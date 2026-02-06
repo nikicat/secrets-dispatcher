@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
@@ -15,14 +16,16 @@ type ItemHandler struct {
 	localConn *dbus.Conn
 	sessions  *SessionManager
 	logger    *logging.Logger
+	approval  *approval.Manager
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager) *ItemHandler {
 	return &ItemHandler{
 		localConn: localConn,
 		sessions:  sessions,
 		logger:    logger,
+		approval:  approvalMgr,
 	}
 }
 
@@ -72,6 +75,13 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
 	if !isItemPath(path) {
 		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(path))
+	}
+
+	// Require approval before accessing secret
+	items := []string{string(path)}
+	if err := i.approval.RequireApproval(context.Background(), items, string(session)); err != nil {
+		i.logger.LogItemGetSecret(context.Background(), string(path), "denied", err)
+		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	// Map remote session to local session

@@ -65,3 +65,8 @@ func ErrObjectNotFound(path string) *dbus.Error {
 func ErrUnsupportedAlgorithm(algo string) *dbus.Error {
 	return NewDBusError(ErrNotSupported, "Algorithm "+algo+" is not supported")
 }
+
+// ErrAccessDenied returns an error when access to a secret is denied.
+func ErrAccessDenied(message string) *dbus.Error {
+	return NewDBusError("org.freedesktop.DBus.Error.AccessDenied", message)
+}

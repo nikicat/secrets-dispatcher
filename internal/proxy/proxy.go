@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
@@ -23,6 +24,7 @@ type Proxy struct {
 
 	sessions *SessionManager
 	logger   *logging.Logger
+	approval *approval.Manager
 
 	service           *Service
 	collection        *CollectionHandler
@@ -35,6 +37,7 @@ type Config struct {
 	RemoteSocketPath string
 	ClientName       string
 	LogLevel         slog.Level
+	Approval         *approval.Manager
 }
 
 // New creates a new Proxy with the given configuration.
@@ -44,11 +47,18 @@ func New(cfg Config) *Proxy {
 		clientName = "unknown"
 	}
 
+	approvalMgr := cfg.Approval
+	if approvalMgr == nil {
+		// Create a disabled manager if none provided (auto-approve all)
+		approvalMgr = approval.NewDisabledManager()
+	}
+
 	return &Proxy{
 		remoteSocketPath: cfg.RemoteSocketPath,
 		clientName:       clientName,
 		sessions:         NewSessionManager(),
 		logger:           logging.New(cfg.LogLevel, clientName),
+		approval:         approvalMgr,
 	}
 }
 
@@ -70,9 +80,9 @@ func (p *Proxy) Connect(ctx context.Context) error {
 	}
 
 	// Create handlers
-	p.service = NewService(p.localConn, p.sessions, p.logger)
+	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval)
 	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger)
-	p.item = NewItemHandler(p.localConn, p.sessions, p.logger)
+	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.localConn, p.sessions, p.logger)
 
 	// Export the Service interface on the remote connection

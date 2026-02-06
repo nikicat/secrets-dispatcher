@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
@@ -13,14 +14,16 @@ type Service struct {
 	localConn *dbus.Conn
 	sessions  *SessionManager
 	logger    *logging.Logger
+	approval  *approval.Manager
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager) *Service {
 	return &Service{
 		localConn: localConn,
 		sessions:  sessions,
 		logger:    logger,
+		approval:  approvalMgr,
 	}
 }
 
@@ -64,10 +67,17 @@ func (s *Service) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, 
 // GetSecrets retrieves secrets for multiple items.
 // Signature: GetSecrets(items Array<ObjectPath>, session ObjectPath) -> (secrets Dict<ObjectPath,Secret>)
 func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
+	itemStrs := objectPathsToStrings(items)
+
+	// Require approval before accessing secrets
+	if err := s.approval.RequireApproval(context.Background(), itemStrs, string(session)); err != nil {
+		s.logger.LogGetSecrets(context.Background(), itemStrs, "denied", err)
+		return nil, dbustypes.ErrAccessDenied(err.Error())
+	}
+
 	// Map remote session to local session
 	localSession, ok := s.sessions.GetLocalSession(session)
 	if !ok {
-		itemStrs := objectPathsToStrings(items)
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", dbustypes.ErrSessionNotFound(string(session)))
 		return nil, dbustypes.ErrSessionNotFound(string(session))
 	}
@@ -75,7 +85,6 @@ func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	call := obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession)
 	if call.Err != nil {
-		itemStrs := objectPathsToStrings(items)
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", call.Err)
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{call.Err.Error()}}
 	}
@@ -83,7 +92,6 @@ func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (
 	// The return type is Dict<ObjectPath, Secret> where Secret is (oayays)
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	if err := call.Store(&secrets); err != nil {
-		itemStrs := objectPathsToStrings(items)
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", err)
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
 	}
@@ -94,7 +102,6 @@ func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (
 		secrets[path] = secret
 	}
 
-	itemStrs := objectPathsToStrings(items)
 	s.logger.LogGetSecrets(context.Background(), itemStrs, "ok", nil)
 	return secrets, nil
 }

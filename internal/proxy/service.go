@@ -16,16 +16,18 @@ type Service struct {
 	logger     *logging.Logger
 	approval   *approval.Manager
 	clientName string
+	tracker    *clientTracker
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker) *Service {
 	return &Service{
 		localConn:  localConn,
 		sessions:   sessions,
 		logger:     logger,
 		approval:   approvalMgr,
 		clientName: clientName,
+		tracker:    tracker,
 	}
 }
 
@@ -68,17 +70,22 @@ func (s *Service) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, 
 
 // GetSecrets retrieves secrets for multiple items.
 // Signature: GetSecrets(items Array<ObjectPath>, session ObjectPath) -> (secrets Dict<ObjectPath,Secret>)
-func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
+func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
 	// Fetch item info (label + attributes) for each item
 	itemInfos := make([]approval.ItemInfo, len(items))
 	for i, path := range items {
 		itemInfos[i] = s.getItemInfo(path)
 	}
 
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
+
 	// Require approval before accessing secrets
 	itemStrs := objectPathsToStrings(items)
-	if err := s.approval.RequireApproval(context.Background(), s.clientName, itemInfos, string(session)); err != nil {
-		s.logger.LogGetSecrets(context.Background(), itemStrs, "denied", err)
+	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session)); err != nil {
+		s.logger.LogGetSecrets(ctx, itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
 

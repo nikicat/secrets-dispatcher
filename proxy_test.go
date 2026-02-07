@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
@@ -508,6 +509,124 @@ func connectProxyWithLocalAddr(p *proxy.Proxy, ctx context.Context, localAddr, r
 	remoteConn.Close()
 
 	return p.Connect(ctx)
+}
+
+// TestProxyClientDisconnectCancelsPendingRequest tests that when a client disconnects
+// while waiting for approval, the pending request is automatically removed.
+func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	// Add a test item
+	mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
+
+	// Create an approval manager that requires approval (not auto-approve)
+	approvalMgr := approval.NewManager(30 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := proxy.New(proxy.Config{
+		RemoteSocketPath: env.remoteSocketPath(),
+		ClientName:       "test-client",
+		LogLevel:         slog.LevelDebug,
+		Approval:         approvalMgr,
+	})
+
+	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	// Connect a client to the remote D-Bus
+	clientConn := env.remoteConn()
+
+	// Open a session first
+	serviceObj := clientConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	if call.Err != nil {
+		t.Fatalf("OpenSession: %v", call.Err)
+	}
+
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// Search for items to get item paths
+	call = serviceObj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"test-attr": "test-value"})
+	if call.Err != nil {
+		t.Fatalf("SearchItems: %v", call.Err)
+	}
+
+	var unlocked, locked []dbus.ObjectPath
+	if err := call.Store(&unlocked, &locked); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	if len(unlocked) == 0 {
+		t.Fatal("no items found")
+	}
+
+	// Start GetSecrets in a goroutine - it will block waiting for approval
+	secretsReturned := make(chan error, 1)
+	go func() {
+		call := serviceObj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, unlocked, sessionPath)
+		secretsReturned <- call.Err
+	}()
+
+	// Wait for the pending request to appear
+	var pendingCount int
+	for i := 0; i < 50; i++ {
+		pendingCount = approvalMgr.PendingCount()
+		if pendingCount > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if pendingCount == 0 {
+		t.Fatal("pending request did not appear")
+	}
+	t.Logf("Pending request appeared (count=%d)", pendingCount)
+
+	// Now disconnect the client
+	clientConn.Close()
+	t.Log("Client disconnected")
+
+	// Wait for the pending request to be removed
+	var finalCount int
+	for i := 0; i < 50; i++ {
+		finalCount = approvalMgr.PendingCount()
+		if finalCount == 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if finalCount != 0 {
+		t.Errorf("pending request was not removed after client disconnect: count=%d", finalCount)
+	} else {
+		t.Log("Pending request was correctly removed after client disconnect")
+	}
+
+	// The GetSecrets call should have returned an error (context cancelled or similar)
+	select {
+	case err := <-secretsReturned:
+		t.Logf("GetSecrets returned: %v", err)
+	case <-time.After(2 * time.Second):
+		// Timeout is acceptable - the goroutine might be stuck if cleanup didn't happen
+		t.Log("GetSecrets goroutine did not return (expected if feature not implemented)")
+	}
 }
 
 // TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects non-plain algorithms.

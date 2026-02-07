@@ -25,6 +25,7 @@ type Proxy struct {
 	sessions *SessionManager
 	logger   *logging.Logger
 	approval *approval.Manager
+	tracker  *clientTracker
 
 	service           *Service
 	collection        *CollectionHandler
@@ -79,10 +80,18 @@ func (p *Proxy) Connect(ctx context.Context) error {
 		return fmt.Errorf("connect to remote socket %s: %w", p.remoteSocketPath, err)
 	}
 
+	// Create client tracker to detect disconnects
+	p.tracker, err = newClientTracker(p.remoteConn)
+	if err != nil {
+		p.localConn.Close()
+		p.remoteConn.Close()
+		return fmt.Errorf("create client tracker: %w", err)
+	}
+
 	// Create handlers
-	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName)
+	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
 	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger)
-	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName)
+	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.localConn, p.sessions, p.logger)
 
 	// Export the Service interface on the remote connection
@@ -148,6 +157,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Close shuts down the proxy and closes all connections.
 func (p *Proxy) Close() error {
 	p.logger.Info("shutting down")
+
+	if p.tracker != nil {
+		p.tracker.close()
+	}
 
 	if p.sessions != nil && p.localConn != nil {
 		p.sessions.CloseAll(p.localConn)

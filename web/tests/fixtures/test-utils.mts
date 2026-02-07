@@ -11,6 +11,7 @@ const BINARY_PATH = join(PROJECT_ROOT, "secrets-dispatcher");
 
 export interface TestBackend {
   url: string;
+  wsUrl: string;
   port: number;
   stateDir: string;
   process: ChildProcess;
@@ -63,6 +64,7 @@ export async function startTestBackend(): Promise<TestBackend> {
 
   const port = getRandomPort();
   const url = `http://localhost:${port}`;
+  const wsUrl = `ws://localhost:${port}/api/v1/ws`;
 
   // Start the backend in API-only mode with isolated state
   const proc = spawn(
@@ -137,6 +139,7 @@ export async function startTestBackend(): Promise<TestBackend> {
 
   return {
     url,
+    wsUrl,
     port,
     stateDir,
     process: proc,

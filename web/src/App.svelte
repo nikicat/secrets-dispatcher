@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { PendingRequest, AuthState, ClientInfo } from "./lib/types";
-  import { exchangeToken, getStatus, getPending, ApiError } from "./lib/api";
+  import { exchangeToken, getStatus } from "./lib/api";
+  import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
 
   let authState = $state<AuthState>("checking");
@@ -11,58 +12,66 @@
   let error = $state<string | null>(null);
   let connected = $state(false);
 
-  let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let ws: ApprovalWebSocket | null = null;
 
   async function checkAuth(): Promise<boolean> {
     const status = await getStatus();
     if (status !== null) {
-      connected = true;
       clients = status.clients || [];
       return true;
     }
     return false;
   }
 
-  async function fetchPending() {
-    try {
-      const [pendingResult, status] = await Promise.all([
-        getPending(),
-        getStatus(),
-      ]);
-      requests = pendingResult.requests;
-      if (status) {
-        clients = status.clients || [];
-      }
-      error = null;
-      connected = true;
-    } catch (e) {
-      if (e instanceof ApiError) {
-        if (e.status === 401) {
-          authState = "unauthenticated";
-          stopPolling();
-          return;
+  function startWebSocket() {
+    ws = new ApprovalWebSocket({
+      onSnapshot: (reqs, cls) => {
+        requests = reqs;
+        clients = cls;
+        loading = false;
+        error = null;
+      },
+      onRequestCreated: (req) => {
+        requests = [...requests, req];
+      },
+      onRequestResolved: (id) => {
+        requests = requests.filter((r) => r.id !== id);
+      },
+      onRequestExpired: (id) => {
+        requests = requests.filter((r) => r.id !== id);
+      },
+      onRequestCancelled: (id) => {
+        requests = requests.filter((r) => r.id !== id);
+      },
+      onClientConnected: (client) => {
+        // Add client if not already present
+        if (!clients.some((c) => c.socket_path === client.socket_path)) {
+          clients = [...clients, client];
         }
-        error = e.message;
-      } else {
-        error = "Connection failed";
-      }
-      connected = false;
-    } finally {
-      loading = false;
-    }
+      },
+      onClientDisconnected: (client) => {
+        clients = clients.filter((c) => c.socket_path !== client.socket_path);
+      },
+      onConnectionChange: (isConnected) => {
+        connected = isConnected;
+        if (!isConnected) {
+          error = "Connection lost. Reconnecting...";
+        } else {
+          error = null;
+        }
+      },
+      onAuthError: () => {
+        authState = "unauthenticated";
+        ws?.disconnect();
+        ws = null;
+      },
+    });
+    ws.connect();
   }
 
-  function startPolling() {
-    if (pollInterval) return;
-    fetchPending();
-    pollInterval = setInterval(fetchPending, 2000);
-  }
-
-  function stopPolling() {
-    if (pollInterval) {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
+  function stopWebSocket() {
+    ws?.disconnect();
+    ws = null;
   }
 
   async function handleAuth() {
@@ -77,17 +86,20 @@
 
       if (success) {
         authState = "authenticated";
-        startPolling();
+        startWebSocket();
       } else {
         authState = "unauthenticated";
         error = "Invalid or expired login link";
+        loading = false;
       }
     } else {
       // Check if we have a valid session
       const isAuth = await checkAuth();
       authState = isAuth ? "authenticated" : "unauthenticated";
       if (isAuth) {
-        startPolling();
+        startWebSocket();
+      } else {
+        loading = false;
       }
     }
   }
@@ -95,12 +107,20 @@
   function handleRetry() {
     error = null;
     loading = true;
-    fetchPending();
+    if (ws) {
+      ws.disconnect();
+    }
+    startWebSocket();
+  }
+
+  // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
+  function handleAction() {
+    // No-op: WebSocket will push the update
   }
 
   onMount(() => {
     handleAuth();
-    return () => stopPolling();
+    return () => stopWebSocket();
   });
 </script>
 
@@ -114,7 +134,7 @@
         {#if connected}
           {clients.length} client{clients.length !== 1 ? "s" : ""} connected
         {:else}
-          Disconnected
+          Reconnecting...
         {/if}
       </span>
     </div>
@@ -142,7 +162,7 @@
       <div class="spinner"></div>
       <p>Loading...</p>
     </div>
-  {:else if error}
+  {:else if error && !connected}
     <div class="error-state">
       <p class="error-message">{error}</p>
       <button class="btn-retry" onclick={handleRetry}>Retry</button>
@@ -168,7 +188,7 @@
     <section>
       <h2>Pending Requests ({requests.length})</h2>
       {#each requests as request (request.id)}
-        <RequestCard {request} onAction={fetchPending} />
+        <RequestCard {request} onAction={handleAction} />
       {/each}
     </section>
   {/if}

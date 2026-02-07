@@ -40,3 +40,55 @@ export interface ErrorResponse {
 }
 
 export type AuthState = "checking" | "authenticated" | "unauthenticated";
+
+// WebSocket message types
+export type WSMessage =
+  | WSSnapshotMessage
+  | WSRequestCreatedMessage
+  | WSRequestResolvedMessage
+  | WSRequestExpiredMessage
+  | WSRequestCancelledMessage
+  | WSClientConnectedMessage
+  | WSClientDisconnectedMessage
+  | WSPingMessage;
+
+export interface WSSnapshotMessage {
+  type: "snapshot";
+  requests: PendingRequest[];
+  clients: ClientInfo[];
+}
+
+export interface WSRequestCreatedMessage {
+  type: "request_created";
+  request: PendingRequest;
+}
+
+export interface WSRequestResolvedMessage {
+  type: "request_resolved";
+  id: string;
+  result: "approved" | "denied";
+}
+
+export interface WSRequestExpiredMessage {
+  type: "request_expired";
+  id: string;
+}
+
+export interface WSRequestCancelledMessage {
+  type: "request_cancelled";
+  id: string;
+}
+
+export interface WSClientConnectedMessage {
+  type: "client_connected";
+  client: ClientInfo;
+}
+
+export interface WSClientDisconnectedMessage {
+  type: "client_disconnected";
+  client: ClientInfo;
+}
+
+export interface WSPingMessage {
+  type: "ping";
+}

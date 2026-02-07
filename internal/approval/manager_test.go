@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -330,5 +331,299 @@ func TestManager_CleanupAfterApproval(t *testing.T) {
 	// Trying to approve again should fail
 	if err := mgr.Approve(reqID); err != ErrNotFound {
 		t.Errorf("second approval should return ErrNotFound, got: %v", err)
+	}
+}
+
+// testObserver collects events for testing.
+type testObserver struct {
+	mu     sync.Mutex
+	events []Event
+}
+
+func (o *testObserver) OnEvent(e Event) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, e)
+}
+
+func (o *testObserver) Events() []Event {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]Event{}, o.events...)
+}
+
+func (o *testObserver) WaitForEvents(count int, timeout time.Duration) []Event {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		events := o.Events()
+		if len(events) >= count {
+			return events
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return o.Events()
+}
+
+func TestManager_Observer_Created(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+	}()
+
+	// Wait for created event
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) < 1 {
+		t.Fatal("expected at least 1 event")
+	}
+	if events[0].Type != EventRequestCreated {
+		t.Errorf("expected EventRequestCreated, got %v", events[0].Type)
+	}
+	if events[0].Request == nil {
+		t.Error("expected request in event")
+	}
+
+	wg.Wait()
+	mgr.Unsubscribe(obs)
+}
+
+func TestManager_Observer_Approved(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("request did not appear")
+	}
+
+	// Approve
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Wait for events
+	events := obs.WaitForEvents(2, time.Second)
+	if len(events) < 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[0].Type != EventRequestCreated {
+		t.Errorf("expected first event to be Created, got %v", events[0].Type)
+	}
+	if events[1].Type != EventRequestApproved {
+		t.Errorf("expected second event to be Approved, got %v", events[1].Type)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestManager_Observer_Denied(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Deny
+	mgr.Deny(reqID)
+	wg.Wait()
+
+	// Wait for events
+	events := obs.WaitForEvents(2, time.Second)
+	if len(events) < 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[1].Type != EventRequestDenied {
+		t.Errorf("expected second event to be Denied, got %v", events[1].Type)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestManager_Observer_Expired(t *testing.T) {
+	mgr := NewManager(100 * time.Millisecond)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	// This will timeout
+	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+
+	// Wait for events
+	events := obs.WaitForEvents(2, time.Second)
+	if len(events) < 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[0].Type != EventRequestCreated {
+		t.Errorf("expected first event to be Created, got %v", events[0].Type)
+	}
+	if events[1].Type != EventRequestExpired {
+		t.Errorf("expected second event to be Expired, got %v", events[1].Type)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestManager_Observer_Cancelled(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+		if err != context.Canceled {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	}()
+
+	// Wait for created event
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) < 1 {
+		t.Fatal("expected at least 1 event (created)")
+	}
+
+	// Cancel the context
+	cancel()
+	wg.Wait()
+
+	// Wait for cancelled event
+	events = obs.WaitForEvents(2, time.Second)
+	if len(events) < 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[0].Type != EventRequestCreated {
+		t.Errorf("expected first event to be Created, got %v", events[0].Type)
+	}
+	if events[1].Type != EventRequestCancelled {
+		t.Errorf("expected second event to be Cancelled, got %v", events[1].Type)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestManager_Observer_Unsubscribe(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+	mgr.Unsubscribe(obs)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+	}()
+
+	wg.Wait()
+
+	// Should receive no events after unsubscribe
+	events := obs.Events()
+	if len(events) != 0 {
+		t.Errorf("expected 0 events after unsubscribe, got %d", len(events))
+	}
+}
+
+func TestManager_Observer_MultipleObservers(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+	obs1 := &testObserver{}
+	obs2 := &testObserver{}
+	mgr.Subscribe(obs1)
+	mgr.Subscribe(obs2)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1")
+	}()
+
+	// Wait for created event on both observers
+	events1 := obs1.WaitForEvents(1, time.Second)
+	events2 := obs2.WaitForEvents(1, time.Second)
+
+	if len(events1) < 1 {
+		t.Error("observer 1 should receive events")
+	}
+	if len(events2) < 1 {
+		t.Error("observer 2 should receive events")
+	}
+
+	wg.Wait()
+	mgr.Unsubscribe(obs1)
+	mgr.Unsubscribe(obs2)
+}
+
+func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
+	mgr := NewManager(5 * time.Second)
+
+	var wg sync.WaitGroup
+	var subscribed atomic.Int32
+
+	// Subscribe concurrently
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			obs := &testObserver{}
+			mgr.Subscribe(obs)
+			subscribed.Add(1)
+		}()
+	}
+
+	wg.Wait()
+
+	if subscribed.Load() != 10 {
+		t.Errorf("expected 10 subscribed, got %d", subscribed.Load())
 	}
 }

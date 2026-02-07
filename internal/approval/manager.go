@@ -19,6 +19,28 @@ var ErrTimeout = errors.New("approval request timed out")
 // ErrNotFound is returned when a request ID doesn't exist.
 var ErrNotFound = errors.New("request not found")
 
+// EventType represents the type of approval event.
+type EventType int
+
+const (
+	EventRequestCreated EventType = iota
+	EventRequestApproved
+	EventRequestDenied
+	EventRequestExpired
+	EventRequestCancelled
+)
+
+// Event represents an approval event for observers.
+type Event struct {
+	Type    EventType
+	Request *Request
+}
+
+// Observer receives notifications about approval events.
+type Observer interface {
+	OnEvent(Event)
+}
+
 // ItemInfo contains metadata about a secret item.
 type ItemInfo struct {
 	Path       string            `json:"path"`
@@ -46,21 +68,49 @@ type Manager struct {
 	pending  map[string]*Request
 	timeout  time.Duration
 	disabled bool // when true, auto-approve all requests
+
+	observersMu sync.RWMutex
+	observers   map[Observer]struct{}
 }
 
 // NewManager creates a new approval manager.
 func NewManager(timeout time.Duration) *Manager {
 	return &Manager{
-		pending: make(map[string]*Request),
-		timeout: timeout,
+		pending:   make(map[string]*Request),
+		timeout:   timeout,
+		observers: make(map[Observer]struct{}),
 	}
 }
 
 // NewDisabledManager creates a manager that auto-approves all requests.
 func NewDisabledManager() *Manager {
 	return &Manager{
-		pending:  make(map[string]*Request),
-		disabled: true,
+		pending:   make(map[string]*Request),
+		disabled:  true,
+		observers: make(map[Observer]struct{}),
+	}
+}
+
+// Subscribe registers an observer to receive approval events.
+func (m *Manager) Subscribe(o Observer) {
+	m.observersMu.Lock()
+	defer m.observersMu.Unlock()
+	m.observers[o] = struct{}{}
+}
+
+// Unsubscribe removes an observer from receiving approval events.
+func (m *Manager) Unsubscribe(o Observer) {
+	m.observersMu.Lock()
+	defer m.observersMu.Unlock()
+	delete(m.observers, o)
+}
+
+// notify sends an event to all observers asynchronously.
+func (m *Manager) notify(event Event) {
+	m.observersMu.RLock()
+	defer m.observersMu.RUnlock()
+	for o := range m.observers {
+		go o.OnEvent(event)
 	}
 }
 
@@ -86,6 +136,9 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 	m.pending[req.ID] = req
 	m.mu.Unlock()
 
+	// Notify observers of new request
+	m.notify(Event{Type: EventRequestCreated, Request: req})
+
 	// Ensure cleanup when we exit
 	defer func() {
 		m.mu.Lock()
@@ -104,8 +157,10 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		}
 		return ErrDenied
 	case <-timer.C:
+		m.notify(Event{Type: EventRequestExpired, Request: req})
 		return ErrTimeout
 	case <-ctx.Done():
+		m.notify(Event{Type: EventRequestCancelled, Request: req})
 		return ctx.Err()
 	}
 }
@@ -129,30 +184,34 @@ func (m *Manager) List() []*Request {
 // Approve approves a pending request by ID.
 func (m *Manager) Approve(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	req, ok := m.pending[id]
 	if !ok {
+		m.mu.Unlock()
 		return ErrNotFound
 	}
 
 	req.result = true
 	close(req.done)
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestApproved, Request: req})
 	return nil
 }
 
 // Deny denies a pending request by ID.
 func (m *Manager) Deny(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	req, ok := m.pending[id]
 	if !ok {
+		m.mu.Unlock()
 		return ErrNotFound
 	}
 
 	req.result = false
 	close(req.done)
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestDenied, Request: req})
 	return nil
 }
 

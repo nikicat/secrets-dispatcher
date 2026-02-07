@@ -12,24 +12,29 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	httpServer *http.Server
-	auth       *Auth
-	handlers   *Handlers
-	listener   net.Listener
+	httpServer  *http.Server
+	auth        *Auth
+	handlers    *Handlers
+	wsHandler   *WSHandler
+	listener    net.Listener
 }
 
 // NewServer creates a new API server for single-socket mode.
 func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth) (*Server, error) {
-	return newServerWithHandlers(addr, NewHandlers(manager, remoteSocket, clientName, auth), auth)
+	handlers := NewHandlers(manager, remoteSocket, clientName, auth)
+	wsHandler := NewWSHandler(manager, nil, auth, remoteSocket, clientName)
+	return newServerWithHandlers(addr, handlers, wsHandler, auth)
 }
 
 // NewServerWithProvider creates a new API server for multi-socket mode.
 func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth) (*Server, error) {
-	return newServerWithHandlers(addr, NewHandlersWithProvider(manager, provider, auth), auth)
+	handlers := NewHandlersWithProvider(manager, provider, auth)
+	wsHandler := NewWSHandler(manager, provider, auth, "", "")
+	return newServerWithHandlers(addr, handlers, wsHandler, auth)
 }
 
 // newServerWithHandlers creates a new API server with the given handlers.
-func newServerWithHandlers(addr string, handlers *Handlers, auth *Auth) (*Server, error) {
+func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth) (*Server, error) {
 
 	// Create the main router
 	rootMux := http.NewServeMux()
@@ -39,6 +44,7 @@ func newServerWithHandlers(addr string, handlers *Handlers, auth *Auth) (*Server
 	apiMux.HandleFunc("/api/v1/status", handlers.HandleStatus)
 	apiMux.HandleFunc("/api/v1/pending", handlers.HandlePendingList)
 	apiMux.HandleFunc("/api/v1/log", handlers.HandleLog)
+	apiMux.HandleFunc("/api/v1/ws", wsHandler.HandleWS)
 
 	// Routes with path parameters need pattern matching
 	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +82,7 @@ func newServerWithHandlers(addr string, handlers *Handlers, auth *Auth) (*Server
 		httpServer: httpServer,
 		auth:       auth,
 		handlers:   handlers,
+		wsHandler:  wsHandler,
 		listener:   listener,
 	}, nil
 }
@@ -103,4 +110,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // CookieFilePath returns the path to the authentication cookie file.
 func (s *Server) CookieFilePath() string {
 	return s.auth.FilePath()
+}
+
+// WSHandler returns the WebSocket handler for broadcasting client events.
+func (s *Server) WSHandler() *WSHandler {
+	return s.wsHandler
 }

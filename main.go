@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -74,6 +75,11 @@ func runLogin(args []string) {
 	fmt.Println(url)
 	fmt.Println()
 	fmt.Println("(Link expires in 5 minutes)")
+
+	// Try to open the URL in the default browser
+	if err := exec.Command("xdg-open", url).Start(); err != nil {
+		// Silently ignore errors - user can still copy the URL manually
+	}
 }
 
 func runProxy() {

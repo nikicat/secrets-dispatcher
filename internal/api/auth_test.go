@@ -202,3 +202,35 @@ func TestAuth_CreatesConfigDir(t *testing.T) {
 		t.Error("expected directory")
 	}
 }
+
+func TestAuth_PreservesExistingCookie(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Create first auth - generates new cookie
+	auth1, err := NewAuth(tempDir)
+	if err != nil {
+		t.Fatalf("NewAuth (first) failed: %v", err)
+	}
+	token1 := auth1.Token()
+
+	// Create second auth - should load existing cookie
+	auth2, err := NewAuth(tempDir)
+	if err != nil {
+		t.Fatalf("NewAuth (second) failed: %v", err)
+	}
+	token2 := auth2.Token()
+
+	// Tokens should be identical
+	if token1 != token2 {
+		t.Errorf("token changed across NewAuth calls: %q != %q", token1, token2)
+	}
+
+	// Verify file wasn't modified (same content)
+	content, err := os.ReadFile(filepath.Join(tempDir, cookieFileName))
+	if err != nil {
+		t.Fatalf("failed to read cookie file: %v", err)
+	}
+	if string(content) != token1 {
+		t.Error("cookie file content doesn't match original token")
+	}
+}

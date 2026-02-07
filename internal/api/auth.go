@@ -24,23 +24,36 @@ type Auth struct {
 	filePath string
 }
 
-// NewAuth creates a new Auth, generating a random cookie and writing it to the config directory.
+// NewAuth creates or loads an Auth from the config directory.
+// If a cookie file exists, it is loaded. Otherwise, a new random cookie is generated.
 // The cookie file is created with mode 0600.
 func NewAuth(configDir string) (*Auth, error) {
-	// Generate random token
+	// Ensure config directory exists
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return nil, err
+	}
+
+	filePath := filepath.Join(configDir, cookieFileName)
+
+	// Try to load existing cookie file
+	if data, err := os.ReadFile(filePath); err == nil {
+		token := strings.TrimSpace(string(data))
+		if token != "" {
+			return &Auth{
+				token:    token,
+				filePath: filePath,
+			}, nil
+		}
+	}
+
+	// Generate new random token
 	tokenBytes := make([]byte, cookieSize)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, err
 	}
 	token := hex.EncodeToString(tokenBytes)
 
-	// Ensure config directory exists
-	if err := os.MkdirAll(configDir, 0700); err != nil {
-		return nil, err
-	}
-
 	// Write cookie file
-	filePath := filepath.Join(configDir, cookieFileName)
 	if err := os.WriteFile(filePath, []byte(token), 0600); err != nil {
 		return nil, err
 	}

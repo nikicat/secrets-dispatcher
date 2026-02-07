@@ -50,7 +50,8 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 
 // SearchItems searches for items matching the given attributes.
 // Signature: SearchItems(attributes Dict<String,String>) -> (unlocked Array<ObjectPath>, locked Array<ObjectPath>)
-func (s *Service) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
+func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
+	// Perform search on local service first
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes)
 	if call.Err != nil {
@@ -62,6 +63,24 @@ func (s *Service) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, 
 	if err := call.Store(&unlocked, &locked); err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", err)
 		return nil, nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
+	}
+
+	// Fetch item info for all results
+	allPaths := append(unlocked, locked...)
+	itemInfos := make([]approval.ItemInfo, len(allPaths))
+	for i, path := range allPaths {
+		itemInfos[i] = s.getItemInfo(path)
+	}
+
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
+
+	// Require approval before returning search results
+	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, "", approval.RequestTypeSearch, attributes); err != nil {
+		s.logger.LogSearchItems(ctx, attributes, len(unlocked), len(locked), "denied", err)
+		return nil, nil, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	s.logger.LogSearchItems(context.Background(), attributes, len(unlocked), len(locked), "ok", nil)
@@ -84,7 +103,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 
 	// Require approval before accessing secrets
 	itemStrs := objectPathsToStrings(items)
-	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session)); err != nil {
+	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session), approval.RequestTypeGetSecret, nil); err != nil {
 		s.logger.LogGetSecrets(ctx, itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}

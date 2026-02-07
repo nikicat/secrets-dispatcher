@@ -91,7 +91,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 
 	// Require approval before accessing secret
 	items := []approval.ItemInfo{itemInfo}
-	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(session)); err != nil {
+	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(session), approval.RequestTypeGetSecret, nil); err != nil {
 		i.logger.LogItemGetSecret(ctx, string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
 	}

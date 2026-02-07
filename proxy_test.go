@@ -525,8 +525,8 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	// Add a test item
-	mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
+	// Add a test item and capture its path directly (avoids needing SearchItems which now requires approval)
+	itemPath := mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
 	// Create an approval manager that requires approval (not auto-approve)
 	approvalMgr := approval.NewManager(30 * time.Second)
@@ -562,20 +562,8 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 		t.Fatalf("store result: %v", err)
 	}
 
-	// Search for items to get item paths
-	call = serviceObj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"test-attr": "test-value"})
-	if call.Err != nil {
-		t.Fatalf("SearchItems: %v", call.Err)
-	}
-
-	var unlocked, locked []dbus.ObjectPath
-	if err := call.Store(&unlocked, &locked); err != nil {
-		t.Fatalf("store result: %v", err)
-	}
-
-	if len(unlocked) == 0 {
-		t.Fatal("no items found")
-	}
+	// Use the item path directly (avoids SearchItems which now requires approval)
+	unlocked := []dbus.ObjectPath{itemPath}
 
 	// Start GetSecrets in a goroutine - it will block waiting for approval
 	secretsReturned := make(chan error, 1)

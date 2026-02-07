@@ -11,6 +11,8 @@ export interface PendingRequest {
   session: string;
   created_at: string;
   expires_at: string;
+  type: "get_secret" | "search";
+  search_attributes?: Record<string, string>;
 }
 
 export interface ClientInfo {

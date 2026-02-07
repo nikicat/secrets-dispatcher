@@ -48,6 +48,14 @@ type ItemInfo struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
+// RequestType indicates the type of secret access request.
+type RequestType string
+
+const (
+	RequestTypeGetSecret RequestType = "get_secret"
+	RequestTypeSearch    RequestType = "search"
+)
+
 // Request represents a secret access request awaiting approval.
 type Request struct {
 	ID        string     `json:"id"`
@@ -56,6 +64,12 @@ type Request struct {
 	Session   string     `json:"session"`
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt time.Time  `json:"expires_at"`
+
+	// Type indicates whether this is a get_secret or search request.
+	Type RequestType `json:"type"`
+
+	// SearchAttributes contains the search criteria for search requests.
+	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
 
 	// Internal: channel signaled when request is approved/denied
 	done   chan struct{}
@@ -116,20 +130,23 @@ func (m *Manager) notify(event Event) {
 
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.
 // Returns nil if approved, ErrDenied if denied, ErrTimeout if timeout.
-func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo, session string) error {
+func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo,
+	session string, reqType RequestType, searchAttrs map[string]string) error {
 	if m.disabled {
 		return nil
 	}
 
 	now := time.Now()
 	req := &Request{
-		ID:        uuid.New().String(),
-		Client:    client,
-		Items:     items,
-		Session:   session,
-		CreatedAt: now,
-		ExpiresAt: now.Add(m.timeout),
-		done:      make(chan struct{}),
+		ID:               uuid.New().String(),
+		Client:           client,
+		Items:            items,
+		Session:          session,
+		CreatedAt:        now,
+		ExpiresAt:        now.Add(m.timeout),
+		Type:             reqType,
+		SearchAttributes: searchAttrs,
+		done:             make(chan struct{}),
 	}
 
 	m.mu.Lock()

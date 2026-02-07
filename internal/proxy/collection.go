@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
@@ -12,17 +13,23 @@ import (
 // CollectionHandler handles Collection interface calls for collection objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*.
 type CollectionHandler struct {
-	localConn *dbus.Conn
-	sessions  *SessionManager
-	logger    *logging.Logger
+	localConn  *dbus.Conn
+	sessions   *SessionManager
+	logger     *logging.Logger
+	approval   *approval.Manager
+	clientName string
+	tracker    *clientTracker
 }
 
 // NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger) *CollectionHandler {
+func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker) *CollectionHandler {
 	return &CollectionHandler{
-		localConn: localConn,
-		sessions:  sessions,
-		logger:    logger,
+		localConn:  localConn,
+		sessions:   sessions,
+		logger:     logger,
+		approval:   approvalMgr,
+		clientName: clientName,
+		tracker:    tracker,
 	}
 }
 
@@ -70,6 +77,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
+	// Perform search on local service first
 	obj := c.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes)
 	if call.Err != nil {
@@ -79,6 +87,27 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	var results []dbus.ObjectPath
 	if err := call.Store(&results); err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
+	}
+
+	// Fetch item info for all results
+	itemInfos := make([]approval.ItemInfo, len(results))
+	for i, itemPath := range results {
+		itemInfos[i] = c.getItemInfo(itemPath)
+	}
+
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := c.tracker.contextForSender(context.Background(), sender)
+	defer c.tracker.remove(sender)
+
+	// Require approval before returning search results
+	if err := c.approval.RequireApproval(ctx, c.clientName, itemInfos, "", approval.RequestTypeSearch, attributes); err != nil {
+		c.logger.LogMethod(ctx, "Collection.SearchItems", map[string]any{
+			"collection": string(path),
+			"attributes": attributes,
+			"count":      len(results),
+		}, "denied", err)
+		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	c.logger.LogMethod(context.Background(), "Collection.SearchItems", map[string]any{
@@ -182,4 +211,27 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 	}
 
 	return nil
+}
+
+// getItemInfo fetches label and attributes for a secret item from D-Bus.
+func (c *CollectionHandler) getItemInfo(path dbus.ObjectPath) approval.ItemInfo {
+	info := approval.ItemInfo{Path: string(path)}
+
+	obj := c.localConn.Object(dbustypes.BusName, path)
+
+	// Get Label property
+	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Label"); err == nil {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+
+	// Get Attributes property
+	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Attributes"); err == nil {
+		if attrs, ok := v.Value().(map[string]string); ok {
+			info.Attributes = attrs
+		}
+	}
+
+	return info
 }

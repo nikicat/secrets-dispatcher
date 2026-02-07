@@ -84,44 +84,106 @@
     <span class="expires">Expires: {timeLeft}</span>
   </div>
 
-  <div class="items">
-    <h4>Requested Secrets</h4>
-    {#each request.items as item}
-      <div class="item-card">
-        <div class="item-header">
-          <span class="item-label">{item.label || "Unnamed"}</span>
-          <button
-            class="copy-btn"
-            onclick={() => copyToClipboard(item.path)}
-            title="Copy item path"
-          >
-            {#if copiedPath === item.path}
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12"></polyline>
-              </svg>
-            {:else}
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-              </svg>
+  {#if request.type === "search"}
+    <div class="search-criteria">
+      <h4>Search Criteria</h4>
+      {#if request.search_attributes && Object.keys(request.search_attributes).length > 0}
+        <table class="attributes-table">
+          <tbody>
+            {#each Object.entries(request.search_attributes) as [key, value]}
+              <tr>
+                <td class="attr-key">{key}</td>
+                <td class="attr-value">{value}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="no-criteria">No search criteria specified</p>
+      {/if}
+    </div>
+    <div class="items">
+      <h4>Matching Items ({request.items.length})</h4>
+      {#if request.items.length === 0}
+        <p class="no-items">No matching items found</p>
+      {:else}
+        {#each request.items as item}
+          <div class="item-card">
+            <div class="item-header">
+              <span class="item-label">{item.label || "Unnamed"}</span>
+              <button
+                class="copy-btn"
+                onclick={() => copyToClipboard(item.path)}
+                title="Copy item path"
+              >
+                {#if copiedPath === item.path}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                {:else}
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                {/if}
+              </button>
+            </div>
+            {#if item.attributes && Object.keys(item.attributes).length > 0}
+              <table class="attributes-table">
+                <tbody>
+                  {#each Object.entries(item.attributes) as [key, value]}
+                    <tr>
+                      <td class="attr-key">{key}</td>
+                      <td class="attr-value">{value}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
             {/if}
-          </button>
+          </div>
+        {/each}
+      {/if}
+    </div>
+  {:else}
+    <div class="items">
+      <h4>Requested Secrets</h4>
+      {#each request.items as item}
+        <div class="item-card">
+          <div class="item-header">
+            <span class="item-label">{item.label || "Unnamed"}</span>
+            <button
+              class="copy-btn"
+              onclick={() => copyToClipboard(item.path)}
+              title="Copy item path"
+            >
+              {#if copiedPath === item.path}
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              {:else}
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              {/if}
+            </button>
+          </div>
+          {#if item.attributes && Object.keys(item.attributes).length > 0}
+            <table class="attributes-table">
+              <tbody>
+                {#each Object.entries(item.attributes) as [key, value]}
+                  <tr>
+                    <td class="attr-key">{key}</td>
+                    <td class="attr-value">{value}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
         </div>
-        {#if item.attributes && Object.keys(item.attributes).length > 0}
-          <table class="attributes-table">
-            <tbody>
-              {#each Object.entries(item.attributes) as [key, value]}
-                <tr>
-                  <td class="attr-key">{key}</td>
-                  <td class="attr-value">{value}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        {/if}
-      </div>
-    {/each}
-  </div>
+      {/each}
+    </div>
+  {/if}
 
   {#if error}
     <div class="error">{error}</div>
@@ -173,6 +235,27 @@
   .expires {
     font-size: 13px;
     color: var(--color-warning);
+  }
+
+  .search-criteria {
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .search-criteria h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin: 0 0 8px 0;
+  }
+
+  .no-criteria,
+  .no-items {
+    font-size: 13px;
+    color: var(--color-text-muted);
+    font-style: italic;
+    margin: 0;
   }
 
   .items {

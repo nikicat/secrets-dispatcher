@@ -296,12 +296,14 @@ func convertRequest(req *approval.Request) *PendingRequest {
 		}
 	}
 	return &PendingRequest{
-		ID:        req.ID,
-		Client:    req.Client,
-		Items:     items,
-		Session:   req.Session,
-		CreatedAt: req.CreatedAt,
-		ExpiresAt: req.ExpiresAt,
+		ID:               req.ID,
+		Client:           req.Client,
+		Items:            items,
+		Session:          req.Session,
+		CreatedAt:        req.CreatedAt,
+		ExpiresAt:        req.ExpiresAt,
+		Type:             string(req.Type),
+		SearchAttributes: req.SearchAttributes,
 	}
 }
 

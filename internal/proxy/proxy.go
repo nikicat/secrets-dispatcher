@@ -90,7 +90,7 @@ func (p *Proxy) Connect(ctx context.Context) error {
 
 	// Create handlers
 	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
-	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger)
+	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
 	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.localConn, p.sessions, p.logger)
 

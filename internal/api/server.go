@@ -20,17 +20,19 @@ type Server struct {
 
 // NewServer creates a new API server.
 func NewServer(addr string, manager *approval.Manager, remoteSocket string, auth *Auth) (*Server, error) {
-	handlers := NewHandlers(manager, remoteSocket)
+	handlers := NewHandlers(manager, remoteSocket, auth)
 
-	mux := http.NewServeMux()
+	// Create the main router
+	rootMux := http.NewServeMux()
 
-	// Register routes
-	mux.HandleFunc("/api/v1/status", handlers.HandleStatus)
-	mux.HandleFunc("/api/v1/pending", handlers.HandlePendingList)
-	mux.HandleFunc("/api/v1/log", handlers.HandleLog)
+	// API routes that require auth
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/v1/status", handlers.HandleStatus)
+	apiMux.HandleFunc("/api/v1/pending", handlers.HandlePendingList)
+	apiMux.HandleFunc("/api/v1/log", handlers.HandleLog)
 
 	// Routes with path parameters need pattern matching
-	mux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {
+	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case strings.HasSuffix(path, "/approve"):
@@ -42,8 +44,14 @@ func NewServer(addr string, manager *approval.Manager, remoteSocket string, auth
 		}
 	})
 
-	// Wrap all handlers with auth middleware
-	handler := auth.Middleware(mux)
+	// Auth endpoint (no auth required - it's how you get auth)
+	rootMux.HandleFunc("/api/v1/auth", handlers.HandleAuth)
+
+	// All other API routes require auth
+	rootMux.Handle("/api/", auth.Middleware(apiMux))
+
+	// Static files (no auth required)
+	rootMux.Handle("/", NewSPAHandler())
 
 	// Create listener first to catch address-in-use errors early
 	listener, err := net.Listen("tcp", addr)
@@ -52,7 +60,7 @@ func NewServer(addr string, manager *approval.Manager, remoteSocket string, auth
 	}
 
 	httpServer := &http.Server{
-		Handler: handler,
+		Handler: rootMux,
 	}
 
 	return &Server{

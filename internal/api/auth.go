@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,8 +13,9 @@ import (
 )
 
 const (
-	cookieFileName = ".cookie"
-	cookieSize     = 32 // 32 bytes = 256 bits
+	cookieFileName    = ".cookie"
+	cookieSize        = 32 // 32 bytes = 256 bits
+	sessionCookieName = "session"
 )
 
 // Auth handles cookie-based authentication for the API.
@@ -49,12 +51,20 @@ func NewAuth(configDir string) (*Auth, error) {
 	}, nil
 }
 
-// Middleware returns an HTTP middleware that checks for valid Bearer token.
+// Middleware returns an HTTP middleware that checks for valid auth.
+// Supports both Bearer token (Authorization header) and session cookie.
 func (a *Auth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// First, try session cookie
+		if a.ValidateSession(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Fall back to Bearer token
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, `{"error": "missing Authorization header"}`, http.StatusUnauthorized)
+			http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 
@@ -82,4 +92,54 @@ func (a *Auth) Token() string {
 // FilePath returns the path to the cookie file.
 func (a *Auth) FilePath() string {
 	return a.filePath
+}
+
+// LoadAuth loads an existing Auth from the cookie file.
+// Returns an error if the cookie file doesn't exist or is invalid.
+func LoadAuth(configDir string) (*Auth, error) {
+	filePath := filepath.Join(configDir, cookieFileName)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return nil, fmt.Errorf("empty cookie file")
+	}
+
+	return &Auth{
+		token:    token,
+		filePath: filePath,
+	}, nil
+}
+
+// GenerateLoginURL creates a login URL with an embedded JWT.
+func (a *Auth) GenerateLoginURL(addr string) (string, error) {
+	jwt, err := a.GenerateJWT()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("http://%s/?token=%s", addr, jwt), nil
+}
+
+// ValidateSession checks if the session cookie is valid.
+// Returns true if the session cookie matches the auth token.
+func (a *Auth) ValidateSession(r *http.Request) bool {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(a.token)) == 1
+}
+
+// SetSessionCookie sets the session cookie on the response.
+func (a *Auth) SetSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    a.token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
 }

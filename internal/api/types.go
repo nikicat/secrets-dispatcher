@@ -49,3 +49,8 @@ type LogEntry struct {
 type LogResponse struct {
 	Entries []LogEntry `json:"entries"`
 }
+
+// AuthRequest is the request body for POST /api/v1/auth.
+type AuthRequest struct {
+	Token string `json:"token"`
+}

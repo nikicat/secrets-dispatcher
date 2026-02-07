@@ -2,3 +2,13 @@
 secrets-dispatcher
 mock-secret-service
 *.exe
+
+# Frontend build artifacts
+web/dist/
+web/node_modules/
+
+# Embedded frontend (copied from web/dist)
+internal/api/web/
+
+# Test artifacts
+web/test-results/

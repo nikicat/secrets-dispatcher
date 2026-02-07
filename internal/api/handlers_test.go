@@ -11,9 +11,20 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
+// testHandlers creates handlers with a test auth for use in tests.
+func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
+	t.Helper()
+	tmpDir := t.TempDir()
+	auth, err := NewAuth(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create auth: %v", err)
+	}
+	return NewHandlers(mgr, "/path/to/socket", auth)
+}
+
 func TestHandleStatus(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	rr := httptest.NewRecorder()
@@ -45,7 +56,7 @@ func TestHandleStatus(t *testing.T) {
 
 func TestHandleStatus_WrongMethod(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
 	rr := httptest.NewRecorder()
@@ -59,7 +70,7 @@ func TestHandleStatus_WrongMethod(t *testing.T) {
 
 func TestHandlePendingList_Empty(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending", nil)
 	rr := httptest.NewRecorder()
@@ -82,7 +93,7 @@ func TestHandlePendingList_Empty(t *testing.T) {
 
 func TestHandlePendingList_WithRequests(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
 	go func() {
@@ -131,7 +142,7 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 
 func TestHandleApprove_Success(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
 	done := make(chan error, 1)
@@ -185,7 +196,7 @@ func TestHandleApprove_Success(t *testing.T) {
 
 func TestHandleApprove_NotFound(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/approve", nil)
 	rr := httptest.NewRecorder()
@@ -208,7 +219,7 @@ func TestHandleApprove_NotFound(t *testing.T) {
 
 func TestHandleApprove_WrongMethod(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/approve", nil)
 	rr := httptest.NewRecorder()
@@ -222,7 +233,7 @@ func TestHandleApprove_WrongMethod(t *testing.T) {
 
 func TestHandleDeny_Success(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
 	done := make(chan error, 1)
@@ -276,7 +287,7 @@ func TestHandleDeny_Success(t *testing.T) {
 
 func TestHandleLog(t *testing.T) {
 	mgr := approval.NewManager("test-client", 5*time.Minute)
-	handlers := NewHandlers(mgr, "/path/to/socket")
+	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
 	rr := httptest.NewRecorder()

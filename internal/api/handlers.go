@@ -12,13 +12,15 @@ import (
 type Handlers struct {
 	manager      *approval.Manager
 	remoteSocket string
+	auth         *Auth
 }
 
 // NewHandlers creates new API handlers.
-func NewHandlers(manager *approval.Manager, remoteSocket string) *Handlers {
+func NewHandlers(manager *approval.Manager, remoteSocket string, auth *Auth) *Handlers {
 	return &Handlers{
 		manager:      manager,
 		remoteSocket: remoteSocket,
+		auth:         auth,
 	}
 }
 
@@ -151,4 +153,35 @@ func writeError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+}
+
+// HandleAuth handles POST /api/v1/auth for JWT to session cookie exchange.
+func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req AuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Token == "" {
+		writeError(w, "missing token", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the JWT
+	_, err := h.auth.ValidateJWT(req.Token)
+	if err != nil {
+		writeError(w, "invalid or expired token", http.StatusUnauthorized)
+		return
+	}
+
+	// Set the session cookie
+	h.auth.SetSessionCookie(w)
+
+	writeJSON(w, ActionResponse{Status: "authenticated"})
 }

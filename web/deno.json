@@ -1,0 +1,19 @@
+{
+  "tasks": {
+    "dev": "deno run -A npm:vite",
+    "build": "deno run -A npm:vite build",
+    "preview": "deno run -A npm:vite preview",
+    "check": "deno run -A npm:svelte-check --tsconfig ./tsconfig.json",
+    "test:e2e:prepare": "deno cache --node-modules-dir playwright.config.ts tests/approval.spec.ts tests/auth.spec.ts",
+    "test:e2e": "deno task test:e2e:prepare && deno run -A npm:@playwright/test@latest/cli test",
+    "test:e2e:ui": "deno task test:e2e:prepare && deno run -A npm:@playwright/test@latest/cli test --ui"
+  },
+  "imports": {
+    "svelte": "npm:svelte@^5.0.0",
+    "@sveltejs/vite-plugin-svelte": "npm:@sveltejs/vite-plugin-svelte@^5.0.0",
+    "vite": "npm:vite@^6.0.0",
+    "@playwright/test": "npm:@playwright/test@1.58.2",
+    "svelte-check": "npm:svelte-check@^4.0.0"
+  },
+  "nodeModulesDir": "auto"
+}

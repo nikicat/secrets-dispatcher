@@ -185,9 +185,9 @@ func TestAuth_FilePath(t *testing.T) {
 	}
 }
 
-func TestAuth_CreatesConfigDir(t *testing.T) {
+func TestAuth_CreatesStateDir(t *testing.T) {
 	tempDir := t.TempDir()
-	nestedDir := filepath.Join(tempDir, "nested", "config")
+	nestedDir := filepath.Join(tempDir, "nested", "state")
 
 	_, err := NewAuth(nestedDir)
 	if err != nil {

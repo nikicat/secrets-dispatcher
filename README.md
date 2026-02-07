@@ -133,9 +133,18 @@ Add to `~/.ssh/config`:
 Host myserver
     HostName server.example.com
     User myuser
+
+    # Forward remote D-Bus socket to local secrets-dispatcher directory
     # Note: SSH config doesn't expand variables, use absolute paths
     # Local UID 1000, remote UID 1001 - adjust as needed
     LocalForward /run/user/1000/secrets-dispatcher/myserver.sock /run/user/1001/bus
+
+    # Remove existing socket before binding (handles reconnects)
+    StreamLocalBindUnlink yes
+
+    # Keep connection alive for long sessions
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
 ```
 
 ### Automation Script
@@ -154,13 +163,12 @@ LOCAL_SOCK="$SOCK_DIR/$SERVER.sock"
 # Create socket directory
 mkdir -p "$SOCK_DIR"
 
-# Clean up old socket if exists
-rm -f "$LOCAL_SOCK"
-
 # Start SSH with tunnel in background
+# StreamLocalBindUnlink removes existing socket on reconnect
 # Get remote user's UID via ssh (or hardcode if known)
 REMOTE_UID=$(ssh "$SERVER" 'id -u')
-ssh -f -N -L "$LOCAL_SOCK:/run/user/$REMOTE_UID/bus" "$SERVER"
+ssh -f -N -o StreamLocalBindUnlink=yes \
+    -L "$LOCAL_SOCK:/run/user/$REMOTE_UID/bus" "$SERVER"
 
 # Wait for socket to be created
 for i in {1..10}; do

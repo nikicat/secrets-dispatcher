@@ -38,22 +38,22 @@ func main() {
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
-	configDirFlag := fs.String("config-dir", "", "Config directory (default: $XDG_CONFIG_HOME/secrets-dispatcher)")
+	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	fs.Parse(args)
 
-	var configDir string
+	var stateDir string
 	var err error
-	if *configDirFlag != "" {
-		configDir = *configDirFlag
+	if *stateDirFlag != "" {
+		stateDir = *stateDirFlag
 	} else {
-		configDir, err = getConfigDir()
+		stateDir, err = getStateDir()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	auth, err := api.LoadAuth(configDir)
+	auth, err := api.LoadAuth(stateDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Fprintln(os.Stderr, "error: secrets-dispatcher is not running (no cookie file found)")
@@ -84,7 +84,7 @@ func runProxy() {
 		logLevel      = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 		listenAddr    = flag.String("listen", defaultListenAddr, "HTTP API listen address")
 		timeout       = flag.Duration("timeout", defaultTimeout, "Approval timeout")
-		configDirFlag = flag.String("config-dir", "", "Config directory (default: $XDG_CONFIG_HOME/secrets-dispatcher)")
+		stateDirFlag = flag.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
 		apiOnly       = flag.Bool("api-only", false, "Run only the API server (for testing)")
 	)
 	flag.Parse()
@@ -111,13 +111,13 @@ func runProxy() {
 	// Create approval manager
 	approvalMgr := approval.NewManager(*timeout)
 
-	// Set up config directory for cookie
-	var configDir string
+	// Set up state directory for cookie
+	var stateDir string
 	var err error
-	if *configDirFlag != "" {
-		configDir = *configDirFlag
+	if *stateDirFlag != "" {
+		stateDir = *stateDirFlag
 	} else {
-		configDir, err = getConfigDir()
+		stateDir, err = getStateDir()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -125,7 +125,7 @@ func runProxy() {
 	}
 
 	// Create auth with cookie file
-	auth, err := api.NewAuth(configDir)
+	auth, err := api.NewAuth(stateDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating auth: %v\n", err)
 		os.Exit(1)
@@ -237,17 +237,17 @@ func parseLogLevel(s string) slog.Level {
 	}
 }
 
-func getConfigDir() (string, error) {
-	// Use XDG_CONFIG_HOME if set, otherwise ~/.config
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
+func getStateDir() (string, error) {
+	// Use XDG_STATE_HOME if set, otherwise ~/.local/state
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("get home dir: %w", err)
 		}
-		configHome = filepath.Join(home, ".config")
+		stateHome = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(configHome, "secrets-dispatcher"), nil
+	return filepath.Join(stateHome, "secrets-dispatcher"), nil
 }
 
 func getSocketsDir() (string, error) {

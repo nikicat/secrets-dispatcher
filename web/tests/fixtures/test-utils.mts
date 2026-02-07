@@ -12,7 +12,7 @@ const BINARY_PATH = join(PROJECT_ROOT, "secrets-dispatcher");
 export interface TestBackend {
   url: string;
   port: number;
-  configDir: string;
+  stateDir: string;
   process: ChildProcess;
   cleanup: () => Promise<void>;
   generateLoginURL: () => Promise<string>;
@@ -58,19 +58,19 @@ function generateJWT(secret: string): string {
 export async function startTestBackend(): Promise<TestBackend> {
   // Create temp directory for test
   const testId = randomBytes(8).toString("hex");
-  const configDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
-  await mkdir(configDir, { recursive: true });
+  const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
+  await mkdir(stateDir, { recursive: true });
 
   const port = getRandomPort();
   const url = `http://localhost:${port}`;
 
-  // Start the backend in API-only mode with isolated config
+  // Start the backend in API-only mode with isolated state
   const proc = spawn(
     BINARY_PATH,
     [
       "--api-only",
-      "--config-dir",
-      configDir,
+      "--state-dir",
+      stateDir,
       "--listen",
       `127.0.0.1:${port}`,
       "--client",
@@ -111,7 +111,7 @@ export async function startTestBackend(): Promise<TestBackend> {
   });
 
   const getAuthToken = async (): Promise<string> => {
-    const cookiePath = join(configDir, ".cookie");
+    const cookiePath = join(stateDir, ".cookie");
     return (await readFile(cookiePath, "utf-8")).trim();
   };
 
@@ -132,13 +132,13 @@ export async function startTestBackend(): Promise<TestBackend> {
       });
     }
     // Clean up temp directory
-    await rm(configDir, { recursive: true, force: true });
+    await rm(stateDir, { recursive: true, force: true });
   };
 
   return {
     url,
     port,
-    configDir,
+    stateDir,
     process: proc,
     cleanup,
     generateLoginURL,

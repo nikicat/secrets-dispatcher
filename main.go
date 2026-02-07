@@ -178,7 +178,7 @@ func runProxy() {
 		os.Exit(1)
 	}
 	slog.Info("API server started",
-		"address", apiServer.Addr(),
+		"url", "http://"+apiServer.Addr(),
 		"cookie_file", apiServer.CookieFilePath())
 
 	// Graceful shutdown of API server

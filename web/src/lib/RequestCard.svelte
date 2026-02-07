@@ -12,6 +12,15 @@
   let loading = $state<"approve" | "deny" | null>(null);
   let error = $state<string | null>(null);
   let timeLeft = $state("");
+  let copiedPath = $state<string | null>(null);
+
+  async function copyToClipboard(path: string) {
+    await navigator.clipboard.writeText(path);
+    copiedPath = path;
+    setTimeout(() => {
+      copiedPath = null;
+    }, 2000);
+  }
 
   function updateTimeLeft() {
     const now = Date.now();
@@ -76,12 +85,42 @@
   </div>
 
   <div class="items">
-    <div class="items-label">Items:</div>
-    <ul>
-      {#each request.items as item}
-        <li>{item}</li>
-      {/each}
-    </ul>
+    <h4>Requested Secrets</h4>
+    {#each request.items as item}
+      <div class="item-card">
+        <div class="item-header">
+          <span class="item-label">{item.label || "Unnamed"}</span>
+          <button
+            class="copy-btn"
+            onclick={() => copyToClipboard(item.path)}
+            title="Copy item path"
+          >
+            {#if copiedPath === item.path}
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+              </svg>
+            {:else}
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+              </svg>
+            {/if}
+          </button>
+        </div>
+        {#if item.attributes && Object.keys(item.attributes).length > 0}
+          <table class="attributes-table">
+            <tbody>
+              {#each Object.entries(item.attributes) as [key, value]}
+                <tr>
+                  <td class="attr-key">{key}</td>
+                  <td class="attr-value">{value}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </div>
+    {/each}
   </div>
 
   {#if error}
@@ -140,27 +179,80 @@
     margin-bottom: 16px;
   }
 
-  .items-label {
+  .items h4 {
     font-size: 13px;
+    font-weight: 600;
     color: var(--color-text-muted);
-    margin-bottom: 4px;
+    margin: 0 0 8px 0;
   }
 
-  ul {
-    list-style: none;
-    padding-left: 8px;
+  .item-card {
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    margin-bottom: 8px;
   }
 
-  li {
-    font-size: 13px;
+  .item-card:last-child {
+    margin-bottom: 0;
+  }
+
+  .item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .item-label {
+    font-weight: 500;
+    font-size: 14px;
     color: var(--color-text);
-    padding: 2px 0;
   }
 
-  li::before {
-    content: "\2022";
+  .copy-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
     color: var(--color-text-muted);
-    margin-right: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .copy-btn:hover {
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    border-color: var(--color-text-muted);
+  }
+
+  .attributes-table {
+    width: 100%;
+    font-size: 12px;
+    border-collapse: collapse;
+  }
+
+  .attributes-table tr {
+    border-top: 1px solid var(--color-border);
+  }
+
+  .attributes-table td {
+    padding: 4px 0;
+  }
+
+  .attr-key {
+    color: var(--color-text-muted);
+    width: 40%;
+    padding-right: 8px;
+  }
+
+  .attr-value {
+    color: var(--color-text);
+    word-break: break-all;
   }
 
   .error {

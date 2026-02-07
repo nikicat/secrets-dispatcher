@@ -81,10 +81,19 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 	pending := h.manager.List()
 	requests := make([]PendingRequest, len(pending))
 	for i, req := range pending {
+		// Convert approval.ItemInfo to api.ItemInfo
+		items := make([]ItemInfo, len(req.Items))
+		for j, item := range req.Items {
+			items[j] = ItemInfo{
+				Path:       item.Path,
+				Label:      item.Label,
+				Attributes: item.Attributes,
+			}
+		}
 		requests[i] = PendingRequest{
 			ID:        req.ID,
 			Client:    req.Client,
-			Items:     req.Items,
+			Items:     items,
 			Session:   req.Session,
 			CreatedAt: req.CreatedAt,
 			ExpiresAt: req.ExpiresAt,

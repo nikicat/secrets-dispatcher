@@ -110,7 +110,7 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, "test-client", []string{"/test/item1", "/test/item2"}, "/session/42")
+		mgr.RequireApproval(ctx, "test-client", []approval.ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42")
 	}()
 
 	// Wait for request to appear
@@ -158,7 +158,7 @@ func TestHandleApprove_Success(t *testing.T) {
 	// Start a pending request
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
+		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1")
 	}()
 
 	// Wait for request to appear
@@ -249,7 +249,7 @@ func TestHandleDeny_Success(t *testing.T) {
 	// Start a pending request
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
+		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1")
 	}()
 
 	// Wait for request to appear

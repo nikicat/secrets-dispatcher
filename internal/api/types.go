@@ -22,14 +22,21 @@ type PendingListResponse struct {
 	Requests []PendingRequest `json:"requests"`
 }
 
+// ItemInfo contains metadata about a secret item.
+type ItemInfo struct {
+	Path       string            `json:"path"`
+	Label      string            `json:"label"`
+	Attributes map[string]string `json:"attributes"`
+}
+
 // PendingRequest represents a pending approval request in API responses.
 type PendingRequest struct {
-	ID        string    `json:"id"`
-	Client    string    `json:"client"`
-	Items     []string  `json:"items"`
-	Session   string    `json:"session"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string     `json:"id"`
+	Client    string     `json:"client"`
+	Items     []ItemInfo `json:"items"`
+	Session   string     `json:"session"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
 }
 
 // ActionResponse is returned by approve/deny endpoints.

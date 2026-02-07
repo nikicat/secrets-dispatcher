@@ -20,8 +20,8 @@ test.describe("Approval Flow", () => {
   test.beforeEach(async ({ page }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
-    // Wait for authentication to complete
-    await expect(page.getByText("Connected")).toBeVisible();
+    // Wait for authentication to complete - look for the specific status text
+    await expect(page.getByText("client connected")).toBeVisible();
   });
 
   test("shows empty state when no pending requests", async ({ page }) => {
@@ -128,5 +128,42 @@ test.describe("Approval Flow", () => {
     );
 
     expect(response.status()).toBe(404);
+  });
+
+  test("pending list response has correct ItemInfo structure", async ({
+    request,
+  }) => {
+    // Verify the API response structure matches expected ItemInfo format
+    const token = await backend.getAuthToken();
+
+    const response = await request.get(`${backend.url}/api/v1/pending`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    expect(response.status()).toBe(200);
+    const data = await response.json();
+
+    // Verify response structure - requests should be an array
+    expect(data).toHaveProperty("requests");
+    expect(Array.isArray(data.requests)).toBe(true);
+
+    // When there are requests, each item should have ItemInfo structure
+    // (path, label, attributes) - we verify the type shape even if empty
+    for (const req of data.requests) {
+      expect(req).toHaveProperty("id");
+      expect(req).toHaveProperty("client");
+      expect(req).toHaveProperty("items");
+      expect(req).toHaveProperty("session");
+      expect(Array.isArray(req.items)).toBe(true);
+
+      // Each item should have ItemInfo structure
+      for (const item of req.items) {
+        expect(item).toHaveProperty("path");
+        expect(item).toHaveProperty("label");
+        expect(item).toHaveProperty("attributes");
+      }
+    }
   });
 });

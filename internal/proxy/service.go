@@ -69,10 +69,15 @@ func (s *Service) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, 
 // GetSecrets retrieves secrets for multiple items.
 // Signature: GetSecrets(items Array<ObjectPath>, session ObjectPath) -> (secrets Dict<ObjectPath,Secret>)
 func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
-	itemStrs := objectPathsToStrings(items)
+	// Fetch item info (label + attributes) for each item
+	itemInfos := make([]approval.ItemInfo, len(items))
+	for i, path := range items {
+		itemInfos[i] = s.getItemInfo(path)
+	}
 
 	// Require approval before accessing secrets
-	if err := s.approval.RequireApproval(context.Background(), s.clientName, itemStrs, string(session)); err != nil {
+	itemStrs := objectPathsToStrings(items)
+	if err := s.approval.RequireApproval(context.Background(), s.clientName, itemInfos, string(session)); err != nil {
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -318,6 +323,29 @@ func (s *Service) Introspect() string {
     </method>
   </interface>
 </node>`
+}
+
+// getItemInfo fetches label and attributes for a secret item from D-Bus.
+func (s *Service) getItemInfo(path dbus.ObjectPath) approval.ItemInfo {
+	info := approval.ItemInfo{Path: string(path)}
+
+	obj := s.localConn.Object(dbustypes.BusName, path)
+
+	// Get Label property
+	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Label"); err == nil {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+
+	// Get Attributes property
+	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Attributes"); err == nil {
+		if attrs, ok := v.Value().(map[string]string); ok {
+			info.Attributes = attrs
+		}
+	}
+
+	return info
 }
 
 func objectPathsToStrings(paths []dbus.ObjectPath) []string {

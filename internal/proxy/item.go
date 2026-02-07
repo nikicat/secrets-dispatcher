@@ -79,8 +79,11 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
+	// Fetch item info (label + attributes)
+	itemInfo := i.getItemInfo(path)
+
 	// Require approval before accessing secret
-	items := []string{string(path)}
+	items := []approval.ItemInfo{itemInfo}
 	if err := i.approval.RequireApproval(context.Background(), i.clientName, items, string(session)); err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
@@ -199,4 +202,27 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 	}
 
 	return nil
+}
+
+// getItemInfo fetches label and attributes for a secret item from D-Bus.
+func (i *ItemHandler) getItemInfo(path dbus.ObjectPath) approval.ItemInfo {
+	info := approval.ItemInfo{Path: string(path)}
+
+	obj := i.localConn.Object(dbustypes.BusName, path)
+
+	// Get Label property
+	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Label"); err == nil {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+
+	// Get Attributes property
+	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Attributes"); err == nil {
+		if attrs, ok := v.Value().(map[string]string); ok {
+			info.Attributes = attrs
+		}
+	}
+
+	return info
 }

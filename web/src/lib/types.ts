@@ -1,7 +1,13 @@
+export interface ItemInfo {
+  path: string;
+  label: string;
+  attributes: Record<string, string>;
+}
+
 export interface PendingRequest {
   id: string;
   client: string;
-  items: string[];
+  items: ItemInfo[];
   session: string;
   created_at: string;
   expires_at: string;

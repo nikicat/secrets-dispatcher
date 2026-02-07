@@ -19,14 +19,21 @@ var ErrTimeout = errors.New("approval request timed out")
 // ErrNotFound is returned when a request ID doesn't exist.
 var ErrNotFound = errors.New("request not found")
 
+// ItemInfo contains metadata about a secret item.
+type ItemInfo struct {
+	Path       string            `json:"path"`
+	Label      string            `json:"label"`
+	Attributes map[string]string `json:"attributes"`
+}
+
 // Request represents a secret access request awaiting approval.
 type Request struct {
-	ID        string    `json:"id"`
-	Client    string    `json:"client"`
-	Items     []string  `json:"items"`
-	Session   string    `json:"session"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string     `json:"id"`
+	Client    string     `json:"client"`
+	Items     []ItemInfo `json:"items"`
+	Session   string     `json:"session"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
 
 	// Internal: channel signaled when request is approved/denied
 	done   chan struct{}
@@ -59,7 +66,7 @@ func NewDisabledManager() *Manager {
 
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.
 // Returns nil if approved, ErrDenied if denied, ErrTimeout if timeout.
-func (m *Manager) RequireApproval(ctx context.Context, client string, items []string, session string) error {
+func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo, session string) error {
 	if m.disabled {
 		return nil
 	}

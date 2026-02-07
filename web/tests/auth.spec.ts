@@ -40,7 +40,7 @@ test.describe("Authentication", () => {
     await expect(page).toHaveURL(backend.url + "/");
 
     // Should show connected status
-    await expect(page.getByText("Connected")).toBeVisible();
+    await expect(page.getByText("client connected")).toBeVisible();
 
     // Should show empty state (no pending requests in API-only mode)
     await expect(page.getByText("No pending requests")).toBeVisible();
@@ -63,13 +63,13 @@ test.describe("Authentication", () => {
     await page.goto(loginURL);
 
     // Verify authenticated
-    await expect(page.getByText("Connected")).toBeVisible();
+    await expect(page.getByText("client connected")).toBeVisible();
 
     // Reload the page
     await page.reload();
 
     // Should still show connected status (cookie persists)
-    await expect(page.getByText("Connected")).toBeVisible();
+    await expect(page.getByText("client connected")).toBeVisible();
   });
 
   test("API calls return 401 when not authenticated", async ({ request }) => {

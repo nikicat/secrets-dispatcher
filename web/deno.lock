@@ -4,6 +4,7 @@
     "npm:@playwright/test@1.58.2": "1.58.2",
     "npm:@playwright/test@latest": "1.58.2",
     "npm:@sveltejs/vite-plugin-svelte@5": "5.1.1_svelte@5.50.0__acorn@8.15.0_vite@6.4.1__picomatch@4.0.3",
+    "npm:svelte-check@*": "4.3.6_svelte@5.50.0__acorn@8.15.0_typescript@5.9.3",
     "npm:svelte-check@4": "4.3.6_svelte@5.50.0__acorn@8.15.0_typescript@5.9.3",
     "npm:svelte@5": "5.50.0_acorn@8.15.0",
     "npm:vite@*": "6.4.1_picomatch@4.0.3",

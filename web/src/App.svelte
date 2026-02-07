@@ -11,6 +11,7 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
+  let sidebarOpen = $state(false);
 
   let ws: ApprovalWebSocket | null = null;
 
@@ -113,6 +114,14 @@
     startWebSocket();
   }
 
+  function toggleSidebar() {
+    sidebarOpen = !sidebarOpen;
+  }
+
+  function closeSidebar() {
+    sidebarOpen = false;
+  }
+
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
   function handleAction() {
     // No-op: WebSocket will push the update
@@ -124,56 +133,29 @@
   });
 </script>
 
-<header>
-  <h1>Secrets Dispatcher</h1>
-  {#if authState === "authenticated"}
-    <div class="status-indicator">
-      <span class="status-dot" class:ok={connected} class:error={!connected}
-      ></span>
-      <span>
-        {#if connected}
-          {clients.length} client{clients.length !== 1 ? "s" : ""} connected
-        {:else}
-          Reconnecting...
-        {/if}
-      </span>
-    </div>
+<div class="app-layout" class:sidebar-open={sidebarOpen}>
+  <!-- Sidebar overlay for mobile -->
+  {#if sidebarOpen}
+    <button class="sidebar-overlay" onclick={closeSidebar} aria-label="Close sidebar"></button>
   {/if}
-</header>
 
-<main>
-  {#if authState === "checking"}
-    <div class="center">
-      <div class="spinner"></div>
-      <p>Checking authentication...</p>
-    </div>
-  {:else if authState === "unauthenticated"}
-    <div class="login-prompt">
-      <h2>Authentication Required</h2>
-      {#if error}
-        <p class="error-message">{error}</p>
-      {/if}
-      <p>To access the web interface, run:</p>
-      <pre><code>secrets-dispatcher login</code></pre>
-      <p>Then open the generated URL in your browser.</p>
-    </div>
-  {:else if loading}
-    <div class="center">
-      <div class="spinner"></div>
-      <p>Loading...</p>
-    </div>
-  {:else if error && !connected}
-    <div class="error-state">
-      <p class="error-message">{error}</p>
-      <button class="btn-retry" onclick={handleRetry}>Retry</button>
-    </div>
-  {:else if requests.length === 0}
-    <div class="empty-state">
-      <p>No pending requests</p>
-      {#if clients.length > 0}
-        <div class="clients-list">
-          <h3>Connected Clients</h3>
-          <ul>
+  <!-- Sidebar -->
+  {#if authState === "authenticated"}
+    <aside class="sidebar" class:open={sidebarOpen}>
+      <div class="sidebar-header">
+        <h3>Connected Clients</h3>
+        <button class="sidebar-close" onclick={closeSidebar} aria-label="Close sidebar">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="sidebar-content">
+        {#if clients.length === 0}
+          <p class="no-clients">No clients connected</p>
+        {:else}
+          <ul class="clients-list">
             {#each clients as client}
               <li>
                 <span class="client-name">{client.name}</span>
@@ -181,20 +163,212 @@
               </li>
             {/each}
           </ul>
+        {/if}
+      </div>
+    </aside>
+  {/if}
+
+  <!-- Main content -->
+  <div class="main-wrapper">
+    <header>
+      <h1>Secrets Dispatcher</h1>
+      {#if authState === "authenticated"}
+        <div class="header-actions">
+          <div class="status-indicator">
+            <span class="status-dot" class:ok={connected} class:error={!connected}></span>
+            <span class="status-text">
+              {#if connected}
+                {clients.length} client{clients.length !== 1 ? "s" : ""}
+              {:else}
+                Reconnecting...
+              {/if}
+            </span>
+          </div>
+          <button class="sidebar-toggle" onclick={toggleSidebar} aria-label="Toggle client list">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+            </svg>
+          </button>
         </div>
       {/if}
-    </div>
-  {:else}
-    <section>
-      <h2>Pending Requests ({requests.length})</h2>
-      {#each requests as request (request.id)}
-        <RequestCard {request} onAction={handleAction} />
-      {/each}
-    </section>
-  {/if}
-</main>
+    </header>
+
+    <main>
+      {#if authState === "checking"}
+        <div class="center">
+          <div class="spinner"></div>
+          <p>Checking authentication...</p>
+        </div>
+      {:else if authState === "unauthenticated"}
+        <div class="login-prompt">
+          <h2>Authentication Required</h2>
+          {#if error}
+            <p class="error-message">{error}</p>
+          {/if}
+          <p>To access the web interface, run:</p>
+          <pre><code>secrets-dispatcher login</code></pre>
+          <p>Then open the generated URL in your browser.</p>
+        </div>
+      {:else if loading}
+        <div class="center">
+          <div class="spinner"></div>
+          <p>Loading...</p>
+        </div>
+      {:else if error && !connected}
+        <div class="error-state">
+          <p class="error-message">{error}</p>
+          <button class="btn-retry" onclick={handleRetry}>Retry</button>
+        </div>
+      {:else if requests.length === 0}
+        <div class="empty-state">
+          <p>No pending requests</p>
+        </div>
+      {:else}
+        <section>
+          <h2>Pending Requests ({requests.length})</h2>
+          {#each requests as request (request.id)}
+            <RequestCard {request} onAction={handleAction} />
+          {/each}
+        </section>
+      {/if}
+    </main>
+  </div>
+</div>
 
 <style>
+  .app-layout {
+    display: flex;
+    min-height: 100vh;
+  }
+
+  .main-wrapper {
+    flex: 1;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 24px 16px;
+    width: 100%;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 280px;
+    height: 100vh;
+    background-color: var(--color-surface);
+    border-left: 1px solid var(--color-border);
+    z-index: 100;
+    transform: translateX(100%);
+    transition: transform 0.2s ease;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+    border: none;
+    cursor: pointer;
+  }
+
+  .sidebar-open .sidebar-overlay {
+    display: block;
+  }
+
+  .sidebar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .sidebar-header h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0;
+  }
+
+  .sidebar-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .sidebar-close:hover {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
+  }
+
+  .sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+  }
+
+  .no-clients {
+    color: var(--color-text-muted);
+    font-size: 14px;
+    text-align: center;
+    padding: 24px 0;
+  }
+
+  .clients-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .clients-list li {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px;
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+  }
+
+  .clients-list li:last-child {
+    margin-bottom: 0;
+  }
+
+  .client-name {
+    font-weight: 500;
+    color: var(--color-text);
+    font-size: 14px;
+  }
+
+  .client-socket {
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
+    color: var(--color-text-muted);
+    word-break: break-all;
+  }
+
+  /* Header */
   header {
     display: flex;
     justify-content: space-between;
@@ -216,6 +390,36 @@
     color: var(--color-text-muted);
   }
 
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .status-text {
+    display: none;
+  }
+
+  .sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .sidebar-toggle:hover {
+    background-color: var(--color-surface);
+    color: var(--color-text);
+  }
+
+  /* Main content */
   .center {
     display: flex;
     flex-direction: column;
@@ -280,55 +484,43 @@
     color: var(--color-text-muted);
   }
 
-  .clients-list {
-    margin-top: 24px;
-    text-align: left;
-    background-color: var(--color-surface);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius);
-    padding: 16px;
-    max-width: 400px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  .clients-list h3 {
-    font-size: 14px;
-    font-weight: 500;
-    margin-bottom: 12px;
-    color: var(--color-text);
-  }
-
-  .clients-list ul {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-  }
-
-  .clients-list li {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--color-border);
-  }
-
-  .clients-list li:last-child {
-    border-bottom: none;
-  }
-
-  .client-name {
-    font-weight: 500;
-    color: var(--color-text);
-  }
-
-  .client-socket {
-    font-size: 12px;
-    font-family: ui-monospace, "SF Mono", Monaco, monospace;
-    color: var(--color-text-muted);
-  }
-
   section {
     margin-top: 8px;
+  }
+
+  /* Desktop: show sidebar by default, hide toggle */
+  @media (min-width: 768px) {
+    .sidebar {
+      position: fixed;
+      transform: translateX(0);
+    }
+
+    .sidebar-open .sidebar-overlay {
+      display: none;
+    }
+
+    .sidebar-close {
+      display: none;
+    }
+
+    .main-wrapper {
+      margin-right: 280px;
+    }
+
+    .status-text {
+      display: inline;
+    }
+
+    .sidebar-toggle {
+      display: none;
+    }
+  }
+
+  /* Large screens: center the main content better */
+  @media (min-width: 1024px) {
+    .main-wrapper {
+      margin-left: auto;
+      margin-right: calc(280px + ((100% - 640px - 280px) / 2));
+    }
   }
 </style>

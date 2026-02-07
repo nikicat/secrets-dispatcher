@@ -6,21 +6,40 @@ import (
 	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
+
+// ClientProvider is an interface for getting connected client information.
+type ClientProvider interface {
+	Clients() []proxy.ClientInfo
+}
 
 // Handlers provides HTTP handlers for the REST API.
 type Handlers struct {
-	manager      *approval.Manager
+	manager        *approval.Manager
+	clientProvider ClientProvider
+	// For backward compatibility in single-socket mode
 	remoteSocket string
+	clientName   string
 	auth         *Auth
 }
 
-// NewHandlers creates new API handlers.
-func NewHandlers(manager *approval.Manager, remoteSocket string, auth *Auth) *Handlers {
+// NewHandlers creates new API handlers for single-socket mode.
+func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, auth *Auth) *Handlers {
 	return &Handlers{
 		manager:      manager,
 		remoteSocket: remoteSocket,
+		clientName:   clientName,
 		auth:         auth,
+	}
+}
+
+// NewHandlersWithProvider creates new API handlers for multi-socket mode.
+func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider, auth *Auth) *Handlers {
+	return &Handlers{
+		manager:        manager,
+		clientProvider: provider,
+		auth:           auth,
 	}
 }
 
@@ -33,9 +52,20 @@ func (h *Handlers) HandleStatus(w http.ResponseWriter, r *http.Request) {
 
 	resp := StatusResponse{
 		Running:      true,
-		Client:       h.manager.Client(),
 		PendingCount: h.manager.PendingCount(),
-		RemoteSocket: h.remoteSocket,
+	}
+
+	if h.clientProvider != nil {
+		// Multi-socket mode: get clients from provider
+		resp.Clients = h.clientProvider.Clients()
+	} else {
+		// Single-socket mode: use static client info
+		resp.Clients = []proxy.ClientInfo{
+			{Name: h.clientName, SocketPath: h.remoteSocket},
+		}
+		// Also set deprecated fields for backward compatibility
+		resp.Client = h.clientName
+		resp.RemoteSocket = h.remoteSocket
 	}
 
 	writeJSON(w, resp)

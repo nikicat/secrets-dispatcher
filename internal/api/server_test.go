@@ -14,14 +14,14 @@ import (
 func TestServer_Integration(t *testing.T) {
 	tempDir := t.TempDir()
 
-	mgr := approval.NewManager("test-client", 5*time.Minute)
+	mgr := approval.NewManager(5 * time.Minute)
 	auth, err := NewAuth(tempDir)
 	if err != nil {
 		t.Fatalf("NewAuth failed: %v", err)
 	}
 
 	// Use port 0 to get a random available port
-	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", auth)
+	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -71,6 +71,14 @@ func TestServer_Integration(t *testing.T) {
 		if !status.Running {
 			t.Error("expected running=true")
 		}
+		// Check new clients field
+		if len(status.Clients) != 1 {
+			t.Fatalf("expected 1 client, got %d", len(status.Clients))
+		}
+		if status.Clients[0].Name != "test-client" {
+			t.Errorf("expected client name 'test-client', got '%s'", status.Clients[0].Name)
+		}
+		// Check deprecated field
 		if status.Client != "test-client" {
 			t.Errorf("expected client 'test-client', got '%s'", status.Client)
 		}
@@ -81,7 +89,7 @@ func TestServer_Integration(t *testing.T) {
 		// Start a pending request
 		done := make(chan error, 1)
 		go func() {
-			done <- mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+			done <- mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 		}()
 
 		// Wait for request to appear
@@ -145,13 +153,13 @@ func TestServer_Integration(t *testing.T) {
 func TestServer_CookieFilePath(t *testing.T) {
 	tempDir := t.TempDir()
 
-	mgr := approval.NewManager("test", 5*time.Minute)
+	mgr := approval.NewManager(5 * time.Minute)
 	auth, err := NewAuth(tempDir)
 	if err != nil {
 		t.Fatalf("NewAuth failed: %v", err)
 	}
 
-	server, err := NewServer("127.0.0.1:0", mgr, "/socket", auth)
+	server, err := NewServer("127.0.0.1:0", mgr, "/socket", "test-client", auth)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}

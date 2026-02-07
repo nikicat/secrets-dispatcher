@@ -11,19 +11,21 @@ import (
 
 // Service implements org.freedesktop.Secret.Service.
 type Service struct {
-	localConn *dbus.Conn
-	sessions  *SessionManager
-	logger    *logging.Logger
-	approval  *approval.Manager
+	localConn  *dbus.Conn
+	sessions   *SessionManager
+	logger     *logging.Logger
+	approval   *approval.Manager
+	clientName string
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string) *Service {
 	return &Service{
-		localConn: localConn,
-		sessions:  sessions,
-		logger:    logger,
-		approval:  approvalMgr,
+		localConn:  localConn,
+		sessions:   sessions,
+		logger:     logger,
+		approval:   approvalMgr,
+		clientName: clientName,
 	}
 }
 
@@ -70,7 +72,7 @@ func (s *Service) GetSecrets(items []dbus.ObjectPath, session dbus.ObjectPath) (
 	itemStrs := objectPathsToStrings(items)
 
 	// Require approval before accessing secrets
-	if err := s.approval.RequireApproval(context.Background(), itemStrs, string(session)); err != nil {
+	if err := s.approval.RequireApproval(context.Background(), s.clientName, itemStrs, string(session)); err != nil {
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}

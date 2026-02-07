@@ -1,13 +1,20 @@
 package api
 
-import "time"
+import (
+	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+)
 
 // StatusResponse is returned by GET /api/v1/status.
 type StatusResponse struct {
-	Running      bool   `json:"running"`
-	Client       string `json:"client"`
-	PendingCount int    `json:"pending_count"`
-	RemoteSocket string `json:"remote_socket"`
+	Running      bool               `json:"running"`
+	Clients      []proxy.ClientInfo `json:"clients"`
+	PendingCount int                `json:"pending_count"`
+	// Deprecated: use Clients instead. Kept for backward compatibility.
+	Client string `json:"client,omitempty"`
+	// Deprecated: use Clients instead. Kept for backward compatibility.
+	RemoteSocket string `json:"remote_socket,omitempty"`
 }
 
 // PendingListResponse is returned by GET /api/v1/pending.

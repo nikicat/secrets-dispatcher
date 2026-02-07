@@ -13,19 +13,21 @@ import (
 // ItemHandler handles Item interface calls for item objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*/*.
 type ItemHandler struct {
-	localConn *dbus.Conn
-	sessions  *SessionManager
-	logger    *logging.Logger
-	approval  *approval.Manager
+	localConn  *dbus.Conn
+	sessions   *SessionManager
+	logger     *logging.Logger
+	approval   *approval.Manager
+	clientName string
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string) *ItemHandler {
 	return &ItemHandler{
-		localConn: localConn,
-		sessions:  sessions,
-		logger:    logger,
-		approval:  approvalMgr,
+		localConn:  localConn,
+		sessions:   sessions,
+		logger:     logger,
+		approval:   approvalMgr,
+		clientName: clientName,
 	}
 }
 
@@ -79,7 +81,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 
 	// Require approval before accessing secret
 	items := []string{string(path)}
-	if err := i.approval.RequireApproval(context.Background(), items, string(session)); err != nil {
+	if err := i.approval.RequireApproval(context.Background(), i.clientName, items, string(session)); err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
 	}

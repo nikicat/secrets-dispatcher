@@ -18,9 +18,18 @@ type Server struct {
 	listener   net.Listener
 }
 
-// NewServer creates a new API server.
-func NewServer(addr string, manager *approval.Manager, remoteSocket string, auth *Auth) (*Server, error) {
-	handlers := NewHandlers(manager, remoteSocket, auth)
+// NewServer creates a new API server for single-socket mode.
+func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth) (*Server, error) {
+	return newServerWithHandlers(addr, NewHandlers(manager, remoteSocket, clientName, auth), auth)
+}
+
+// NewServerWithProvider creates a new API server for multi-socket mode.
+func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth) (*Server, error) {
+	return newServerWithHandlers(addr, NewHandlersWithProvider(manager, provider, auth), auth)
+}
+
+// newServerWithHandlers creates a new API server with the given handlers.
+func newServerWithHandlers(addr string, handlers *Handlers, auth *Auth) (*Server, error) {
 
 	// Create the main router
 	rootMux := http.NewServeMux()

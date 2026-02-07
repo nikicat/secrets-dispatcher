@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState } from "./lib/types";
+  import type { PendingRequest, AuthState, ClientInfo } from "./lib/types";
   import { exchangeToken, getStatus, getPending, ApiError } from "./lib/api";
   import RequestCard from "./lib/RequestCard.svelte";
 
   let authState = $state<AuthState>("checking");
   let requests = $state<PendingRequest[]>([]);
+  let clients = $state<ClientInfo[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
@@ -16,6 +17,7 @@
     const status = await getStatus();
     if (status !== null) {
       connected = true;
+      clients = status.clients || [];
       return true;
     }
     return false;
@@ -23,8 +25,14 @@
 
   async function fetchPending() {
     try {
-      const result = await getPending();
-      requests = result.requests;
+      const [pendingResult, status] = await Promise.all([
+        getPending(),
+        getStatus(),
+      ]);
+      requests = pendingResult.requests;
+      if (status) {
+        clients = status.clients || [];
+      }
       error = null;
       connected = true;
     } catch (e) {
@@ -102,7 +110,13 @@
     <div class="status-indicator">
       <span class="status-dot" class:ok={connected} class:error={!connected}
       ></span>
-      <span>{connected ? "Connected" : "Disconnected"}</span>
+      <span>
+        {#if connected}
+          {clients.length} client{clients.length !== 1 ? "s" : ""} connected
+        {:else}
+          Disconnected
+        {/if}
+      </span>
     </div>
   {/if}
 </header>
@@ -136,6 +150,19 @@
   {:else if requests.length === 0}
     <div class="empty-state">
       <p>No pending requests</p>
+      {#if clients.length > 0}
+        <div class="clients-list">
+          <h3>Connected Clients</h3>
+          <ul>
+            {#each clients as client}
+              <li>
+                <span class="client-name">{client.name}</span>
+                <span class="client-socket">{client.socket_path}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
     </div>
   {:else}
     <section>
@@ -230,6 +257,54 @@
   .empty-state {
     text-align: center;
     padding: 48px 0;
+    color: var(--color-text-muted);
+  }
+
+  .clients-list {
+    margin-top: 24px;
+    text-align: left;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 16px;
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .clients-list h3 {
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 12px;
+    color: var(--color-text);
+  }
+
+  .clients-list ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .clients-list li {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .clients-list li:last-child {
+    border-bottom: none;
+  }
+
+  .client-name {
+    font-weight: 500;
+    color: var(--color-text);
+  }
+
+  .client-socket {
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
     color: var(--color-text-muted);
   }
 

@@ -8,7 +8,7 @@ import (
 )
 
 func TestManager_RequireApproval_Approved(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -16,7 +16,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		approvalErr = mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 	}()
 
 	// Wait for request to appear
@@ -47,7 +47,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 }
 
 func TestManager_RequireApproval_Denied(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -55,7 +55,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		approvalErr = mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 	}()
 
 	// Wait for request to appear
@@ -86,9 +86,9 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 }
 
 func TestManager_RequireApproval_Timeout(t *testing.T) {
-	mgr := NewManager("test-client", 100*time.Millisecond)
+	mgr := NewManager(100 * time.Millisecond)
 
-	err := mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+	err := mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 
 	if err != ErrTimeout {
 		t.Errorf("expected ErrTimeout, got: %v", err)
@@ -96,7 +96,7 @@ func TestManager_RequireApproval_Timeout(t *testing.T) {
 }
 
 func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -106,7 +106,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		approvalErr = mgr.RequireApproval(ctx, []string{"/test/item"}, "/session/1")
+		approvalErr = mgr.RequireApproval(ctx, "test-client", []string{"/test/item"}, "/session/1")
 	}()
 
 	// Wait for request to appear
@@ -128,7 +128,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 }
 
 func TestManager_List(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	// Start multiple approval requests
 	var wg sync.WaitGroup
@@ -138,7 +138,7 @@ func TestManager_List(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
-			mgr.RequireApproval(ctx, []string{"/test/item"}, "/session/1")
+			mgr.RequireApproval(ctx, "test-client", []string{"/test/item"}, "/session/1")
 		}(i)
 	}
 
@@ -159,7 +159,7 @@ func TestManager_List(t *testing.T) {
 }
 
 func TestManager_Approve_NotFound(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	err := mgr.Approve("nonexistent-id")
 	if err != ErrNotFound {
@@ -168,7 +168,7 @@ func TestManager_Approve_NotFound(t *testing.T) {
 }
 
 func TestManager_Deny_NotFound(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	err := mgr.Deny("nonexistent-id")
 	if err != ErrNotFound {
@@ -177,7 +177,7 @@ func TestManager_Deny_NotFound(t *testing.T) {
 }
 
 func TestManager_Concurrent(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	const numRequests = 10
 	var wg sync.WaitGroup
@@ -190,7 +190,7 @@ func TestManager_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			results[n] = mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+			results[n] = mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 		}(i)
 	}
 
@@ -235,7 +235,7 @@ func TestManager_Disabled(t *testing.T) {
 	mgr := NewDisabledManager()
 
 	// Should auto-approve immediately
-	err := mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+	err := mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 	if err != nil {
 		t.Errorf("disabled manager should auto-approve, got: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestManager_Disabled(t *testing.T) {
 }
 
 func TestManager_RequestFields(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -255,7 +255,7 @@ func TestManager_RequestFields(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, []string{"/test/item1", "/test/item2"}, "/session/42")
+		mgr.RequireApproval(ctx, "test-client", []string{"/test/item1", "/test/item2"}, "/session/42")
 	}()
 
 	// Wait for request to appear
@@ -298,13 +298,13 @@ func TestManager_RequestFields(t *testing.T) {
 }
 
 func TestManager_CleanupAfterApproval(t *testing.T) {
-	mgr := NewManager("test-client", 5*time.Second)
+	mgr := NewManager(5 * time.Second)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), []string{"/test/item"}, "/session/1")
+		mgr.RequireApproval(context.Background(), "test-client", []string{"/test/item"}, "/session/1")
 	}()
 
 	// Wait for request to appear

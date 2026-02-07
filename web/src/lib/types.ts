@@ -7,11 +7,18 @@ export interface PendingRequest {
   expires_at: string;
 }
 
+export interface ClientInfo {
+  name: string;
+  socket_path: string;
+}
+
 export interface StatusResponse {
   running: boolean;
-  client: string;
+  clients: ClientInfo[];
   pending_count: number;
-  remote_socket: string;
+  // Deprecated fields for backward compatibility
+  client?: string;
+  remote_socket?: string;
 }
 
 export interface PendingListResponse {

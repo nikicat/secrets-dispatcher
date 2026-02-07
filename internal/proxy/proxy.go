@@ -80,9 +80,9 @@ func (p *Proxy) Connect(ctx context.Context) error {
 	}
 
 	// Create handlers
-	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval)
+	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName)
 	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger)
-	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval)
+	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.localConn, p.sessions, p.logger)
 
 	// Export the Service interface on the remote connection

@@ -78,8 +78,9 @@ func runLogin(args []string) {
 
 func runProxy() {
 	var (
-		remoteSocket  = flag.String("remote-socket", "", "Path to the remote D-Bus socket (required unless --api-only)")
-		clientName    = flag.String("client", "unknown", "Name of the remote client (for logging)")
+		remoteSocket  = flag.String("remote-socket", "", "Path to the remote D-Bus socket (single-socket mode)")
+		socketsDir    = flag.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher)")
+		clientName    = flag.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
 		logLevel      = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 		listenAddr    = flag.String("listen", defaultListenAddr, "HTTP API listen address")
 		timeout       = flag.Duration("timeout", defaultTimeout, "Approval timeout")
@@ -88,16 +89,27 @@ func runProxy() {
 	)
 	flag.Parse()
 
-	if *remoteSocket == "" && !*apiOnly {
-		fmt.Fprintln(os.Stderr, "error: --remote-socket is required (or use --api-only for testing)")
+	// Validate mode selection
+	if *remoteSocket != "" && *socketsDir != "" {
+		fmt.Fprintln(os.Stderr, "error: --remote-socket and --sockets-dir are mutually exclusive")
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	// Use default sockets directory if neither mode is specified
+	if *remoteSocket == "" && *socketsDir == "" && !*apiOnly {
+		defaultDir, err := getSocketsDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		*socketsDir = defaultDir
 	}
 
 	level := parseLogLevel(*logLevel)
 
 	// Create approval manager
-	approvalMgr := approval.NewManager(*clientName, *timeout)
+	approvalMgr := approval.NewManager(*timeout)
 
 	// Set up config directory for cookie
 	var configDir string
@@ -119,8 +131,36 @@ func runProxy() {
 		os.Exit(1)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle signals for graceful shutdown
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		slog.Info("received signal, shutting down", "signal", sig)
+		cancel()
+	}()
+
+	// Create proxy manager for multi-socket mode (needed before API server for ClientProvider)
+	var proxyMgr *proxy.Manager
+	if *socketsDir != "" {
+		var err error
+		proxyMgr, err = proxy.NewManager(*socketsDir, approvalMgr, level)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Create API server
-	apiServer, err := api.NewServer(*listenAddr, approvalMgr, *remoteSocket, auth)
+	var apiServer *api.Server
+	if proxyMgr != nil {
+		apiServer, err = api.NewServerWithProvider(*listenAddr, approvalMgr, proxyMgr, auth)
+	} else {
+		apiServer, err = api.NewServer(*listenAddr, approvalMgr, *remoteSocket, *clientName, auth)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
@@ -134,18 +174,6 @@ func runProxy() {
 	slog.Info("API server started",
 		"address", apiServer.Addr(),
 		"cookie_file", apiServer.CookieFilePath())
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle signals for graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		slog.Info("received signal, shutting down", "signal", sig)
-		cancel()
-	}()
 
 	// Graceful shutdown of API server
 	defer func() {
@@ -161,6 +189,18 @@ func runProxy() {
 		return
 	}
 
+	// Multi-socket mode
+	if proxyMgr != nil {
+		slog.Info("running in multi-socket mode", "sockets_dir", *socketsDir)
+
+		if err := proxyMgr.Run(ctx); err != nil && err != context.Canceled {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Single-socket mode
 	cfg := proxy.Config{
 		RemoteSocketPath: *remoteSocket,
 		ClientName:       *clientName,
@@ -208,4 +248,13 @@ func getConfigDir() (string, error) {
 		configHome = filepath.Join(home, ".config")
 	}
 	return filepath.Join(configHome, "secrets-dispatcher"), nil
+}
+
+func getSocketsDir() (string, error) {
+	// Use XDG_RUNTIME_DIR for runtime files like sockets
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return "", fmt.Errorf("XDG_RUNTIME_DIR is not set")
+	}
+	return filepath.Join(runtimeDir, "secrets-dispatcher"), nil
 }

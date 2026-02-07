@@ -37,16 +37,14 @@ type Request struct {
 type Manager struct {
 	mu       sync.RWMutex
 	pending  map[string]*Request
-	client   string
 	timeout  time.Duration
 	disabled bool // when true, auto-approve all requests
 }
 
 // NewManager creates a new approval manager.
-func NewManager(client string, timeout time.Duration) *Manager {
+func NewManager(timeout time.Duration) *Manager {
 	return &Manager{
 		pending: make(map[string]*Request),
-		client:  client,
 		timeout: timeout,
 	}
 }
@@ -61,7 +59,7 @@ func NewDisabledManager() *Manager {
 
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.
 // Returns nil if approved, ErrDenied if denied, ErrTimeout if timeout.
-func (m *Manager) RequireApproval(ctx context.Context, items []string, session string) error {
+func (m *Manager) RequireApproval(ctx context.Context, client string, items []string, session string) error {
 	if m.disabled {
 		return nil
 	}
@@ -69,7 +67,7 @@ func (m *Manager) RequireApproval(ctx context.Context, items []string, session s
 	now := time.Now()
 	req := &Request{
 		ID:        uuid.New().String(),
-		Client:    m.client,
+		Client:    client,
 		Items:     items,
 		Session:   session,
 		CreatedAt: now,
@@ -156,11 +154,6 @@ func (m *Manager) PendingCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.pending)
-}
-
-// Client returns the client name.
-func (m *Manager) Client() string {
-	return m.client
 }
 
 // Timeout returns the configured timeout.

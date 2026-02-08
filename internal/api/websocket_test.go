@@ -150,7 +150,7 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 		defer wg.Done()
 		reqCtx, reqCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer reqCancel()
-		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil)
+		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	}()
 
 	// Read request_created message
@@ -213,7 +213,7 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	}()
 
 	// Read request_created
@@ -286,7 +286,7 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	}()
 
 	// Read request_created
@@ -347,7 +347,7 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil)
+		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	}()
 
 	// Read request_created

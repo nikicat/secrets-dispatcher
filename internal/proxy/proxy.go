@@ -26,6 +26,7 @@ type Proxy struct {
 	logger   *logging.Logger
 	approval *approval.Manager
 	tracker  *clientTracker
+	resolver *SenderInfoResolver
 
 	service           *Service
 	collection        *CollectionHandler
@@ -88,10 +89,13 @@ func (p *Proxy) Connect(ctx context.Context) error {
 		return fmt.Errorf("create client tracker: %w", err)
 	}
 
+	// Create sender info resolver
+	p.resolver = NewSenderInfoResolver(p.remoteConn)
+
 	// Create handlers
-	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
-	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
-	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker)
+	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
+	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
+	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.localConn, p.sessions, p.logger)
 
 	// Export the Service interface on the remote connection

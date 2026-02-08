@@ -89,7 +89,7 @@ func TestServer_Integration(t *testing.T) {
 		// Start a pending request
 		done := make(chan error, 1)
 		go func() {
-			done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil)
+			done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 		}()
 
 		// Wait for request to appear

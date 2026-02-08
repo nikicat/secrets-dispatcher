@@ -17,7 +17,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -56,7 +56,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -89,7 +89,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 func TestManager_RequireApproval_Timeout(t *testing.T) {
 	mgr := NewManager(100*time.Millisecond, 100)
 
-	err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	if err != ErrTimeout {
 		t.Errorf("expected ErrTimeout, got: %v", err)
@@ -107,7 +107,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		approvalErr = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		approvalErr = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -139,7 +139,7 @@ func TestManager_List(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
-			mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+			mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		}(i)
 	}
 
@@ -191,7 +191,7 @@ func TestManager_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			results[n] = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+			results[n] = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		}(i)
 	}
 
@@ -236,7 +236,7 @@ func TestManager_Disabled(t *testing.T) {
 	mgr := NewDisabledManager()
 
 	// Should auto-approve immediately
-	err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	if err != nil {
 		t.Errorf("disabled manager should auto-approve, got: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestManager_RequestFields(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -305,7 +305,7 @@ func TestManager_CleanupAfterApproval(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -375,7 +375,7 @@ func TestManager_Observer_Created(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for created event
@@ -403,7 +403,7 @@ func TestManager_Observer_Approved(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -450,7 +450,7 @@ func TestManager_Observer_Denied(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -487,7 +487,7 @@ func TestManager_Observer_Expired(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	// This will timeout
-	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	// Wait for events
 	events := obs.WaitForEvents(2, time.Second)
@@ -516,7 +516,7 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		err := mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		if err != context.Canceled {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
@@ -560,7 +560,7 @@ func TestManager_Observer_Unsubscribe(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	wg.Wait()
@@ -585,7 +585,7 @@ func TestManager_Observer_MultipleObservers(t *testing.T) {
 		defer wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for created event on both observers
@@ -635,7 +635,7 @@ func TestHistory_RecordsApproved(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -680,7 +680,7 @@ func TestHistory_RecordsDenied(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -715,7 +715,7 @@ func TestHistory_RecordsExpired(t *testing.T) {
 	mgr := NewManager(100*time.Millisecond, 100)
 
 	// This will timeout
-	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	// Give time for history to be recorded
 	time.Sleep(50 * time.Millisecond)
@@ -739,7 +739,7 @@ func TestHistory_RecordsCancelled(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -773,7 +773,7 @@ func TestHistory_LimitEnforced(t *testing.T) {
 
 	// Create more requests than the history limit
 	for i := 0; i < historyMax+3; i++ {
-		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}
 
 	// Check history is limited
@@ -792,7 +792,7 @@ func TestHistory_NewestFirst(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+			mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		}()
 
 		// Wait for request to appear

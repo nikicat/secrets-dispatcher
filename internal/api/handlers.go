@@ -99,6 +99,13 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:        req.ExpiresAt,
 			Type:             string(req.Type),
 			SearchAttributes: req.SearchAttributes,
+			SenderInfo: SenderInfo{
+				Sender:   req.SenderInfo.Sender,
+				PID:      req.SenderInfo.PID,
+				UID:      req.SenderInfo.UID,
+				UserName: req.SenderInfo.UserName,
+				UnitName: req.SenderInfo.UnitName,
+			},
 		}
 	}
 
@@ -193,6 +200,13 @@ func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 			ExpiresAt:        entry.Request.ExpiresAt,
 			Type:             string(entry.Request.Type),
 			SearchAttributes: entry.Request.SearchAttributes,
+			SenderInfo: SenderInfo{
+				Sender:   entry.Request.SenderInfo.Sender,
+				PID:      entry.Request.SenderInfo.PID,
+				UID:      entry.Request.SenderInfo.UID,
+				UserName: entry.Request.SenderInfo.UserName,
+				UnitName: entry.Request.SenderInfo.UnitName,
+			},
 		},
 		Resolution: string(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,

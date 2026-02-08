@@ -29,6 +29,15 @@ type ItemInfo struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
+// SenderInfo contains information about the D-Bus sender process.
+type SenderInfo struct {
+	Sender   string `json:"sender"`    // D-Bus unique name (":1.123")
+	PID      uint32 `json:"pid"`       // Process ID
+	UID      uint32 `json:"uid"`       // User ID
+	UserName string `json:"user_name"` // Username (may be empty if lookup fails)
+	UnitName string `json:"unit_name"` // Systemd unit (may be empty)
+}
+
 // PendingRequest represents a pending approval request in API responses.
 type PendingRequest struct {
 	ID               string            `json:"id"`
@@ -39,6 +48,7 @@ type PendingRequest struct {
 	ExpiresAt        time.Time         `json:"expires_at"`
 	Type             string            `json:"type"`
 	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
+	SenderInfo       SenderInfo        `json:"sender_info"`
 }
 
 // ActionResponse is returned by approve/deny endpoints.

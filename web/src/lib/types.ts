@@ -4,6 +4,14 @@ export interface ItemInfo {
   attributes: Record<string, string>;
 }
 
+export interface SenderInfo {
+  sender: string;
+  pid: number;
+  uid: number;
+  user_name: string;
+  unit_name: string;
+}
+
 export interface PendingRequest {
   id: string;
   client: string;
@@ -13,6 +21,7 @@ export interface PendingRequest {
   expires_at: string;
   type: "get_secret" | "search";
   search_attributes?: Record<string, string>;
+  sender_info: SenderInfo;
 }
 
 export interface ClientInfo {

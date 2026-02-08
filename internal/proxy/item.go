@@ -19,10 +19,11 @@ type ItemHandler struct {
 	approval   *approval.Manager
 	clientName string
 	tracker    *clientTracker
+	resolver   *SenderInfoResolver
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *ItemHandler {
 	return &ItemHandler{
 		localConn:  localConn,
 		sessions:   sessions,
@@ -30,6 +31,7 @@ func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logg
 		approval:   approvalMgr,
 		clientName: clientName,
 		tracker:    tracker,
+		resolver:   resolver,
 	}
 }
 
@@ -89,9 +91,12 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	ctx := i.tracker.contextForSender(context.Background(), sender)
 	defer i.tracker.remove(sender)
 
+	// Resolve sender information
+	senderInfo := i.resolver.Resolve(sender)
+
 	// Require approval before accessing secret
 	items := []approval.ItemInfo{itemInfo}
-	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(session), approval.RequestTypeGetSecret, nil); err != nil {
+	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(session), approval.RequestTypeGetSecret, nil, senderInfo); err != nil {
 		i.logger.LogItemGetSecret(ctx, string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
 	}

@@ -14,6 +14,34 @@
   let timeLeft = $state("");
   let copiedPath = $state<string | null>(null);
 
+  // Format sender info for display
+  function formatSenderInfo(): string {
+    const info = request.sender_info;
+    if (!info) {
+      return request.client;
+    }
+
+    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
+
+    // If we have a unit name, show that with username
+    if (info.unit_name) {
+      return user ? `${info.unit_name} (${user})` : info.unit_name;
+    }
+
+    // Fall back to username with PID
+    if (info.pid && user) {
+      return `${user} (PID ${info.pid})`;
+    }
+
+    // Fall back to just PID
+    if (info.pid) {
+      return `PID ${info.pid}`;
+    }
+
+    // Fall back to client name
+    return request.client;
+  }
+
   async function copyToClipboard(path: string) {
     await navigator.clipboard.writeText(path);
     copiedPath = path;
@@ -80,7 +108,10 @@
 
 <div class="card">
   <div class="card-header">
-    <span class="client">Client: {request.client}</span>
+    <div class="card-title">
+      <span class="item-summary">{request.items.map(i => i.label || i.path).join(", ") || "Secret request"}</span>
+      <span class="sender-info" title="Client: {request.client}">{formatSenderInfo()}</span>
+    </div>
     <span class="expires">Expires: {timeLeft}</span>
   </div>
 
@@ -223,18 +254,36 @@
   .card-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
     margin-bottom: 12px;
+    gap: 12px;
   }
 
-  .client {
+  .card-title {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .item-summary {
     font-weight: 600;
+    font-size: 15px;
     color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sender-info {
+    font-size: 12px;
+    color: var(--color-text-muted);
   }
 
   .expires {
-    font-size: 13px;
+    font-size: 12px;
     color: var(--color-warning);
+    white-space: nowrap;
   }
 
   .search-criteria {

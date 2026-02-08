@@ -173,6 +173,33 @@
     }
   }
 
+  function formatSenderInfo(entry: HistoryEntry): string {
+    const info = entry.request.sender_info;
+    if (!info) {
+      return entry.request.client;
+    }
+
+    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
+
+    // If we have a unit name, show that with user
+    if (info.unit_name) {
+      return user ? `${info.unit_name} (${user})` : info.unit_name;
+    }
+
+    // Fall back to user with PID
+    if (info.pid && user) {
+      return `${user} (PID ${info.pid})`;
+    }
+
+    // Fall back to just PID
+    if (info.pid) {
+      return `PID ${info.pid}`;
+    }
+
+    // Fall back to client name
+    return entry.request.client;
+  }
+
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
   function handleAction() {
     // No-op: WebSocket will push the update
@@ -301,8 +328,8 @@
                       <span class="history-time">{formatRelativeTime(entry.resolved_at)}</span>
                     </div>
                     <div class="history-entry-details">
-                      <span class="history-client">{entry.request.client}</span>
                       <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
+                      <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
                   </li>
                 {/each}
@@ -338,8 +365,8 @@
                       <span class="history-time">{formatRelativeTime(entry.resolved_at)}</span>
                     </div>
                     <div class="history-entry-details">
-                      <span class="history-client">{entry.request.client}</span>
                       <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
+                      <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
                   </li>
                 {/each}
@@ -724,18 +751,18 @@
     gap: 2px;
   }
 
-  .history-client {
+  .history-items {
     font-size: 14px;
     font-weight: 500;
     color: var(--color-text);
-  }
-
-  .history-items {
-    font-size: 12px;
-    color: var(--color-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .history-sender {
+    font-size: 12px;
+    color: var(--color-text-muted);
   }
 
   /* Desktop: show sidebar by default, hide toggle */

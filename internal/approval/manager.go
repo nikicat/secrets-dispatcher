@@ -71,6 +71,9 @@ type Request struct {
 	// SearchAttributes contains the search criteria for search requests.
 	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
 
+	// SenderInfo contains information about the requesting process.
+	SenderInfo SenderInfo `json:"sender_info"`
+
 	// Internal: channel signaled when request is approved/denied
 	done   chan struct{}
 	result bool // true = approved, false = denied
@@ -200,7 +203,7 @@ func (m *Manager) History() []HistoryEntry {
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.
 // Returns nil if approved, ErrDenied if denied, ErrTimeout if timeout.
 func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo,
-	session string, reqType RequestType, searchAttrs map[string]string) error {
+	session string, reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) error {
 	if m.disabled {
 		return nil
 	}
@@ -215,6 +218,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		ExpiresAt:        now.Add(m.timeout),
 		Type:             reqType,
 		SearchAttributes: searchAttrs,
+		SenderInfo:       senderInfo,
 		done:             make(chan struct{}),
 	}
 

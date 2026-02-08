@@ -17,10 +17,11 @@ type Service struct {
 	approval   *approval.Manager
 	clientName string
 	tracker    *clientTracker
+	resolver   *SenderInfoResolver
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *Service {
 	return &Service{
 		localConn:  localConn,
 		sessions:   sessions,
@@ -28,6 +29,7 @@ func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.
 		approval:   approvalMgr,
 		clientName: clientName,
 		tracker:    tracker,
+		resolver:   resolver,
 	}
 }
 
@@ -77,8 +79,11 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	ctx := s.tracker.contextForSender(context.Background(), sender)
 	defer s.tracker.remove(sender)
 
+	// Resolve sender information
+	senderInfo := s.resolver.Resolve(sender)
+
 	// Require approval before returning search results
-	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, "", approval.RequestTypeSearch, attributes); err != nil {
+	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, "", approval.RequestTypeSearch, attributes, senderInfo); err != nil {
 		s.logger.LogSearchItems(ctx, attributes, len(unlocked), len(locked), "denied", err)
 		return nil, nil, dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -101,9 +106,12 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	ctx := s.tracker.contextForSender(context.Background(), sender)
 	defer s.tracker.remove(sender)
 
+	// Resolve sender information
+	senderInfo := s.resolver.Resolve(sender)
+
 	// Require approval before accessing secrets
 	itemStrs := objectPathsToStrings(items)
-	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session), approval.RequestTypeGetSecret, nil); err != nil {
+	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session), approval.RequestTypeGetSecret, nil, senderInfo); err != nil {
 		s.logger.LogGetSecrets(ctx, itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}

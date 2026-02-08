@@ -19,10 +19,11 @@ type CollectionHandler struct {
 	approval   *approval.Manager
 	clientName string
 	tracker    *clientTracker
+	resolver   *SenderInfoResolver
 }
 
 // NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker) *CollectionHandler {
+func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *CollectionHandler {
 	return &CollectionHandler{
 		localConn:  localConn,
 		sessions:   sessions,
@@ -30,6 +31,7 @@ func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger
 		approval:   approvalMgr,
 		clientName: clientName,
 		tracker:    tracker,
+		resolver:   resolver,
 	}
 }
 
@@ -100,8 +102,11 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	ctx := c.tracker.contextForSender(context.Background(), sender)
 	defer c.tracker.remove(sender)
 
+	// Resolve sender information
+	senderInfo := c.resolver.Resolve(sender)
+
 	// Require approval before returning search results
-	if err := c.approval.RequireApproval(ctx, c.clientName, itemInfos, "", approval.RequestTypeSearch, attributes); err != nil {
+	if err := c.approval.RequireApproval(ctx, c.clientName, itemInfos, "", approval.RequestTypeSearch, attributes, senderInfo); err != nil {
 		c.logger.LogMethod(ctx, "Collection.SearchItems", map[string]any{
 			"collection": string(path),
 			"attributes": attributes,

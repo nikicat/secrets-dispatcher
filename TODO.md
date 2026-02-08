@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] Implement desktop notifications for incoming requests
+- [x] Implement desktop notifications for incoming requests
 - [ ] Implement browser notifications for incoming requests
 - [ ] Implement auto accept/reject rule loading from YAML file
 - [ ] Implement updating rules using additional actions on requests, including past requests (history)
@@ -9,4 +9,5 @@
 - [x] Colored logs
 - [x] Fix: no debug logs
 - [x] Click on timestamp in webui switches display mode between relative and absolute
+- [ ] Implement CLI for approving/rejecting
 - [ ] Refactor

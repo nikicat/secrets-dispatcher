@@ -16,6 +16,7 @@ import (
 	"github.com/lmittmann/tint"
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
@@ -96,6 +97,7 @@ func runProxy() {
 		historyLimit  = flag.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
 		stateDirFlag  = flag.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
 		apiOnly       = flag.Bool("api-only", false, "Run only the API server (for testing)")
+		notifications = flag.Bool("notifications", true, "Enable desktop notifications for approval requests")
 	)
 	flag.Parse()
 
@@ -133,6 +135,18 @@ func runProxy() {
 
 	// Create approval manager
 	approvalMgr := approval.NewManager(*timeout, *historyLimit)
+
+	// Set up desktop notifications
+	if *notifications {
+		notifier, err := notification.NewDBusNotifier()
+		if err != nil {
+			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
+		} else {
+			handler := notification.NewHandler(notifier)
+			approvalMgr.Subscribe(handler)
+			slog.Debug("desktop notifications enabled")
+		}
+	}
 
 	// Set up state directory for cookie
 	var stateDir string

@@ -103,6 +103,10 @@ func TestWSHandler_Snapshot(t *testing.T) {
 	if len(msg.Requests) != 0 {
 		t.Errorf("expected 0 requests, got %d", len(msg.Requests))
 	}
+	// Version should match BuildVersion (may be empty in dev mode)
+	if msg.Version != BuildVersion {
+		t.Errorf("expected version %q, got %q", BuildVersion, msg.Version)
+	}
 }
 
 func TestWSHandler_RequestCreated(t *testing.T) {

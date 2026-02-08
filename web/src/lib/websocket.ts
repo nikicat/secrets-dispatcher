@@ -6,7 +6,7 @@ import type {
 } from "./types";
 
 export interface ApprovalWebSocketCallbacks {
-  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[]) => void;
+  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[], version: string) => void;
   onRequestCreated?: (request: PendingRequest) => void;
   onRequestResolved?: (id: string, result: "approved" | "denied") => void;
   onRequestExpired?: (id: string) => void;
@@ -16,6 +16,7 @@ export interface ApprovalWebSocketCallbacks {
   onHistoryEntry?: (entry: HistoryEntry) => void;
   onConnectionChange?: (isConnected: boolean) => void;
   onAuthError?: () => void;
+  onVersionMismatch?: () => void;
 }
 
 export class ApprovalWebSocket {
@@ -26,6 +27,7 @@ export class ApprovalWebSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private shouldReconnect = true;
   private isConnected = false;
+  private clientVersion: string | null = null;
 
   constructor(callbacks: ApprovalWebSocketCallbacks) {
     this.callbacks = callbacks;
@@ -123,7 +125,16 @@ export class ApprovalWebSocket {
 
     switch (msg.type) {
       case "snapshot":
-        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? []);
+        // Check for version mismatch on reconnect
+        if (this.clientVersion === null) {
+          // First connection - store version
+          this.clientVersion = msg.version ?? "";
+        } else if (this.clientVersion !== (msg.version ?? "")) {
+          // Version mismatch - server was updated
+          this.callbacks.onVersionMismatch?.();
+          return;
+        }
+        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? [], msg.version ?? "");
         break;
       case "request_created":
         this.callbacks.onRequestCreated?.(msg.request);

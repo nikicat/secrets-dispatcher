@@ -27,7 +27,8 @@ const (
 
 // WSMessage represents a message sent over the WebSocket.
 type WSMessage struct {
-	Type string `json:"type"`
+	Type    string `json:"type"`
+	Version string `json:"version,omitempty"`
 
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
 	Requests []PendingRequest   `json:"requests"`
@@ -259,6 +260,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 
 	msg := WSMessage{
 		Type:     "snapshot",
+		Version:  BuildVersion,
 		Requests: requests,
 		Clients:  clients,
 		History:  history,

@@ -14,6 +14,7 @@
   let connected = $state(false);
   let sidebarOpen = $state(false);
   let historyOpen = $state(true);
+  let version = $state("");
 
   let ws: ApprovalWebSocket | null = null;
 
@@ -28,10 +29,11 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist) => {
+      onSnapshot: (reqs, cls, hist, ver) => {
         requests = reqs;
         clients = cls;
         history = hist;
+        version = ver;
         loading = false;
         error = null;
       },
@@ -72,6 +74,9 @@
         authState = "unauthenticated";
         ws?.disconnect();
         ws = null;
+      },
+      onVersionMismatch: () => {
+        window.location.reload();
       },
     });
     ws.connect();
@@ -211,6 +216,11 @@
           </ul>
         {/if}
       </div>
+      {#if version}
+        <div class="sidebar-footer">
+          <span class="version">{version}</span>
+        </div>
+      {/if}
     </aside>
   {/if}
 
@@ -472,6 +482,18 @@
     font-family: ui-monospace, "SF Mono", Monaco, monospace;
     color: var(--color-text-muted);
     word-break: break-all;
+  }
+
+  .sidebar-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .version {
+    font-size: 11px;
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
+    color: var(--color-text-muted);
+    opacity: 0.6;
   }
 
   /* Header */

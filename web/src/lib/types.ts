@@ -65,6 +65,7 @@ export type WSMessage =
 
 export interface WSSnapshotMessage {
   type: "snapshot";
+  version?: string;
   requests: PendingRequest[];
   clients: ClientInfo[];
   history: HistoryEntry[];

@@ -18,6 +18,7 @@ export interface TestBackend {
   cleanup: () => Promise<void>;
   generateLoginURL: () => Promise<string>;
   getAuthToken: () => Promise<string>;
+  restart: (options?: { version?: string }) => Promise<void>;
 }
 
 /**
@@ -56,7 +57,7 @@ function generateJWT(secret: string): string {
  * Start a test instance of the secrets-dispatcher backend.
  * Creates an isolated config directory and starts the server in API-only mode.
  */
-export async function startTestBackend(): Promise<TestBackend> {
+export async function startTestBackend(options?: { version?: string }): Promise<TestBackend> {
   // Create temp directory for test
   const testId = randomBytes(8).toString("hex");
   const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
@@ -66,8 +67,14 @@ export async function startTestBackend(): Promise<TestBackend> {
   const url = `http://localhost:${port}`;
   const wsUrl = `ws://localhost:${port}/api/v1/ws`;
 
+  // Build environment with optional version override
+  const env: Record<string, string> = { ...process.env };
+  if (options?.version) {
+    env.TEST_BUILD_VERSION = options.version;
+  }
+
   // Start the backend in API-only mode with isolated state
-  const proc = spawn(
+  let proc = spawn(
     BINARY_PATH,
     [
       "--api-only",
@@ -80,37 +87,42 @@ export async function startTestBackend(): Promise<TestBackend> {
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      env,
       detached: false,
     },
   );
 
   // Wait for the server to start
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Timeout waiting for backend to start"));
-    }, 5000);
+  const waitForServer = async (process: ChildProcess): Promise<void> => {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Timeout waiting for backend to start"));
+      }, 5000);
 
-    let output = "";
-    proc.stderr?.on("data", (data: Buffer) => {
-      output += data.toString();
-      if (output.includes("API server started")) {
+      let output = "";
+      process.stderr?.on("data", (data: Buffer) => {
+        output += data.toString();
+        if (output.includes("API server started")) {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+
+      process.on("error", (err) => {
         clearTimeout(timeout);
-        resolve();
-      }
-    });
+        reject(err);
+      });
 
-    proc.on("error", (err) => {
-      clearTimeout(timeout);
-      reject(err);
+      process.on("exit", (code) => {
+        if (code !== 0 && code !== null) {
+          clearTimeout(timeout);
+          reject(new Error(`Backend exited with code ${code}: ${output}`));
+        }
+      });
     });
+  };
 
-    proc.on("exit", (code) => {
-      if (code !== 0 && code !== null) {
-        clearTimeout(timeout);
-        reject(new Error(`Backend exited with code ${code}: ${output}`));
-      }
-    });
-  });
+  await waitForServer(proc);
 
   const getAuthToken = async (): Promise<string> => {
     const cookiePath = join(stateDir, ".cookie");
@@ -123,16 +135,50 @@ export async function startTestBackend(): Promise<TestBackend> {
     return `${url}/?token=${jwt}`;
   };
 
-  const cleanup = async (): Promise<void> => {
-    // Kill the process
-    if (proc.pid) {
-      proc.kill("SIGTERM");
-      // Wait for process to exit
+  const stopProcess = async (process: ChildProcess): Promise<void> => {
+    if (process.pid) {
+      process.kill("SIGTERM");
       await new Promise<void>((resolve) => {
-        proc.on("exit", () => resolve());
+        process.on("exit", () => resolve());
         setTimeout(resolve, 1000); // Force resolve after 1s
       });
     }
+  };
+
+  const restart = async (restartOptions?: { version?: string }): Promise<void> => {
+    // Stop current process
+    await stopProcess(proc);
+
+    // Build environment with optional version override
+    const restartEnv: Record<string, string> = { ...process.env };
+    if (restartOptions?.version) {
+      restartEnv.TEST_BUILD_VERSION = restartOptions.version;
+    }
+
+    // Start a new process
+    proc = spawn(
+      BINARY_PATH,
+      [
+        "--api-only",
+        "--state-dir",
+        stateDir,
+        "--listen",
+        `127.0.0.1:${port}`,
+        "--client",
+        "test-client",
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: restartEnv,
+        detached: false,
+      },
+    );
+
+    await waitForServer(proc);
+  };
+
+  const cleanup = async (): Promise<void> => {
+    await stopProcess(proc);
     // Clean up temp directory
     await rm(stateDir, { recursive: true, force: true });
   };
@@ -146,6 +192,7 @@ export async function startTestBackend(): Promise<TestBackend> {
     cleanup,
     generateLoginURL,
     getAuthToken,
+    restart,
   };
 }
 

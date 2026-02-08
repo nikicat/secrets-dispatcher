@@ -43,6 +43,14 @@ export interface ErrorResponse {
 
 export type AuthState = "checking" | "authenticated" | "unauthenticated";
 
+export type Resolution = "approved" | "denied" | "expired" | "cancelled";
+
+export interface HistoryEntry {
+  request: PendingRequest;
+  resolution: Resolution;
+  resolved_at: string;
+}
+
 // WebSocket message types
 export type WSMessage =
   | WSSnapshotMessage
@@ -52,12 +60,14 @@ export type WSMessage =
   | WSRequestCancelledMessage
   | WSClientConnectedMessage
   | WSClientDisconnectedMessage
+  | WSHistoryEntryMessage
   | WSPingMessage;
 
 export interface WSSnapshotMessage {
   type: "snapshot";
   requests: PendingRequest[];
   clients: ClientInfo[];
+  history: HistoryEntry[];
 }
 
 export interface WSRequestCreatedMessage {
@@ -89,6 +99,11 @@ export interface WSClientConnectedMessage {
 export interface WSClientDisconnectedMessage {
   type: "client_disconnected";
   client: ClientInfo;
+}
+
+export interface WSHistoryEntryMessage {
+  type: "history_entry";
+  history_entry: HistoryEntry;
 }
 
 export interface WSPingMessage {

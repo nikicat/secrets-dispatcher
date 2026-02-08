@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState, ClientInfo } from "./lib/types";
+  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry } from "./lib/types";
   import { exchangeToken, getStatus } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
@@ -8,10 +8,12 @@
   let authState = $state<AuthState>("checking");
   let requests = $state<PendingRequest[]>([]);
   let clients = $state<ClientInfo[]>([]);
+  let history = $state<HistoryEntry[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
   let sidebarOpen = $state(false);
+  let historyOpen = $state(true);
 
   let ws: ApprovalWebSocket | null = null;
 
@@ -26,9 +28,10 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls) => {
+      onSnapshot: (reqs, cls, hist) => {
         requests = reqs;
         clients = cls;
+        history = hist;
         loading = false;
         error = null;
       },
@@ -52,6 +55,10 @@
       },
       onClientDisconnected: (client) => {
         clients = clients.filter((c) => c.socket_path !== client.socket_path);
+      },
+      onHistoryEntry: (entry) => {
+        // Prepend new entry to history (newest first)
+        history = [entry, ...history];
       },
       onConnectionChange: (isConnected) => {
         connected = isConnected;
@@ -120,6 +127,45 @@
 
   function closeSidebar() {
     sidebarOpen = false;
+  }
+
+  function toggleHistory() {
+    historyOpen = !historyOpen;
+  }
+
+  function formatRelativeTime(dateString: string): string {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffSec = Math.floor(diffMs / 1000);
+
+    if (diffSec < 60) {
+      return "just now";
+    }
+
+    const diffMin = Math.floor(diffSec / 60);
+    if (diffMin < 60) {
+      return `${diffMin} minute${diffMin !== 1 ? "s" : ""} ago`;
+    }
+
+    const diffHour = Math.floor(diffMin / 60);
+    if (diffHour < 24) {
+      return `${diffHour} hour${diffHour !== 1 ? "s" : ""} ago`;
+    }
+
+    const diffDay = Math.floor(diffHour / 24);
+    return `${diffDay} day${diffDay !== 1 ? "s" : ""} ago`;
+  }
+
+  function resolutionClass(resolution: string): string {
+    switch (resolution) {
+      case "approved":
+        return "resolution-approved";
+      case "denied":
+        return "resolution-denied";
+      default:
+        return "resolution-other";
+    }
   }
 
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
@@ -224,6 +270,36 @@
         <div class="empty-state">
           <p>No pending requests</p>
         </div>
+        <!-- Show history section below empty state -->
+        {#if history.length > 0}
+          <section class="history-section">
+            <button class="history-toggle" onclick={toggleHistory}>
+              <h2>Recent Activity ({history.length})</h2>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:rotated={!historyOpen}>
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            {#if historyOpen}
+              <ul class="history-list">
+                {#each history as entry (entry.request.id + entry.resolved_at)}
+                  <li class="history-entry">
+                    <div class="history-entry-header">
+                      <div class="history-entry-badges">
+                        <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
+                        <span class="history-type">{entry.request.type === "search" ? "search" : "get"}</span>
+                      </div>
+                      <span class="history-time">{formatRelativeTime(entry.resolved_at)}</span>
+                    </div>
+                    <div class="history-entry-details">
+                      <span class="history-client">{entry.request.client}</span>
+                      <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        {/if}
       {:else}
         <section>
           <h2>Pending Requests ({requests.length})</h2>
@@ -231,6 +307,36 @@
             <RequestCard {request} onAction={handleAction} />
           {/each}
         </section>
+        <!-- Show history section below pending requests -->
+        {#if history.length > 0}
+          <section class="history-section">
+            <button class="history-toggle" onclick={toggleHistory}>
+              <h2>Recent Activity ({history.length})</h2>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:rotated={!historyOpen}>
+                <polyline points="6 9 12 15 18 9"></polyline>
+              </svg>
+            </button>
+            {#if historyOpen}
+              <ul class="history-list">
+                {#each history as entry (entry.request.id + entry.resolved_at)}
+                  <li class="history-entry">
+                    <div class="history-entry-header">
+                      <div class="history-entry-badges">
+                        <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
+                        <span class="history-type">{entry.request.type === "search" ? "search" : "get"}</span>
+                      </div>
+                      <span class="history-time">{formatRelativeTime(entry.resolved_at)}</span>
+                    </div>
+                    <div class="history-entry-details">
+                      <span class="history-client">{entry.request.client}</span>
+                      <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        {/if}
       {/if}
     </main>
   </div>
@@ -486,6 +592,128 @@
 
   section {
     margin-top: 8px;
+  }
+
+  /* History section */
+  .history-section {
+    margin-top: 32px;
+  }
+
+  .history-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .history-toggle h2 {
+    margin: 0;
+  }
+
+  .history-toggle svg {
+    color: var(--color-text-muted);
+    transition: transform 0.2s ease;
+  }
+
+  .history-toggle svg.rotated {
+    transform: rotate(-90deg);
+  }
+
+  .history-list {
+    list-style: none;
+    padding: 0;
+    margin: 16px 0 0 0;
+  }
+
+  .history-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+  }
+
+  .history-entry:last-child {
+    margin-bottom: 0;
+  }
+
+  .history-entry-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .history-entry-badges {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .history-resolution {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+  }
+
+  .history-type {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+  }
+
+  .resolution-approved {
+    color: var(--color-success);
+    background-color: rgba(34, 197, 94, 0.1);
+  }
+
+  .resolution-denied {
+    color: var(--color-danger);
+    background-color: rgba(239, 68, 68, 0.1);
+  }
+
+  .resolution-other {
+    color: var(--color-text-muted);
+    background-color: var(--color-bg);
+  }
+
+  .history-time {
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+
+  .history-entry-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .history-client {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--color-text);
+  }
+
+  .history-items {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Desktop: show sidebar by default, hide toggle */

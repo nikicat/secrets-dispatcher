@@ -9,7 +9,7 @@ import (
 )
 
 func TestManager_RequireApproval_Approved(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -48,7 +48,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 }
 
 func TestManager_RequireApproval_Denied(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -87,7 +87,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 }
 
 func TestManager_RequireApproval_Timeout(t *testing.T) {
-	mgr := NewManager(100 * time.Millisecond)
+	mgr := NewManager(100*time.Millisecond, 100)
 
 	err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
 
@@ -97,7 +97,7 @@ func TestManager_RequireApproval_Timeout(t *testing.T) {
 }
 
 func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -129,7 +129,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 }
 
 func TestManager_List(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	// Start multiple approval requests
 	var wg sync.WaitGroup
@@ -160,7 +160,7 @@ func TestManager_List(t *testing.T) {
 }
 
 func TestManager_Approve_NotFound(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	err := mgr.Approve("nonexistent-id")
 	if err != ErrNotFound {
@@ -169,7 +169,7 @@ func TestManager_Approve_NotFound(t *testing.T) {
 }
 
 func TestManager_Deny_NotFound(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	err := mgr.Deny("nonexistent-id")
 	if err != ErrNotFound {
@@ -178,7 +178,7 @@ func TestManager_Deny_NotFound(t *testing.T) {
 }
 
 func TestManager_Concurrent(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	const numRequests = 10
 	var wg sync.WaitGroup
@@ -248,7 +248,7 @@ func TestManager_Disabled(t *testing.T) {
 }
 
 func TestManager_RequestFields(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -299,7 +299,7 @@ func TestManager_RequestFields(t *testing.T) {
 }
 
 func TestManager_CleanupAfterApproval(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -365,7 +365,7 @@ func (o *testObserver) WaitForEvents(count int, timeout time.Duration) []Event {
 }
 
 func TestManager_Observer_Created(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -395,7 +395,7 @@ func TestManager_Observer_Created(t *testing.T) {
 }
 
 func TestManager_Observer_Approved(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -442,7 +442,7 @@ func TestManager_Observer_Approved(t *testing.T) {
 }
 
 func TestManager_Observer_Denied(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -482,7 +482,7 @@ func TestManager_Observer_Denied(t *testing.T) {
 }
 
 func TestManager_Observer_Expired(t *testing.T) {
-	mgr := NewManager(100 * time.Millisecond)
+	mgr := NewManager(100*time.Millisecond, 100)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -506,7 +506,7 @@ func TestManager_Observer_Expired(t *testing.T) {
 }
 
 func TestManager_Observer_Cancelled(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -549,7 +549,7 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 }
 
 func TestManager_Observer_Unsubscribe(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 	mgr.Unsubscribe(obs)
@@ -573,7 +573,7 @@ func TestManager_Observer_Unsubscribe(t *testing.T) {
 }
 
 func TestManager_Observer_MultipleObservers(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 	obs1 := &testObserver{}
 	obs2 := &testObserver{}
 	mgr.Subscribe(obs1)
@@ -605,7 +605,7 @@ func TestManager_Observer_MultipleObservers(t *testing.T) {
 }
 
 func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
-	mgr := NewManager(5 * time.Second)
+	mgr := NewManager(5*time.Second, 100)
 
 	var wg sync.WaitGroup
 	var subscribed atomic.Int32
@@ -625,5 +625,206 @@ func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
 
 	if subscribed.Load() != 10 {
 		t.Errorf("expected 10 subscribed, got %d", subscribed.Load())
+	}
+}
+
+func TestHistory_RecordsApproved(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("request did not appear")
+	}
+
+	// Approve
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Give time for history to be recorded
+	time.Sleep(50 * time.Millisecond)
+
+	// Check history
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionApproved {
+		t.Errorf("expected resolution 'approved', got '%s'", history[0].Resolution)
+	}
+	if history[0].Request.ID != reqID {
+		t.Errorf("expected request ID %s, got %s", reqID, history[0].Request.ID)
+	}
+}
+
+func TestHistory_RecordsDenied(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Deny
+	mgr.Deny(reqID)
+	wg.Wait()
+
+	// Give time for history to be recorded
+	time.Sleep(50 * time.Millisecond)
+
+	// Check history
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionDenied {
+		t.Errorf("expected resolution 'denied', got '%s'", history[0].Resolution)
+	}
+}
+
+func TestHistory_RecordsExpired(t *testing.T) {
+	mgr := NewManager(100*time.Millisecond, 100)
+
+	// This will timeout
+	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+
+	// Give time for history to be recorded
+	time.Sleep(50 * time.Millisecond)
+
+	// Check history
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionExpired {
+		t.Errorf("expected resolution 'expired', got '%s'", history[0].Resolution)
+	}
+}
+
+func TestHistory_RecordsCancelled(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	}()
+
+	// Wait for request to appear
+	for i := 0; i < 100; i++ {
+		if mgr.PendingCount() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Cancel the context
+	cancel()
+	wg.Wait()
+
+	// Give time for history to be recorded
+	time.Sleep(50 * time.Millisecond)
+
+	// Check history
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionCancelled {
+		t.Errorf("expected resolution 'cancelled', got '%s'", history[0].Resolution)
+	}
+}
+
+func TestHistory_LimitEnforced(t *testing.T) {
+	historyMax := 5
+	mgr := NewManager(100*time.Millisecond, historyMax)
+
+	// Create more requests than the history limit
+	for i := 0; i < historyMax+3; i++ {
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+	}
+
+	// Check history is limited
+	history := mgr.History()
+	if len(history) != historyMax {
+		t.Errorf("expected %d history entries (limit), got %d", historyMax, len(history))
+	}
+}
+
+func TestHistory_NewestFirst(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+
+	// Create and resolve 3 requests in sequence
+	for i := 0; i < 3; i++ {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil)
+		}()
+
+		// Wait for request to appear
+		var reqID string
+		for j := 0; j < 100; j++ {
+			reqs := mgr.List()
+			if len(reqs) > 0 {
+				reqID = reqs[0].ID
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		mgr.Approve(reqID)
+		wg.Wait()
+
+		// Small delay to ensure different timestamps
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Give time for history to be recorded
+	time.Sleep(50 * time.Millisecond)
+
+	// Check history is in reverse chronological order (newest first)
+	history := mgr.History()
+	if len(history) != 3 {
+		t.Fatalf("expected 3 history entries, got %d", len(history))
+	}
+
+	for i := 0; i < len(history)-1; i++ {
+		if history[i].ResolvedAt.Before(history[i+1].ResolvedAt) {
+			t.Errorf("history entry %d resolved before entry %d, but should be after (newest first)", i, i+1)
+		}
 	}
 }

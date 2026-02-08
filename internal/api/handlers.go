@@ -157,17 +157,46 @@ func (h *Handlers) HandleDeny(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleLog handles GET /api/v1/log.
-// Note: Log retrieval is not implemented in this phase - returns empty list.
 func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Log retrieval would require storing logs in memory or reading from file.
-	// For now, return empty list.
-	resp := LogResponse{Entries: []LogEntry{}}
+	history := h.manager.History()
+	entries := make([]HistoryEntry, len(history))
+	for i, entry := range history {
+		entries[i] = convertHistoryEntry(entry)
+	}
+
+	resp := HistoryResponse{Entries: entries}
 	writeJSON(w, resp)
+}
+
+// convertHistoryEntry converts an approval.HistoryEntry to an API HistoryEntry.
+func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
+	items := make([]ItemInfo, len(entry.Request.Items))
+	for i, item := range entry.Request.Items {
+		items[i] = ItemInfo{
+			Path:       item.Path,
+			Label:      item.Label,
+			Attributes: item.Attributes,
+		}
+	}
+	return HistoryEntry{
+		Request: PendingRequest{
+			ID:               entry.Request.ID,
+			Client:           entry.Request.Client,
+			Items:            items,
+			Session:          entry.Request.Session,
+			CreatedAt:        entry.Request.CreatedAt,
+			ExpiresAt:        entry.Request.ExpiresAt,
+			Type:             string(entry.Request.Type),
+			SearchAttributes: entry.Request.SearchAttributes,
+		},
+		Resolution: string(entry.Resolution),
+		ResolvedAt: entry.ResolvedAt,
+	}
 }
 
 // extractRequestID extracts the request ID from a path like /api/v1/pending/{id}/action.

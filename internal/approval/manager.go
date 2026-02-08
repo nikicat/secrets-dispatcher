@@ -76,6 +76,23 @@ type Request struct {
 	result bool // true = approved, false = denied
 }
 
+// Resolution represents how a request was resolved.
+type Resolution string
+
+const (
+	ResolutionApproved  Resolution = "approved"
+	ResolutionDenied    Resolution = "denied"
+	ResolutionExpired   Resolution = "expired"
+	ResolutionCancelled Resolution = "cancelled"
+)
+
+// HistoryEntry represents a resolved approval request.
+type HistoryEntry struct {
+	Request    *Request   `json:"request"`
+	Resolution Resolution `json:"resolution"`
+	ResolvedAt time.Time  `json:"resolved_at"`
+}
+
 // Manager tracks pending approval requests and handles blocking until decision.
 type Manager struct {
 	mu       sync.RWMutex
@@ -85,23 +102,29 @@ type Manager struct {
 
 	observersMu sync.RWMutex
 	observers   map[Observer]struct{}
+
+	historyMu  sync.RWMutex
+	history    []HistoryEntry
+	historyMax int
 }
 
 // NewManager creates a new approval manager.
-func NewManager(timeout time.Duration) *Manager {
+func NewManager(timeout time.Duration, historyMax int) *Manager {
 	return &Manager{
-		pending:   make(map[string]*Request),
-		timeout:   timeout,
-		observers: make(map[Observer]struct{}),
+		pending:    make(map[string]*Request),
+		timeout:    timeout,
+		observers:  make(map[Observer]struct{}),
+		historyMax: historyMax,
 	}
 }
 
 // NewDisabledManager creates a manager that auto-approves all requests.
 func NewDisabledManager() *Manager {
 	return &Manager{
-		pending:   make(map[string]*Request),
-		disabled:  true,
-		observers: make(map[Observer]struct{}),
+		pending:    make(map[string]*Request),
+		disabled:   true,
+		observers:  make(map[Observer]struct{}),
+		historyMax: 100,
 	}
 }
 
@@ -126,6 +149,52 @@ func (m *Manager) notify(event Event) {
 	for o := range m.observers {
 		go o.OnEvent(event)
 	}
+
+	// Record history for terminal events
+	if event.Type != EventRequestCreated {
+		m.addHistory(event)
+	}
+}
+
+// addHistory records a resolved request in history.
+func (m *Manager) addHistory(event Event) {
+	var resolution Resolution
+	switch event.Type {
+	case EventRequestApproved:
+		resolution = ResolutionApproved
+	case EventRequestDenied:
+		resolution = ResolutionDenied
+	case EventRequestExpired:
+		resolution = ResolutionExpired
+	case EventRequestCancelled:
+		resolution = ResolutionCancelled
+	default:
+		return
+	}
+
+	entry := HistoryEntry{
+		Request:    event.Request,
+		Resolution: resolution,
+		ResolvedAt: time.Now(),
+	}
+
+	m.historyMu.Lock()
+	defer m.historyMu.Unlock()
+
+	// Prepend to slice (newest first)
+	m.history = append([]HistoryEntry{entry}, m.history...)
+
+	// Trim to historyMax
+	if len(m.history) > m.historyMax {
+		m.history = m.history[:m.historyMax]
+	}
+}
+
+// History returns a copy of the history entries, newest first.
+func (m *Manager) History() []HistoryEntry {
+	m.historyMu.RLock()
+	defer m.historyMu.RUnlock()
+	return append([]HistoryEntry{}, m.history...)
 }
 
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.

@@ -23,7 +23,7 @@ func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 }
 
 func TestHandleStatus(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
@@ -66,7 +66,7 @@ func TestHandleStatus(t *testing.T) {
 }
 
 func TestHandleStatus_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
@@ -80,7 +80,7 @@ func TestHandleStatus_WrongMethod(t *testing.T) {
 }
 
 func TestHandlePendingList_Empty(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending", nil)
@@ -103,7 +103,7 @@ func TestHandlePendingList_Empty(t *testing.T) {
 }
 
 func TestHandlePendingList_WithRequests(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -152,7 +152,7 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 }
 
 func TestHandleApprove_Success(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -206,7 +206,7 @@ func TestHandleApprove_Success(t *testing.T) {
 }
 
 func TestHandleApprove_NotFound(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/approve", nil)
@@ -229,7 +229,7 @@ func TestHandleApprove_NotFound(t *testing.T) {
 }
 
 func TestHandleApprove_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/approve", nil)
@@ -243,7 +243,7 @@ func TestHandleApprove_WrongMethod(t *testing.T) {
 }
 
 func TestHandleDeny_Success(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -296,8 +296,8 @@ func TestHandleDeny_Success(t *testing.T) {
 	}
 }
 
-func TestHandleLog(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Minute)
+func TestHandleLog_Empty(t *testing.T) {
+	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
@@ -309,14 +309,76 @@ func TestHandleLog(t *testing.T) {
 		t.Errorf("expected status 200, got %d", rr.Code)
 	}
 
-	var resp LogResponse
+	var resp HistoryResponse
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Log retrieval not implemented yet, should return empty
+	// No history yet, should return empty
 	if len(resp.Entries) != 0 {
 		t.Errorf("expected empty entries, got %d", len(resp.Entries))
+	}
+}
+
+func TestHandleLog_WithHistory(t *testing.T) {
+	mgr := approval.NewManager(5*time.Minute, 100)
+	handlers := testHandlers(t, mgr)
+
+	// Start and approve a request to create history
+	done := make(chan error, 1)
+	go func() {
+		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item", Label: "Test Item"}}, "/session/1", approval.RequestTypeGetSecret, nil)
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("request did not appear")
+	}
+
+	// Approve the request
+	mgr.Approve(reqID)
+	<-done
+
+	// Give time for history to be recorded
+	time.Sleep(50 * time.Millisecond)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
+	rr := httptest.NewRecorder()
+
+	handlers.HandleLog(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var resp HistoryResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp.Entries) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(resp.Entries))
+	}
+
+	entry := resp.Entries[0]
+	if entry.Resolution != "approved" {
+		t.Errorf("expected resolution 'approved', got '%s'", entry.Resolution)
+	}
+	if entry.Request.ID != reqID {
+		t.Errorf("expected request ID %s, got %s", reqID, entry.Request.ID)
+	}
+	if entry.Request.Client != "test-client" {
+		t.Errorf("expected client 'test-client', got '%s'", entry.Request.Client)
 	}
 }
 

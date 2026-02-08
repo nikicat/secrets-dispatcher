@@ -2,16 +2,18 @@ import type {
   WSMessage,
   PendingRequest,
   ClientInfo,
+  HistoryEntry,
 } from "./types";
 
 export interface ApprovalWebSocketCallbacks {
-  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[]) => void;
+  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[]) => void;
   onRequestCreated?: (request: PendingRequest) => void;
   onRequestResolved?: (id: string, result: "approved" | "denied") => void;
   onRequestExpired?: (id: string) => void;
   onRequestCancelled?: (id: string) => void;
   onClientConnected?: (client: ClientInfo) => void;
   onClientDisconnected?: (client: ClientInfo) => void;
+  onHistoryEntry?: (entry: HistoryEntry) => void;
   onConnectionChange?: (isConnected: boolean) => void;
   onAuthError?: () => void;
 }
@@ -121,7 +123,7 @@ export class ApprovalWebSocket {
 
     switch (msg.type) {
       case "snapshot":
-        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? []);
+        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? []);
         break;
       case "request_created":
         this.callbacks.onRequestCreated?.(msg.request);
@@ -140,6 +142,9 @@ export class ApprovalWebSocket {
         break;
       case "client_disconnected":
         this.callbacks.onClientDisconnected?.(msg.client);
+        break;
+      case "history_entry":
+        this.callbacks.onHistoryEntry?.(msg.history_entry);
         break;
       case "ping":
         // Server ping, no action needed

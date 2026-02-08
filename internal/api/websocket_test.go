@@ -26,7 +26,7 @@ func (m *mockClientProvider) Clients() []proxy.ClientInfo {
 }
 
 func TestWSHandler_Unauthorized(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -50,7 +50,7 @@ func TestWSHandler_Unauthorized(t *testing.T) {
 }
 
 func TestWSHandler_Snapshot(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -106,7 +106,7 @@ func TestWSHandler_Snapshot(t *testing.T) {
 }
 
 func TestWSHandler_RequestCreated(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -174,7 +174,7 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 }
 
 func TestWSHandler_RequestResolved(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -247,7 +247,7 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 }
 
 func TestWSHandler_RequestExpired(t *testing.T) {
-	mgr := approval.NewManager(100 * time.Millisecond)
+	mgr := approval.NewManager(100*time.Millisecond, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -307,7 +307,7 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 }
 
 func TestWSHandler_RequestCancelled(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -371,7 +371,7 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 }
 
 func TestWSHandler_BroadcastClient(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
@@ -428,7 +428,7 @@ func TestWSHandler_BroadcastClient(t *testing.T) {
 }
 
 func TestWSHandler_MultipleConnections(t *testing.T) {
-	mgr := approval.NewManager(5 * time.Second)
+	mgr := approval.NewManager(5*time.Second, 100)
 	auth, err := NewAuth(t.TempDir())
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)

@@ -51,7 +51,7 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-// LogEntry represents an audit log entry.
+// LogEntry represents an audit log entry (deprecated, use HistoryEntry).
 type LogEntry struct {
 	Time    time.Time `json:"time"`
 	Client  string    `json:"client"`
@@ -61,9 +61,21 @@ type LogEntry struct {
 	Error   string    `json:"error,omitempty"`
 }
 
-// LogResponse is returned by GET /api/v1/log.
+// LogResponse is returned by GET /api/v1/log (deprecated, use HistoryResponse).
 type LogResponse struct {
 	Entries []LogEntry `json:"entries"`
+}
+
+// HistoryEntry represents a resolved approval request in API responses.
+type HistoryEntry struct {
+	Request    PendingRequest `json:"request"`
+	Resolution string         `json:"resolution"` // approved, denied, expired, cancelled
+	ResolvedAt time.Time      `json:"resolved_at"`
+}
+
+// HistoryResponse is returned by GET /api/v1/log.
+type HistoryResponse struct {
+	Entries []HistoryEntry `json:"entries"`
 }
 
 // AuthRequest is the request body for POST /api/v1/auth.

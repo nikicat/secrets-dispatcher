@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	defaultListenAddr = "127.0.0.1:8484"
-	defaultTimeout    = 5 * time.Minute
+	defaultListenAddr   = "127.0.0.1:8484"
+	defaultTimeout      = 5 * time.Minute
+	defaultHistoryLimit = 100
 )
 
 func main() {
@@ -90,7 +91,8 @@ func runProxy() {
 		logLevel      = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 		listenAddr    = flag.String("listen", defaultListenAddr, "HTTP API listen address")
 		timeout       = flag.Duration("timeout", defaultTimeout, "Approval timeout")
-		stateDirFlag = flag.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
+		historyLimit  = flag.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
+		stateDirFlag  = flag.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
 		apiOnly       = flag.Bool("api-only", false, "Run only the API server (for testing)")
 	)
 	flag.Parse()
@@ -115,7 +117,7 @@ func runProxy() {
 	level := parseLogLevel(*logLevel)
 
 	// Create approval manager
-	approvalMgr := approval.NewManager(*timeout)
+	approvalMgr := approval.NewManager(*timeout, *historyLimit)
 
 	// Set up state directory for cookie
 	var stateDir string

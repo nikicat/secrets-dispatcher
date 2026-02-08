@@ -14,7 +14,7 @@ import (
 func TestServer_Integration(t *testing.T) {
 	tempDir := t.TempDir()
 
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	auth, err := NewAuth(tempDir)
 	if err != nil {
 		t.Fatalf("NewAuth failed: %v", err)
@@ -153,7 +153,7 @@ func TestServer_Integration(t *testing.T) {
 func TestServer_CookieFilePath(t *testing.T) {
 	tempDir := t.TempDir()
 
-	mgr := approval.NewManager(5 * time.Minute)
+	mgr := approval.NewManager(5*time.Minute, 100)
 	auth, err := NewAuth(tempDir)
 	if err != nil {
 		t.Fatalf("NewAuth failed: %v", err)

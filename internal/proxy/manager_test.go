@@ -55,7 +55,7 @@ func TestIsSocketFile(t *testing.T) {
 
 func TestNewManager(t *testing.T) {
 	tempDir := t.TempDir()
-	approvalMgr := approval.NewManager(5 * time.Minute)
+	approvalMgr := approval.NewManager(5*time.Minute, 100)
 
 	mgr, err := NewManager(tempDir, approvalMgr, slog.LevelInfo)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestNewManager(t *testing.T) {
 
 func TestManager_ClientsEmpty(t *testing.T) {
 	tempDir := t.TempDir()
-	approvalMgr := approval.NewManager(5 * time.Minute)
+	approvalMgr := approval.NewManager(5*time.Minute, 100)
 
 	mgr, err := NewManager(tempDir, approvalMgr, slog.LevelInfo)
 	if err != nil {
@@ -94,7 +94,7 @@ func TestManager_ClientsEmpty(t *testing.T) {
 
 func TestManager_ScanExistingSockets_NoSockets(t *testing.T) {
 	tempDir := t.TempDir()
-	approvalMgr := approval.NewManager(5 * time.Minute)
+	approvalMgr := approval.NewManager(5*time.Minute, 100)
 
 	mgr, err := NewManager(tempDir, approvalMgr, slog.LevelInfo)
 	if err != nil {

@@ -32,6 +32,7 @@ type WSMessage struct {
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
 	Requests []PendingRequest   `json:"requests"`
 	Clients  []proxy.ClientInfo `json:"clients"`
+	History  []HistoryEntry     `json:"history"`
 
 	// For request_created
 	Request *PendingRequest `json:"request,omitempty"`
@@ -42,6 +43,9 @@ type WSMessage struct {
 
 	// For client_connected/client_disconnected
 	Client *proxy.ClientInfo `json:"client,omitempty"`
+
+	// For history_entry
+	HistoryEntry *HistoryEntry `json:"history_entry,omitempty"`
 }
 
 // WSHandler handles WebSocket connections for real-time updates.
@@ -129,51 +133,99 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 // OnEvent implements approval.Observer.
 func (wsc *wsConnection) OnEvent(event approval.Event) {
-	var msg WSMessage
+	var msgs []WSMessage
 
 	switch event.Type {
 	case approval.EventRequestCreated:
-		msg = WSMessage{
+		msgs = append(msgs, WSMessage{
 			Type:    "request_created",
 			Request: convertRequest(event.Request),
-		}
+		})
 	case approval.EventRequestApproved:
-		msg = WSMessage{
+		msgs = append(msgs, WSMessage{
 			Type:   "request_resolved",
 			ID:     event.Request.ID,
 			Result: "approved",
-		}
+		})
+		entry := makeHistoryEntry(event.Request, "approved")
+		msgs = append(msgs, WSMessage{
+			Type:         "history_entry",
+			HistoryEntry: &entry,
+		})
 	case approval.EventRequestDenied:
-		msg = WSMessage{
+		msgs = append(msgs, WSMessage{
 			Type:   "request_resolved",
 			ID:     event.Request.ID,
 			Result: "denied",
-		}
+		})
+		entry := makeHistoryEntry(event.Request, "denied")
+		msgs = append(msgs, WSMessage{
+			Type:         "history_entry",
+			HistoryEntry: &entry,
+		})
 	case approval.EventRequestExpired:
-		msg = WSMessage{
+		msgs = append(msgs, WSMessage{
 			Type: "request_expired",
 			ID:   event.Request.ID,
-		}
+		})
+		entry := makeHistoryEntry(event.Request, "expired")
+		msgs = append(msgs, WSMessage{
+			Type:         "history_entry",
+			HistoryEntry: &entry,
+		})
 	case approval.EventRequestCancelled:
-		msg = WSMessage{
+		msgs = append(msgs, WSMessage{
 			Type: "request_cancelled",
 			ID:   event.Request.ID,
+		})
+		entry := makeHistoryEntry(event.Request, "cancelled")
+		msgs = append(msgs, WSMessage{
+			Type:         "history_entry",
+			HistoryEntry: &entry,
+		})
+	default:
+		return
+	}
+
+	for _, msg := range msgs {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			slog.Error("Failed to marshal WebSocket message", "error", err)
+			continue
 		}
-	default:
-		return
-	}
 
-	data, err := json.Marshal(msg)
-	if err != nil {
-		slog.Error("Failed to marshal WebSocket message", "error", err)
-		return
+		// Non-blocking send - drop message if client is slow
+		select {
+		case wsc.send <- data:
+		default:
+			slog.Warn("WebSocket send buffer full, dropping message")
+		}
 	}
+}
 
-	// Non-blocking send - drop message if client is slow
-	select {
-	case wsc.send <- data:
-	default:
-		slog.Warn("WebSocket send buffer full, dropping message")
+// makeHistoryEntry creates a HistoryEntry for WebSocket messages.
+func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
+	items := make([]ItemInfo, len(req.Items))
+	for i, item := range req.Items {
+		items[i] = ItemInfo{
+			Path:       item.Path,
+			Label:      item.Label,
+			Attributes: item.Attributes,
+		}
+	}
+	return HistoryEntry{
+		Request: PendingRequest{
+			ID:               req.ID,
+			Client:           req.Client,
+			Items:            items,
+			Session:          req.Session,
+			CreatedAt:        req.CreatedAt,
+			ExpiresAt:        req.ExpiresAt,
+			Type:             string(req.Type),
+			SearchAttributes: req.SearchAttributes,
+		},
+		Resolution: resolution,
+		ResolvedAt: time.Now(),
 	}
 }
 
@@ -198,10 +250,18 @@ func (wsc *wsConnection) sendSnapshot() error {
 		}
 	}
 
+	// Get history
+	historyEntries := h.manager.History()
+	history := make([]HistoryEntry, len(historyEntries))
+	for i, entry := range historyEntries {
+		history[i] = convertHistoryEntry(entry)
+	}
+
 	msg := WSMessage{
 		Type:     "snapshot",
 		Requests: requests,
 		Clients:  clients,
+		History:  history,
 	}
 
 	data, err := json.Marshal(msg)

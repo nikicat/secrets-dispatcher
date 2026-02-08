@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lmittmann/tint"
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
@@ -89,6 +90,7 @@ func runProxy() {
 		socketsDir    = flag.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher)")
 		clientName    = flag.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
 		logLevel      = flag.String("log-level", "info", "Log level: debug, info, warn, error")
+		logFormat     = flag.String("log-format", "text", "Log format: text (colored) or json")
 		listenAddr    = flag.String("listen", defaultListenAddr, "HTTP API listen address")
 		timeout       = flag.Duration("timeout", defaultTimeout, "Approval timeout")
 		historyLimit  = flag.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
@@ -116,10 +118,18 @@ func runProxy() {
 
 	level := parseLogLevel(*logLevel)
 
-	// Set global slog default with configured level
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-	})))
+	// Set global slog default with configured level and format
+	var handler slog.Handler
+	switch *logFormat {
+	case "json":
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	default:
+		handler = tint.NewHandler(os.Stderr, &tint.Options{
+			Level:      level,
+			TimeFormat: time.TimeOnly,
+		})
+	}
+	slog.SetDefault(slog.New(handler))
 
 	// Create approval manager
 	approvalMgr := approval.NewManager(*timeout, *historyLimit)

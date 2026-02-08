@@ -4,7 +4,6 @@ package logging
 import (
 	"context"
 	"log/slog"
-	"os"
 )
 
 // Logger wraps slog for structured audit logging.
@@ -13,13 +12,10 @@ type Logger struct {
 	client string
 }
 
-// New creates a new audit logger that writes JSON to stderr.
+// New creates a new audit logger using the global default handler.
 func New(level slog.Level, client string) *Logger {
-	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-	})
 	return &Logger{
-		Logger: slog.New(handler),
+		Logger: slog.Default(),
 		client: client,
 	}
 }

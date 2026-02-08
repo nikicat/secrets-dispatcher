@@ -9,4 +9,7 @@ require (
 	github.com/google/uuid v1.6.0
 )
 
-require golang.org/x/sys v0.27.0 // indirect
+require (
+	github.com/lmittmann/tint v1.1.3 // indirect
+	golang.org/x/sys v0.27.0 // indirect
+)

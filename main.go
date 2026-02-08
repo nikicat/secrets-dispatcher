@@ -116,6 +116,11 @@ func runProxy() {
 
 	level := parseLogLevel(*logLevel)
 
+	// Set global slog default with configured level
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+	})))
+
 	// Create approval manager
 	approvalMgr := approval.NewManager(*timeout, *historyLimit)
 

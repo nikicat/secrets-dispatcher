@@ -323,6 +323,16 @@ func (h *WSHandler) BroadcastClientDisconnected(client proxy.ClientInfo) {
 	})
 }
 
+// OnClientConnected implements proxy.ClientObserver.
+func (h *WSHandler) OnClientConnected(client proxy.ClientInfo) {
+	h.BroadcastClientConnected(client)
+}
+
+// OnClientDisconnected implements proxy.ClientObserver.
+func (h *WSHandler) OnClientDisconnected(client proxy.ClientInfo) {
+	h.BroadcastClientDisconnected(client)
+}
+
 // broadcast sends a message to all connected clients.
 func (h *WSHandler) broadcast(msg WSMessage) {
 	data, err := json.Marshal(msg)

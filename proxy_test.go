@@ -656,3 +656,61 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 		t.Errorf("unexpected error: %v", call.Err)
 	}
 }
+
+// TestProxyDetectsSocketDisconnect tests that the proxy detects when the remote
+// D-Bus daemon is killed (simulating SSH tunnel disconnect).
+func TestProxyDetectsSocketDisconnect(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	p := proxy.New(proxy.Config{
+		RemoteSocketPath: env.remoteSocketPath(),
+		ClientName:       "test-client",
+		LogLevel:         slog.LevelDebug,
+	})
+
+	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	// Run the proxy in a goroutine
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- p.Run(ctx)
+	}()
+
+	// Verify proxy is running (give it a moment to start)
+	time.Sleep(100 * time.Millisecond)
+
+	// Kill the remote D-Bus daemon to simulate disconnect
+	if env.remoteCmd != nil && env.remoteCmd.Process != nil {
+		t.Log("Killing remote D-Bus daemon to simulate disconnect")
+		env.remoteCmd.Process.Kill()
+		env.remoteCmd.Wait()
+		env.remoteCmd = nil // Prevent double-kill in cleanup
+	}
+
+	// Proxy should detect the disconnect and return an error
+	select {
+	case err := <-runErr:
+		if err == nil {
+			t.Error("expected error from Run() after disconnect, got nil")
+		} else {
+			t.Logf("Run() returned expected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("timeout waiting for proxy to detect disconnect")
+	}
+}

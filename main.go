@@ -199,6 +199,9 @@ func runProxy() {
 	if proxyMgr != nil {
 		slog.Info("running in multi-socket mode", "sockets_dir", *socketsDir)
 
+		// Subscribe WebSocket handler to receive client connect/disconnect events
+		proxyMgr.Subscribe(apiServer.WSHandler())
+
 		if err := proxyMgr.Run(ctx); err != nil && err != context.Canceled {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)

@@ -148,10 +148,26 @@ func (p *Proxy) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Run blocks until the context is cancelled.
+// Run blocks until the context is cancelled or the remote connection is closed.
 func (p *Proxy) Run(ctx context.Context) error {
-	<-ctx.Done()
-	return ctx.Err()
+	if p.remoteConn == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	remoteCtx := p.remoteConn.Context()
+	if remoteCtx == nil {
+		// Fallback if context is not available
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-remoteCtx.Done():
+		// Remote connection closed (e.g., SSH tunnel disconnected)
+		return fmt.Errorf("remote connection closed")
+	}
 }
 
 // Close shuts down the proxy and closes all connections.

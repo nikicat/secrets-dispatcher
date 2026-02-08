@@ -14,8 +14,10 @@ type clientTracker struct {
 	conn *dbus.Conn
 	mu   sync.Mutex
 	// clients maps sender unique name (e.g., ":1.123") to cancel function
-	clients map[string]context.CancelFunc
-	signals chan *dbus.Signal
+	clients   map[string]context.CancelFunc
+	signals   chan *dbus.Signal
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // newClientTracker creates a new tracker and starts listening for NameOwnerChanged signals.
@@ -24,6 +26,7 @@ func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 		conn:    conn,
 		clients: make(map[string]context.CancelFunc),
 		signals: make(chan *dbus.Signal, 16),
+		done:    make(chan struct{}),
 	}
 
 	// Subscribe to NameOwnerChanged signals to detect client disconnects
@@ -45,27 +48,37 @@ func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 
 // processSignals handles NameOwnerChanged signals.
 func (t *clientTracker) processSignals() {
-	for signal := range t.signals {
-		if signal.Name != "org.freedesktop.DBus.NameOwnerChanged" {
-			continue
-		}
+	for {
+		select {
+		case <-t.done:
+			return
+		case signal, ok := <-t.signals:
+			if !ok {
+				// Channel closed by D-Bus library when connection closes
+				return
+			}
 
-		// NameOwnerChanged(name string, old_owner string, new_owner string)
-		if len(signal.Body) != 3 {
-			continue
-		}
+			if signal.Name != "org.freedesktop.DBus.NameOwnerChanged" {
+				continue
+			}
 
-		name, ok1 := signal.Body[0].(string)
-		oldOwner, ok2 := signal.Body[1].(string)
-		newOwner, ok3 := signal.Body[2].(string)
+			// NameOwnerChanged(name string, old_owner string, new_owner string)
+			if len(signal.Body) != 3 {
+				continue
+			}
 
-		if !ok1 || !ok2 || !ok3 {
-			continue
-		}
+			name, ok1 := signal.Body[0].(string)
+			oldOwner, ok2 := signal.Body[1].(string)
+			newOwner, ok3 := signal.Body[2].(string)
 
-		// Client disconnected when: name is a unique name, old_owner is non-empty, new_owner is empty
-		if name != "" && name[0] == ':' && oldOwner != "" && newOwner == "" {
-			t.clientDisconnected(oldOwner)
+			if !ok1 || !ok2 || !ok3 {
+				continue
+			}
+
+			// Client disconnected when: name is a unique name, old_owner is non-empty, new_owner is empty
+			if name != "" && name[0] == ':' && oldOwner != "" && newOwner == "" {
+				t.clientDisconnected(oldOwner)
+			}
 		}
 	}
 }
@@ -112,8 +125,13 @@ func (t *clientTracker) remove(sender string) {
 
 // close stops the tracker.
 func (t *clientTracker) close() {
-	t.conn.RemoveSignal(t.signals)
-	close(t.signals)
+	t.closeOnce.Do(func() {
+		// Signal the processSignals goroutine to stop
+		close(t.done)
+		// Unregister from receiving signals (don't close signals channel -
+		// the D-Bus library may have already closed it or will close it)
+		t.conn.RemoveSignal(t.signals)
+	})
 
 	t.mu.Lock()
 	defer t.mu.Unlock()

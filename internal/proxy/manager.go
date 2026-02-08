@@ -19,6 +19,12 @@ type ClientInfo struct {
 	SocketPath string `json:"socket_path"`
 }
 
+// ClientObserver receives notifications about client connections.
+type ClientObserver interface {
+	OnClientConnected(client ClientInfo)
+	OnClientDisconnected(client ClientInfo)
+}
+
 // proxyInstance holds a running proxy and its cancellation function.
 type proxyInstance struct {
 	proxy  *Proxy
@@ -33,6 +39,9 @@ type Manager struct {
 	watcher    *fsnotify.Watcher
 	approval   *approval.Manager
 	logLevel   slog.Level
+
+	observersMu sync.RWMutex
+	observers   []ClientObserver
 }
 
 // NewManager creates a new proxy manager.
@@ -105,6 +114,43 @@ func (m *Manager) Clients() []ClientInfo {
 		})
 	}
 	return clients
+}
+
+// Subscribe adds an observer to receive client connection events.
+func (m *Manager) Subscribe(obs ClientObserver) {
+	m.observersMu.Lock()
+	defer m.observersMu.Unlock()
+	m.observers = append(m.observers, obs)
+}
+
+// Unsubscribe removes an observer.
+func (m *Manager) Unsubscribe(obs ClientObserver) {
+	m.observersMu.Lock()
+	defer m.observersMu.Unlock()
+	for i, o := range m.observers {
+		if o == obs {
+			m.observers = append(m.observers[:i], m.observers[i+1:]...)
+			return
+		}
+	}
+}
+
+// notifyConnected notifies all observers of a client connection.
+func (m *Manager) notifyConnected(client ClientInfo) {
+	m.observersMu.RLock()
+	defer m.observersMu.RUnlock()
+	for _, obs := range m.observers {
+		obs.OnClientConnected(client)
+	}
+}
+
+// notifyDisconnected notifies all observers of a client disconnection.
+func (m *Manager) notifyDisconnected(client ClientInfo) {
+	m.observersMu.RLock()
+	defer m.observersMu.RUnlock()
+	for _, obs := range m.observers {
+		obs.OnClientDisconnected(client)
+	}
 }
 
 // scanExistingSockets connects to all existing socket files in the directory.
@@ -199,9 +245,14 @@ func (m *Manager) startProxy(ctx context.Context, socketPath string) {
 	}
 	m.mu.Unlock()
 
+	client := ClientInfo{Name: clientName, SocketPath: socketPath}
+
 	slog.Info("started proxy",
 		"socket", socketPath,
 		"client", clientName)
+
+	// Notify observers of new client
+	m.notifyConnected(client)
 
 	// Run the proxy in a goroutine
 	go func() {
@@ -222,6 +273,9 @@ func (m *Manager) startProxy(ctx context.Context, socketPath string) {
 		slog.Info("stopped proxy",
 			"socket", socketPath,
 			"client", clientName)
+
+		// Notify observers of client disconnect
+		m.notifyDisconnected(client)
 	}()
 }
 

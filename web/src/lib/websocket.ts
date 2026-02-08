@@ -64,13 +64,17 @@ export class ApprovalWebSocket {
         this.callbacks.onConnectionChange?.(false);
       }
 
-      // Check for auth error (HTTP 401 during WebSocket upgrade)
-      // WebSocket close code 1008 is policy violation, often used for auth errors
-      // Close code 1006 is abnormal closure, which can happen with 401
-      if (event.code === 1008 || (event.code === 1006 && !wasConnected)) {
-        // This might be an auth error - don't reconnect automatically
+      // WebSocket close code 1008 is explicit policy violation (auth error)
+      if (event.code === 1008) {
         this.callbacks.onAuthError?.();
         this.shouldReconnect = false;
+      }
+
+      // For code 1006 (abnormal closure) when we never connected,
+      // verify auth status before assuming it's an auth error
+      if (event.code === 1006 && !wasConnected) {
+        this.verifyAuthAndReconnect();
+        return;
       }
 
       if (this.shouldReconnect) {
@@ -140,6 +144,33 @@ export class ApprovalWebSocket {
       case "ping":
         // Server ping, no action needed
         break;
+    }
+  }
+
+  private async verifyAuthAndReconnect(): Promise<void> {
+    // Check if the server is up and we're still authenticated
+    try {
+      const response = await fetch("/api/v1/status", {
+        credentials: "include",
+      });
+
+      if (response.status === 401) {
+        // Confirmed auth error
+        this.callbacks.onAuthError?.();
+        this.shouldReconnect = false;
+        return;
+      }
+
+      // Server is up and we're authenticated (or server is up but returned other error)
+      // Continue reconnecting
+      if (this.shouldReconnect) {
+        this.scheduleReconnect();
+      }
+    } catch {
+      // Network error - server probably not up yet, continue reconnecting
+      if (this.shouldReconnect) {
+        this.scheduleReconnect();
+      }
     }
   }
 

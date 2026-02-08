@@ -15,6 +15,12 @@
   let sidebarOpen = $state(false);
   let historyOpen = $state(true);
   let version = $state("");
+  let useAbsoluteTime = $state(localStorage.getItem('timeFormat') === 'absolute');
+
+  function toggleTimeFormat() {
+    useAbsoluteTime = !useAbsoluteTime;
+    localStorage.setItem('timeFormat', useAbsoluteTime ? 'absolute' : 'relative');
+  }
 
   let ws: ApprovalWebSocket | null = null;
 
@@ -160,6 +166,17 @@
 
     const diffDay = Math.floor(diffHour / 24);
     return `${diffDay} day${diffDay !== 1 ? "s" : ""} ago`;
+  }
+
+  function formatAbsoluteTime(dateString: string): string {
+    const date = new Date(dateString);
+    return date.toLocaleTimeString();
+  }
+
+  function formatTime(dateString: string): string {
+    return useAbsoluteTime
+      ? formatAbsoluteTime(dateString)
+      : formatRelativeTime(dateString);
   }
 
   function resolutionClass(resolution: string): string {
@@ -325,7 +342,7 @@
                         <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
                         <span class="history-type">{entry.request.type === "search" ? "search" : "get"}</span>
                       </div>
-                      <span class="history-time">{formatRelativeTime(entry.resolved_at)}</span>
+                      <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
                     </div>
                     <div class="history-entry-details">
                       <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
@@ -362,7 +379,7 @@
                         <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
                         <span class="history-type">{entry.request.type === "search" ? "search" : "get"}</span>
                       </div>
-                      <span class="history-time">{formatRelativeTime(entry.resolved_at)}</span>
+                      <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
                     </div>
                     <div class="history-entry-details">
                       <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
@@ -743,6 +760,19 @@
   .history-time {
     font-size: 12px;
     color: var(--color-text-muted);
+  }
+
+  .history-time.clickable {
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .history-time.clickable:hover {
+    color: var(--color-text);
+    text-decoration: underline;
   }
 
   .history-entry-details {

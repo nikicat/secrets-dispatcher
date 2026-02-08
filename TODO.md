@@ -8,5 +8,5 @@
 - [ ] Config file support
 - [x] Colored logs
 - [x] Fix: no debug logs
-- [ ] Click on timestamp in webui switches display mode between relative and absolute
+- [x] Click on timestamp in webui switches display mode between relative and absolute
 - [ ] Refactor

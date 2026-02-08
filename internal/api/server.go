@@ -17,6 +17,7 @@ type Server struct {
 	handlers    *Handlers
 	wsHandler   *WSHandler
 	listener    net.Listener
+	testMode    bool
 }
 
 // NewServer creates a new API server for single-socket mode.
@@ -45,6 +46,7 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	apiMux.HandleFunc("/api/v1/pending", handlers.HandlePendingList)
 	apiMux.HandleFunc("/api/v1/log", handlers.HandleLog)
 	apiMux.HandleFunc("/api/v1/ws", wsHandler.HandleWS)
+	apiMux.HandleFunc("/api/v1/test/history", handlers.HandleTestInjectHistory)
 
 	// Routes with path parameters need pattern matching
 	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {
@@ -115,4 +117,10 @@ func (s *Server) CookieFilePath() string {
 // WSHandler returns the WebSocket handler for broadcasting client events.
 func (s *Server) WSHandler() *WSHandler {
 	return s.wsHandler
+}
+
+// SetTestMode enables test-only endpoints.
+func (s *Server) SetTestMode(enabled bool) {
+	s.testMode = enabled
+	s.handlers.SetTestMode(enabled)
 }

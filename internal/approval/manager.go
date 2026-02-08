@@ -200,6 +200,20 @@ func (m *Manager) History() []HistoryEntry {
 	return append([]HistoryEntry{}, m.history...)
 }
 
+// AddHistoryEntry adds an entry directly to history. For testing only.
+func (m *Manager) AddHistoryEntry(entry HistoryEntry) {
+	m.historyMu.Lock()
+	defer m.historyMu.Unlock()
+
+	// Prepend to slice (newest first)
+	m.history = append([]HistoryEntry{entry}, m.history...)
+
+	// Trim to historyMax
+	if len(m.history) > m.historyMax {
+		m.history = m.history[:m.historyMax]
+	}
+}
+
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.
 // Returns nil if approved, ErrDenied if denied, ErrTimeout if timeout.
 func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo,

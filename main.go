@@ -189,6 +189,11 @@ func runProxy() {
 		os.Exit(1)
 	}
 
+	// Enable test mode for API-only mode
+	if *apiOnly {
+		apiServer.SetTestMode(true)
+	}
+
 	// Start API server
 	if err := apiServer.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "error starting API server: %v\n", err)

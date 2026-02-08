@@ -22,6 +22,7 @@ type Handlers struct {
 	remoteSocket string
 	clientName   string
 	auth         *Auth
+	testMode     bool // When true, enables test-only endpoints
 }
 
 // NewHandlers creates new API handlers for single-socket mode.
@@ -41,6 +42,11 @@ func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider,
 		clientProvider: provider,
 		auth:           auth,
 	}
+}
+
+// SetTestMode enables test-only endpoints.
+func (h *Handlers) SetTestMode(enabled bool) {
+	h.testMode = enabled
 }
 
 // HandleStatus handles GET /api/v1/status.
@@ -268,4 +274,60 @@ func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	h.auth.SetSessionCookie(w)
 
 	writeJSON(w, ActionResponse{Status: "authenticated"})
+}
+
+// HandleTestInjectHistory handles POST /api/v1/test/history for injecting test history entries.
+// Only available when test mode is enabled.
+func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Request) {
+	if !h.testMode {
+		writeError(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var entry HistoryEntry
+	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Convert API HistoryEntry to approval.HistoryEntry
+	items := make([]approval.ItemInfo, len(entry.Request.Items))
+	for i, item := range entry.Request.Items {
+		items[i] = approval.ItemInfo{
+			Path:       item.Path,
+			Label:      item.Label,
+			Attributes: item.Attributes,
+		}
+	}
+
+	approvalEntry := approval.HistoryEntry{
+		Request: &approval.Request{
+			ID:               entry.Request.ID,
+			Client:           entry.Request.Client,
+			Items:            items,
+			Session:          entry.Request.Session,
+			CreatedAt:        entry.Request.CreatedAt,
+			ExpiresAt:        entry.Request.ExpiresAt,
+			Type:             approval.RequestType(entry.Request.Type),
+			SearchAttributes: entry.Request.SearchAttributes,
+			SenderInfo: approval.SenderInfo{
+				Sender:   entry.Request.SenderInfo.Sender,
+				PID:      entry.Request.SenderInfo.PID,
+				UID:      entry.Request.SenderInfo.UID,
+				UserName: entry.Request.SenderInfo.UserName,
+				UnitName: entry.Request.SenderInfo.UnitName,
+			},
+		},
+		Resolution: approval.Resolution(entry.Resolution),
+		ResolvedAt: entry.ResolvedAt,
+	}
+
+	h.manager.AddHistoryEntry(approvalEntry)
+
+	writeJSON(w, ActionResponse{Status: "created"})
 }

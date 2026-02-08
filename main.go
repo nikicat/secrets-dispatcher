@@ -16,6 +16,7 @@ import (
 	"github.com/lmittmann/tint"
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/cli"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
@@ -26,17 +27,52 @@ const (
 	defaultHistoryLimit = 100
 )
 
+var progName = filepath.Base(os.Args[0])
+
 func main() {
-	// Check for subcommands first
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "login":
-			runLogin(os.Args[2:])
-			return
-		}
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
 	}
 
-	runProxy()
+	switch os.Args[1] {
+	case "serve":
+		runServe(os.Args[2:])
+	case "login":
+		runLogin(os.Args[2:])
+	case "list":
+		runCLI("list", os.Args[2:])
+	case "show":
+		runCLI("show", os.Args[2:])
+	case "approve":
+		runCLI("approve", os.Args[2:])
+	case "deny":
+		runCLI("deny", os.Args[2:])
+	case "history":
+		runCLI("history", os.Args[2:])
+	case "-h", "--help", "help":
+		printUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Fprintf(os.Stderr, `Usage: %s <command> [options]
+
+Commands:
+  serve     Start the proxy server and API
+  login     Generate a login URL for the web UI
+  list      List pending approval requests
+  show      Show details of a pending request
+  approve   Approve a pending request
+  deny      Deny a pending request
+  history   Show resolved requests
+
+Run '%s <command> -h' for command-specific help.
+`, progName, progName)
 }
 
 func runLogin(args []string) {
@@ -60,8 +96,8 @@ func runLogin(args []string) {
 	auth, err := api.LoadAuth(stateDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(os.Stderr, "error: secrets-dispatcher is not running (no cookie file found)")
-			fmt.Fprintln(os.Stderr, "Start the service first with: secrets-dispatcher --remote-socket <path>")
+			fmt.Fprintf(os.Stderr, "error: %s is not running (no cookie file found)\n", progName)
+			fmt.Fprintf(os.Stderr, "Start the service first with: %s serve\n", progName)
 		} else {
 			fmt.Fprintf(os.Stderr, "error loading auth: %v\n", err)
 		}
@@ -85,26 +121,113 @@ func runLogin(args []string) {
 	}
 }
 
-func runProxy() {
-	var (
-		remoteSocket  = flag.String("remote-socket", "", "Path to the remote D-Bus socket (single-socket mode)")
-		socketsDir    = flag.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher)")
-		clientName    = flag.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
-		logLevel      = flag.String("log-level", "info", "Log level: debug, info, warn, error")
-		logFormat     = flag.String("log-format", "text", "Log format: text (colored) or json")
-		listenAddr    = flag.String("listen", defaultListenAddr, "HTTP API listen address")
-		timeout       = flag.Duration("timeout", defaultTimeout, "Approval timeout")
-		historyLimit  = flag.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
-		stateDirFlag  = flag.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
-		apiOnly       = flag.Bool("api-only", false, "Run only the API server (for testing)")
-		notifications = flag.Bool("notifications", true, "Enable desktop notifications for approval requests")
-	)
-	flag.Parse()
+func runCLI(cmd string, args []string) {
+	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
+	serverAddr := fs.String("server", defaultListenAddr, "API server address")
+	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	fs.Parse(args)
+
+	var stateDir string
+	var err error
+	if *stateDirFlag != "" {
+		stateDir = *stateDirFlag
+	} else {
+		stateDir, err = getStateDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	auth, err := api.LoadAuth(stateDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "error: %s is not running (no cookie file found)\n", progName)
+			fmt.Fprintf(os.Stderr, "Start the service first with: %s serve\n", progName)
+		} else {
+			fmt.Fprintf(os.Stderr, "error loading auth: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	client := cli.NewClient(*serverAddr, auth.Token())
+	formatter := cli.NewFormatter(os.Stdout, *jsonOutput)
+
+	switch cmd {
+	case "list":
+		requests, err := client.List()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		formatter.FormatRequests(requests)
+
+	case "show":
+		if fs.NArg() < 1 {
+			fmt.Fprintf(os.Stderr, "usage: %s show <request-id>\n", progName)
+			os.Exit(1)
+		}
+		req, err := client.Show(fs.Arg(0))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		formatter.FormatRequest(req)
+
+	case "approve":
+		if fs.NArg() < 1 {
+			fmt.Fprintf(os.Stderr, "usage: %s approve <request-id>\n", progName)
+			os.Exit(1)
+		}
+		id := fs.Arg(0)
+		if err := client.Approve(id); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		formatter.FormatAction("approved", id)
+
+	case "deny":
+		if fs.NArg() < 1 {
+			fmt.Fprintf(os.Stderr, "usage: %s deny <request-id>\n", progName)
+			os.Exit(1)
+		}
+		id := fs.Arg(0)
+		if err := client.Deny(id); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		formatter.FormatAction("denied", id)
+
+	case "history":
+		entries, err := client.History()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		formatter.FormatHistory(entries)
+	}
+}
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	remoteSocket := fs.String("remote-socket", "", "Path to the remote D-Bus socket (single-socket mode)")
+	socketsDir := fs.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher)")
+	clientName := fs.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
+	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn, error")
+	logFormat := fs.String("log-format", "text", "Log format: text (colored) or json")
+	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
+	timeout := fs.Duration("timeout", defaultTimeout, "Approval timeout")
+	historyLimit := fs.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
+	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
+	apiOnly := fs.Bool("api-only", false, "Run only the API server (for testing)")
+	notifications := fs.Bool("notifications", true, "Enable desktop notifications for approval requests")
+	fs.Parse(args)
 
 	// Validate mode selection
 	if *remoteSocket != "" && *socketsDir != "" {
 		fmt.Fprintln(os.Stderr, "error: --remote-socket and --sockets-dir are mutually exclusive")
-		flag.Usage()
+		fs.Usage()
 		os.Exit(1)
 	}
 

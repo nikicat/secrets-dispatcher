@@ -9,5 +9,5 @@
 - [x] Colored logs
 - [x] Fix: no debug logs
 - [x] Click on timestamp in webui switches display mode between relative and absolute
-- [ ] Implement CLI for approving/rejecting
+- [x] Implement CLI for approving/rejecting
 - [ ] Refactor

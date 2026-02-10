@@ -4,6 +4,7 @@
   import { exchangeToken, getStatus } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
+  import { requestPermission, showRequestNotification } from "./lib/notifications";
 
   let authState = $state<AuthState>("checking");
   let requests = $state<PendingRequest[]>([]);
@@ -42,9 +43,12 @@
         version = ver;
         loading = false;
         error = null;
+        // Request notification permission after successful connection
+        requestPermission();
       },
       onRequestCreated: (req) => {
         requests = [...requests, req];
+        showRequestNotification(req);
       },
       onRequestResolved: (id) => {
         requests = requests.filter((r) => r.id !== id);
@@ -278,7 +282,7 @@
             <span class="status-dot" class:ok={connected} class:error={!connected}></span>
             <span class="status-text">
               {#if connected}
-                {clients.length} client{clients.length !== 1 ? "s" : ""}
+                {clients.length} client{clients.length !== 1 ? "s" : ""} connected
               {:else}
                 Reconnecting...
               {/if}

@@ -77,6 +77,7 @@ export async function startTestBackend(options?: { version?: string }): Promise<
   let proc = spawn(
     BINARY_PATH,
     [
+      "serve",
       "--api-only",
       "--state-dir",
       stateDir,
@@ -159,6 +160,7 @@ export async function startTestBackend(options?: { version?: string }): Promise<
     proc = spawn(
       BINARY_PATH,
       [
+        "serve",
         "--api-only",
         "--state-dir",
         stateDir,

@@ -1,6 +1,6 @@
 # secrets-dispatcher
 
-A secure proxy for dispatching secrets from a local Secret Service to remote servers.
+A secure proxy for dispatching secrets from a local [Secret Service](https://specifications.freedesktop.org/secret-service/latest/) to remote servers.
 
 ## Problem
 

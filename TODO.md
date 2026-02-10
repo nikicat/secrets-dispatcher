@@ -11,3 +11,4 @@
 - [x] Click on timestamp in webui switches display mode between relative and absolute
 - [x] Implement CLI for approving/rejecting
 - [ ] Refactor
+- [ ] Proxy webserver mode for development - load webapp from vite webserver instead of embedded html

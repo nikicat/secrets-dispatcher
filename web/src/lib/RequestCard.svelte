@@ -42,6 +42,25 @@
     return request.client;
   }
 
+  function commitSubject(msg: string): string {
+    return msg.split('\n')[0];
+  }
+
+  function commitBody(msg: string): string {
+    const lines = msg.split('\n');
+    if (lines.length <= 1) return '';
+    const body = lines.slice(1).join('\n').replace(/^\n/, '');
+    return body.trimEnd();
+  }
+
+  function typeBadgeLabel(type: string): string {
+    switch (type) {
+      case "gpg_sign": return "GPG Sign";
+      case "search": return "Search";
+      default: return "Secret";
+    }
+  }
+
   async function copyToClipboard(path: string) {
     await navigator.clipboard.writeText(path);
     copiedPath = path;
@@ -106,10 +125,28 @@
   }
 </script>
 
-<div class="card">
+<div class="card card--{request.type}">
   <div class="card-header">
     <div class="card-title">
-      <span class="item-summary">{request.items.map(i => i.label || i.path).join(", ") || "Secret request"}</span>
+      <div class="card-identity">
+        <span class="type-badge type-badge--{request.type}">
+          {typeBadgeLabel(request.type)}
+        </span>
+        <span class="session-id">
+          {#if request.type === "gpg_sign" && request.gpg_sign_info}
+            PID {request.sender_info.pid} · {request.gpg_sign_info.repo_name}
+          {:else if request.sender_info?.pid}
+            PID {request.sender_info.pid}
+          {/if}
+        </span>
+      </div>
+      <span class="item-summary">
+        {#if request.type === "gpg_sign" && request.gpg_sign_info}
+          {commitSubject(request.gpg_sign_info.commit_msg)}
+        {:else}
+          {request.items.map(i => i.label || i.path).join(", ") || "Secret request"}
+        {/if}
+      </span>
       <span class="sender-info" title="Client: {request.client}">{formatSenderInfo()}</span>
     </div>
     <span class="expires">Expires: {timeLeft}</span>
@@ -174,6 +211,52 @@
           </div>
         {/each}
       {/if}
+    </div>
+  {:else if request.type === "gpg_sign" && request.gpg_sign_info}
+    {@const info = request.gpg_sign_info}
+    <div class="gpg-sign-content">
+      <div class="commit-meta">
+        <div class="meta-row">
+          <span class="meta-label">Author</span>
+          <span class="meta-value">{info.author}</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Key</span>
+          <span class="meta-value mono">{info.key_id}</span>
+        </div>
+      </div>
+
+      {#if commitBody(info.commit_msg)}
+        <details class="commit-body-toggle">
+          <summary>Show full message</summary>
+          <pre class="commit-body">{commitBody(info.commit_msg)}</pre>
+        </details>
+      {/if}
+
+      <div class="changed-files">
+        <span class="section-label">Changed files ({info.changed_files.length})</span>
+        {#each info.changed_files.slice(0, 5) as file}
+          <div class="file-path mono">{file}</div>
+        {/each}
+        {#if info.changed_files.length > 5}
+          <details>
+            <summary>{info.changed_files.length - 5} more files</summary>
+            {#each info.changed_files.slice(5) as file}
+              <div class="file-path mono">{file}</div>
+            {/each}
+          </details>
+        {/if}
+      </div>
+
+      <details class="secondary-meta">
+        <summary>More details</summary>
+        {#if info.committer && info.committer !== info.author}
+          <div>Committer: {info.committer}</div>
+        {/if}
+        {#if info.parent_hash}
+          <div class="mono">Parent: {info.parent_hash}</div>
+        {/if}
+      </details>
     </div>
   {:else}
     <div class="items">
@@ -251,6 +334,10 @@
     margin-bottom: 16px;
   }
 
+  .card.card--gpg_sign {
+    border-left: 3px solid var(--color-gpg-sign-border);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -264,6 +351,36 @@
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+  }
+
+  .card-identity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 2px;
+  }
+
+  .type-badge {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+  }
+
+  .type-badge--gpg_sign {
+    color: var(--color-gpg-sign);
+    background-color: var(--color-gpg-sign-bg);
+    border-color: var(--color-gpg-sign);
+  }
+
+  .session-id {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
   }
 
   .item-summary {
@@ -400,5 +517,96 @@
   .actions {
     display: flex;
     gap: 12px;
+  }
+
+  /* GPG sign card styles */
+  .gpg-sign-content {
+    margin-bottom: 16px;
+  }
+
+  .commit-meta {
+    margin-bottom: 12px;
+  }
+
+  .meta-row {
+    display: flex;
+    gap: 8px;
+    font-size: 13px;
+    padding: 2px 0;
+  }
+
+  .meta-label {
+    color: var(--color-text-muted);
+    min-width: 50px;
+  }
+
+  .meta-value {
+    color: var(--color-text);
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
+    font-size: 12px;
+  }
+
+  .commit-body-toggle {
+    margin-bottom: 12px;
+  }
+
+  .commit-body-toggle summary {
+    font-size: 12px;
+    color: var(--color-primary);
+    cursor: pointer;
+  }
+
+  .commit-body {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
+    white-space: pre-wrap;
+    color: var(--color-text-muted);
+  }
+
+  .changed-files {
+    margin-bottom: 12px;
+  }
+
+  .section-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin-bottom: 4px;
+  }
+
+  .file-path {
+    font-size: 12px;
+    color: var(--color-text);
+    padding: 2px 0;
+  }
+
+  .changed-files details summary {
+    font-size: 12px;
+    color: var(--color-primary);
+    cursor: pointer;
+    padding-top: 4px;
+  }
+
+  .secondary-meta {
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+
+  .secondary-meta summary {
+    color: var(--color-primary);
+    cursor: pointer;
+  }
+
+  .secondary-meta div {
+    padding: 2px 0;
   }
 </style>

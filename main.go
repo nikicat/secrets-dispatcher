@@ -17,6 +17,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/cli"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
@@ -77,18 +78,33 @@ Run '%s <command> -h' for command-specific help.
 
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
 	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	fs.Parse(args)
 
+	// Load config and apply values for flags not explicitly set
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	set := setFlags(fs)
+	if !set["state-dir"] && cfg.StateDir != "" {
+		*stateDirFlag = cfg.StateDir
+	}
+	if !set["listen"] && cfg.Listen != "" {
+		*listenAddr = cfg.Listen
+	}
+
 	var stateDir string
-	var err error
 	if *stateDirFlag != "" {
 		stateDir = *stateDirFlag
 	} else {
-		stateDir, err = getStateDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		var sdErr error
+		stateDir, sdErr = getStateDir()
+		if sdErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", sdErr)
 			os.Exit(1)
 		}
 	}
@@ -123,13 +139,27 @@ func runLogin(args []string) {
 
 func runCLI(cmd string, args []string) {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	serverAddr := fs.String("server", defaultListenAddr, "API server address")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Parse(args)
 
+	// Load config and apply values for flags not explicitly set
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	set := setFlags(fs)
+	if !set["state-dir"] && cfg.StateDir != "" {
+		*stateDirFlag = cfg.StateDir
+	}
+	if !set["server"] && cfg.Listen != "" {
+		*serverAddr = cfg.Listen
+	}
+
 	var stateDir string
-	var err error
 	if *stateDirFlag != "" {
 		stateDir = *stateDirFlag
 	} else {
@@ -211,6 +241,7 @@ func runCLI(cmd string, args []string) {
 
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	remoteSocket := fs.String("remote-socket", "", "Path to the remote D-Bus socket (single-socket mode)")
 	socketsDir := fs.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher)")
 	clientName := fs.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
@@ -223,6 +254,44 @@ func runServe(args []string) {
 	apiOnly := fs.Bool("api-only", false, "Run only the API server (for testing)")
 	notifications := fs.Bool("notifications", true, "Enable desktop notifications for approval requests")
 	fs.Parse(args)
+
+	// Load config and apply values for flags not explicitly set
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	set := setFlags(fs)
+	if !set["state-dir"] && cfg.StateDir != "" {
+		*stateDirFlag = cfg.StateDir
+	}
+	if !set["listen"] && cfg.Listen != "" {
+		*listenAddr = cfg.Listen
+	}
+	if !set["sockets-dir"] && cfg.Serve.SocketsDir != "" {
+		*socketsDir = cfg.Serve.SocketsDir
+	}
+	if !set["remote-socket"] && cfg.Serve.RemoteSocket != "" {
+		*remoteSocket = cfg.Serve.RemoteSocket
+	}
+	if !set["client"] && cfg.Serve.Client != "" {
+		*clientName = cfg.Serve.Client
+	}
+	if !set["log-level"] && cfg.Serve.LogLevel != "" {
+		*logLevel = cfg.Serve.LogLevel
+	}
+	if !set["log-format"] && cfg.Serve.LogFormat != "" {
+		*logFormat = cfg.Serve.LogFormat
+	}
+	if !set["timeout"] && cfg.Serve.Timeout != 0 {
+		*timeout = time.Duration(cfg.Serve.Timeout)
+	}
+	if !set["history-limit"] && cfg.Serve.HistoryLimit != 0 {
+		*historyLimit = cfg.Serve.HistoryLimit
+	}
+	if !set["notifications"] && cfg.Serve.Notifications != nil {
+		*notifications = *cfg.Serve.Notifications
+	}
 
 	// Validate mode selection
 	if *remoteSocket != "" && *socketsDir != "" {
@@ -273,13 +342,13 @@ func runServe(args []string) {
 
 	// Set up state directory for cookie
 	var stateDir string
-	var err error
 	if *stateDirFlag != "" {
 		stateDir = *stateDirFlag
 	} else {
-		stateDir, err = getStateDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		var sdErr error
+		stateDir, sdErr = getStateDir()
+		if sdErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", sdErr)
 			os.Exit(1)
 		}
 	}
@@ -369,14 +438,14 @@ func runServe(args []string) {
 	}
 
 	// Single-socket mode
-	cfg := proxy.Config{
+	proxyCfg := proxy.Config{
 		RemoteSocketPath: *remoteSocket,
 		ClientName:       *clientName,
 		LogLevel:         level,
 		Approval:         approvalMgr,
 	}
 
-	p := proxy.New(cfg)
+	p := proxy.New(proxyCfg)
 
 	if err := p.Connect(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -425,4 +494,38 @@ func getSocketsDir() (string, error) {
 		return "", fmt.Errorf("XDG_RUNTIME_DIR is not set")
 	}
 	return filepath.Join(runtimeDir, "secrets-dispatcher"), nil
+}
+
+// loadConfig loads a config file. An explicit path that doesn't exist is an error.
+// A missing default path is silently ignored (returns empty config).
+func loadConfig(explicitPath string) (*config.Config, error) {
+	if explicitPath != "" {
+		cfg, err := config.Load(explicitPath)
+		if err != nil {
+			return nil, fmt.Errorf("load config %s: %w", explicitPath, err)
+		}
+		// If the explicit path didn't exist, Load returns empty config.
+		// We need to distinguish: check if the file actually exists.
+		if _, statErr := os.Stat(explicitPath); statErr != nil {
+			return nil, fmt.Errorf("config file not found: %s", explicitPath)
+		}
+		return cfg, nil
+	}
+
+	defaultPath := config.DefaultPath()
+	if defaultPath == "" {
+		return &config.Config{}, nil
+	}
+	cfg, err := config.Load(defaultPath)
+	if err != nil {
+		return nil, fmt.Errorf("load config %s: %w", defaultPath, err)
+	}
+	return cfg, nil
+}
+
+// setFlags returns the set of flag names that were explicitly provided on the command line.
+func setFlags(fs *flag.FlagSet) map[string]bool {
+	m := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) { m[f.Name] = true })
+	return m
 }

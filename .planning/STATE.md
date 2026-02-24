@@ -84,6 +84,9 @@ Recent decisions affecting current work:
 - [Phase 03-02]: requestSummary (renamed from secretSummary) dispatches on GPGSignInfo != nil first, falls through to existing logic
 - [Phase 03-02]: Committer line in show output suppressed when Committer == Author (common case)
 - [Phase 03-02]: commitBody strips trailing newlines — git appends trailing newline to commit objects
+- [Phase 03-03]: Notification title changed from "Secret Access Request" to "Secret Request" (shorter) and "Commit Signing Request" for gpg_sign
+- [Phase 03-03]: Type badge and session identity applied to ALL card types, not just gpg_sign — consistent visual scanning
+- [Phase 03-03]: Changed files list shows first 5 inline with details expand for overflow — avoids overwhelming card height
 
 ### Pending Todos
 
@@ -97,5 +100,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-02-PLAN.md (CLI gpg_sign display: SUMMARY column in list/history, git-log style show output)
+Stopped at: Completed 03-03-PLAN.md (web UI gpg_sign card: type badges, session identity, purple border, history view, browser notifications)
 Resume file: None

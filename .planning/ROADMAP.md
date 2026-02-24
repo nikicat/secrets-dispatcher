@@ -13,7 +13,7 @@ Three phases extend the existing approval pipeline with a second request type: G
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Data Model and Protocol Foundation** - Establish `gpg_sign` request type, `GPGSignInfo` struct, and API types that all other components depend on (completed 2026-02-24)
-- [ ] **Phase 2: Core Signing Flow** - Implement `gpg-sign` thin client and daemon handler for end-to-end commit signing with approval gate
+- [x] **Phase 2: Core Signing Flow** - Implement `gpg-sign` thin client and daemon handler for end-to-end commit signing with approval gate (completed 2026-02-24)
 - [ ] **Phase 3: UI and Observability** - Extend web UI, CLI, and desktop notifications to display `gpg_sign` request context distinctly
 
 ## Phase Details
@@ -74,5 +74,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Data Model and Protocol Foundation | 3/3 | Complete   | 2026-02-24 |
-| 2. Core Signing Flow | 3/4 | In Progress|  |
+| 2. Core Signing Flow | 3/4 | Complete    | 2026-02-24 |
 | 3. UI and Observability | 0/? | Not started | - |

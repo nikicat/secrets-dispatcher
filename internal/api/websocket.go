@@ -45,6 +45,12 @@ type WSMessage struct {
 	// Signature carries base64-encoded signature bytes for gpg_sign request_resolved events.
 	// Empty for all other event types.
 	Signature string `json:"signature,omitempty"`
+	// GPGStatus carries the raw [GNUPG:] status lines from gpg --status-fd=2.
+	// Written to thin client's stderr so git can parse gpg status.
+	GPGStatus string `json:"gpg_status,omitempty"`
+	// ExitCode carries gpg's exit code for failed signing attempts.
+	// Non-zero only when real gpg exited with an error.
+	ExitCode int `json:"exit_code,omitempty"`
 
 	// For client_connected/client_disconnected
 	Client *proxy.ClientInfo `json:"client,omitempty"`
@@ -89,8 +95,8 @@ type wsConnection struct {
 
 // HandleWS handles WebSocket upgrade requests.
 func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
-	// Validate session cookie before accepting upgrade
-	if !h.auth.ValidateSession(r) {
+	// Validate session cookie or Bearer token before accepting upgrade.
+	if !h.auth.ValidateRequest(r) {
 		http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -153,7 +159,11 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Result: "approved",
 		}
 		if event.Request.Type == approval.RequestTypeGPGSign {
-			msg.Signature = base64.StdEncoding.EncodeToString([]byte("PLACEHOLDER_SIGNATURE"))
+			msg.Signature = base64.StdEncoding.EncodeToString(event.Request.Signature)
+			msg.GPGStatus = string(event.Request.GPGStatus)
+			if event.Request.GPGExitCode != 0 {
+				msg.ExitCode = event.Request.GPGExitCode
+			}
 		}
 		msgs = append(msgs, msg)
 		entry := makeHistoryEntry(event.Request, "approved")

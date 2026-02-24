@@ -5,33 +5,34 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** The user always knows exactly what they're cryptographically signing before it happens.
-**Current focus:** Phase 1 — Data Model and Protocol Foundation
+**Current focus:** Phase 2 — Core Signing Flow
 
 ## Current Position
 
-Phase: 1 of 3 (Data Model and Protocol Foundation)
-Plan: 3 of 3 in current phase
+Phase: 2 of 3 (Core Signing Flow)
+Plan: 2 of 5 in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 01-03 (GPGSign unit tests)
+Last activity: 2026-02-24 — Completed 02-02 (thin client pure functions: ParseCommitObject, FindRealGPG, extractKeyID)
 
-Progress: [██░░░░░░░░] 20%
+Progress: [███░░░░░░░] 30%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 8 min
-- Total execution time: 0.13 hours
+- Total plans completed: 5
+- Average duration: 6 min
+- Total execution time: 0.5 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-data-model-and-protocol-foundation | 1 | 8 min | 8 min |
+| 01-data-model-and-protocol-foundation | 3 | 24 min | 8 min |
+| 02-core-signing-flow | 2 | 10 min | 5 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (8 min)
-- Trend: —
+- Last 5 plans: 01-01 (8 min), 01-02 (8 min), 01-03 (8 min), 02-01 (5 min), 02-02 (5 min)
+- Trend: Consistent
 
 *Updated after each plan completion*
 
@@ -50,6 +51,9 @@ Recent decisions affecting current work:
 - Pre-Phase 2: Must decide `gpg.program` installation UX (shell wrapper vs. symlink dispatch) before Phase 2 implementation starts — research recommends shell wrapper as simpler
 - [Phase 01]: Approve() and Deny() now delete from pending before closing done channel to handle CreateGPGSignRequest cleanup (no blocking goroutine defer)
 - [Phase 01]: findEvent() helper used for event assertions — notify() dispatches async goroutines making ordering non-deterministic
+- 02-02: First parent hash wins for merge commits (multiple parent lines) — display context only, not security-critical
+- 02-02: Trailing newline stripped from commit message body — git appends trailing newline to commit objects
+- 02-02: Combined short-flag detection for extractKeyID — arg starts with '-', not '--', ends with 'u' means next arg is key ID
 
 ### Pending Todos
 
@@ -63,5 +67,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 01-03-PLAN.md (GPGSign unit tests)
+Stopped at: Completed 02-02-PLAN.md (thin client pure functions)
 Resume file: None

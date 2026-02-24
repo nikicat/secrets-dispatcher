@@ -146,6 +146,20 @@ func (a *Auth) ValidateSession(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(a.token)) == 1
 }
 
+// ValidateRequest checks session cookie first, then falls back to Bearer token
+// in the Authorization header. Used by WebSocket handler to accept both browser
+// sessions and thin client Bearer tokens.
+func (a *Auth) ValidateRequest(r *http.Request) bool {
+	if a.ValidateSession(r) {
+		return true
+	}
+	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
+	if len(parts) == 2 && parts[0] == "Bearer" {
+		return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(a.token)) == 1
+	}
+	return false
+}
+
 // SetSessionCookie sets the session cookie on the response.
 func (a *Auth) SetSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{

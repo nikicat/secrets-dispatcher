@@ -74,5 +74,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Data Model and Protocol Foundation | 3/3 | Complete   | 2026-02-24 |
-| 2. Core Signing Flow | 0/4 | Not started | - |
+| 2. Core Signing Flow | 1/4 | In Progress|  |
 | 3. UI and Observability | 0/? | Not started | - |

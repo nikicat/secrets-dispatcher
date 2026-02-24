@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -12,30 +14,33 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	httpServer  *http.Server
-	auth        *Auth
-	handlers    *Handlers
-	wsHandler   *WSHandler
-	listener    net.Listener
-	testMode    bool
+	httpServer     *http.Server
+	auth           *Auth
+	handlers       *Handlers
+	wsHandler      *WSHandler
+	listener       net.Listener
+	unixListener   net.Listener
+	UnixSocketPath string
+	testMode       bool
 }
 
 // NewServer creates a new API server for single-socket mode.
 func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth) (*Server, error) {
 	handlers := NewHandlers(manager, remoteSocket, clientName, auth)
 	wsHandler := NewWSHandler(manager, nil, auth, remoteSocket, clientName)
-	return newServerWithHandlers(addr, handlers, wsHandler, auth)
+	return newServerWithHandlers(addr, handlers, wsHandler, auth, "")
 }
 
 // NewServerWithProvider creates a new API server for multi-socket mode.
 func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth) (*Server, error) {
 	handlers := NewHandlersWithProvider(manager, provider, auth)
 	wsHandler := NewWSHandler(manager, provider, auth, "", "")
-	return newServerWithHandlers(addr, handlers, wsHandler, auth)
+	return newServerWithHandlers(addr, handlers, wsHandler, auth, "")
 }
 
 // newServerWithHandlers creates a new API server with the given handlers.
-func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth) (*Server, error) {
+// If unixSocketPath is non-empty, the server also listens on a Unix socket.
+func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth, unixSocketPath string) (*Server, error) {
 
 	// Create the main router
 	rootMux := http.NewServeMux()
@@ -81,13 +86,39 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 		Handler: rootMux,
 	}
 
-	return &Server{
+	s := &Server{
 		httpServer: httpServer,
 		auth:       auth,
 		handlers:   handlers,
 		wsHandler:  wsHandler,
 		listener:   listener,
-	}, nil
+	}
+
+	// Set up Unix socket listener if path is provided.
+	if unixSocketPath != "" {
+		// Remove stale socket file from previous runs (Pitfall 5).
+		os.Remove(unixSocketPath) //nolint:errcheck
+
+		// Ensure parent directory exists with restrictive permissions.
+		if err := os.MkdirAll(filepath.Dir(unixSocketPath), 0700); err != nil {
+			listener.Close()
+			return nil, err
+		}
+
+		unixListener, err := net.Listen("unix", unixSocketPath)
+		if err != nil {
+			listener.Close()
+			return nil, err
+		}
+
+		// Owner-only access: thin client runs as same user as daemon.
+		os.Chmod(unixSocketPath, 0600) //nolint:errcheck
+
+		s.unixListener = unixListener
+		s.UnixSocketPath = unixSocketPath
+	}
+
+	return s, nil
 }
 
 // Start begins serving HTTP requests. This is non-blocking.
@@ -97,6 +128,13 @@ func (s *Server) Start() error {
 			slog.Error("HTTP server error", "error", err)
 		}
 	}()
+	if s.unixListener != nil {
+		go func() {
+			if err := s.httpServer.Serve(s.unixListener); err != nil && err != http.ErrServerClosed {
+				slog.Error("Unix socket server error", "error", err)
+			}
+		}()
+	}
 	return nil
 }
 
@@ -107,6 +145,12 @@ func (s *Server) Addr() string {
 
 // Shutdown gracefully shuts down the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.unixListener != nil {
+		s.unixListener.Close()
+		if s.UnixSocketPath != "" {
+			os.Remove(s.UnixSocketPath) //nolint:errcheck
+		}
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 

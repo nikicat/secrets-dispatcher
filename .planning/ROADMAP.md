@@ -61,10 +61,12 @@ Plans:
   2. The web UI displays a `gpg_sign` card that shows repo, commit message, author, changed files list, and key ID — visually distinct from `get_secret` cards (different color, icon, or label)
   3. `secrets-dispatcher list` shows `gpg_sign` requests with file count summary; `secrets-dispatcher show <id>` displays full commit context
   4. The session or client identity is shown prominently enough that a user with two parallel Claude Code sessions can tell which session is requesting the signature
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 03-01: TBD
+- [ ] 03-01-PLAN.md — Desktop notifications: gpg_sign branch, per-type icon, rename get_secret title
+- [ ] 03-02-PLAN.md — CLI formatters: GPGSignInfo struct, gpg_sign branches in list/show/history
+- [ ] 03-03-PLAN.md — Web UI: gpg_sign card, type badge, session identity, history view, browser notifications
 
 ## Progress
 
@@ -75,4 +77,4 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Data Model and Protocol Foundation | 3/3 | Complete   | 2026-02-24 |
 | 2. Core Signing Flow | 3/4 | Complete    | 2026-02-24 |
-| 3. UI and Observability | 0/? | Not started | - |
+| 3. UI and Observability | 0/3 | Not started | - |

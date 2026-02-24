@@ -21,7 +21,7 @@ const (
 // Notifier defines the interface for sending desktop notifications.
 type Notifier interface {
 	// Notify sends a notification and returns its ID.
-	Notify(summary, body string) (uint32, error)
+	Notify(summary, body, icon string) (uint32, error)
 	// Close closes a notification by ID.
 	Close(id uint32) error
 }
@@ -41,14 +41,14 @@ func NewDBusNotifier() (*DBusNotifier, error) {
 }
 
 // Notify sends a desktop notification.
-func (n *DBusNotifier) Notify(summary, body string) (uint32, error) {
+func (n *DBusNotifier) Notify(summary, body, icon string) (uint32, error) {
 	obj := n.conn.Object(notifyDest, notifyPath)
 	call := obj.Call(
 		notifyInterface+".Notify",
 		0,
 		"secrets-dispatcher", // app_name
 		uint32(0),            // replaces_id (0 = new notification)
-		"dialog-password",    // app_icon
+		icon,                 // app_icon
 		summary,              // summary
 		body,                 // body
 		[]string{},           // actions
@@ -105,11 +105,21 @@ func (h *Handler) OnEvent(event approval.Event) {
 	}
 }
 
+// notificationMeta returns the summary title and icon for a request based on its type.
+func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string) {
+	switch req.Type {
+	case approval.RequestTypeGPGSign:
+		return "Commit Signing Request", "emblem-important"
+	default:
+		return "Secret Request", "dialog-password"
+	}
+}
+
 func (h *Handler) handleCreated(req *approval.Request) {
-	summary := "Secret Access Request"
+	summary, icon := h.notificationMeta(req)
 	body := h.formatBody(req)
 
-	id, err := h.notifier.Notify(summary, body)
+	id, err := h.notifier.Notify(summary, body, icon)
 	if err != nil {
 		slog.Error("failed to send notification", "error", err, "request_id", req.ID)
 		return
@@ -142,6 +152,14 @@ func (h *Handler) handleResolved(requestID string) {
 	slog.Debug("closed desktop notification", "request_id", requestID, "notification_id", notifID)
 }
 
+// commitSubject returns the first line of a commit message.
+func commitSubject(msg string) string {
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		return msg[:i]
+	}
+	return msg
+}
+
 func (h *Handler) formatBody(req *approval.Request) string {
 	var b strings.Builder
 
@@ -154,6 +172,11 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	}
 
 	switch req.Type {
+	case approval.RequestTypeGPGSign:
+		if req.GPGSignInfo != nil {
+			b.WriteString(fmt.Sprintf("Repo: %s\n", req.GPGSignInfo.RepoName))
+			b.WriteString(commitSubject(req.GPGSignInfo.CommitMsg))
+		}
 	case approval.RequestTypeGetSecret:
 		if len(req.Items) == 1 {
 			b.WriteString(fmt.Sprintf("Secret: %s", req.Items[0].Label))

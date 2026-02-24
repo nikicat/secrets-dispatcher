@@ -10,10 +10,10 @@ import (
 
 // mockNotifier records calls for testing.
 type mockNotifier struct {
-	mu       sync.Mutex
-	nextID   uint32
-	notified []notifyCall
-	closed   []uint32
+	mu        sync.Mutex
+	nextID    uint32
+	notified  []notifyCall
+	closed    []uint32
 	notifyErr error
 	closeErr  error
 }
@@ -21,16 +21,17 @@ type mockNotifier struct {
 type notifyCall struct {
 	summary string
 	body    string
+	icon    string
 }
 
-func (m *mockNotifier) Notify(summary, body string) (uint32, error) {
+func (m *mockNotifier) Notify(summary, body, icon string) (uint32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.notifyErr != nil {
 		return 0, m.notifyErr
 	}
 	m.nextID++
-	m.notified = append(m.notified, notifyCall{summary, body})
+	m.notified = append(m.notified, notifyCall{summary, body, icon})
 	return m.nextID, nil
 }
 
@@ -98,7 +99,7 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 	}
 
 	call := mock.lastNotify()
-	if call.summary != "Secret Access Request" {
+	if call.summary != "Secret Request" {
 		t.Errorf("unexpected summary: %s", call.summary)
 	}
 	if !contains(call.body, "user@remote") {
@@ -258,6 +259,73 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 	call := mock.lastNotify()
 	if !contains(call.body, "PID: 5678") {
 		t.Errorf("body should show PID: %s", call.body)
+	}
+}
+
+func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
+	mock := &mockNotifier{}
+	h := NewHandler(mock)
+
+	req := &approval.Request{
+		ID:     "gpg-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGPGSign,
+		GPGSignInfo: &approval.GPGSignInfo{
+			RepoName:     "my-project",
+			CommitMsg:    "Add feature\n\nSome body text",
+			Author:       "John",
+			KeyID:        "ABCD1234",
+			ChangedFiles: []string{"a.go", "b.go"},
+		},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	if mock.notifyCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
+	}
+
+	call := mock.lastNotify()
+	if call.summary != "Commit Signing Request" {
+		t.Errorf("expected summary 'Commit Signing Request', got %q", call.summary)
+	}
+	if call.icon != "emblem-important" {
+		t.Errorf("expected icon 'emblem-important', got %q", call.icon)
+	}
+	if !contains(call.body, "my-project") {
+		t.Errorf("body should contain repo name 'my-project': %s", call.body)
+	}
+	if !contains(call.body, "Add feature") {
+		t.Errorf("body should contain commit subject 'Add feature': %s", call.body)
+	}
+	if contains(call.body, "Some body text") {
+		t.Errorf("body should NOT contain commit body text 'Some body text': %s", call.body)
+	}
+}
+
+func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
+	mock := &mockNotifier{}
+	h := NewHandler(mock)
+
+	req := &approval.Request{
+		ID:     "secret-icon-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "MySecret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	if mock.notifyCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
+	}
+
+	call := mock.lastNotify()
+	if call.summary != "Secret Request" {
+		t.Errorf("expected summary 'Secret Request', got %q", call.summary)
+	}
+	if call.icon != "dialog-password" {
+		t.Errorf("expected icon 'dialog-password', got %q", call.icon)
 	}
 }
 

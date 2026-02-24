@@ -327,10 +327,22 @@ func runServe(args []string) {
 	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
 	default:
-		handler = tint.NewHandler(os.Stderr, &tint.Options{
+		// When running under systemd, the journal adds its own timestamps.
+		underSystemd := os.Getenv("INVOCATION_ID") != ""
+		opts := &tint.Options{
 			Level:      level,
 			TimeFormat: time.TimeOnly,
-		})
+			NoColor:    underSystemd,
+		}
+		if underSystemd {
+			opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+				if a.Key == slog.TimeKey {
+					return slog.Attr{}
+				}
+				return a
+			}
+		}
+		handler = tint.NewHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(handler))
 

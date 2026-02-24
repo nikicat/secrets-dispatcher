@@ -44,10 +44,13 @@ Plans:
   3. After denial, `git commit` exits non-zero and no commit is created
   4. If the daemon is unreachable, `gpg-sign` exits non-zero immediately with a clear stderr message (never falls back to calling real gpg)
   5. GPG exit codes from signing failures (e.g., key not found) propagate through the daemon to `git commit` as non-zero exits
-**Plans**: TBD
+**Plans**: 4 plans
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md — Daemon infrastructure: CommitObject field, Manager.GetPending, signature exports, WebSocket Bearer auth fix, Unix socket listener, WSMessage extensions
+- [ ] 02-02-PLAN.md — Thin client pure functions (TDD): ParseCommitObject, FindRealGPG, extractKeyID
+- [ ] 02-03-PLAN.md — Real GPG invocation in daemon approve flow: runRealGPG, HandleApprove gpg_sign branch
+- [ ] 02-04-PLAN.md — Thin client DaemonClient, Run() entry point, SetupGitConfig, main.go subcommand wiring
 
 ### Phase 3: UI and Observability
 **Goal**: All display surfaces — web UI, CLI, and desktop notifications — present `gpg_sign` request context in a way that lets the user immediately understand what they are signing and which session is requesting it
@@ -71,5 +74,5 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Data Model and Protocol Foundation | 3/3 | Complete   | 2026-02-24 |
-| 2. Core Signing Flow | 0/? | Not started | - |
+| 2. Core Signing Flow | 0/4 | Not started | - |
 | 3. UI and Observability | 0/? | Not started | - |

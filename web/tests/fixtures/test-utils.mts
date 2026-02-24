@@ -79,6 +79,7 @@ export async function startTestBackend(options?: { version?: string }): Promise<
     [
       "serve",
       "--api-only",
+      "--notifications=false",
       "--state-dir",
       stateDir,
       "--listen",
@@ -162,6 +163,7 @@ export async function startTestBackend(options?: { version?: string }): Promise<
       [
         "serve",
         "--api-only",
+        "--notifications=false",
         "--state-dir",
         stateDir,
         "--listen",

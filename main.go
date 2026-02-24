@@ -18,6 +18,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/cli"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
@@ -51,6 +52,8 @@ func main() {
 		runCLI("deny", os.Args[2:])
 	case "history":
 		runCLI("history", os.Args[2:])
+	case "gpg-sign":
+		runGPGSign(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:
@@ -64,13 +67,15 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: %s <command> [options]
 
 Commands:
-  serve     Start the proxy server and API
-  login     Generate a login URL for the web UI
-  list      List pending approval requests
-  show      Show details of a pending request
-  approve   Approve a pending request
-  deny      Deny a pending request
-  history   Show resolved requests
+  serve         Start the proxy server and API
+  login         Generate a login URL for the web UI
+  list          List pending approval requests
+  show          Show details of a pending request
+  approve       Approve a pending request
+  deny          Deny a pending request
+  history       Show resolved requests
+  gpg-sign      GPG signing proxy (called by git as gpg.program)
+  gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
 
 Run '%s <command> -h' for command-specific help.
 `, progName, progName)
@@ -383,12 +388,26 @@ func runServe(args []string) {
 		}
 	}
 
+	// Compute Unix socket path for thin client (gpg-sign subcommand).
+	// Skip in --api-only mode (test/dev use case — no signing pipeline needed).
+	var apiUnixSocket string
+	if !*apiOnly {
+		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+		if runtimeDir == "" {
+			// Graceful fallback: no Unix socket if XDG_RUNTIME_DIR is unset.
+			// The thin client uses the same fallback, so both sides agree.
+			slog.Warn("XDG_RUNTIME_DIR is not set; Unix socket for gpg-sign will not be created")
+		} else {
+			apiUnixSocket = filepath.Join(runtimeDir, "secrets-dispatcher", "api.sock")
+		}
+	}
+
 	// Create API server
 	var apiServer *api.Server
 	if proxyMgr != nil {
-		apiServer, err = api.NewServerWithProvider(*listenAddr, approvalMgr, proxyMgr, auth)
+		apiServer, err = api.NewServerWithProvider(*listenAddr, approvalMgr, proxyMgr, auth, apiUnixSocket)
 	} else {
-		apiServer, err = api.NewServer(*listenAddr, approvalMgr, *remoteSocket, *clientName, auth)
+		apiServer, err = api.NewServer(*listenAddr, approvalMgr, *remoteSocket, *clientName, auth, apiUnixSocket)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
@@ -408,6 +427,9 @@ func runServe(args []string) {
 	slog.Info("API server started",
 		"url", "http://"+apiServer.Addr(),
 		"cookie_file", apiServer.CookieFilePath())
+	if apiServer.UnixSocketPath != "" {
+		slog.Info("Unix socket ready for gpg-sign", "socket", apiServer.UnixSocketPath)
+	}
 
 	// Graceful shutdown of API server
 	defer func() {
@@ -454,6 +476,35 @@ func runServe(args []string) {
 	defer p.Close()
 
 	if err := p.Run(ctx); err != nil && err != context.Canceled {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runGPGSign handles the gpg-sign subcommand.
+// When called as "gpg-sign setup [--local]", it configures git to use this binary.
+// Otherwise, it acts as a gpg proxy: reads commit object from stdin, sends to daemon,
+// and blocks until the signing request is resolved.
+func runGPGSign(args []string) {
+	if len(args) > 0 && args[0] == "setup" {
+		runGPGSignSetup(args[1:])
+		return
+	}
+	os.Exit(gpgsign.Run(args, os.Stdin))
+}
+
+// runGPGSignSetup handles the "gpg-sign setup" subcommand.
+func runGPGSignSetup(args []string) {
+	fs := flag.NewFlagSet("gpg-sign setup", flag.ExitOnError)
+	local := fs.Bool("local", false, "Configure per-repo (--local) instead of --global")
+	fs.Parse(args) //nolint:errcheck
+
+	scope := "global"
+	if *local {
+		scope = "local"
+	}
+
+	if err := gpgsign.SetupGitConfig(scope); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

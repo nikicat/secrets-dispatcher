@@ -21,7 +21,7 @@ func TestServer_Integration(t *testing.T) {
 	}
 
 	// Use port 0 to get a random available port
-	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth)
+	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth, "")
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestServer_CookieFilePath(t *testing.T) {
 		t.Fatalf("NewAuth failed: %v", err)
 	}
 
-	server, err := NewServer("127.0.0.1:0", mgr, "/socket", "test-client", auth)
+	server, err := NewServer("127.0.0.1:0", mgr, "/socket", "test-client", auth, "")
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}

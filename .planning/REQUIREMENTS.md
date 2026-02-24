@@ -14,10 +14,10 @@ Requirements for initial release. Each maps to roadmap phases.
 - [ ] **SIGN-03**: Thin client resolves repository name from working directory via `git rev-parse --show-toplevel`
 - [ ] **SIGN-04**: Thin client collects changed files list via `git diff --cached --name-only`
 - [ ] **SIGN-05**: Thin client sends commit data + context to daemon via API as JSON (commit object as string field)
-- [ ] **SIGN-06**: Daemon creates `gpg_sign` approval request with full commit context and blocks on user decision
+- [x] **SIGN-06**: Daemon creates `gpg_sign` approval request with full commit context and blocks on user decision
 - [ ] **SIGN-07**: Daemon calls real `gpg` with original args verbatim after approval, captures signature and status output
 - [ ] **SIGN-08**: Signature and gpg status output returned to thin client; client writes signature to stdout and status to stderr
-- [ ] **SIGN-09**: Key ID / fingerprint extracted from gpg args and shown in approval context
+- [x] **SIGN-09**: Key ID / fingerprint extracted from gpg args and shown in approval context
 
 ### Display & Notifications
 
@@ -32,7 +32,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 - [ ] **ERR-01**: Thin client exits non-zero with clear stderr message when daemon is unreachable
 - [ ] **ERR-02**: Exit code from real gpg failures propagated through daemon to thin client
-- [ ] **ERR-03**: Signing requests expire via existing timeout mechanism
+- [x] **ERR-03**: Signing requests expire via existing timeout mechanism
 
 ## v2 Requirements
 
@@ -65,10 +65,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SIGN-03 | Phase 2 | Pending |
 | SIGN-04 | Phase 2 | Pending |
 | SIGN-05 | Phase 2 | Pending |
-| SIGN-06 | Phase 1 | Pending |
+| SIGN-06 | Phase 1 | Complete |
 | SIGN-07 | Phase 2 | Pending |
 | SIGN-08 | Phase 2 | Pending |
-| SIGN-09 | Phase 1 | Pending |
+| SIGN-09 | Phase 1 | Complete |
 | DISP-01 | Phase 3 | Pending |
 | DISP-02 | Phase 3 | Pending |
 | DISP-03 | Phase 3 | Pending |
@@ -77,7 +77,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISP-06 | Phase 3 | Pending |
 | ERR-01 | Phase 2 | Pending |
 | ERR-02 | Phase 2 | Pending |
-| ERR-03 | Phase 1 | Pending |
+| ERR-03 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 18 total

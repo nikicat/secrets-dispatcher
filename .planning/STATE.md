@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 1 of 3 (Data Model and Protocol Foundation)
-Plan: 1 of ? in current phase
+Plan: 2 of 3 in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 01-01 (GPGSign data model foundation)
+Last activity: 2026-02-24 — Completed 01-02 (API handler & WebSocket extension)
 
-Progress: [█░░░░░░░░░] 10%
+Progress: [██░░░░░░░░] 20%
 
 ## Performance Metrics
 
@@ -45,6 +45,8 @@ Recent decisions affecting current work:
 - 01-01: CreateGPGSignRequest uses fire-and-forget timeout goroutine (not HTTP context) so dropped connections don't cancel active UI reviews
 - 01-01: GPGSignInfo is a pointer on Request (nil for non-gpg_sign requests) to avoid serialization overhead
 - 01-01: signature field is unexported; Phase 2 will wire real gpg output; Phase 1 leaves it unset
+- 01-02: Used *approval.GPGSignInfo directly in PendingRequest (no field duplication like SenderInfo)
+- 01-02: Placeholder signature via base64 literal in OnEvent — real signing in Phase 2
 - Pre-Phase 2: Must decide `gpg.program` installation UX (shell wrapper vs. symlink dispatch) before Phase 2 implementation starts — research recommends shell wrapper as simpler
 
 ### Pending Todos
@@ -59,5 +61,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 01-01-PLAN.md (GPGSign data model and protocol foundation)
+Stopped at: Completed 01-02-PLAN.md (API handler & WebSocket extension)
 Resume file: None

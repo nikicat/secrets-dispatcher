@@ -112,6 +112,7 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 				UserName: req.SenderInfo.UserName,
 				UnitName: req.SenderInfo.UnitName,
 			},
+			GPGSignInfo: req.GPGSignInfo,
 		}
 	}
 
@@ -213,6 +214,7 @@ func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 				UserName: entry.Request.SenderInfo.UserName,
 				UnitName: entry.Request.SenderInfo.UnitName,
 			},
+			GPGSignInfo: entry.Request.GPGSignInfo,
 		},
 		Resolution: string(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,

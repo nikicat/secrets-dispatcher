@@ -3,6 +3,7 @@ package api
 import (
 	"time"
 
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
@@ -47,8 +48,9 @@ type PendingRequest struct {
 	CreatedAt        time.Time         `json:"created_at"`
 	ExpiresAt        time.Time         `json:"expires_at"`
 	Type             string            `json:"type"`
-	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
-	SenderInfo       SenderInfo        `json:"sender_info"`
+	SearchAttributes map[string]string    `json:"search_attributes,omitempty"`
+	SenderInfo       SenderInfo           `json:"sender_info"`
+	GPGSignInfo      *approval.GPGSignInfo `json:"gpg_sign_info,omitempty"`
 }
 
 // ActionResponse is returned by approve/deny endpoints.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -41,6 +42,9 @@ type WSMessage struct {
 	// For request_resolved
 	ID     string `json:"id,omitempty"`
 	Result string `json:"result,omitempty"`
+	// Signature carries base64-encoded signature bytes for gpg_sign request_resolved events.
+	// Empty for all other event types.
+	Signature string `json:"signature,omitempty"`
 
 	// For client_connected/client_disconnected
 	Client *proxy.ClientInfo `json:"client,omitempty"`
@@ -143,11 +147,15 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Request: convertRequest(event.Request),
 		})
 	case approval.EventRequestApproved:
-		msgs = append(msgs, WSMessage{
+		msg := WSMessage{
 			Type:   "request_resolved",
 			ID:     event.Request.ID,
 			Result: "approved",
-		})
+		}
+		if event.Request.Type == approval.RequestTypeGPGSign {
+			msg.Signature = base64.StdEncoding.EncodeToString([]byte("PLACEHOLDER_SIGNATURE"))
+		}
+		msgs = append(msgs, msg)
 		entry := makeHistoryEntry(event.Request, "approved")
 		msgs = append(msgs, WSMessage{
 			Type:         "history_entry",
@@ -231,6 +239,7 @@ func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
 				UserName: req.SenderInfo.UserName,
 				UnitName: req.SenderInfo.UnitName,
 			},
+			GPGSignInfo: req.GPGSignInfo,
 		},
 		Resolution: resolution,
 		ResolvedAt: time.Now(),
@@ -380,6 +389,7 @@ func convertRequest(req *approval.Request) *PendingRequest {
 			UserName: req.SenderInfo.UserName,
 			UnitName: req.SenderInfo.UnitName,
 		},
+		GPGSignInfo: req.GPGSignInfo,
 	}
 }
 

@@ -31,7 +31,7 @@ func (f *Formatter) FormatRequests(requests []PendingRequest) error {
 	}
 
 	// Print header
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "SECRET", "EXPIRES")
+	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "SUMMARY", "EXPIRES")
 	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "-------------------------", "-------")
 
 	for _, req := range requests {
@@ -40,7 +40,7 @@ func (f *Formatter) FormatRequests(requests []PendingRequest) error {
 		pid := formatPID(req.SenderInfo.PID)
 		uid := formatUID(req.SenderInfo.UID)
 		reqType := truncate(req.Type, 12)
-		secret := truncate(secretSummary(req), 25)
+		secret := truncate(requestSummary(req), 25)
 		remaining := formatRemaining(req.ExpiresAt)
 
 		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", id, client, pid, uid, reqType, secret, remaining)
@@ -55,7 +55,14 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-1] + "…"
 }
 
-func secretSummary(req PendingRequest) string {
+func requestSummary(req PendingRequest) string {
+	if req.GPGSignInfo != nil {
+		n := len(req.GPGSignInfo.ChangedFiles)
+		if n == 1 {
+			return "1 file"
+		}
+		return fmt.Sprintf("%d files", n)
+	}
 	if len(req.Items) == 0 {
 		if len(req.SearchAttributes) > 0 {
 			return formatAttrs(req.SearchAttributes)
@@ -109,21 +116,61 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 		fmt.Fprintf(f.w, "PID:     %d\n", req.SenderInfo.PID)
 	}
 
-	if len(req.Items) == 1 {
-		fmt.Fprintf(f.w, "Secret:  %s\n", req.Items[0].Label)
-	} else if len(req.Items) > 1 {
-		fmt.Fprintf(f.w, "Secrets: %d items\n", len(req.Items))
-		for _, item := range req.Items {
-			fmt.Fprintf(f.w, "  - %s\n", item.Label)
+	if req.GPGSignInfo != nil {
+		info := req.GPGSignInfo
+		fmt.Fprintf(f.w, "Repo:    %s\n", info.RepoName)
+		fmt.Fprintf(f.w, "Author:  %s\n", info.Author)
+		fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
+		fmt.Fprintf(f.w, "\n    %s\n", commitSubject(info.CommitMsg))
+		if body := commitBody(info.CommitMsg); body != "" {
+			for _, line := range strings.Split(body, "\n") {
+				fmt.Fprintf(f.w, "    %s\n", line)
+			}
+		}
+		fmt.Fprintln(f.w)
+		fmt.Fprintf(f.w, "Changed files (%d):\n", len(info.ChangedFiles))
+		for _, file := range info.ChangedFiles {
+			fmt.Fprintf(f.w, "  %s\n", file)
+		}
+		if info.Committer != "" && info.Committer != info.Author {
+			fmt.Fprintf(f.w, "\nCommitter: %s\n", info.Committer)
+		}
+		if info.ParentHash != "" {
+			fmt.Fprintf(f.w, "Parent:    %s\n", info.ParentHash)
+		}
+	} else {
+		if len(req.Items) == 1 {
+			fmt.Fprintf(f.w, "Secret:  %s\n", req.Items[0].Label)
+		} else if len(req.Items) > 1 {
+			fmt.Fprintf(f.w, "Secrets: %d items\n", len(req.Items))
+			for _, item := range req.Items {
+				fmt.Fprintf(f.w, "  - %s\n", item.Label)
+			}
+		}
+
+		if len(req.SearchAttributes) > 0 {
+			attrs := formatAttrs(req.SearchAttributes)
+			fmt.Fprintf(f.w, "Query:   %s\n", attrs)
 		}
 	}
 
-	if len(req.SearchAttributes) > 0 {
-		attrs := formatAttrs(req.SearchAttributes)
-		fmt.Fprintf(f.w, "Query:   %s\n", attrs)
-	}
-
 	fmt.Fprintf(f.w, "Expires: %s (%s remaining)\n", req.ExpiresAt.Format(time.RFC3339), remaining)
+}
+
+func commitSubject(msg string) string {
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		return msg[:i]
+	}
+	return msg
+}
+
+func commitBody(msg string) string {
+	i := strings.IndexByte(msg, '\n')
+	if i < 0 {
+		return ""
+	}
+	body := strings.TrimLeft(msg[i:], "\n")
+	return strings.TrimRight(body, "\n")
 }
 
 // FormatHistory outputs history entries as a table.
@@ -138,7 +185,7 @@ func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 	}
 
 	// Print header
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "RESULT", "SECRET", "RESOLVED")
+	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "RESULT", "SUMMARY", "RESOLVED")
 	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "----------", "--------------------", "--------")
 
 	for _, entry := range entries {
@@ -148,7 +195,7 @@ func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 		uid := formatUID(entry.Request.SenderInfo.UID)
 		reqType := truncate(entry.Request.Type, 12)
 		resolution := truncate(entry.Resolution, 10)
-		secret := truncate(secretSummary(entry.Request), 20)
+		secret := truncate(requestSummary(entry.Request), 20)
 		ago := formatAgo(entry.ResolvedAt)
 
 		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", id, client, pid, uid, reqType, resolution, secret, ago)

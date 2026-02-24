@@ -31,7 +31,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Error Handling
 
 - [ ] **ERR-01**: Thin client exits non-zero with clear stderr message when daemon is unreachable
-- [ ] **ERR-02**: Exit code from real gpg failures propagated through daemon to thin client
+- [x] **ERR-02**: Exit code from real gpg failures propagated through daemon to thin client
 - [x] **ERR-03**: Signing requests expire via existing timeout mechanism
 
 ## v2 Requirements
@@ -76,7 +76,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISP-05 | Phase 3 | Pending |
 | DISP-06 | Phase 3 | Pending |
 | ERR-01 | Phase 2 | Pending |
-| ERR-02 | Phase 2 | Pending |
+| ERR-02 | Phase 2 | Complete |
 | ERR-03 | Phase 1 | Complete |
 
 **Coverage:**

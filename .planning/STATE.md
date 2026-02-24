@@ -10,17 +10,17 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 2 of 3 (Core Signing Flow)
-Plan: 2 of 5 in current phase
+Plan: 3 of 5 in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 02-02 (thin client pure functions: ParseCommitObject, FindRealGPG, extractKeyID)
+Last activity: 2026-02-24 — Completed 02-03 (real GPG invocation in HandleApprove: GPGRunner interface + HandleApprove wired to exec real gpg)
 
-Progress: [███░░░░░░░] 30%
+Progress: [████░░░░░░] 40%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 6 min
+- Total plans completed: 6
+- Average duration: 5 min
 - Total execution time: 0.5 hours
 
 **By Phase:**
@@ -28,14 +28,15 @@ Progress: [███░░░░░░░] 30%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-data-model-and-protocol-foundation | 3 | 24 min | 8 min |
-| 02-core-signing-flow | 2 | 10 min | 5 min |
+| 02-core-signing-flow | 3 | 12 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (8 min), 01-02 (8 min), 01-03 (8 min), 02-01 (5 min), 02-02 (5 min)
-- Trend: Consistent
+- Last 5 plans: 01-02 (8 min), 01-03 (8 min), 02-01 (5 min), 02-02 (5 min), 02-03 (2 min)
+- Trend: Accelerating
 
 *Updated after each plan completion*
 | Phase 02-core-signing-flow P01 | 5 | 2 tasks | 5 files |
+| Phase 02-core-signing-flow P03 | 2 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -59,6 +60,10 @@ Recent decisions affecting current work:
 - [Phase 02-01]: ValidateRequest checks cookie then Bearer — fixes thin client WebSocket auth that was cookie-only
 - [Phase 02-01]: ApproveGPGFailed signals result=true/closes done channel — gpg failure is resolved request; ExitCode in WSMessage carries failure to thin client
 - [Phase 02-01]: Unix socket served by same http.Server via second net.Listener — zero handler duplication
+- [Phase 02-03]: GPGRunner interface on Handlers rather than inline exec.Command — enables unit test mocking without a real gpg binary
+- [Phase 02-03]: Separate stdout/stderr buffers in RunGPG — --status-fd=2 writes status to stderr; mixing corrupts PGP signature
+- [Phase 02-03]: HTTP response is always "approved" regardless of gpg exit code; ExitCode in WSMessage carries gpg failure to thin client
+- [Phase 02-03]: ApproveGPGFailed with exit code 2 when gpg binary not found — consistent failure path, no special case
 
 ### Pending Todos
 
@@ -72,5 +77,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 02-02-PLAN.md (thin client pure functions)
+Stopped at: Completed 02-03-PLAN.md (real GPG invocation in HandleApprove)
 Resume file: None

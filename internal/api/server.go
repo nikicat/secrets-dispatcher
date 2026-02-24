@@ -47,6 +47,7 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	apiMux.HandleFunc("/api/v1/log", handlers.HandleLog)
 	apiMux.HandleFunc("/api/v1/ws", wsHandler.HandleWS)
 	apiMux.HandleFunc("/api/v1/test/history", handlers.HandleTestInjectHistory)
+	apiMux.HandleFunc("/api/v1/gpg-sign/request", handlers.HandleGPGSignRequest)
 
 	// Routes with path parameters need pattern matching
 	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {

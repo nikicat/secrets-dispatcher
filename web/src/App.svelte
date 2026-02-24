@@ -200,25 +200,37 @@
       return entry.request.client;
     }
 
+    // Prefix with repo for gpg_sign
+    const repoPrefix = entry.request.type === "gpg_sign" && entry.request.gpg_sign_info
+      ? entry.request.gpg_sign_info.repo_name + " · "
+      : "";
+
     const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
 
     // If we have a unit name, show that with user
     if (info.unit_name) {
-      return user ? `${info.unit_name} (${user})` : info.unit_name;
+      return repoPrefix + (user ? `${info.unit_name} (${user})` : info.unit_name);
     }
 
     // Fall back to user with PID
     if (info.pid && user) {
-      return `${user} (PID ${info.pid})`;
+      return repoPrefix + `${user} (PID ${info.pid})`;
     }
 
     // Fall back to just PID
     if (info.pid) {
-      return `PID ${info.pid}`;
+      return repoPrefix + `PID ${info.pid}`;
     }
 
     // Fall back to client name
-    return entry.request.client;
+    return repoPrefix + entry.request.client;
+  }
+
+  function historyItemsSummary(request: PendingRequest): string {
+    if (request.type === "gpg_sign" && request.gpg_sign_info) {
+      return request.gpg_sign_info.commit_msg.split('\n')[0];
+    }
+    return request.items.map(i => i.label || i.path).join(", ");
   }
 
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
@@ -351,12 +363,20 @@
                     <div class="history-entry-header">
                       <div class="history-entry-badges">
                         <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
-                        <span class="history-type">{entry.request.type === "search" ? "search" : "get"}</span>
+                        <span class="history-type history-type--{entry.request.type}">
+                          {#if entry.request.type === "gpg_sign"}
+                            GPG Sign
+                          {:else if entry.request.type === "search"}
+                            Search
+                          {:else}
+                            Secret
+                          {/if}
+                        </span>
                       </div>
                       <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
                     </div>
                     <div class="history-entry-details">
-                      <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
+                      <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
                   </li>
@@ -388,12 +408,20 @@
                     <div class="history-entry-header">
                       <div class="history-entry-badges">
                         <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
-                        <span class="history-type">{entry.request.type === "search" ? "search" : "get"}</span>
+                        <span class="history-type history-type--{entry.request.type}">
+                          {#if entry.request.type === "gpg_sign"}
+                            GPG Sign
+                          {:else if entry.request.type === "search"}
+                            Search
+                          {:else}
+                            Secret
+                          {/if}
+                        </span>
                       </div>
                       <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
                     </div>
                     <div class="history-entry-details">
-                      <span class="history-items">{entry.request.items.map(i => i.label || i.path).join(", ")}</span>
+                      <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
                   </li>
@@ -768,6 +796,12 @@
     color: var(--color-text-muted);
     background-color: var(--color-bg);
     border: 1px solid var(--color-border);
+  }
+
+  .history-type--gpg_sign {
+    color: var(--color-gpg-sign);
+    border-color: var(--color-gpg-sign);
+    background-color: var(--color-gpg-sign-bg);
   }
 
   .resolution-approved {

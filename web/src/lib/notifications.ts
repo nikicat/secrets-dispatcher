@@ -59,7 +59,9 @@ export function showRequestNotification(request: PendingRequest): void {
     return;
   }
 
-  const title = "Secret Access Request";
+  const title = request.type === "gpg_sign"
+    ? "Commit Signing Request"
+    : "Secret Request";
   const body = formatBody(request);
 
   // Use window.Notification to ensure we use the (potentially mocked) global
@@ -87,6 +89,12 @@ function formatBody(request: PendingRequest): string {
     parts.push(`Process: ${request.sender_info.unit_name}`);
   } else if (request.sender_info?.pid) {
     parts.push(`PID: ${request.sender_info.pid}`);
+  }
+
+  if (request.type === "gpg_sign" && request.gpg_sign_info) {
+    parts.push(`Repo: ${request.gpg_sign_info.repo_name}`);
+    parts.push(request.gpg_sign_info.commit_msg.split('\n')[0]);
+    return parts.join("\n");
   }
 
   if (request.type === "get_secret") {

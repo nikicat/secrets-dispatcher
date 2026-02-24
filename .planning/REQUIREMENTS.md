@@ -9,10 +9,10 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Signing Flow
 
-- [ ] **SIGN-01**: `gpg-sign` subcommand intercepts git's `gpg.program` call and blocks until user approves or denies
+- [x] **SIGN-01**: `gpg-sign` subcommand intercepts git's `gpg.program` call and blocks until user approves or denies
 - [x] **SIGN-02**: Thin client parses raw commit object from stdin to extract author, committer, message, and parent hash
-- [ ] **SIGN-03**: Thin client resolves repository name from working directory via `git rev-parse --show-toplevel`
-- [ ] **SIGN-04**: Thin client collects changed files list via `git diff --cached --name-only`
+- [x] **SIGN-03**: Thin client resolves repository name from working directory via `git rev-parse --show-toplevel`
+- [x] **SIGN-04**: Thin client collects changed files list via `git diff --cached --name-only`
 - [x] **SIGN-05**: Thin client sends commit data + context to daemon via API as JSON (commit object as string field)
 - [x] **SIGN-06**: Daemon creates `gpg_sign` approval request with full commit context and blocks on user decision
 - [x] **SIGN-07**: Daemon calls real `gpg` with original args verbatim after approval, captures signature and status output
@@ -30,7 +30,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Error Handling
 
-- [ ] **ERR-01**: Thin client exits non-zero with clear stderr message when daemon is unreachable
+- [x] **ERR-01**: Thin client exits non-zero with clear stderr message when daemon is unreachable
 - [x] **ERR-02**: Exit code from real gpg failures propagated through daemon to thin client
 - [x] **ERR-03**: Signing requests expire via existing timeout mechanism
 
@@ -60,10 +60,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SIGN-01 | Phase 2 | Pending |
+| SIGN-01 | Phase 2 | Complete |
 | SIGN-02 | Phase 2 | Complete |
-| SIGN-03 | Phase 2 | Pending |
-| SIGN-04 | Phase 2 | Pending |
+| SIGN-03 | Phase 2 | Complete |
+| SIGN-04 | Phase 2 | Complete |
 | SIGN-05 | Phase 2 | Complete |
 | SIGN-06 | Phase 1 | Complete |
 | SIGN-07 | Phase 2 | Complete |
@@ -75,7 +75,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | DISP-04 | Phase 3 | Pending |
 | DISP-05 | Phase 3 | Pending |
 | DISP-06 | Phase 3 | Pending |
-| ERR-01 | Phase 2 | Pending |
+| ERR-01 | Phase 2 | Complete |
 | ERR-02 | Phase 2 | Complete |
 | ERR-03 | Phase 1 | Complete |
 

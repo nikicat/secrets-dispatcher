@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 2 of 3 (Core Signing Flow)
-Plan: 3 of 5 in current phase
+Plan: 4 of 5 in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 02-03 (real GPG invocation in HandleApprove: GPGRunner interface + HandleApprove wired to exec real gpg)
+Last activity: 2026-02-24 — Completed 02-04 (thin client: DaemonClient, Run(), SetupGitConfig, gpg-sign subcommand wiring in main.go)
 
-Progress: [████░░░░░░] 40%
+Progress: [████░░░░░░] 50%
 
 ## Performance Metrics
 
@@ -23,20 +23,26 @@ Progress: [████░░░░░░] 40%
 - Average duration: 5 min
 - Total execution time: 0.5 hours
 
+**Velocity:**
+- Total plans completed: 7
+- Average duration: 5 min
+- Total execution time: ~0.6 hours
+
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-data-model-and-protocol-foundation | 3 | 24 min | 8 min |
-| 02-core-signing-flow | 3 | 12 min | 4 min |
+| 02-core-signing-flow | 4 | 16 min | 4 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-02 (8 min), 01-03 (8 min), 02-01 (5 min), 02-02 (5 min), 02-03 (2 min)
-- Trend: Accelerating
+- Last 5 plans: 01-03 (8 min), 02-01 (5 min), 02-02 (5 min), 02-03 (2 min), 02-04 (4 min)
+- Trend: Consistent
 
 *Updated after each plan completion*
 | Phase 02-core-signing-flow P01 | 5 | 2 tasks | 5 files |
 | Phase 02-core-signing-flow P03 | 2 | 2 tasks | 2 files |
+| Phase 02-core-signing-flow P04 | 4 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -64,6 +70,9 @@ Recent decisions affecting current work:
 - [Phase 02-03]: Separate stdout/stderr buffers in RunGPG — --status-fd=2 writes status to stderr; mixing corrupts PGP signature
 - [Phase 02-03]: HTTP response is always "approved" regardless of gpg exit code; ExitCode in WSMessage carries gpg failure to thin client
 - [Phase 02-03]: ApproveGPGFailed with exit code 2 when gpg binary not found — consistent failure path, no special case
+- [Phase 02-04]: NewServer/NewServerWithProvider accept unixSocketPath as last parameter — explicit over implicit; tests pass "" to skip socket
+- [Phase 02-04]: timeout (request_expired) exits 1 not 2 — user-visible outcome like denial, not a system error
+- [Phase 02-04]: Shell wrapper required for git gpg.program — git uses execvp not shell-split, so "binary subcommand" would fail without wrapper
 
 ### Pending Todos
 
@@ -77,5 +86,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 02-03-PLAN.md (real GPG invocation in HandleApprove)
+Stopped at: Completed 02-04-PLAN.md (thin client: DaemonClient, Run(), SetupGitConfig, gpg-sign subcommand wiring)
 Resume file: None

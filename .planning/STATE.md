@@ -35,6 +35,7 @@ Progress: [███░░░░░░░] 30%
 - Trend: Consistent
 
 *Updated after each plan completion*
+| Phase 02-core-signing-flow P01 | 5 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -54,6 +55,10 @@ Recent decisions affecting current work:
 - 02-02: First parent hash wins for merge commits (multiple parent lines) — display context only, not security-critical
 - 02-02: Trailing newline stripped from commit message body — git appends trailing newline to commit objects
 - 02-02: Combined short-flag detection for extractKeyID — arg starts with '-', not '--', ends with 'u' means next arg is key ID
+- [Phase 02-01]: signature field promoted from unexported to exported Signature; GPGStatus/GPGExitCode use json:"-" to exclude from JSON pending list
+- [Phase 02-01]: ValidateRequest checks cookie then Bearer — fixes thin client WebSocket auth that was cookie-only
+- [Phase 02-01]: ApproveGPGFailed signals result=true/closes done channel — gpg failure is resolved request; ExitCode in WSMessage carries failure to thin client
+- [Phase 02-01]: Unix socket served by same http.Server via second net.Listener — zero handler duplication
 
 ### Pending Todos
 

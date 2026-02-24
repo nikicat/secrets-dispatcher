@@ -13,10 +13,10 @@ Requirements for initial release. Each maps to roadmap phases.
 - [x] **SIGN-02**: Thin client parses raw commit object from stdin to extract author, committer, message, and parent hash
 - [ ] **SIGN-03**: Thin client resolves repository name from working directory via `git rev-parse --show-toplevel`
 - [ ] **SIGN-04**: Thin client collects changed files list via `git diff --cached --name-only`
-- [ ] **SIGN-05**: Thin client sends commit data + context to daemon via API as JSON (commit object as string field)
+- [x] **SIGN-05**: Thin client sends commit data + context to daemon via API as JSON (commit object as string field)
 - [x] **SIGN-06**: Daemon creates `gpg_sign` approval request with full commit context and blocks on user decision
-- [ ] **SIGN-07**: Daemon calls real `gpg` with original args verbatim after approval, captures signature and status output
-- [ ] **SIGN-08**: Signature and gpg status output returned to thin client; client writes signature to stdout and status to stderr
+- [x] **SIGN-07**: Daemon calls real `gpg` with original args verbatim after approval, captures signature and status output
+- [x] **SIGN-08**: Signature and gpg status output returned to thin client; client writes signature to stdout and status to stderr
 - [x] **SIGN-09**: Key ID / fingerprint extracted from gpg args and shown in approval context
 
 ### Display & Notifications
@@ -64,10 +64,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SIGN-02 | Phase 2 | Complete |
 | SIGN-03 | Phase 2 | Pending |
 | SIGN-04 | Phase 2 | Pending |
-| SIGN-05 | Phase 2 | Pending |
+| SIGN-05 | Phase 2 | Complete |
 | SIGN-06 | Phase 1 | Complete |
-| SIGN-07 | Phase 2 | Pending |
-| SIGN-08 | Phase 2 | Pending |
+| SIGN-07 | Phase 2 | Complete |
+| SIGN-08 | Phase 2 | Complete |
 | SIGN-09 | Phase 1 | Complete |
 | DISP-01 | Phase 3 | Pending |
 | DISP-02 | Phase 3 | Pending |

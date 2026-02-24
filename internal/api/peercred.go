@@ -22,12 +22,33 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 	return context.WithValue(ctx, connContextKey{}, c)
 }
 
+// shells is the set of known shell process names to skip when walking
+// up the process tree to find the user-facing invoker.
+var shells = map[string]bool{
+	"sh": true, "bash": true, "zsh": true, "fish": true,
+	"dash": true, "csh": true, "tcsh": true, "ksh": true,
+}
+
+func isShell(comm string) bool {
+	return shells[comm]
+}
+
+type procInfo struct {
+	pid  int32
+	comm string
+}
+
+func (p procInfo) String() string {
+	return fmt.Sprintf("%s[%d]", p.comm, p.pid)
+}
+
 // resolvePeerInfo extracts peer credentials from a Unix socket connection
-// in the request context and resolves the grandparent process (the process
-// that invoked git, which invoked the thin client).
+// in the request context and resolves the user-facing process that invoked
+// git commit.
 //
-// Process chain: terminal → git → secrets-dispatcher gpg-sign → (HTTP)
-// We walk up 2 levels from the peer PID to find git's parent.
+// Process chain example: claude → zsh → git → secrets-dispatcher → (HTTP)
+// We walk up from the peer PID, skip the thin client and git, then skip
+// any intermediate shells to find the real invoker (e.g., "claude").
 func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 	c, ok := ctx.Value(connContextKey{}).(net.Conn)
 	if !ok || c == nil {
@@ -53,33 +74,34 @@ func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 		return approval.SenderInfo{}
 	}
 
-	// Walk up: peer (thin client) → parent (git) → grandparent (invoker)
-	peerComm := readComm(cred.Pid)
-	gitPID := readPPID(cred.Pid)
-	if gitPID <= 1 {
-		slog.Debug("process chain", "peer", fmt.Sprintf("%s[%d]", peerComm, cred.Pid))
-		return approval.SenderInfo{PID: uint32(cred.Pid), UID: uint32(cred.Uid)}
+	// Build the process chain from peer up to init.
+	var chain []procInfo
+	for pid := cred.Pid; pid > 1; pid = readPPID(pid) {
+		chain = append(chain, procInfo{pid: pid, comm: readComm(pid)})
 	}
 
-	gitComm := readComm(gitPID)
-	invokerPID := readPPID(gitPID)
-	if invokerPID <= 1 {
-		slog.Debug("process chain",
-			"peer", fmt.Sprintf("%s[%d]", peerComm, cred.Pid),
-			"git", fmt.Sprintf("%s[%d]", gitComm, gitPID))
-		return approval.SenderInfo{PID: uint32(gitPID), UID: uint32(cred.Uid), UnitName: gitComm}
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		labels := make([]string, len(chain))
+		for i, p := range chain {
+			labels[i] = p.String()
+		}
+		slog.Debug("process chain", "chain", strings.Join(labels, " → "))
 	}
 
-	invokerComm := readComm(invokerPID)
-	slog.Debug("process chain",
-		"peer", fmt.Sprintf("%s[%d]", peerComm, cred.Pid),
-		"git", fmt.Sprintf("%s[%d]", gitComm, gitPID),
-		"invoker", fmt.Sprintf("%s[%d]", invokerComm, invokerPID))
+	// chain[0] = thin client, chain[1] = git, chain[2+] = ancestors.
+	// Start from git's parent and skip shells.
+	invoker := chain[0] // fallback to peer
+	for i := 2; i < len(chain); i++ {
+		invoker = chain[i]
+		if !isShell(chain[i].comm) {
+			break
+		}
+	}
 
 	return approval.SenderInfo{
-		PID:      uint32(invokerPID),
+		PID:      uint32(invoker.pid),
 		UID:      uint32(cred.Uid),
-		UnitName: invokerComm,
+		UnitName: invoker.comm,
 	}
 }
 

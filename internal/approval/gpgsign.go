@@ -11,8 +11,8 @@ import (
 const RequestTypeGPGSign RequestType = "gpg_sign"
 
 // GPGSignInfo carries the commit context fields for a signing approval request.
-// All fields are supplied by the thin client (Phase 2); in Phase 1 they come from
-// the POST body sent by tests or manual API calls.
+// All fields are supplied by the thin client; CommitObject is the raw commit object
+// bytes (UTF-8 text) that the daemon feeds to real gpg's stdin on approval.
 type GPGSignInfo struct {
 	RepoName     string   `json:"repo_name"`
 	CommitMsg    string   `json:"commit_msg"`
@@ -22,6 +22,8 @@ type GPGSignInfo struct {
 	Fingerprint  string   `json:"fingerprint,omitempty"`
 	ChangedFiles []string `json:"changed_files"`
 	ParentHash   string   `json:"parent_hash,omitempty"`
+	// CommitObject is the raw commit object bytes (UTF-8 text) fed to gpg's stdin.
+	CommitObject string `json:"commit_object,omitempty"`
 }
 
 // CreateGPGSignRequest creates a pending gpg_sign approval request and returns its ID.

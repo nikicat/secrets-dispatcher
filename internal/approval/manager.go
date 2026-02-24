@@ -77,10 +77,19 @@ type Request struct {
 	// GPGSignInfo contains signing context for gpg_sign requests; nil for other types.
 	GPGSignInfo *GPGSignInfo `json:"gpg_sign_info,omitempty"`
 
+	// Signature holds the ASCII-armored PGP signature bytes produced by real gpg
+	// on approval of a gpg_sign request. Set by ApproveWithSignature.
+	Signature []byte `json:"-"`
+	// GPGStatus holds the raw [GNUPG:] status lines from gpg --status-fd=2.
+	// Set by ApproveWithSignature or ApproveGPGFailed.
+	GPGStatus []byte `json:"-"`
+	// GPGExitCode holds the gpg process exit code. Non-zero on failure.
+	// Set by ApproveGPGFailed.
+	GPGExitCode int `json:"-"`
+
 	// Internal: channel signaled when request is approved/denied
-	done      chan struct{}
-	result    bool  // true = approved, false = denied
-	signature []byte // unexported; placeholder bytes set on approval for gpg_sign in Phase 1
+	done   chan struct{}
+	result bool // true = approved, false = denied
 }
 
 // Resolution represents how a request was resolved.
@@ -335,4 +344,55 @@ func (m *Manager) PendingCount() int {
 // Timeout returns the configured timeout.
 func (m *Manager) Timeout() time.Duration {
 	return m.timeout
+}
+
+// GetPending returns the pending request with the given ID, or nil if not found.
+// Uses a read lock so it does not block concurrent approvals.
+func (m *Manager) GetPending(id string) *Request {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.pending[id]
+}
+
+// ApproveWithSignature stores the real gpg signature and status on the request,
+// then approves it. Used by HandleApprove for gpg_sign requests after real gpg succeeds.
+func (m *Manager) ApproveWithSignature(id string, sig, status []byte) error {
+	m.mu.Lock()
+	req, ok := m.pending[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+
+	req.Signature = sig
+	req.GPGStatus = status
+	req.result = true
+	delete(m.pending, id)
+	close(req.done)
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestApproved, Request: req})
+	return nil
+}
+
+// ApproveGPGFailed stores the gpg failure status and exit code, then signals
+// the request as approved so the done channel fires. The WebSocket message will
+// carry the non-zero ExitCode; the thin client exits with it.
+func (m *Manager) ApproveGPGFailed(id string, status []byte, exitCode int) error {
+	m.mu.Lock()
+	req, ok := m.pending[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+
+	req.GPGStatus = status
+	req.GPGExitCode = exitCode
+	req.result = true
+	delete(m.pending, id)
+	close(req.done)
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestApproved, Request: req})
+	return nil
 }

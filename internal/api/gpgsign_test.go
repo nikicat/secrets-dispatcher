@@ -201,7 +201,7 @@ func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
 		KeyID:        "ABCD1234",
 		ChangedFiles: []string{"main.go"},
 	}
-	id, err := mgr.CreateGPGSignRequest("test-client", info)
+	id, err := mgr.CreateGPGSignRequest("test-client", info, approval.SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}

@@ -331,6 +331,10 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 			KeyID:        "ABCD1234",
 			ChangedFiles: []string{"a.go", "b.go"},
 		},
+		SenderInfo: approval.SenderInfo{
+			PID:      1234,
+			UnitName: "ssh-agent.service",
+		},
 	}
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
@@ -340,20 +344,47 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 	}
 
 	call := mock.lastNotify()
-	if call.summary != "Commit Signing Request" {
-		t.Errorf("expected summary 'Commit Signing Request', got %q", call.summary)
+	if call.summary != "Sign commit" {
+		t.Errorf("expected summary 'Sign commit', got %q", call.summary)
 	}
 	if call.icon != "emblem-important" {
 		t.Errorf("expected icon 'emblem-important', got %q", call.icon)
 	}
-	if !contains(call.body, "my-project") {
-		t.Errorf("body should contain repo name 'my-project': %s", call.body)
+	if !contains(call.body, "<b>ssh-agent.service@my-project</b>: ") {
+		t.Errorf("body should contain bold process@repo: %s", call.body)
 	}
-	if !contains(call.body, "Add feature") {
-		t.Errorf("body should contain commit subject 'Add feature': %s", call.body)
+	if !contains(call.body, "<i>Add feature</i>") {
+		t.Errorf("body should contain italic commit subject: %s", call.body)
 	}
 	if contains(call.body, "Some body text") {
-		t.Errorf("body should NOT contain commit body text 'Some body text': %s", call.body)
+		t.Errorf("body should NOT contain commit body text: %s", call.body)
+	}
+}
+
+func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	req := &approval.Request{
+		ID:     "gpg-pid-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGPGSign,
+		GPGSignInfo: &approval.GPGSignInfo{
+			RepoName:  "my-project",
+			CommitMsg: "Fix bug",
+		},
+		SenderInfo: approval.SenderInfo{
+			PID: 5678,
+		},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	call := mock.lastNotify()
+	if !contains(call.body, "<b>my-project</b>: ") {
+		t.Errorf("body should contain bold repo without process name: %s", call.body)
+	}
+	if !contains(call.body, "<i>Fix bug</i>") {
+		t.Errorf("body should contain italic commit subject: %s", call.body)
 	}
 }
 

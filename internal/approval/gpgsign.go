@@ -31,7 +31,7 @@ type GPGSignInfo struct {
 // pipeline (EventRequestApproved / EventRequestDenied / EventRequestExpired).
 // Uses context.Background() for the timeout goroutine so a dropped HTTP connection does
 // not cancel a request the user is actively reviewing in the web UI.
-func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo) (string, error) {
+func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderInfo SenderInfo) (string, error) {
 	if info == nil {
 		return "", errors.New("gpg sign info is required")
 	}
@@ -43,6 +43,7 @@ func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo) (string
 		ExpiresAt:   now.Add(m.timeout),
 		Type:        RequestTypeGPGSign,
 		GPGSignInfo: info,
+		SenderInfo:  senderInfo,
 		done:        make(chan struct{}),
 	}
 	m.mu.Lock()

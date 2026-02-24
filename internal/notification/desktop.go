@@ -257,7 +257,7 @@ func (h *Handler) OnEvent(event approval.Event) {
 func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string) {
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
-		return "Commit Signing Request", "emblem-important"
+		return "Sign commit", "emblem-important"
 	default:
 		return "Secret Request", "dialog-password"
 	}
@@ -314,34 +314,40 @@ func commitSubject(msg string) string {
 func (h *Handler) formatBody(req *approval.Request) string {
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("Client: %s\n", req.Client))
-
-	if req.SenderInfo.UnitName != "" {
-		b.WriteString(fmt.Sprintf("Process: %s (PID %d)\n", req.SenderInfo.UnitName, req.SenderInfo.PID))
-	} else if req.SenderInfo.PID != 0 {
-		b.WriteString(fmt.Sprintf("PID: %d\n", req.SenderInfo.PID))
-	}
-
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		if req.GPGSignInfo != nil {
-			b.WriteString(fmt.Sprintf("Repo: %s\n", req.GPGSignInfo.RepoName))
-			b.WriteString(commitSubject(req.GPGSignInfo.CommitMsg))
-		}
-	case approval.RequestTypeGetSecret:
-		if len(req.Items) == 1 {
-			b.WriteString(fmt.Sprintf("Secret: %s", req.Items[0].Label))
-		} else {
-			b.WriteString(fmt.Sprintf("Secrets: %d items", len(req.Items)))
-		}
-	case approval.RequestTypeSearch:
-		b.WriteString("Type: search")
-		if len(req.SearchAttributes) > 0 {
-			attrs := make([]string, 0, len(req.SearchAttributes))
-			for k, v := range req.SearchAttributes {
-				attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
+			if req.SenderInfo.UnitName != "" {
+				fmt.Fprintf(&b, "<b>%s@%s</b>: ", req.SenderInfo.UnitName, req.GPGSignInfo.RepoName)
+			} else {
+				fmt.Fprintf(&b, "<b>%s</b>: ", req.GPGSignInfo.RepoName)
 			}
-			b.WriteString(fmt.Sprintf("\nQuery: %s", strings.Join(attrs, ", ")))
+			fmt.Fprintf(&b, "<i>%s</i>", commitSubject(req.GPGSignInfo.CommitMsg))
+		}
+	default:
+		fmt.Fprintf(&b, "Client: %s\n", req.Client)
+		if req.SenderInfo.UnitName != "" {
+			fmt.Fprintf(&b, "Process: %s [%d]\n", req.SenderInfo.UnitName, req.SenderInfo.PID)
+		} else if req.SenderInfo.PID != 0 {
+			fmt.Fprintf(&b, "PID: %d\n", req.SenderInfo.PID)
+		}
+
+		switch req.Type {
+		case approval.RequestTypeGetSecret:
+			if len(req.Items) == 1 {
+				fmt.Fprintf(&b, "Secret: %s", req.Items[0].Label)
+			} else {
+				fmt.Fprintf(&b, "Secrets: %d items", len(req.Items))
+			}
+		case approval.RequestTypeSearch:
+			b.WriteString("Type: search")
+			if len(req.SearchAttributes) > 0 {
+				attrs := make([]string, 0, len(req.SearchAttributes))
+				for k, v := range req.SearchAttributes {
+					attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
+				}
+				fmt.Fprintf(&b, "\nQuery: %s", strings.Join(attrs, ", "))
+			}
 		}
 	}
 

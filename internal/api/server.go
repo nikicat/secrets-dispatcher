@@ -89,7 +89,8 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	}
 
 	httpServer := &http.Server{
-		Handler: rootMux,
+		Handler:     rootMux,
+		ConnContext: connContext,
 	}
 
 	s := &Server{

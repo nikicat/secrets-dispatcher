@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os/exec"
+	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
@@ -80,10 +82,24 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	if req.Client == "" {
 		req.Client = "unknown"
 	}
-	id, err := h.manager.CreateGPGSignRequest(req.Client, req.GPGSignInfo)
+	senderInfo := resolvePeerInfo(r.Context())
+	id, err := h.manager.CreateGPGSignRequest(req.Client, req.GPGSignInfo, senderInfo)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	commitSubject := req.GPGSignInfo.CommitMsg
+	if i := strings.IndexByte(commitSubject, '\n'); i >= 0 {
+		commitSubject = commitSubject[:i]
+	}
+	slog.Info("gpg sign request created",
+		"request_id", id,
+		"repo", req.GPGSignInfo.RepoName,
+		"process", senderInfo.UnitName,
+		"pid", senderInfo.PID,
+		"commit", commitSubject,
+	)
+
 	writeJSON(w, GPGSignResponse{RequestID: id})
 }

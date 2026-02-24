@@ -36,7 +36,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest returned unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 func TestCreateGPGSignRequest_NilInfo(t *testing.T) {
 	mgr := NewManager(5*time.Second, 100)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", nil)
+	id, err := mgr.CreateGPGSignRequest("test-client", nil, SenderInfo{})
 	if err == nil {
 		t.Fatal("expected error for nil GPGSignInfo, got nil")
 	}
@@ -86,7 +86,7 @@ func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestCreateGPGSignRequest_Approve(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestCreateGPGSignRequest_Deny(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestCreateGPGSignRequest_Cancel(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestCreateGPGSignRequest_GPGSignInfoPreserved(t *testing.T) {
 	mgr := NewManager(5*time.Second, 100)
 
 	info := sampleGPGSignInfo()
-	id, err := mgr.CreateGPGSignRequest("test-client", info)
+	id, err := mgr.CreateGPGSignRequest("test-client", info, SenderInfo{})
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestCreateGPGSignRequest_Concurrent(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+			id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
 			if err != nil {
 				t.Errorf("CreateGPGSignRequest failed: %v", err)
 				return

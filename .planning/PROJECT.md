@@ -1,12 +1,12 @@
-# Secrets Dispatcher — GPG Commit Signing
+# Secrets Dispatcher
 
 ## What This Is
 
-An extension to secrets-dispatcher that intercepts GPG commit signing requests, shows the user full context about what they're signing (repo, commit message, author, changed files), and requires explicit approval before producing the signature. Solves the problem of blindly approving GPG pinentry dialogs when multiple Claude Code sessions run parallel commits.
+A D-Bus Secret Service approval proxy with GPG commit signing support. Intercepts secret access and GPG signing requests, shows the user full context (secret path, or repo/commit/author/files for signing), and requires explicit approval before proceeding. Solves the problem of blindly approving credential and signing dialogs when multiple automated sessions run in parallel.
 
 ## Core Value
 
-The user always knows exactly what they're cryptographically signing before it happens.
+The user always knows exactly what they're approving before it happens — whether it's a secret access or a cryptographic signature.
 
 ## Requirements
 
@@ -19,51 +19,58 @@ The user always knows exactly what they're cryptographically signing before it h
 - :white_check_mark: CLI for viewing and approving requests — existing
 - :white_check_mark: Desktop notifications for incoming requests — existing
 - :white_check_mark: Observer pattern for event subscribers — existing
+- :white_check_mark: GPG signing requests flow through approval pipeline as `gpg_sign` request type — v1.0
+- :white_check_mark: `gpg-sign` thin client intercepts `gpg.program`, sends commit data to daemon, blocks until approval — v1.0
+- :white_check_mark: Signing context shows repo name, commit message, author/committer, changed files, key ID — v1.0
+- :white_check_mark: Daemon calls real `gpg` after approval, returns signature to thin client — v1.0
+- :white_check_mark: WebSocket delivers approval result and signature to thin client — v1.0
+- :white_check_mark: Web UI displays signing requests distinctly from secret access requests — v1.0
+- :white_check_mark: CLI displays signing request context in list/show/history — v1.0
+- :white_check_mark: Desktop notifications with commit summary for signing requests — v1.0
+- :white_check_mark: Session/client identity shown for parallel session disambiguation — v1.0
+- :white_check_mark: Error propagation: daemon unreachable, GPG failures, request expiry — v1.0
 
 ### Active
 
-- [ ] GPG signing requests flow through the existing approval pipeline as a new request type
-- [ ] `secrets-dispatcher gpg-sign` subcommand acts as `gpg.program` — thin client that sends signing data + context to the daemon and receives the signature back
-- [ ] Signing request shows: repository name, commit message, author/committer, changed files list
-- [ ] Daemon produces the signature by calling real `gpg` after approval
-- [ ] `gpg-sign` client uses WebSocket to wait for approval result and receive the signature
-- [ ] Web UI displays signing request context (repo, message, author, files) distinctly from secret access requests
-- [ ] CLI displays signing request context in list/show commands
+(None — define with next milestone)
 
 ### Out of Scope
 
 - Handling the GPG private key directly — gpg-agent manages key protection
 - Replacing pinentry — pinentry still handles passphrase if not cached
-- Non-git GPG signing — only git commit signing for now (tags can be added later)
+- Non-git GPG signing — only git commit signing (tags can be added later)
 - SSH commit signing — staying with GPG signatures
 - Passphrase caching — gpg-agent handles this
+- Full diff content display — payload explosion, rendering complexity
+- Policy-based auto-approval — undermines human-in-the-loop model
 
 ## Context
 
-- secrets-dispatcher already proxies Secret Service D-Bus requests with user approval
-- The approval manager, API server, WebSocket, web UI, CLI, and desktop notifications are all in place
-- The new GPG signing feature is a second "channel" into the same approval pipeline
-- Git calls `gpg.program` with `-bsau <key-id>` args and commit object data on stdin
-- The commit object contains: tree hash, parent hash(es), author, committer, commit message
-- Changed files can be determined by running `git diff --cached --name-only` from the repo directory
-- The daemon calls real `gpg` to produce the signature, so gpg-agent/pinentry handle passphrase as usual
-- User sees two layers: (1) context-aware approval in secrets-dispatcher, (2) passphrase in pinentry if not cached
+Shipped v1.0 with 12,520 LOC Go + Svelte.
+Tech stack: Go, D-Bus (godbus), Svelte 5, WebSocket, GPG.
+Two request channels: D-Bus Secret Service proxy and GPG commit signing.
+Desktop notifications via D-Bus org.freedesktop.Notifications.
+Web UI with real-time updates, browser notifications, and session identity.
+CLI with git-log-style formatting for both request types.
 
 ## Constraints
 
-- **Protocol**: Must produce valid GPG/PGP signatures that git accepts — faithful proxying of gpg args and stdin
-- **Compatibility**: Must work alongside existing D-Bus proxy functionality — same daemon, same approval manager
-- **Latency**: The HTTP/WebSocket roundtrip adds latency to every signed commit — acceptable since user approval is inherently interactive
-- **Dependency**: Requires secrets-dispatcher daemon to be running for commits to succeed
+- **Protocol**: Must produce valid GPG/PGP signatures that git accepts
+- **Compatibility**: D-Bus proxy and GPG signing coexist in same daemon
+- **Latency**: HTTP/WebSocket roundtrip acceptable for interactive approval
+- **Dependency**: Daemon must be running for signed commits and secret access
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Custom `gpg.program` over pinentry wrapper | Full access to commit context at the git-gpg boundary; avoids Assuan protocol interception and process tree issues with gpg-agent | -- Pending |
-| Daemon calls gpg, not the CLI client | Clean separation: CLI is a thin pipe, daemon owns the signing flow and gpg interaction | -- Pending |
-| WebSocket for result delivery | Already implemented; avoids HTTP long-polling; consistent with existing real-time update pattern | -- Pending |
-| New request type, not new approval system | Reuses existing approval manager, observers, web UI, CLI — minimal new code | -- Pending |
+| Custom `gpg.program` over pinentry wrapper | Full access to commit context at the git-gpg boundary; avoids Assuan protocol interception | :white_check_mark: Good — clean separation, rich context display |
+| Daemon calls gpg, not the CLI client | CLI is a thin pipe; daemon owns signing flow and gpg interaction | :white_check_mark: Good — enables server-side error handling and signature caching |
+| WebSocket for result delivery | Already implemented; avoids long-polling; consistent with existing pattern | :white_check_mark: Good — reuses infrastructure, real-time updates |
+| New request type, not new approval system | Reuses existing approval manager, observers, web UI, CLI | :white_check_mark: Good — minimal new code, consistent UX |
+| Shell wrapper for gpg.program | git uses execvp not shell-split; "binary subcommand" fails without wrapper | :white_check_mark: Good — reliable, simple `~/.local/bin/secrets-dispatcher-gpg` |
+| Unix socket for thin client communication | User-scoped, no network exposure, no port conflicts | :white_check_mark: Good — secure by default |
+| GPGRunner interface for testability | Enables unit test mocking without real gpg binary | :white_check_mark: Good — fast tests, no external deps |
 
 ---
-*Last updated: 2026-02-24 after initialization*
+*Last updated: 2026-02-24 after v1.0 milestone*

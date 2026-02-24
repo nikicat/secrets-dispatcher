@@ -21,6 +21,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/service"
 )
 
 const (
@@ -52,6 +53,8 @@ func main() {
 		runCLI("deny", os.Args[2:])
 	case "history":
 		runCLI("history", os.Args[2:])
+	case "service":
+		runService(os.Args[2:])
 	case "gpg-sign":
 		runGPGSign(os.Args[2:])
 	case "-h", "--help", "help":
@@ -74,6 +77,7 @@ Commands:
   approve       Approve a pending request
   deny          Deny a pending request
   history       Show resolved requests
+  service       Manage the systemd user service
   gpg-sign      GPG signing proxy (called by git as gpg.program)
   gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
 
@@ -479,6 +483,61 @@ func runServe(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runService handles the "service" subcommand group (install/uninstall/status).
+func runService(args []string) {
+	if len(args) == 0 {
+		printServiceUsage()
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "install":
+		runServiceInstall(args[1:])
+	case "uninstall":
+		if err := service.Uninstall(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "status":
+		service.Status()
+	case "-h", "--help", "help":
+		printServiceUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown service command: %s\n\n", args[0])
+		printServiceUsage()
+		os.Exit(1)
+	}
+}
+
+func runServiceInstall(args []string) {
+	fs := flag.NewFlagSet("service install", flag.ExitOnError)
+	start := fs.Bool("start", false, "Start the service immediately after installing")
+	configPath := fs.String("config", "", "Config file path to embed in the unit file")
+	fs.Parse(args)
+
+	if err := service.Install(service.Options{
+		ConfigPath: *configPath,
+		Start:      *start,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func printServiceUsage() {
+	fmt.Fprintf(os.Stderr, `Usage: %s service <command> [options]
+
+Commands:
+  install       Install and enable the systemd user service
+  uninstall     Stop, disable, and remove the systemd user service
+  status        Show the service status
+
+Install options:
+  --start       Start the service immediately after installing
+  --config      Config file path to embed in the unit file's ExecStart
+`, progName)
 }
 
 // runGPGSign handles the gpg-sign subcommand.

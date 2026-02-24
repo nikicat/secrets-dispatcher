@@ -90,6 +90,27 @@ func (c *DaemonClient) PostSigningRequest(ctx context.Context, client string, in
 	return result.RequestID, nil
 }
 
+// CancelSigningRequest sends a cancel request to the daemon for a pending GPG sign request.
+// Best-effort: errors are returned but callers may choose to ignore them (process is exiting).
+func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/api/v1/pending/"+requestID+"/cancel", nil)
+	if err != nil {
+		return fmt.Errorf("create cancel request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("cancel signing request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon returned status %d for cancel", resp.StatusCode)
+	}
+	return nil
+}
+
 // wsMsg is a local type for parsing WebSocket messages from the daemon.
 // Defined locally to avoid a circular import with the api package.
 type wsMsg struct {
@@ -147,6 +168,12 @@ func (c *DaemonClient) WaitForResolution(ctx context.Context, conn *websocket.Co
 				continue
 			}
 			return nil, nil, 0, false, fmt.Errorf("signing request timed out (request_id=%s)", requestID)
+
+		case "request_cancelled":
+			if msg.ID != requestID {
+				continue
+			}
+			return nil, nil, 0, true, nil
 		}
 		// Other message types (snapshot, request_created, etc.) — keep reading.
 	}

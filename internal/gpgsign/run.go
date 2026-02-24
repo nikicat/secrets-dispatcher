@@ -7,8 +7,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
@@ -92,8 +94,31 @@ func Run(args []string, stdin io.Reader) int {
 		fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: request_id=%s\n", reqID)
 	}
 
-	// 10. Block until resolution (SIGN-08, ERR-01, ERR-02).
-	signature, gpgStatus, exitCode, denied, err := client.WaitForResolution(ctx, wsConn, reqID)
+	// 10. Trap SIGINT/SIGTERM to cancel the signing request on interrupt.
+	wsCtx, wsCancel := context.WithCancel(ctx)
+	defer wsCancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		select {
+		case <-sigCh:
+			if debug {
+				fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: interrupted, cancelling request %s\n", reqID)
+			}
+			wsCancel()
+			// Best-effort cancel — use background context since wsCtx is cancelled.
+			if err := client.CancelSigningRequest(context.Background(), reqID); err != nil && debug {
+				fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: cancel request failed: %v\n", err)
+			}
+		case <-wsCtx.Done():
+			// Normal exit path — nothing to do.
+		}
+		signal.Stop(sigCh)
+	}()
+
+	// 11. Block until resolution (SIGN-08, ERR-01, ERR-02).
+	signature, gpgStatus, exitCode, denied, err := client.WaitForResolution(wsCtx, wsConn, reqID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
 		return 1 // timeout is exit 1 per spec

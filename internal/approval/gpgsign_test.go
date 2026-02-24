@@ -177,6 +177,50 @@ func TestCreateGPGSignRequest_Deny(t *testing.T) {
 	}
 }
 
+// TestCreateGPGSignRequest_Cancel verifies that Cancel(id) fires EventRequestCancelled
+// and removes the request from pending.
+func TestCreateGPGSignRequest_Cancel(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo())
+	if err != nil {
+		t.Fatalf("CreateGPGSignRequest failed: %v", err)
+	}
+
+	if err := mgr.Cancel(id); err != nil {
+		t.Fatalf("Cancel failed: %v", err)
+	}
+
+	// Wait for Created + Cancelled events.
+	events := obs.WaitForEvents(2, time.Second)
+	if len(events) < 2 {
+		t.Fatalf("expected 2 events (Created, Cancelled), got %d", len(events))
+	}
+	if findEvent(events, EventRequestCancelled) == nil {
+		t.Errorf("EventRequestCancelled not found in events: %v", events)
+	}
+
+	// Request must be gone from pending.
+	pending := mgr.List()
+	for _, req := range pending {
+		if req.ID == id {
+			t.Errorf("cancelled request %q still in pending list", id)
+		}
+	}
+
+	// History should record cancellation.
+	time.Sleep(50 * time.Millisecond)
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionCancelled {
+		t.Errorf("expected resolution 'cancelled', got '%s'", history[0].Resolution)
+	}
+}
+
 // TestCreateGPGSignRequest_GPGSignInfoPreserved verifies that GPGSignInfo fields
 // are correctly stored on the Request and visible via List().
 func TestCreateGPGSignRequest_GPGSignInfoPreserved(t *testing.T) {

@@ -296,6 +296,78 @@ func TestHandleDeny_Success(t *testing.T) {
 	}
 }
 
+func TestHandleCancel_Success(t *testing.T) {
+	mgr := approval.NewManager(5*time.Minute, 100)
+	handlers := testHandlers(t, mgr)
+
+	// Start a pending request
+	done := make(chan error, 1)
+	go func() {
+		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("request did not appear")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+reqID+"/cancel", nil)
+	rr := httptest.NewRecorder()
+
+	handlers.HandleCancel(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+
+	var resp ActionResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Status != "cancelled" {
+		t.Errorf("expected status 'cancelled', got '%s'", resp.Status)
+	}
+}
+
+func TestHandleCancel_NotFound(t *testing.T) {
+	mgr := approval.NewManager(5*time.Minute, 100)
+	handlers := testHandlers(t, mgr)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/cancel", nil)
+	rr := httptest.NewRecorder()
+
+	handlers.HandleCancel(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleCancel_WrongMethod(t *testing.T) {
+	mgr := approval.NewManager(5*time.Minute, 100)
+	handlers := testHandlers(t, mgr)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/cancel", nil)
+	rr := httptest.NewRecorder()
+
+	handlers.HandleCancel(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405, got %d", rr.Code)
+	}
+}
+
 func TestHandleLog_Empty(t *testing.T) {
 	mgr := approval.NewManager(5*time.Minute, 100)
 	handlers := testHandlers(t, mgr)

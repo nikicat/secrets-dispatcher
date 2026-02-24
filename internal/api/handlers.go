@@ -173,6 +173,31 @@ func (h *Handlers) HandleDeny(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, ActionResponse{Status: "denied"})
 }
 
+// HandleCancel handles POST /api/v1/pending/{id}/cancel.
+func (h *Handlers) HandleCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := extractRequestID(r.URL.Path, "/api/v1/pending/", "/cancel")
+	if id == "" {
+		writeError(w, "invalid request path", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.manager.Cancel(id); err != nil {
+		if err == approval.ErrNotFound {
+			writeError(w, "request not found or expired", http.StatusNotFound)
+			return
+		}
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, ActionResponse{Status: "cancelled"})
+}
+
 // HandleLog handles GET /api/v1/log.
 func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

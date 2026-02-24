@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -325,7 +327,9 @@ func (wsc *wsConnection) writePump() {
 			err := wsc.conn.Write(ctx, websocket.MessageText, message)
 			cancel()
 			if err != nil {
-				slog.Debug("WebSocket write failed", "error", err)
+				if !isConnClosedErr(err) {
+					slog.Debug("WebSocket write failed", "error", err)
+				}
 				return
 			}
 
@@ -335,7 +339,9 @@ func (wsc *wsConnection) writePump() {
 			err := wsc.conn.Ping(ctx)
 			cancel()
 			if err != nil {
-				slog.Debug("WebSocket ping failed", "error", err)
+				if !isConnClosedErr(err) {
+					slog.Debug("WebSocket ping failed", "error", err)
+				}
 				return
 			}
 		}
@@ -401,6 +407,21 @@ func convertRequest(req *approval.Request) *PendingRequest {
 		},
 		GPGSignInfo: req.GPGSignInfo,
 	}
+}
+
+// isConnClosedErr returns true if the error indicates a connection that was
+// already closed or broken (broken pipe, connection reset, context cancelled).
+// These are expected during normal WebSocket teardown and not worth logging.
+func isConnClosedErr(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		// Covers "write: broken pipe" and "write: connection reset by peer"
+		return true
+	}
+	return false
 }
 
 // BroadcastClientConnected sends a client_connected message to all connections.

@@ -334,6 +334,25 @@ func (m *Manager) Deny(id string) error {
 	return nil
 }
 
+// Cancel cancels a pending request by ID. This is a system/client-driven
+// cleanup (e.g. thin client interrupted), distinct from user-initiated Deny.
+func (m *Manager) Cancel(id string) error {
+	m.mu.Lock()
+	req, ok := m.pending[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+
+	req.result = false
+	delete(m.pending, id)
+	close(req.done)
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestCancelled, Request: req})
+	return nil
+}
+
 // PendingCount returns the number of pending requests.
 func (m *Manager) PendingCount() int {
 	m.mu.RLock()

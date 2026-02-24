@@ -66,6 +66,8 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 			handlers.HandleApprove(w, r)
 		case strings.HasSuffix(path, "/deny"):
 			handlers.HandleDeny(w, r)
+		case strings.HasSuffix(path, "/cancel"):
+			handlers.HandleCancel(w, r)
 		default:
 			writeError(w, "not found", http.StatusNotFound)
 		}

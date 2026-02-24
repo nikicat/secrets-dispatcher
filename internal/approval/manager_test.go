@@ -159,6 +159,61 @@ func TestManager_List(t *testing.T) {
 	wg.Wait()
 }
 
+func TestManager_Cancel_Success(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+
+	var wg sync.WaitGroup
+	var approvalErr error
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("request did not appear in pending list")
+	}
+
+	// Cancel the request
+	if err := mgr.Cancel(reqID); err != nil {
+		t.Fatalf("Cancel failed: %v", err)
+	}
+
+	wg.Wait()
+
+	// Cancel closes the done channel with result=false, triggering the ctx.Done or done branch.
+	// RequireApproval sees done channel closed with result=false => ErrDenied.
+	if approvalErr != ErrDenied {
+		t.Errorf("expected ErrDenied after cancel, got: %v", approvalErr)
+	}
+
+	// Verify request is cleaned up
+	if mgr.PendingCount() != 0 {
+		t.Error("request should be cleaned up after cancel")
+	}
+}
+
+func TestManager_Cancel_NotFound(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+
+	err := mgr.Cancel("nonexistent-id")
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 func TestManager_Approve_NotFound(t *testing.T) {
 	mgr := NewManager(5*time.Second, 100)
 
@@ -500,6 +555,53 @@ func TestManager_Observer_Expired(t *testing.T) {
 	}
 	if events[1].Type != EventRequestExpired {
 		t.Errorf("expected second event to be Expired, got %v", events[1].Type)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestManager_Observer_CancelMethod(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100)
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+	}()
+
+	// Wait for request to appear
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("request did not appear")
+	}
+
+	// Cancel via Cancel() method
+	mgr.Cancel(reqID)
+	wg.Wait()
+
+	// Wait for events
+	events := obs.WaitForEvents(2, time.Second)
+	if len(events) < 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	if events[0].Type != EventRequestCreated {
+		t.Errorf("expected first event to be Created, got %v", events[0].Type)
+	}
+	if events[1].Type != EventRequestCancelled {
+		t.Errorf("expected second event to be Cancelled, got %v", events[1].Type)
 	}
 
 	mgr.Unsubscribe(obs)

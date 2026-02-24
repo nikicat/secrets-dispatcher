@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"strings"
 	"sync"
 
@@ -160,6 +161,8 @@ func (n *DBusNotifier) Close(id uint32) error {
 type Handler struct {
 	notifier Notifier
 	approver Approver
+	baseURL  string
+	openURL  func(string) // injectable for testing; defaults to xdg-open
 
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
@@ -167,10 +170,13 @@ type Handler struct {
 }
 
 // NewHandler creates a notification handler.
-func NewHandler(notifier Notifier, approver Approver) *Handler {
+// baseURL is the web UI URL opened when the user clicks the notification body.
+func NewHandler(notifier Notifier, approver Approver, baseURL string) *Handler {
 	return &Handler{
 		notifier:      notifier,
 		approver:      approver,
+		baseURL:       baseURL,
+		openURL:       func(u string) { exec.Command("xdg-open", u).Start() },
 		notifications: make(map[string]uint32),
 		requests:      make(map[uint32]string),
 	}
@@ -212,6 +218,9 @@ func (h *Handler) handleAction(action Action) {
 
 	var err error
 	switch action.ActionKey {
+	case "default":
+		h.openURL(h.baseURL)
+		return
 	case "approve":
 		err = h.approver.Approve(reqID)
 	case "deny":
@@ -257,7 +266,7 @@ func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string)
 func (h *Handler) handleCreated(req *approval.Request) {
 	summary, icon := h.notificationMeta(req)
 	body := h.formatBody(req)
-	actions := []string{"approve", "Approve", "deny", "Deny"}
+	actions := []string{"default", "", "approve", "Approve", "deny", "Deny"}
 
 	id, err := h.notifier.Notify(summary, body, icon, actions)
 	if err != nil {

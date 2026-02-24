@@ -346,7 +346,7 @@ func runServe(args []string) {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
 		} else {
 			desktopNotifier = notifier
-			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr))
+			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr), "http://"+*listenAddr)
 			approvalMgr.Subscribe(notifHandler)
 			slog.Debug("desktop notifications enabled")
 		}

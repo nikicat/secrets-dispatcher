@@ -233,20 +233,22 @@
         </details>
       {/if}
 
-      <div class="changed-files">
-        <span class="section-label">Changed files ({info.changed_files.length})</span>
-        {#each info.changed_files.slice(0, 5) as file}
-          <div class="file-path mono">{file}</div>
-        {/each}
-        {#if info.changed_files.length > 5}
-          <details>
-            <summary>{info.changed_files.length - 5} more files</summary>
-            {#each info.changed_files.slice(5) as file}
-              <div class="file-path mono">{file}</div>
-            {/each}
-          </details>
-        {/if}
-      </div>
+      {#if info.changed_files?.length}
+        <div class="changed-files">
+          <span class="section-label">Changed files ({info.changed_files.length})</span>
+          {#each info.changed_files.slice(0, 5) as file}
+            <div class="file-path mono">{file}</div>
+          {/each}
+          {#if info.changed_files.length > 5}
+            <details>
+              <summary>{info.changed_files.length - 5} more files</summary>
+              {#each info.changed_files.slice(5) as file}
+                <div class="file-path mono">{file}</div>
+              {/each}
+            </details>
+          {/if}
+        </div>
+      {/if}
 
       <details class="secondary-meta">
         <summary>More details</summary>

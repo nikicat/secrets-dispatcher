@@ -388,7 +388,7 @@
       {:else}
         <section>
           <h2>Pending Requests ({requests.length})</h2>
-          {#each requests as request (request.id)}
+          {#each [...requests].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) as request (request.id)}
             <RequestCard {request} onAction={handleAction} />
           {/each}
         </section>

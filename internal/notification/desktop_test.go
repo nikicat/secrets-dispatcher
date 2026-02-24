@@ -109,7 +109,7 @@ func (a *mockApprover) Deny(id string) error {
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
-	h := NewHandler(mock, approver)
+	h := NewHandler(mock, approver, "http://127.0.0.1:8484")
 	return h, mock, approver
 }
 
@@ -163,7 +163,7 @@ func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	wantActions := []string{"approve", "Approve", "deny", "Deny"}
+	wantActions := []string{"default", "", "approve", "Approve", "deny", "Deny"}
 	if len(call.actions) != len(wantActions) {
 		t.Fatalf("expected %d actions, got %d", len(wantActions), len(call.actions))
 	}
@@ -458,6 +458,50 @@ func TestHandler_ListenActions_Deny(t *testing.T) {
 	defer approver.mu.Unlock()
 	if len(approver.denied) != 1 || approver.denied[0] != "action-deny-1" {
 		t.Errorf("expected deny for 'action-deny-1', got %v", approver.denied)
+	}
+}
+
+func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
+	h, _, approver := newTestHandler()
+
+	var opened string
+	h.openURL = func(u string) { opened = u }
+
+	req := &approval.Request{
+		ID:     "action-default-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	h.mu.Lock()
+	nID := h.notifications["action-default-1"]
+	h.mu.Unlock()
+
+	actions := make(chan Action, 1)
+	actions <- Action{NotificationID: nID, ActionKey: "default"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		h.ListenActions(ctx, actions)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	if opened != "http://127.0.0.1:8484" {
+		t.Errorf("expected openURL called with base URL, got %q", opened)
+	}
+
+	approver.mu.Lock()
+	defer approver.mu.Unlock()
+	if len(approver.approved) != 0 || len(approver.denied) != 0 {
+		t.Errorf("default action should not call approve/deny")
 	}
 }
 

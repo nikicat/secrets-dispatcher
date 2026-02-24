@@ -22,13 +22,6 @@ export interface TestBackend {
 }
 
 /**
- * Find an available port by letting the OS assign one.
- */
-function getRandomPort(): number {
-  return 18000 + Math.floor(Math.random() * 1000);
-}
-
-/**
  * Generate a JWT token for testing.
  * Matches the format expected by the backend.
  */
@@ -63,62 +56,62 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
   const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
   await mkdir(stateDir, { recursive: true });
 
-  const port = getRandomPort();
-  const url = `http://localhost:${port}`;
-  const wsUrl = `ws://localhost:${port}/api/v1/ws`;
-
   // Build environment with optional version override
   const env: Record<string, string> = { ...process.env };
   if (options?.version) {
     env.TEST_BUILD_VERSION = options.version;
   }
 
-  const baseArgs = [
-    "serve",
-    "--api-only",
-    "--notifications=false",
-    "--state-dir",
-    stateDir,
-    "--listen",
-    `127.0.0.1:${port}`,
-    "--client",
-    "test-client",
-    ...(options?.extraArgs ?? []),
-  ];
+  const extraArgs = options?.extraArgs ?? [];
 
-  // Start the backend in API-only mode with isolated state
-  let proc = spawn(
-    BINARY_PATH,
-    baseArgs,
-    {
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-      detached: false,
-    },
-  );
+  const spawnBackend = (listenAddr: string, spawnEnv: Record<string, string>): ChildProcess => {
+    return spawn(
+      BINARY_PATH,
+      [
+        "serve",
+        "--api-only",
+        "--notifications=false",
+        "--state-dir",
+        stateDir,
+        "--listen",
+        listenAddr,
+        "--client",
+        "test-client",
+        ...extraArgs,
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: spawnEnv,
+        detached: false,
+      },
+    );
+  };
 
-  // Wait for the server to start
-  const waitForServer = async (process: ChildProcess): Promise<void> => {
-    await new Promise<void>((resolve, reject) => {
+  // Wait for the server to start and parse its actual listen port from log output.
+  const waitForServer = async (p: ChildProcess): Promise<number> => {
+    return new Promise<number>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("Timeout waiting for backend to start"));
       }, 5000);
 
       let output = "";
-      process.stderr?.on("data", (data: Buffer) => {
+      p.stderr?.on("data", (data: Buffer) => {
         output += data.toString();
         if (output.includes("API server started")) {
-          clearTimeout(timeout);
-          resolve();
+          const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)/);
+          if (match) {
+            clearTimeout(timeout);
+            resolve(parseInt(match[1], 10));
+          }
         }
       });
 
-      process.on("error", (err) => {
+      p.on("error", (err) => {
         clearTimeout(timeout);
         reject(err);
       });
 
-      process.on("exit", (code) => {
+      p.on("exit", (code) => {
         if (code !== 0 && code !== null) {
           clearTimeout(timeout);
           reject(new Error(`Backend exited with code ${code}: ${output}`));
@@ -127,7 +120,31 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
     });
   };
 
-  await waitForServer(proc);
+  const stopProcess = async (p: ChildProcess): Promise<void> => {
+    if (!p.pid || p.exitCode !== null) return;
+
+    return new Promise<void>((resolve) => {
+      let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+      p.on("exit", () => {
+        if (killTimer) clearTimeout(killTimer);
+        resolve();
+      });
+
+      p.kill("SIGTERM");
+
+      killTimer = setTimeout(() => {
+        try { p.kill("SIGKILL"); } catch { /* already dead */ }
+      }, 2000);
+    });
+  };
+
+  // Start with port 0 — let the OS assign an available port
+  let proc = spawnBackend("127.0.0.1:0", env);
+  const actualPort = await waitForServer(proc);
+
+  const url = `http://localhost:${actualPort}`;
+  const wsUrl = `ws://localhost:${actualPort}/api/v1/ws`;
 
   const getAuthToken = async (): Promise<string> => {
     const cookiePath = join(stateDir, ".cookie");
@@ -140,50 +157,28 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
     return `${url}/?token=${jwt}`;
   };
 
-  const stopProcess = async (process: ChildProcess): Promise<void> => {
-    if (process.pid) {
-      process.kill("SIGTERM");
-      await new Promise<void>((resolve) => {
-        process.on("exit", () => resolve());
-        setTimeout(resolve, 1000); // Force resolve after 1s
-      });
-    }
-  };
-
   const restart = async (restartOptions?: { version?: string }): Promise<void> => {
-    // Stop current process
     await stopProcess(proc);
 
-    // Build environment with optional version override
     const restartEnv: Record<string, string> = { ...process.env };
     if (restartOptions?.version) {
       restartEnv.TEST_BUILD_VERSION = restartOptions.version;
     }
 
-    // Start a new process
-    proc = spawn(
-      BINARY_PATH,
-      baseArgs,
-      {
-        stdio: ["ignore", "pipe", "pipe"],
-        env: restartEnv,
-        detached: false,
-      },
-    );
-
+    // Reuse the same port so the browser page can reconnect
+    proc = spawnBackend(`127.0.0.1:${actualPort}`, restartEnv);
     await waitForServer(proc);
   };
 
   const cleanup = async (): Promise<void> => {
     await stopProcess(proc);
-    // Clean up temp directory
     await rm(stateDir, { recursive: true, force: true });
   };
 
   return {
     url,
     wsUrl,
-    port,
+    port: actualPort,
     stateDir,
     process: proc,
     cleanup,

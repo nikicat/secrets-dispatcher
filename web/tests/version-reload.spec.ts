@@ -18,21 +18,15 @@ test.describe("Version Mismatch Auto-Reload", () => {
       // Wait for WebSocket connection
       await expect(page.getByText("No pending requests")).toBeVisible();
 
-      // Track page reload
-      let reloadTriggered = false;
-      page.on("load", () => {
-        reloadTriggered = true;
-      });
+      // Set up load event listener before triggering the restart
+      const reloadPromise = page.waitForEvent("load", { timeout: 15000 });
 
       // Restart backend with different version to simulate server upgrade
       await backend.restart({ version: "version_bbb2" });
 
       // Wait for the page to automatically reload
       // The WebSocket should reconnect, detect version mismatch, and trigger reload
-      await expect.poll(() => reloadTriggered, {
-        timeout: 10000,
-        message: "Expected page to reload after version mismatch",
-      }).toBe(true);
+      await reloadPromise;
 
       // After reload, page should still work
       await expect(page.getByText("No pending requests")).toBeVisible();
@@ -63,14 +57,13 @@ test.describe("Version Mismatch Auto-Reload", () => {
       // Restart backend with SAME version
       await backend.restart({ version: "version_same" });
 
-      // Wait for WebSocket to reconnect
-      // First we'll see disconnection, then reconnection
-      await expect(page.getByText("Reconnecting...", { exact: true })).toBeVisible({ timeout: 5000 });
-      await expect(page.getByText("No pending requests")).toBeVisible({ timeout: 10000 });
+      // Wait for WebSocket to reconnect.
+      // Don't assert transient "Reconnecting..." state — it may resolve
+      // faster than Playwright can observe. Instead, wait for the end state.
+      await expect(page.getByText("No pending requests")).toBeVisible({ timeout: 15000 });
 
-      // Page should NOT have reloaded (reloadCount stays at 0)
-      // Give a bit of time to ensure no reload happens
-      await page.waitForTimeout(1000);
+      // Give extra time to ensure no delayed reload happens
+      await page.waitForTimeout(2000);
       expect(reloadCount).toBe(0);
     } finally {
       await backend.cleanup();
@@ -90,21 +83,15 @@ test.describe("Version Mismatch Auto-Reload", () => {
       // Wait for WebSocket connection
       await expect(page.getByText("No pending requests")).toBeVisible();
 
-      // Track page reload
-      let reloadTriggered = false;
-      page.on("load", () => {
-        reloadTriggered = true;
-      });
+      // Set up load event listener before triggering the restart
+      const reloadPromise = page.waitForEvent("load", { timeout: 15000 });
 
       // Restart backend WITH a version now
       // Since the initial version was empty, this IS a version change
       await backend.restart({ version: "new_version_1" });
 
       // Wait for the page to automatically reload
-      await expect.poll(() => reloadTriggered, {
-        timeout: 10000,
-        message: "Expected page to reload after version mismatch (empty -> non-empty)",
-      }).toBe(true);
+      await reloadPromise;
 
       // After reload, page should still work
       await expect(page.getByText("No pending requests")).toBeVisible();

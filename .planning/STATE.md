@@ -10,11 +10,11 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 3 of 3 (UI and Observability)
-Plan: 1 of ? in current phase
+Plan: 3 of 3 in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 03-01 (desktop notification gpg_sign support, per-type icon, renamed get_secret title)
+Last activity: 2026-02-24 — Completed 03-03 (web UI gpg_sign card: purple border, type badges on all cards, session identity, history view, browser notifications)
 
-Progress: [█████░░░░░] 55%
+Progress: [████████░░] 80%
 
 ## Performance Metrics
 
@@ -34,10 +34,10 @@ Progress: [█████░░░░░] 55%
 |-------|-------|-------|----------|
 | 01-data-model-and-protocol-foundation | 3 | 24 min | 8 min |
 | 02-core-signing-flow | 4 | 16 min | 4 min |
-| 03-ui-and-observability | 1 | 3 min | 3 min |
+| 03-ui-and-observability | 3 | 8 min | 2.7 min |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (5 min), 02-02 (5 min), 02-03 (2 min), 02-04 (4 min), 03-01 (3 min)
+- Last 5 plans: 02-03 (2 min), 02-04 (4 min), 03-01 (3 min), 03-02 (2 min), 03-03 (3 min)
 - Trend: Consistent
 
 *Updated after each plan completion*
@@ -45,6 +45,8 @@ Progress: [█████░░░░░] 55%
 | Phase 02-core-signing-flow P03 | 2 | 2 tasks | 2 files |
 | Phase 02-core-signing-flow P04 | 4 | 2 tasks | 6 files |
 | Phase 03-ui-and-observability P01 | 3 | 1 task | 2 files |
+| Phase 03-ui-and-observability P02 | 2 | 2 tasks | 3 files |
+| Phase 03-ui-and-observability P03 | 3 | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -78,6 +80,10 @@ Recent decisions affecting current work:
 - [Phase 03-01]: Notifier interface adds icon as third positional param — simple stable three-field call, no options struct needed
 - [Phase 03-01]: notificationMeta() centralizes title+icon dispatch so handleCreated and formatBody stay independent
 - [Phase 03-01]: commitSubject() uses strings.IndexByte — zero extra allocation on single-line messages
+- [Phase 03-02]: Intentional struct duplication for GPGSignInfo in cli package — no import of internal/approval or internal/api
+- [Phase 03-02]: requestSummary (renamed from secretSummary) dispatches on GPGSignInfo != nil first, falls through to existing logic
+- [Phase 03-02]: Committer line in show output suppressed when Committer == Author (common case)
+- [Phase 03-02]: commitBody strips trailing newlines — git appends trailing newline to commit objects
 
 ### Pending Todos
 
@@ -91,5 +97,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 03-01-PLAN.md (desktop notification gpg_sign support, per-type icon, renamed get_secret title)
+Stopped at: Completed 03-02-PLAN.md (CLI gpg_sign display: SUMMARY column in list/history, git-log style show output)
 Resume file: None

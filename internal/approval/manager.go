@@ -74,9 +74,13 @@ type Request struct {
 	// SenderInfo contains information about the requesting process.
 	SenderInfo SenderInfo `json:"sender_info"`
 
+	// GPGSignInfo contains signing context for gpg_sign requests; nil for other types.
+	GPGSignInfo *GPGSignInfo `json:"gpg_sign_info,omitempty"`
+
 	// Internal: channel signaled when request is approved/denied
-	done   chan struct{}
-	result bool // true = approved, false = denied
+	done      chan struct{}
+	result    bool  // true = approved, false = denied
+	signature []byte // unexported; placeholder bytes set on approval for gpg_sign in Phase 1
 }
 
 // Resolution represents how a request was resolved.

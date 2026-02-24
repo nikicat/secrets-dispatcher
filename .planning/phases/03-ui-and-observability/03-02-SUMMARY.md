@@ -113,3 +113,13 @@ None — plan executed cleanly. Both tasks built and passed tests on first attem
 ---
 *Phase: 03-ui-and-observability*
 *Completed: 2026-02-24*
+
+## Self-Check: PASSED
+
+- FOUND: internal/cli/client.go
+- FOUND: internal/cli/format.go
+- FOUND: internal/cli/format_test.go
+- FOUND: .planning/phases/03-ui-and-observability/03-02-SUMMARY.md
+- FOUND commit: c294341 (Task 1)
+- FOUND commit: ab8b840 (Task 2)
+- FOUND commit: 0ecb0f6 (docs/metadata)

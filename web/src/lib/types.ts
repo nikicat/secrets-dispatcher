@@ -12,6 +12,17 @@ export interface SenderInfo {
   unit_name: string;
 }
 
+export interface GPGSignInfo {
+  repo_name: string;
+  commit_msg: string;
+  author: string;
+  committer: string;
+  key_id: string;
+  fingerprint?: string;
+  changed_files: string[];
+  parent_hash?: string;
+}
+
 export interface PendingRequest {
   id: string;
   client: string;
@@ -19,9 +30,10 @@ export interface PendingRequest {
   session: string;
   created_at: string;
   expires_at: string;
-  type: "get_secret" | "search";
+  type: "get_secret" | "search" | "gpg_sign";
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
+  gpg_sign_info?: GPGSignInfo;
 }
 
 export interface ClientInfo {

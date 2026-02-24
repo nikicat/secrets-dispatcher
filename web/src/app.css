@@ -11,6 +11,9 @@
   --color-danger: #ef4444;
   --color-danger-hover: #dc2626;
   --color-warning: #f59e0b;
+  --color-gpg-sign: #8b5cf6;
+  --color-gpg-sign-bg: rgba(139, 92, 246, 0.08);
+  --color-gpg-sign-border: #7c3aed;
   --radius: 8px;
   --radius-sm: 4px;
 }

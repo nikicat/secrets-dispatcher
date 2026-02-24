@@ -252,7 +252,7 @@ func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	remoteSocket := fs.String("remote-socket", "", "Path to the remote D-Bus socket (single-socket mode)")
-	socketsDir := fs.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher)")
+	socketsDir := fs.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher/sockets)")
 	clientName := fs.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn, error")
 	logFormat := fs.String("log-format", "text", "Log format: text (colored) or json")
@@ -624,7 +624,7 @@ func getSocketsDir() (string, error) {
 	if runtimeDir == "" {
 		return "", fmt.Errorf("XDG_RUNTIME_DIR is not set")
 	}
-	return filepath.Join(runtimeDir, "secrets-dispatcher"), nil
+	return filepath.Join(runtimeDir, "secrets-dispatcher", "sockets"), nil
 }
 
 // loadConfig loads a config file. An explicit path that doesn't exist is an error.

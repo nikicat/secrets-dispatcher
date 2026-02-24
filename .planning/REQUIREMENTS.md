@@ -21,7 +21,7 @@ Requirements for initial release. Each maps to roadmap phases.
 
 ### Display & Notifications
 
-- [ ] **DISP-01**: Desktop notification fires when a signing request arrives with commit summary
+- [x] **DISP-01**: Desktop notification fires when a signing request arrives with commit summary
 - [ ] **DISP-02**: Web UI displays signing request context (repo, message, author, files, key ID)
 - [ ] **DISP-03**: Web UI visually distinguishes `gpg_sign` requests from `get_secret` requests (different color/icon/label)
 - [ ] **DISP-04**: CLI `list` and `show` commands display `gpg_sign` request type with commit context
@@ -69,7 +69,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SIGN-07 | Phase 2 | Complete |
 | SIGN-08 | Phase 2 | Complete |
 | SIGN-09 | Phase 1 | Complete |
-| DISP-01 | Phase 3 | Pending |
+| DISP-01 | Phase 3 | Complete |
 | DISP-02 | Phase 3 | Pending |
 | DISP-03 | Phase 3 | Pending |
 | DISP-04 | Phase 3 | Pending |

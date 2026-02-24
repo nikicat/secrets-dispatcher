@@ -5,16 +5,16 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** The user always knows exactly what they're cryptographically signing before it happens.
-**Current focus:** Phase 2 — Core Signing Flow
+**Current focus:** Phase 3 — UI and Observability
 
 ## Current Position
 
-Phase: 2 of 3 (Core Signing Flow)
-Plan: 4 of 5 in current phase
+Phase: 3 of 3 (UI and Observability)
+Plan: 1 of ? in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 02-04 (thin client: DaemonClient, Run(), SetupGitConfig, gpg-sign subcommand wiring in main.go)
+Last activity: 2026-02-24 — Completed 03-01 (desktop notification gpg_sign support, per-type icon, renamed get_secret title)
 
-Progress: [████░░░░░░] 50%
+Progress: [█████░░░░░] 55%
 
 ## Performance Metrics
 
@@ -34,15 +34,17 @@ Progress: [████░░░░░░] 50%
 |-------|-------|-------|----------|
 | 01-data-model-and-protocol-foundation | 3 | 24 min | 8 min |
 | 02-core-signing-flow | 4 | 16 min | 4 min |
+| 03-ui-and-observability | 1 | 3 min | 3 min |
 
 **Recent Trend:**
-- Last 5 plans: 01-03 (8 min), 02-01 (5 min), 02-02 (5 min), 02-03 (2 min), 02-04 (4 min)
+- Last 5 plans: 02-01 (5 min), 02-02 (5 min), 02-03 (2 min), 02-04 (4 min), 03-01 (3 min)
 - Trend: Consistent
 
 *Updated after each plan completion*
 | Phase 02-core-signing-flow P01 | 5 | 2 tasks | 5 files |
 | Phase 02-core-signing-flow P03 | 2 | 2 tasks | 2 files |
 | Phase 02-core-signing-flow P04 | 4 | 2 tasks | 6 files |
+| Phase 03-ui-and-observability P01 | 3 | 1 task | 2 files |
 
 ## Accumulated Context
 
@@ -73,6 +75,9 @@ Recent decisions affecting current work:
 - [Phase 02-04]: NewServer/NewServerWithProvider accept unixSocketPath as last parameter — explicit over implicit; tests pass "" to skip socket
 - [Phase 02-04]: timeout (request_expired) exits 1 not 2 — user-visible outcome like denial, not a system error
 - [Phase 02-04]: Shell wrapper required for git gpg.program — git uses execvp not shell-split, so "binary subcommand" would fail without wrapper
+- [Phase 03-01]: Notifier interface adds icon as third positional param — simple stable three-field call, no options struct needed
+- [Phase 03-01]: notificationMeta() centralizes title+icon dispatch so handleCreated and formatBody stay independent
+- [Phase 03-01]: commitSubject() uses strings.IndexByte — zero extra allocation on single-line messages
 
 ### Pending Todos
 
@@ -86,5 +91,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 02-04-PLAN.md (thin client: DaemonClient, Run(), SetupGitConfig, gpg-sign subcommand wiring)
+Stopped at: Completed 03-01-PLAN.md (desktop notification gpg_sign support, per-type icon, renamed get_secret title)
 Resume file: None

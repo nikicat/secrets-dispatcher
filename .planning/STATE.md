@@ -10,9 +10,9 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 ## Current Position
 
 Phase: 1 of 3 (Data Model and Protocol Foundation)
-Plan: 2 of 3 in current phase
+Plan: 3 of 3 in current phase
 Status: In progress
-Last activity: 2026-02-24 — Completed 01-02 (API handler & WebSocket extension)
+Last activity: 2026-02-24 — Completed 01-03 (GPGSign unit tests)
 
 Progress: [██░░░░░░░░] 20%
 
@@ -48,6 +48,8 @@ Recent decisions affecting current work:
 - 01-02: Used *approval.GPGSignInfo directly in PendingRequest (no field duplication like SenderInfo)
 - 01-02: Placeholder signature via base64 literal in OnEvent — real signing in Phase 2
 - Pre-Phase 2: Must decide `gpg.program` installation UX (shell wrapper vs. symlink dispatch) before Phase 2 implementation starts — research recommends shell wrapper as simpler
+- [Phase 01]: Approve() and Deny() now delete from pending before closing done channel to handle CreateGPGSignRequest cleanup (no blocking goroutine defer)
+- [Phase 01]: findEvent() helper used for event assertions — notify() dispatches async goroutines making ordering non-deterministic
 
 ### Pending Todos
 
@@ -61,5 +63,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-02-24
-Stopped at: Completed 01-02-PLAN.md (API handler & WebSocket extension)
+Stopped at: Completed 01-03-PLAN.md (GPGSign unit tests)
 Resume file: None

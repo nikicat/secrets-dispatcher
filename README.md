@@ -1,22 +1,31 @@
 # secrets-dispatcher
 
-A secure proxy for dispatching secrets from a local [Secret Service](https://specifications.freedesktop.org/secret-service/latest/) to remote servers.
+A secure approval gateway for secret operations. Proxies [Secret Service](https://specifications.freedesktop.org/secret-service/latest/) requests from remote servers and intercepts git GPG commit signing — both with per-operation approval prompts showing full context.
 
 ## Problem
 
-When accessing secrets from untrusted remote servers:
-- Forwarding `gpg-agent` exposes ALL secrets (authorizes by key, not by secret)
-- No visibility into which secret is requested or by which process
-- Compromised server can silently bulk-decrypt everything
+**Remote secrets:** Forwarding `gpg-agent` to untrusted servers exposes ALL secrets (authorizes by key, not by secret). A compromised server can silently bulk-decrypt everything with no visibility into what's being accessed.
+
+**Git commit signing:** GPG signing happens silently — `git commit -S` invokes gpg with no human-visible context about what's being signed. Automated or compromised environments can sign arbitrary commits.
 
 ## Solution
 
-`secrets-dispatcher` acts as a controlled gateway:
+`secrets-dispatcher` acts as a controlled gateway for both:
+
+**Secret Service proxy:**
 - Connects to remote server's D-Bus via SSH tunnel
 - Registers as `org.freedesktop.secrets` on that bus
 - Proxies requests to local Secret Service (gopass, gnome-keyring, etc.)
-- Shows approval prompts with full context
-- Enforces per-client access rules
+
+**Git GPG signing proxy:**
+- Replaces `gpg` as git's `gpg.program`
+- Intercepts signing requests and shows commit context (repo, author, message, changed files)
+- Delegates to real `gpg` only after explicit approval
+
+Both modes share:
+- Web UI, CLI, and desktop notification approval
+- Audit logging
+- Configurable timeout (default 5 minutes)
 
 ## Architecture
 
@@ -37,6 +46,7 @@ SERVER (untrusted)                         LAPTOP (trusted)
 
 ## Features
 
+**Secret Service proxy:**
 - [ ] Per-secret authorization (not per-key like gpg-agent)
 - [ ] Full context display (secret path, client identity)
 - [ ] Access control rules (allow/deny/prompt per client per path)
@@ -45,7 +55,90 @@ SERVER (untrusted)                         LAPTOP (trusted)
 - [x] Standard libsecret compatibility (no client-side changes)
 - [ ] Secret Service DH encryption for secrets in transit
 
-## Usage
+**Git GPG commit signing:**
+- [x] Per-commit approval with full context (repo, author, message, changed files)
+- [x] Web UI with approve/deny buttons
+- [x] Desktop notifications with inline approve/deny actions
+- [x] CLI approve/deny (`secrets-dispatcher approve <id>`)
+- [x] One-command git setup (`secrets-dispatcher gpg-sign setup`)
+- [x] Graceful cancellation (Ctrl+C cancels the pending request)
+- [ ] Auto-accept/reject rules
+
+## Git GPG Commit Signing
+
+### Prerequisites
+
+- GPG key pair configured (`gpg --list-secret-keys`)
+- `secrets-dispatcher serve` running (or installed as a systemd service)
+
+### Setup
+
+**1. Configure git to use secrets-dispatcher as the GPG program:**
+
+```bash
+secrets-dispatcher gpg-sign setup
+```
+
+This creates a wrapper script at `~/.local/bin/secrets-dispatcher-gpg` and sets `gpg.program` in your global git config. Use `--local` for per-repo configuration instead.
+
+**2. Enable commit signing in git** (if not already):
+
+```bash
+git config --global commit.gpgsign true
+```
+
+### Usage
+
+Sign commits as usual — secrets-dispatcher intercepts transparently:
+
+```bash
+git commit -S -m "my signed commit"
+```
+
+When git invokes the signing program, secrets-dispatcher:
+
+1. Parses the commit object to extract context (repo name, author, commit message, changed files)
+2. Sends a signing request to the daemon via Unix socket
+3. Blocks until you approve or deny
+
+Approve via any of:
+- **Web UI** — open with `secrets-dispatcher login`
+- **Desktop notification** — click Approve/Deny
+- **CLI** — `secrets-dispatcher list` then `secrets-dispatcher approve <id>`
+
+If you interrupt (`Ctrl+C`), the pending request is automatically cancelled.
+
+### How It Works
+
+```
+git commit -S
+    │
+    ▼
+git calls: secrets-dispatcher-gpg --status-fd=2 -bsau <keyID>
+    │                                      stdin: raw commit object
+    ▼
+secrets-dispatcher gpg-sign (thin client)
+    │  Parses commit: repo, author, message, changed files
+    │  Connects to daemon via Unix socket
+    ▼
+secrets-dispatcher serve (daemon)
+    │  Creates approval request
+    │  Notifies: web UI, desktop notification
+    │  Waits for user decision
+    ▼
+User approves ──► daemon runs real gpg ──► signature returned to git
+User denies   ──► git commit fails (exit 1)
+```
+
+### Debugging
+
+Set `SECRETS_DISPATCHER_DEBUG=1` to see verbose output from the thin client:
+
+```bash
+SECRETS_DISPATCHER_DEBUG=1 git commit -S -m "test"
+```
+
+## Secret Service Proxy
 
 ### Prerequisites
 
@@ -95,7 +188,7 @@ ssh -L "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/secrets-dispatcher/myserver.sock:
 secret-tool lookup service myapp username myuser
 ```
 
-### How It Works
+### How It Works (Secret Service)
 
 ```
 LAPTOP                                  SERVER
@@ -229,4 +322,8 @@ Redirect to a file for persistent logging:
 
 ## Status
 
-Phase 1 (basic proxy with logging) is complete. See `docs/REQUIREMENTS.md` for the full roadmap.
+- **Secret Service proxy:** Basic proxy with audit logging is complete.
+- **Git GPG commit signing:** Fully functional — setup, signing flow, web UI, desktop notifications, CLI, and cancellation all implemented.
+- **Approval UI:** Web UI with real-time updates, desktop notifications with inline actions, and CLI are all working.
+
+See `docs/REQUIREMENTS.md` for the full roadmap.

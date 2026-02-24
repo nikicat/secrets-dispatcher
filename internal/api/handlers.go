@@ -22,7 +22,8 @@ type Handlers struct {
 	remoteSocket string
 	clientName   string
 	auth         *Auth
-	testMode     bool // When true, enables test-only endpoints
+	testMode     bool      // When true, enables test-only endpoints
+	gpgRunner    GPGRunner // Executes the real gpg binary; injectable for tests
 }
 
 // NewHandlers creates new API handlers for single-socket mode.
@@ -32,6 +33,7 @@ func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, aut
 		remoteSocket: remoteSocket,
 		clientName:   clientName,
 		auth:         auth,
+		gpgRunner:    &defaultGPGRunner{},
 	}
 }
 
@@ -41,6 +43,7 @@ func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider,
 		manager:        manager,
 		clientProvider: provider,
 		auth:           auth,
+		gpgRunner:      &defaultGPGRunner{},
 	}
 }
 

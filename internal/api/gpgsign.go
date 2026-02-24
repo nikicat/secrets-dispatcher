@@ -1,11 +1,53 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"os/exec"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 )
+
+// GPGRunner finds and executes the real gpg binary.
+type GPGRunner interface {
+	FindGPG() (string, error)
+	RunGPG(gpgPath, keyID string, commitObject []byte) (signature, status []byte, exitCode int, err error)
+}
+
+// defaultGPGRunner implements GPGRunner using the real gpg binary from PATH.
+type defaultGPGRunner struct{}
+
+// FindGPG delegates to gpgsign.FindRealGPG to locate the real gpg binary,
+// skipping self (prevents the thin client calling itself when installed as gpg.program).
+func (d *defaultGPGRunner) FindGPG() (string, error) {
+	return gpgsign.FindRealGPG()
+}
+
+// RunGPG invokes the real gpg binary with --status-fd=2 -bsau <keyID>,
+// feeding commitObject to stdin. Signature bytes come from stdout; status
+// lines from stderr (separate buffers — mixing them corrupts the signature).
+func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) ([]byte, []byte, int, error) {
+	cmd := exec.Command(gpgPath, "--status-fd=2", "-bsau", keyID)
+	cmd.Stdin = bytes.NewReader(commitObject)
+	var sigBuf, statusBuf bytes.Buffer
+	cmd.Stdout = &sigBuf
+	cmd.Stderr = &statusBuf
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return nil, statusBuf.Bytes(), 1, fmt.Errorf("gpg exec failed: %w", err)
+		}
+	}
+	return sigBuf.Bytes(), statusBuf.Bytes(), exitCode, nil
+}
 
 // GPGSignRequest is the POST body for /api/v1/gpg-sign/request.
 type GPGSignRequest struct {

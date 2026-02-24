@@ -57,7 +57,7 @@ function generateJWT(secret: string): string {
  * Start a test instance of the secrets-dispatcher backend.
  * Creates an isolated config directory and starts the server in API-only mode.
  */
-export async function startTestBackend(options?: { version?: string }): Promise<TestBackend> {
+export async function startTestBackend(options?: { version?: string; extraArgs?: string[] }): Promise<TestBackend> {
   // Create temp directory for test
   const testId = randomBytes(8).toString("hex");
   const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
@@ -73,20 +73,23 @@ export async function startTestBackend(options?: { version?: string }): Promise<
     env.TEST_BUILD_VERSION = options.version;
   }
 
+  const baseArgs = [
+    "serve",
+    "--api-only",
+    "--notifications=false",
+    "--state-dir",
+    stateDir,
+    "--listen",
+    `127.0.0.1:${port}`,
+    "--client",
+    "test-client",
+    ...(options?.extraArgs ?? []),
+  ];
+
   // Start the backend in API-only mode with isolated state
   let proc = spawn(
     BINARY_PATH,
-    [
-      "serve",
-      "--api-only",
-      "--notifications=false",
-      "--state-dir",
-      stateDir,
-      "--listen",
-      `127.0.0.1:${port}`,
-      "--client",
-      "test-client",
-    ],
+    baseArgs,
     {
       stdio: ["ignore", "pipe", "pipe"],
       env,
@@ -160,17 +163,7 @@ export async function startTestBackend(options?: { version?: string }): Promise<
     // Start a new process
     proc = spawn(
       BINARY_PATH,
-      [
-        "serve",
-        "--api-only",
-        "--notifications=false",
-        "--state-dir",
-        stateDir,
-        "--listen",
-        `127.0.0.1:${port}`,
-        "--client",
-        "test-client",
-      ],
+      baseArgs,
       {
         stdio: ["ignore", "pipe", "pipe"],
         env: restartEnv,

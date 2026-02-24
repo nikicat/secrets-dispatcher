@@ -494,8 +494,8 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 	cancel()
 	<-done
 
-	if opened != "http://127.0.0.1:8484" {
-		t.Errorf("expected openURL called with base URL, got %q", opened)
+	if opened != "http://127.0.0.1:8484?request=action-default-1" {
+		t.Errorf("expected openURL called with request URL, got %q", opened)
 	}
 
 	approver.mu.Lock()

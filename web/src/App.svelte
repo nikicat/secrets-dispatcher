@@ -18,6 +18,10 @@
   let version = $state("");
   let useAbsoluteTime = $state(localStorage.getItem('timeFormat') === 'absolute');
 
+  // Single-request mode: when opened from a desktop notification
+  let focusRequestId = $state<string | null>(null);
+  let focusRequestGone = $state(false); // true when the focused request was cancelled/expired
+
   function toggleTimeFormat() {
     useAbsoluteTime = !useAbsoluteTime;
     localStorage.setItem('timeFormat', useAbsoluteTime ? 'absolute' : 'relative');
@@ -51,12 +55,15 @@
         showRequestNotification(req);
       },
       onRequestResolved: (id) => {
+        if (focusRequestId === id) window.close();
         requests = requests.filter((r) => r.id !== id);
       },
       onRequestExpired: (id) => {
+        if (focusRequestId === id) focusRequestGone = true;
         requests = requests.filter((r) => r.id !== id);
       },
       onRequestCancelled: (id) => {
+        if (focusRequestId === id) focusRequestGone = true;
         requests = requests.filter((r) => r.id !== id);
       },
       onClientConnected: (client) => {
@@ -101,11 +108,16 @@
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
 
+    // Check for single-request mode (opened from desktop notification)
+    focusRequestId = params.get("request");
+
     if (token) {
       // Exchange JWT for session cookie
       const success = await exchangeToken(token);
-      // Clear token from URL
-      window.history.replaceState({}, "", "/");
+      // Clear token from URL, but preserve other params
+      params.delete("token");
+      const remaining = params.toString();
+      window.history.replaceState({}, "", remaining ? `/?${remaining}` : "/");
 
       if (success) {
         authState = "authenticated";
@@ -246,12 +258,12 @@
 
 <div class="app-layout" class:sidebar-open={sidebarOpen}>
   <!-- Sidebar overlay for mobile -->
-  {#if sidebarOpen}
+  {#if sidebarOpen && !focusRequestId}
     <button class="sidebar-overlay" onclick={closeSidebar} aria-label="Close sidebar"></button>
   {/if}
 
   <!-- Sidebar -->
-  {#if authState === "authenticated"}
+  {#if authState === "authenticated" && !focusRequestId}
     <aside class="sidebar" class:open={sidebarOpen}>
       <div class="sidebar-header">
         <h3>Connected Clients</h3>
@@ -295,7 +307,7 @@
           </svg>
         </a>
       </div>
-      {#if authState === "authenticated"}
+      {#if authState === "authenticated" && !focusRequestId}
         <div class="header-actions">
           <div class="status-indicator">
             <span class="status-dot" class:ok={connected} class:error={!connected}></span>
@@ -343,6 +355,20 @@
           <p class="error-message">{error}</p>
           <button class="btn-retry" onclick={handleRetry}>Retry</button>
         </div>
+      {:else if focusRequestId}
+        <!-- Single-request mode: opened from desktop notification -->
+        {@const focusedRequest = requests.find(r => r.id === focusRequestId)}
+        {#if focusedRequest}
+          <RequestCard request={focusedRequest} onAction={handleAction} />
+        {:else if focusRequestGone}
+          <div class="empty-state">
+            <p>Request is no longer pending</p>
+          </div>
+        {:else}
+          <div class="empty-state">
+            <p>Request not found</p>
+          </div>
+        {/if}
       {:else if requests.length === 0}
         <div class="empty-state">
           <p>No pending requests</p>

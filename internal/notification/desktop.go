@@ -219,7 +219,7 @@ func (h *Handler) handleAction(action Action) {
 	var err error
 	switch action.ActionKey {
 	case "default":
-		h.openURL(h.baseURL)
+		h.openURL(h.baseURL + "?request=" + reqID)
 		return
 	case "approve":
 		err = h.approver.Approve(reqID)

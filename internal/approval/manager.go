@@ -299,6 +299,7 @@ func (m *Manager) Approve(id string) error {
 	}
 
 	req.result = true
+	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
 
@@ -316,6 +317,7 @@ func (m *Manager) Deny(id string) error {
 	}
 
 	req.result = false
+	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
 

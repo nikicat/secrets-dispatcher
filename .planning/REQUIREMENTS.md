@@ -60,30 +60,30 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SIGN-01 | — | Pending |
-| SIGN-02 | — | Pending |
-| SIGN-03 | — | Pending |
-| SIGN-04 | — | Pending |
-| SIGN-05 | — | Pending |
-| SIGN-06 | — | Pending |
-| SIGN-07 | — | Pending |
-| SIGN-08 | — | Pending |
-| SIGN-09 | — | Pending |
-| DISP-01 | — | Pending |
-| DISP-02 | — | Pending |
-| DISP-03 | — | Pending |
-| DISP-04 | — | Pending |
-| DISP-05 | — | Pending |
-| DISP-06 | — | Pending |
-| ERR-01 | — | Pending |
-| ERR-02 | — | Pending |
-| ERR-03 | — | Pending |
+| SIGN-01 | Phase 2 | Pending |
+| SIGN-02 | Phase 2 | Pending |
+| SIGN-03 | Phase 2 | Pending |
+| SIGN-04 | Phase 2 | Pending |
+| SIGN-05 | Phase 2 | Pending |
+| SIGN-06 | Phase 1 | Pending |
+| SIGN-07 | Phase 2 | Pending |
+| SIGN-08 | Phase 2 | Pending |
+| SIGN-09 | Phase 1 | Pending |
+| DISP-01 | Phase 3 | Pending |
+| DISP-02 | Phase 3 | Pending |
+| DISP-03 | Phase 3 | Pending |
+| DISP-04 | Phase 3 | Pending |
+| DISP-05 | Phase 3 | Pending |
+| DISP-06 | Phase 3 | Pending |
+| ERR-01 | Phase 2 | Pending |
+| ERR-02 | Phase 2 | Pending |
+| ERR-03 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 18 total
-- Mapped to phases: 0
-- Unmapped: 18
+- Mapped to phases: 18
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-24*
-*Last updated: 2026-02-24 after initial definition*
+*Last updated: 2026-02-24 after roadmap creation*

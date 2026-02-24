@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -136,6 +137,49 @@ func (h *Handlers) HandleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is a gpg_sign request that needs real GPG invocation.
+	req := h.manager.GetPending(id)
+	if req == nil {
+		writeError(w, "request not found or expired", http.StatusNotFound)
+		return
+	}
+
+	if req.Type == approval.RequestTypeGPGSign && req.GPGSignInfo != nil {
+		// Find real gpg binary.
+		gpgPath, err := h.gpgRunner.FindGPG()
+		if err != nil {
+			slog.Error("failed to find real gpg", "error", err)
+			// Approve with failure — thin client will see ExitCode != 0.
+			if apErr := h.manager.ApproveGPGFailed(id, nil, 2); apErr != nil {
+				writeError(w, "request not found or expired", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, ActionResponse{Status: "approved"})
+			return
+		}
+
+		// Run real gpg with the stored commit object.
+		sig, status, exitCode, err := h.gpgRunner.RunGPG(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject))
+		if err != nil || exitCode != 0 {
+			slog.Error("gpg signing failed", "error", err, "exit_code", exitCode)
+			if apErr := h.manager.ApproveGPGFailed(id, status, exitCode); apErr != nil {
+				writeError(w, "request not found or expired", http.StatusNotFound)
+				return
+			}
+			writeJSON(w, ActionResponse{Status: "approved"})
+			return
+		}
+
+		// Success — store signature and status, then approve.
+		if err := h.manager.ApproveWithSignature(id, sig, status); err != nil {
+			writeError(w, "request not found or expired", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, ActionResponse{Status: "approved"})
+		return
+	}
+
+	// Non-gpg_sign requests: existing flow.
 	if err := h.manager.Approve(id); err != nil {
 		if err == approval.ErrNotFound {
 			writeError(w, "request not found or expired", http.StatusNotFound)

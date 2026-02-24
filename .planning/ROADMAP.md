@@ -27,10 +27,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. The `GPGSignInfo` struct carries all commit context fields: repo name, commit message, author, committer, key ID/fingerprint, changed files list, parent hash
   3. The API types `GPGSignRequest` and `GPGSignResponse` are defined and the route is registered in the server (even if the handler is a stub)
   4. Signing requests expire via the existing timeout mechanism without any code change to the approval manager
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: TBD
+- [ ] 01-01-PLAN.md — Approval data model: GPGSignInfo struct, RequestTypeGPGSign constant, CreateGPGSignRequest non-blocking manager method
+- [ ] 01-02-PLAN.md — API handler, WebSocket Signature extension, PendingRequest serialization, route registration
+- [ ] 01-03-PLAN.md — Unit tests for manager method, HTTP handler, expiry, and WebSocket event
 
 ### Phase 2: Core Signing Flow
 **Goal**: Running `git commit -S` with `gpg.program` set to the `gpg-sign` subcommand blocks until the user approves in the daemon, then commits with a valid GPG signature — or exits non-zero if denied or daemon is unreachable
@@ -68,6 +70,6 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Data Model and Protocol Foundation | 0/? | Not started | - |
+| 1. Data Model and Protocol Foundation | 0/3 | Not started | - |
 | 2. Core Signing Flow | 0/? | Not started | - |
 | 3. UI and Observability | 0/? | Not started | - |

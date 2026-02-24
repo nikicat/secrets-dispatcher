@@ -10,7 +10,7 @@ Requirements for initial release. Each maps to roadmap phases.
 ### Signing Flow
 
 - [ ] **SIGN-01**: `gpg-sign` subcommand intercepts git's `gpg.program` call and blocks until user approves or denies
-- [ ] **SIGN-02**: Thin client parses raw commit object from stdin to extract author, committer, message, and parent hash
+- [x] **SIGN-02**: Thin client parses raw commit object from stdin to extract author, committer, message, and parent hash
 - [ ] **SIGN-03**: Thin client resolves repository name from working directory via `git rev-parse --show-toplevel`
 - [ ] **SIGN-04**: Thin client collects changed files list via `git diff --cached --name-only`
 - [ ] **SIGN-05**: Thin client sends commit data + context to daemon via API as JSON (commit object as string field)
@@ -61,7 +61,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SIGN-01 | Phase 2 | Pending |
-| SIGN-02 | Phase 2 | Pending |
+| SIGN-02 | Phase 2 | Complete |
 | SIGN-03 | Phase 2 | Pending |
 | SIGN-04 | Phase 2 | Pending |
 | SIGN-05 | Phase 2 | Pending |

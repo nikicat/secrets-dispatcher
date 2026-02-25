@@ -48,7 +48,7 @@ Plans:
 ### Phase 5: Core Flow
 **Goal**: End-to-end secret request and GPG signing flows work through the VT TUI: request arrives on system D-Bus, appears on VT8, keyboard y/n resolves it, result is returned to the caller
 **Depends on**: Phase 4
-**Requirements**: DBUS-03, DBUS-04, DBUS-05, DBUS-06, DBUS-07, VT-01, VT-02, VT-03, VT-04, VT-05, VT-06, VT-09, GPG-02, GPG-03, TEST-01, TEST-02
+**Requirements**: DBUS-03, DBUS-04, DBUS-06, DBUS-07, VT-01, VT-02, VT-03, VT-04, VT-05, VT-06, VT-09, GPG-02, GPG-03, TEST-01, TEST-02
 **Success Criteria** (what must be TRUE):
   1. A secret request sent via system D-Bus appears on VT8 with the secret path, requester PID/UID/process name, and parent process chain
   2. A GPG signing request appears on VT8 with repo name, commit message, author, changed files, and key ID
@@ -65,7 +65,7 @@ Plans:
 ### Phase 6: Desktop Integration
 **Goal**: Desktop applications transparently use the companion's secret store via the user-space agent; git commits trigger VT approval via the updated GPG thin client; PAM automatically starts and stops the companion session
 **Depends on**: Phase 5
-**Requirements**: COMP-03, COMP-04, AGENT-01, AGENT-02, AGENT-03, AGENT-04, AGENT-05, GPG-01
+**Requirements**: COMP-03, COMP-04, AGENT-01, AGENT-02, AGENT-03, AGENT-04, AGENT-05, DBUS-05, GPG-01
 **Success Criteria** (what must be TRUE):
   1. An application calling the standard Secret Service API on the session bus receives secrets from gopass-secret-service running as `secrets-nb`, with no application-level changes required
   2. A desktop notification appears when a secret request arrives, showing the requester process name and PID

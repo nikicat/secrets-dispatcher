@@ -21,9 +21,9 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 - [x] **DBUS-01**: Daemon registers on system bus, accepting requests from desktop user UID only
 - [x] **DBUS-02**: D-Bus policy file gates access: companion user owns name, desktop user can call methods
-- [ ] **DBUS-03**: Dispatcher exposes standard freedesktop Secret Service D-Bus protocol on system bus
+- [ ] **DBUS-03**: Dispatcher exposes D-Bus interface for secret and signing requests on system bus (custom protocol; full freedesktop Secret Service lives on session bus via agent in Phase 6)
 - [ ] **DBUS-04**: GPG signing uses existing D-Bus protocol if available (research needed), otherwise custom interface
-- [ ] **DBUS-05**: System D-Bus signals restricted to requesting user's processes only (D-Bus policy or unicast)
+- [ ] **DBUS-05**: System D-Bus signals restricted to requesting user's processes only (D-Bus policy or unicast) — deferred from Phase 5 (no signals emitted; blocking RPC only)
 - [ ] **DBUS-06**: Request expiry/timeout enforced (same as v1.0 approval manager)
 - [ ] **DBUS-07**: Graceful error when companion not running — actionable message to desktop user
 
@@ -120,7 +120,7 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | DBUS-02 | Phase 4 | Complete |
 | DBUS-03 | Phase 5 | Pending |
 | DBUS-04 | Phase 5 | Pending |
-| DBUS-05 | Phase 5 | Pending |
+| DBUS-05 | Phase 6 | Pending |
 | DBUS-06 | Phase 5 | Pending |
 | DBUS-07 | Phase 5 | Pending |
 | VT-01 | Phase 5 | Pending |

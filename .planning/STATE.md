@@ -10,24 +10,24 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 4 of 8 (Foundation)
-Plan: 0 of ? in current phase
-Status: Ready to plan
-Last activity: 2026-02-25 — v2.0 roadmap created, ready to plan Phase 4
+Plan: 1 of ? in current phase
+Status: In progress
+Last activity: 2026-02-25 — completed 04-01 (companion provisioning subcommand)
 
-Progress: [░░░░░░░░░░░░░░░░░░░░] 0% (v2.0 phases)
+Progress: [░░░░░░░░░░░░░░░░░░░░] 5% (v2.0 phases, 1 plan complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v2.0): 0
-- Average duration: —
-- Total execution time: —
+- Total plans completed (v2.0): 1
+- Average duration: 7 min
+- Total execution time: 7 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| v2.0 not started | — | — | — |
+| 04-foundation | 1 | 7 min | 7 min |
 
 *Updated after each plan completion*
 
@@ -41,6 +41,12 @@ Key decisions affecting v2.0 work:
 - VT for trusted I/O: only kernel-enforced isolated I/O path on Linux; Wayland compositor is untrusted
 - System D-Bus only: drop HTTP/WS/Web UI to minimize attack surface
 - Standard Secret Service protocol between dispatcher and gopass-secret-service
+
+Key decisions from 04-01 (companion provisioning):
+- Regular user (no --system flag): systemd --user requires normal UID range; nologin shell prevents interactive login
+- PROV-03 Phase 4 scope = directory skeleton only; gopass init + GPG key generation deferred to Phase 5
+- geteuidFunc injectable for root-check testability without running tests as root
+- check.go implements 10 checks (not 9 as plan stated) — home-exists and home-mode-0700 are separate for better diagnostics
 
 ### Critical Pitfalls (from research)
 
@@ -62,5 +68,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Roadmap created for v2.0 (Phases 4-8), ready to plan Phase 4
+Stopped at: Completed 04-01-PLAN.md (companion provisioning subcommand)
 Resume file: None

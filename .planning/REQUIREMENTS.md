@@ -9,18 +9,18 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 ### Companion User
 
-- [ ] **COMP-01**: Companion user (secrets-nb) exists as a real user with separate UID and 0700 home directory
-- [ ] **COMP-02**: gopass store and GPG keyring reside under companion user's home, inaccessible to desktop user
+- [x] **COMP-01**: Companion user (secrets-nb) exists as a real user with separate UID and 0700 home directory
+- [x] **COMP-02**: gopass store and GPG keyring reside under companion user's home, inaccessible to desktop user
 - [ ] **COMP-03**: Companion session starts automatically when desktop user logs in (PAM hook, fire-and-forget)
 - [ ] **COMP-04**: Companion session stops when all desktop user sessions end
-- [ ] **COMP-05**: systemd linger enabled for companion user so systemd --user persists
+- [x] **COMP-05**: systemd linger enabled for companion user so systemd --user persists
 - [ ] **COMP-06**: User can explicitly lock the store via Lock() D-Bus method (clears gpg-agent cache)
 - [ ] **COMP-07**: User can explicitly unlock the store via Unlock() D-Bus method
 
 ### System D-Bus Interface
 
 - [ ] **DBUS-01**: Daemon registers on system bus, accepting requests from desktop user UID only
-- [ ] **DBUS-02**: D-Bus policy file gates access: companion user owns name, desktop user can call methods
+- [x] **DBUS-02**: D-Bus policy file gates access: companion user owns name, desktop user can call methods
 - [ ] **DBUS-03**: Dispatcher exposes standard freedesktop Secret Service D-Bus protocol on system bus
 - [ ] **DBUS-04**: GPG signing uses existing D-Bus protocol if available (research needed), otherwise custom interface
 - [ ] **DBUS-05**: System D-Bus signals restricted to requesting user's processes only (D-Bus policy or unicast)
@@ -55,18 +55,18 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 ### Provisioning
 
-- [ ] **PROV-01**: Provisioning tool creates companion user, home dir, D-Bus policy, systemd units
-- [ ] **PROV-02**: Provisioning tool installs PAM hook
-- [ ] **PROV-03**: Provisioning tool configures gopass and GPG under companion user
-- [ ] **PROV-04**: `sd-provision --check` validates full deployment (pass/fail per component)
-- [ ] **PROV-05**: Provisioning tool is idempotent (safe to re-run)
+- [x] **PROV-01**: Provisioning tool creates companion user, home dir, D-Bus policy, systemd units
+- [x] **PROV-02**: Provisioning tool installs PAM hook
+- [x] **PROV-03**: Provisioning tool configures gopass and GPG under companion user
+- [x] **PROV-04**: `sd-provision --check` validates full deployment (pass/fail per component)
+- [x] **PROV-05**: Provisioning tool is idempotent (safe to re-run)
 
 ### Testing
 
 - [ ] **TEST-01**: Unit tests with interface mocks for VT, D-Bus connections, Secret Service client
 - [ ] **TEST-02**: Integration tests with private D-Bus daemon (runs as regular user, no root)
 - [ ] **TEST-03**: VM E2E tests validating real multi-user, VT, PAM, systemd deployment
-- [ ] **TEST-04**: CI-compatible: unit + integration run in CI; VM E2E gated by environment variable
+- [x] **TEST-04**: CI-compatible: unit + integration run in CI; VM E2E gated by environment variable
 
 ### Infrastructure
 
@@ -109,15 +109,15 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| COMP-01 | Phase 4 | Pending |
-| COMP-02 | Phase 4 | Pending |
+| COMP-01 | Phase 4 | Complete |
+| COMP-02 | Phase 4 | Complete |
 | COMP-03 | Phase 6 | Pending |
 | COMP-04 | Phase 6 | Pending |
-| COMP-05 | Phase 4 | Pending |
+| COMP-05 | Phase 4 | Complete |
 | COMP-06 | Phase 7 | Pending |
 | COMP-07 | Phase 7 | Pending |
 | DBUS-01 | Phase 4 | Pending |
-| DBUS-02 | Phase 4 | Pending |
+| DBUS-02 | Phase 4 | Complete |
 | DBUS-03 | Phase 5 | Pending |
 | DBUS-04 | Phase 5 | Pending |
 | DBUS-05 | Phase 5 | Pending |
@@ -140,15 +140,15 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | GPG-01 | Phase 6 | Pending |
 | GPG-02 | Phase 5 | Pending |
 | GPG-03 | Phase 5 | Pending |
-| PROV-01 | Phase 4 | Pending |
-| PROV-02 | Phase 4 | Pending |
-| PROV-03 | Phase 4 | Pending |
-| PROV-04 | Phase 4 | Pending |
-| PROV-05 | Phase 4 | Pending |
+| PROV-01 | Phase 4 | Complete |
+| PROV-02 | Phase 4 | Complete |
+| PROV-03 | Phase 4 | Complete |
+| PROV-04 | Phase 4 | Complete |
+| PROV-05 | Phase 4 | Complete |
 | TEST-01 | Phase 5 | Pending |
 | TEST-02 | Phase 5 | Pending |
 | TEST-03 | Phase 8 | Pending |
-| TEST-04 | Phase 4 | Pending |
+| TEST-04 | Phase 4 | Complete |
 | INFRA-01 | Phase 4 | Pending |
 | INFRA-02 | Phase 4 | Pending |
 

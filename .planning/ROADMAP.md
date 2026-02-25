@@ -22,7 +22,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 
 **Milestone Goal:** Move secrets-dispatcher and gopass-secret-service to a companion user with kernel-enforced trusted I/O, eliminating userspace attack surface.
 
-- [ ] **Phase 4: Foundation** — Companion user + system D-Bus policy + provisioning skeleton
+- [x] **Phase 4: Foundation** — Companion user + system D-Bus policy + provisioning skeleton (1/2 plans done)
 - [ ] **Phase 5: Core Flow** — Approval manager wired to system D-Bus + VT TUI end-to-end
 - [ ] **Phase 6: Desktop Integration** — User-space agent + PAM hook + GPG thin client update
 - [ ] **Phase 7: Hardening** — Differentiating features and operational polish
@@ -42,7 +42,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
   5. All daemon output routes to systemd-journald; HTTP/REST/WebSocket are disabled by default
 **Plans**: 2 plans
 Plans:
-- [ ] 04-01-PLAN.md — Provisioning tool: companion user creation, D-Bus policy, systemd unit, PAM hook, check validator
+- [x] 04-01-PLAN.md — Provisioning tool: companion user creation, D-Bus policy, systemd unit, PAM hook, check validator
 - [ ] 04-02-PLAN.md — Daemon skeleton: D-Bus stub registration, sd-notify, integration tests with private dbus-daemon
 
 ### Phase 5: Core Flow
@@ -98,7 +98,7 @@ Plans:
 | 1. Data Model and Protocol Foundation | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 2. Core Signing Flow | v1.0 | 4/4 | Complete | 2026-02-24 |
 | 3. UI and Observability | v1.0 | 3/3 | Complete | 2026-02-24 |
-| 4. Foundation | v2.0 | 0/2 | Not started | - |
+| 4. Foundation | v2.0 | 1/2 | In progress | - |
 | 5. Core Flow | v2.0 | 0/? | Not started | - |
 | 6. Desktop Integration | v2.0 | 0/? | Not started | - |
 | 7. Hardening | v2.0 | 0/? | Not started | - |

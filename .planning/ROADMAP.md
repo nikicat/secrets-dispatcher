@@ -22,7 +22,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 
 **Milestone Goal:** Move secrets-dispatcher and gopass-secret-service to a companion user with kernel-enforced trusted I/O, eliminating userspace attack surface.
 
-- [x] **Phase 4: Foundation** — Companion user + system D-Bus policy + provisioning skeleton (1/2 plans done)
+- [x] **Phase 4: Foundation** — Companion user + system D-Bus policy + daemon skeleton (2/2 plans done)
 - [ ] **Phase 5: Core Flow** — Approval manager wired to system D-Bus + VT TUI end-to-end
 - [ ] **Phase 6: Desktop Integration** — User-space agent + PAM hook + GPG thin client update
 - [ ] **Phase 7: Hardening** — Differentiating features and operational polish
@@ -43,7 +43,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 **Plans**: 2 plans
 Plans:
 - [x] 04-01-PLAN.md — Provisioning tool: companion user creation, D-Bus policy, systemd unit, PAM hook, check validator
-- [ ] 04-02-PLAN.md — Daemon skeleton: D-Bus stub registration, sd-notify, integration tests with private dbus-daemon
+- [x] 04-02-PLAN.md — Daemon skeleton: D-Bus stub registration, sd-notify, integration tests with private dbus-daemon
 
 ### Phase 5: Core Flow
 **Goal**: End-to-end secret request and GPG signing flows work through the VT TUI: request arrives on system D-Bus, appears on VT8, keyboard y/n resolves it, result is returned to the caller

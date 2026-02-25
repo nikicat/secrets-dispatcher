@@ -19,7 +19,7 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 ### System D-Bus Interface
 
-- [ ] **DBUS-01**: Daemon registers on system bus, accepting requests from desktop user UID only
+- [x] **DBUS-01**: Daemon registers on system bus, accepting requests from desktop user UID only
 - [x] **DBUS-02**: D-Bus policy file gates access: companion user owns name, desktop user can call methods
 - [ ] **DBUS-03**: Dispatcher exposes standard freedesktop Secret Service D-Bus protocol on system bus
 - [ ] **DBUS-04**: GPG signing uses existing D-Bus protocol if available (research needed), otherwise custom interface
@@ -70,8 +70,8 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 ### Infrastructure
 
-- [ ] **INFRA-01**: All daemon logging goes to systemd-journald (structured slog)
-- [ ] **INFRA-02**: HTTP/REST API, WebSocket, and Web UI are opt-in (disabled by default), enabled via config flag or CLI option
+- [x] **INFRA-01**: All daemon logging goes to systemd-journald (structured slog)
+- [x] **INFRA-02**: HTTP/REST API, WebSocket, and Web UI are opt-in (disabled by default), enabled via config flag or CLI option
 
 ## Future Requirements
 
@@ -116,7 +116,7 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | COMP-05 | Phase 4 | Complete |
 | COMP-06 | Phase 7 | Pending |
 | COMP-07 | Phase 7 | Pending |
-| DBUS-01 | Phase 4 | Pending |
+| DBUS-01 | Phase 4 | Complete |
 | DBUS-02 | Phase 4 | Complete |
 | DBUS-03 | Phase 5 | Pending |
 | DBUS-04 | Phase 5 | Pending |
@@ -149,8 +149,8 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | TEST-02 | Phase 5 | Pending |
 | TEST-03 | Phase 8 | Pending |
 | TEST-04 | Phase 4 | Complete |
-| INFRA-01 | Phase 4 | Pending |
-| INFRA-02 | Phase 4 | Pending |
+| INFRA-01 | Phase 4 | Complete |
+| INFRA-02 | Phase 4 | Complete |
 
 **Coverage:**
 - v1 requirements: 42 total

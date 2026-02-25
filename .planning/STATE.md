@@ -10,24 +10,24 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 4 of 8 (Foundation)
-Plan: 1 of ? in current phase
+Plan: 2 of 2 in current phase
 Status: In progress
-Last activity: 2026-02-25 — completed 04-01 (companion provisioning subcommand)
+Last activity: 2026-02-25 — completed 04-02 (daemon skeleton with D-Bus stubs and integration tests)
 
-Progress: [░░░░░░░░░░░░░░░░░░░░] 5% (v2.0 phases, 1 plan complete)
+Progress: [█░░░░░░░░░░░░░░░░░░░] 10% (v2.0 phases, 2 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v2.0): 1
-- Average duration: 7 min
-- Total execution time: 7 min
+- Total plans completed (v2.0): 2
+- Average duration: 6 min
+- Total execution time: 12 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 04-foundation | 1 | 7 min | 7 min |
+| 04-foundation | 2 | 12 min | 6 min |
 
 *Updated after each plan completion*
 
@@ -47,6 +47,11 @@ Key decisions from 04-01 (companion provisioning):
 - PROV-03 Phase 4 scope = directory skeleton only; gopass init + GPG key generation deferred to Phase 5
 - geteuidFunc injectable for root-check testability without running tests as root
 - check.go implements 10 checks (not 9 as plan stated) — home-exists and home-mode-0700 are separate for better diagnostics
+
+Key decisions from 04-02 (daemon skeleton):
+- Config.BusAddress is the test seam: empty = ConnectSystemBus() (prod), non-empty = Connect(addr) (tests with private bus)
+- godbus introspect subpackage (introspect.Methods + introspect.NewIntrospectable) — dbus.DefaultIntrospectHandler does not exist
+- Numeric UID string (os.Getuid()) in dbus-daemon policy config user= attribute — avoids username lookup issues in test environments
 
 ### Critical Pitfalls (from research)
 
@@ -68,5 +73,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-25
-Stopped at: Completed 04-01-PLAN.md (companion provisioning subcommand)
+Stopped at: Completed 04-02-PLAN.md (daemon skeleton with D-Bus stubs and integration tests)
 Resume file: None

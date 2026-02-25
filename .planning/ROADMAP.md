@@ -55,7 +55,12 @@ Plans:
   3. Pressing `y` on VT8 approves the request and unblocks the requesting process; pressing `n` denies it with an error returned to the caller
   4. If the daemon crashes while holding VT_PROCESS mode, the VT returns to VT_AUTO and the user can switch VTs normally
   5. Integration tests with a private D-Bus daemon verify method signatures and signal delivery without root
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 05-01-PLAN.md — Foundation utilities: procchain package, VT ioctl helpers, tty group provisioning patch
+- [ ] 05-02-PLAN.md — bubbletea TUI: two-pane master-detail layout, request rendering, y/n approval, lock modes
+- [ ] 05-03-PLAN.md — D-Bus handler wiring: RequestSecret/RequestSign methods, TUI startup in daemon.Run(), activation file
+- [ ] 05-04-PLAN.md — Integration tests and GPG-02: D-Bus wire protocol tests, concurrent callers, pinentry-tty config
 
 ### Phase 6: Desktop Integration
 **Goal**: Desktop applications transparently use the companion's secret store via the user-space agent; git commits trigger VT approval via the updated GPG thin client; PAM automatically starts and stops the companion session
@@ -98,8 +103,8 @@ Plans:
 | 1. Data Model and Protocol Foundation | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 2. Core Signing Flow | v1.0 | 4/4 | Complete | 2026-02-24 |
 | 3. UI and Observability | v1.0 | 3/3 | Complete | 2026-02-24 |
-| 4. Foundation | v2.0 | 1/2 | In progress | - |
-| 5. Core Flow | v2.0 | 0/? | Not started | - |
+| 4. Foundation | v2.0 | 2/2 | Complete | - |
+| 5. Core Flow | v2.0 | 0/4 | Not started | - |
 | 6. Desktop Integration | v2.0 | 0/? | Not started | - |
 | 7. Hardening | v2.0 | 0/? | Not started | - |
 | 8. VM E2E | v2.0 | 0/? | Not started | - |

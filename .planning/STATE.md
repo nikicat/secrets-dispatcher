@@ -2,18 +2,17 @@
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-02-24)
+See: .planning/PROJECT.md (updated 2026-02-25)
 
-**Core value:** The user always knows exactly what they're approving before it happens.
-**Current focus:** v1.0 shipped — planning next milestone
+**Core value:** The user always knows exactly what they're approving before it happens, and no process in their desktop session can observe or tamper with the approval.
+**Current focus:** v2.0 Privilege Separation — defining requirements
 
 ## Current Position
 
-Phase: All complete (v1.0 shipped)
-Status: Milestone complete
-Last activity: 2026-02-24 — v1.0 GPG Commit Signing shipped
-
-Progress: [██████████] 100%
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-02-25 — Milestone v2.0 started
 
 ## Accumulated Context
 
@@ -27,10 +26,10 @@ None.
 
 ### Blockers/Concerns
 
-None — milestone shipped cleanly.
+None.
 
 ## Session Continuity
 
-Last session: 2026-02-24
-Stopped at: v1.0 milestone completion
+Last session: 2026-02-25
+Stopped at: Milestone v2.0 initialization
 Resume file: None

@@ -40,7 +40,10 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
   3. The companion daemon can register `net.mowaka.SecretsDispatcher1` on the system bus; a desktop-user process can call stub methods; a process running as any other UID receives a policy rejection
   4. Unit and integration tests compile and run without root, real VT, or real companion user
   5. All daemon output routes to systemd-journald; HTTP/REST/WebSocket are disabled by default
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 04-01-PLAN.md — Provisioning tool: companion user creation, D-Bus policy, systemd unit, PAM hook, check validator
+- [ ] 04-02-PLAN.md — Daemon skeleton: D-Bus stub registration, sd-notify, integration tests with private dbus-daemon
 
 ### Phase 5: Core Flow
 **Goal**: End-to-end secret request and GPG signing flows work through the VT TUI: request arrives on system D-Bus, appears on VT8, keyboard y/n resolves it, result is returned to the caller
@@ -95,7 +98,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 | 1. Data Model and Protocol Foundation | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 2. Core Signing Flow | v1.0 | 4/4 | Complete | 2026-02-24 |
 | 3. UI and Observability | v1.0 | 3/3 | Complete | 2026-02-24 |
-| 4. Foundation | v2.0 | 0/? | Not started | - |
+| 4. Foundation | v2.0 | 0/2 | Not started | - |
 | 5. Core Flow | v2.0 | 0/? | Not started | - |
 | 6. Desktop Integration | v2.0 | 0/? | Not started | - |
 | 7. Hardening | v2.0 | 0/? | Not started | - |

@@ -19,6 +19,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/cli"
 	"github.com/nikicat/secrets-dispatcher/internal/companion"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/daemon"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
@@ -60,6 +61,8 @@ func main() {
 		runGPGSign(os.Args[2:])
 	case "provision":
 		runProvision(os.Args[2:])
+	case "daemon":
+		runDaemon(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:
@@ -84,6 +87,7 @@ Commands:
   gpg-sign      GPG signing proxy (called by git as gpg.program)
   gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
   provision     Provision companion user and deployment artifacts (requires root)
+  daemon        Run companion daemon (registers on system D-Bus)
 
 Run '%s <command> -h' for command-specific help.
 `, progName, progName)
@@ -630,6 +634,44 @@ func runProvision(args []string) {
 
 	if err := companion.Provision(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runDaemon handles the "daemon" subcommand.
+// Registers the companion daemon on the system D-Bus as net.mowaka.SecretsDispatcher1.
+// Sends READY=1 via sd-notify after registration, then blocks until SIGTERM/SIGINT.
+func runDaemon(args []string) {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	busAddress := fs.String("bus-address", "", "D-Bus address to connect to (default: system bus; non-empty used by tests)")
+	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn, error")
+	fs.Parse(args)
+
+	level := parseLogLevel(*logLevel)
+
+	// Mirror the slog setup from runServe: JSON under systemd, tint for terminals.
+	underSystemd := os.Getenv("INVOCATION_ID") != ""
+	var handler slog.Handler
+	if underSystemd {
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
+	} else {
+		handler = tint.NewHandler(os.Stderr, &tint.Options{
+			Level:   level,
+			NoColor: false,
+		})
+	}
+	slog.SetDefault(slog.New(handler))
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	cfg := daemon.Config{
+		BusAddress: *busAddress,
+		Version:    "dev",
+	}
+
+	if err := daemon.Run(ctx, cfg); err != nil {
+		slog.Error("daemon error", "err", err)
 		os.Exit(1)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/cli"
+	"github.com/nikicat/secrets-dispatcher/internal/companion"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
@@ -57,6 +58,8 @@ func main() {
 		runService(os.Args[2:])
 	case "gpg-sign":
 		runGPGSign(os.Args[2:])
+	case "provision":
+		runProvision(os.Args[2:])
 	case "-h", "--help", "help":
 		printUsage()
 	default:
@@ -80,6 +83,7 @@ Commands:
   service       Manage the systemd user service
   gpg-sign      GPG signing proxy (called by git as gpg.program)
   gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
+  provision     Provision companion user and deployment artifacts (requires root)
 
 Run '%s <command> -h' for command-specific help.
 `, progName, progName)
@@ -585,6 +589,46 @@ func runGPGSignSetup(args []string) {
 	}
 
 	if err := gpgsign.SetupGitConfig(scope); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runProvision handles the "provision" subcommand.
+// Without --check, it creates the companion user and all deployment artifacts.
+// With --check, it validates an existing deployment and prints pass/fail per component.
+func runProvision(args []string) {
+	fs := flag.NewFlagSet("provision", flag.ExitOnError)
+	desktopUser := fs.String("user", "", "Desktop username to provision companion for (default: $SUDO_USER)")
+	companionName := fs.String("companion-name", "", "Override companion username (default: secrets-{user})")
+	homeBase := fs.String("home-base", "/var/lib/secret-companion", "Parent directory for companion homes")
+	check := fs.Bool("check", false, "Validate deployment instead of provisioning")
+	fs.Parse(args)
+
+	cfg := companion.Config{
+		DesktopUser:   *desktopUser,
+		CompanionName: *companionName,
+		HomeBase:      *homeBase,
+	}
+
+	if *check {
+		results := companion.Check(cfg)
+		allPass := true
+		for _, r := range results {
+			status := "[PASS]"
+			if !r.Pass {
+				status = "[FAIL]"
+				allPass = false
+			}
+			fmt.Printf("%s %s: %s\n", status, r.Name, r.Message)
+		}
+		if !allPass {
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := companion.Provision(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

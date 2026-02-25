@@ -1,221 +1,264 @@
 # Project Research Summary
 
-**Project:** secrets-dispatcher — GPG Commit Signing Approval Gate
-**Domain:** GPG signing proxy / human-in-the-loop commit approval for autonomous AI agents
-**Researched:** 2026-02-24
-**Confidence:** HIGH
+**Project:** secrets-dispatcher v2.0 — Privilege Separation + VT Trusted I/O
+**Domain:** Linux companion-user secret management with kernel-enforced trusted I/O
+**Researched:** 2026-02-25
+**Confidence:** HIGH (stack and architecture), MEDIUM (PAM/VT edge cases)
 
 ## Executive Summary
 
-The GPG commit signing milestone adds a second approval-gated request type to the existing secrets-dispatcher daemon. Git's `gpg.program` configuration allows the binary to intercept every `git commit -S` call — receiving the raw commit object on stdin, blocking until the user approves or denies, then returning the PGP-armored signature (from the real gpg binary) on stdout. The design solves the "blind signing" problem: today, gpg-agent/pinentry shows only "approve GPG signing" with no context about which Claude Code session is committing what. The feature presents the full commit context (message, author, changed files, repo, key ID) before asking for approval, mirroring Ledger's "clear signing" principle for hardware wallets.
+secrets-dispatcher v2.0 is a Linux-specific security hardening milestone that moves secret management and GPG signing approval out of the desktop user's process space and into a companion user (`secrets-nb`) isolated by a real OS UID boundary. The core insight: any software running as the same user as the daemon can read its memory, inject approvals, or observe secrets in flight. A separate UID makes this impossible at the kernel level — no ptrace, no `/proc/pid/mem` access across UIDs. The companion user owns the secret store, the GPG keyring, and a dedicated virtual terminal (VT8), which is the only trusted I/O channel: input on a VT bypasses the Wayland/X11 compositor entirely, giving a tamper-evident approval surface that no desktop process can observe or inject into.
 
-The implementation requires zero new Go dependencies. Every component is covered by the existing stdlib plus the project's current dependencies. The thin `gpg-sign` subcommand acts as the `gpg.program` entrypoint, collects context, POSTs a synchronous blocking request to the daemon, and relays the signature back to git. The daemon invokes the real gpg binary after user approval — it never touches private key material. The existing `approval.Manager`, observer pipeline, WebSocket handler, desktop notifications, CLI, and web UI all extend naturally to the new `gpg_sign` request type with additive changes.
+The recommended architecture connects two worlds through a single, narrow interface: system D-Bus. The companion daemon registers `net.mowaka.SecretsDispatcher1` on the system bus; a small user-space agent running as the desktop user claims `org.freedesktop.secrets` on the session bus and proxies calls across the UID boundary. Desktop applications are unaware of the architecture change — they call the standard Secret Service API on the session bus exactly as before. GPG signing requests arrive via system D-Bus directly. All approval decisions are rendered on VT8 using a Bubble Tea v2 TUI, and optionally acknowledged via desktop notification action buttons for routine approvals. The HTTP/WebSocket/Web UI stack from v1.0 is dropped entirely.
 
-The critical risks are all implementation-level protocol details: wrong status-fd routing corrupts the PGP output silently, binary-unsafe stdin transport produces BAD signatures, and a daemon running without a TTY breaks pinentry. All three are well-understood and preventable with specific patterns documented in PITFALLS.md. The overall implementation confidence is HIGH — the git gpg.program interface is verified against the git source, the existing codebase patterns are well-suited for extension, and the required changes are surgical.
-
----
+The primary risks cluster around three areas: VT ownership (the ioctl-based VT_PROCESS mode has documented race conditions and can lock the display if the daemon crashes), PAM session lifecycle (the companion session must start asynchronously relative to PAM login — any blocking call in pam_exec locks all logins), and the cross-bus Secret Service proxy (D-Bus object paths are bus-relative; the user-agent must maintain a full path-mapping proxy, not a thin forwarder). These are all solvable with patterns established in the existing codebase and the research documents, but they require deliberate attention during implementation.
 
 ## Key Findings
 
 ### Recommended Stack
 
-No new dependencies are needed. The feature is implemented entirely with Go stdlib (`os/exec`, `bufio`, `bytes`, `strings`, `encoding/base64`, `net/http`) plus the existing project dependencies. The `gpg-sign` client parses the raw git commit object format (a stable, well-documented plaintext format) in approximately 50 lines of stdlib code — go-git, ProtonMail/go-crypto, and Assuan protocol libraries were evaluated and all rejected as unnecessary or incompatible with the project's design.
-
-The only external runtime dependency is the system `gpg` binary, which users must already have for commit signing. The daemon shells out to real gpg after approval, which keeps gpg-agent, pinentry, and passphrase caching working exactly as the user has configured them.
-
-One unresolved installation UX question: `gpg.program` in git config must be a path to a single executable, not a command with arguments. Three options exist — a shell wrapper script, a symlink dispatched by `filepath.Base(os.Args[0])`, or a separate installed binary. The shell wrapper is simplest. This decision must be made before Phase 1 implementation.
+Four new Go dependencies are needed for v2.0. The v1.0 web stack (coder/websocket, Svelte, Deno, Playwright) is dropped entirely. All other existing dependencies are retained.
 
 **Core technologies:**
-- `os/exec` (stdlib): gpg invocation in daemon, git subcommands in client — no PGP library needed
-- `bufio`/`bytes`/`strings` (stdlib): commit object parsing from stdin — stable text format, ~50 lines
-- `encoding/base64` (stdlib): binary-safe transport of raw commit bytes over JSON/HTTP
-- `net/http` (stdlib): synchronous blocking POST from client to daemon — simpler than WebSocket for this flow
-- Existing `internal/approval`, `internal/api`, `internal/cli`: extended additively, interfaces unchanged
+- `charm.land/bubbletea/v2` v2.0.0 (released 2026-02-24): TUI framework for VT approval display — chosen over rivo/tview because Bubble Tea's Elm Architecture maps cleanly onto the 3-state approval machine (pending/approved/denied) and v2's "Cursed Renderer" supports custom `io.Writer` output (needed to write to `/dev/ttyN` instead of stdout)
+- `github.com/msteinert/pam/v2` v2.1.0: PAM module development via CGo — needed if pam_exec proves insufficient for cross-user session lifecycle; start with pam_exec and escalate only if needed
+- `github.com/coreos/go-systemd/v22` v22.7.0: logind API for companion session lifecycle — provides typed bindings to `org.freedesktop.login1` for tracking when all desktop user sessions end; using direct godbus would require hand-writing the same scaffolding
+- `golang.org/x/sys` v0.41.0: upgrade from v0.27.0 — required by new dependencies; VT ioctl constants (`VT_ACTIVATE`, `VT_SETMODE`, etc.) are not in this package and must be defined inline from the stable Linux UAPI
+
+**VT constants must be inlined:** `golang.org/x/sys/unix` does not define VT ioctl constants. They must be declared in an `internal/vt/consts.go` file using numeric literals from `<linux/vt.h>`. These values are stable Linux UAPI.
+
+**Secret Service client:** Implemented directly on `godbus/dbus/v5` — no separate Secret Service library. Both available libraries (`go-libsecret`, `go-dbus-keyring`) are unmaintained.
+
+See `.planning/research/STACK.md` for complete dependency set and build targets.
 
 ### Expected Features
 
-The feature divides cleanly into table-stakes (required for functional correctness) and differentiators (highest-value context signals for the user's decision). Everything else is explicitly deferred.
+The v2.0 milestone has a clear feature boundary. Every table-stakes item directly supports the core security model; removing any one of them breaks the isolation guarantee.
 
 **Must have (table stakes):**
-- Intercept `gpg.program` call and block until user decision — without this the feature does not exist
-- Parse raw commit object from stdin: author, committer, message, parent hash
-- Show repository name — disambiguates parallel Claude Code sessions
-- Show key fingerprint / key ID — user must know whose key is vouching
-- Approve / deny gate with return signature on approve, non-zero exit on deny
-- Desktop notification on incoming request — user is away while agent runs
-- Web UI display of signing request context
-- CLI display extension for `gpg_sign` type
-- Request expiry via existing timeout mechanism
+- Companion user (`secrets-nb`) with separate UID and 0700 home directory — foundation of all isolation
+- System D-Bus interface with D-Bus policy file gating access by desktop user UID — the sole cross-UID IPC channel
+- VT-based trusted I/O (VT8) with VT_SETMODE VT_PROCESS to resist unauthorized switching — the secure display
+- VT TUI showing full approval context: requester process name, binary path, parent chain, secret path or commit details
+- User-space agent claiming `org.freedesktop.secrets` on session bus, proxying to system D-Bus — transparent to apps
+- PAM session hook to start/stop companion session on desktop login/logout — invisible to the user
+- gopass-secret-service running on companion session bus (configuration change only — no code changes)
+- GPG thin client updated from Unix socket/HTTP to system D-Bus method call
+- Provisioning tool (`sd-provision`) with `--check` validation mode
+- Three-layer test infrastructure: unit (mock interfaces), integration (private D-Bus daemon), VM E2E (real multi-user)
 
 **Should have (differentiators):**
-- Changed files list (`git diff --cached --name-only`) — highest-value context signal; what code is being signed
-- Session/client identity shown prominently — critical for parallel-session disambiguation
-- Visual distinction of `gpg_sign` requests in web UI (different color/icon/label)
-- File count summary in list view for quick scan across pending requests
-- Parent commit short hash — anchors signing request to history
+- Requester parent process chain displayed on VT (walk /proc PPid up to 5 levels)
+- Desktop notification with requester identity in body ("Claude Code (pid 31245) wants openai/key")
+- Structured audit log (slog JSON to companion home directory)
+- `sd-provision --check` deployment validation
+- `Lock()` method for explicit store lock without logout
+- Graceful "companion not running" error with actionable desktop notification
 
-**Defer to v2+:**
-- GPG tag signing (different object format, separate milestone)
-- SSH commit signing (different mechanism entirely)
-- Bulk approve for rebase scenarios (defeats the purpose of the gate for single commits)
-- Policy-based auto-approval (undermines human-in-the-loop model)
-- Full diff content display (payload too large; user can open IDE)
+**Defer to post-v2.0:**
+- pam-gnupg automatic GPG passphrase presetting from login password
+- Notification action button "Review on VT" -> chvt (requires CAP_SYS_TTY_CONFIG grant, privilege escalation concern)
+- Non-git GPG signing (tag signing), SSH commit signing
+- Audit log rotation
+
+**Anti-features (deliberately excluded):**
+- polkit authorization, graphical approval UI, Wayland secure surfaces — all route through the compositor, breaking the trust model
+- HTTP/REST API, Web UI, WebSocket — dropped entirely; no reason to maintain them with D-Bus + VT covering all use cases
+- Policy-based auto-approval, bulk approve — undermine human-in-the-loop model
+
+See `.planning/research/FEATURES.md` for complete feature dependency graph and VT information hierarchy.
 
 ### Architecture Approach
 
-The architecture is a clean extension of the existing layered design. The central `approval.Manager` is used unchanged — it already handles blocking, timeouts, and observer notifications. New components are: a `gpg-sign` subcommand (thin client, `main.go` dispatch + `internal/gpgsign/`), a GPG context collector package (`internal/gpgsign/context.go`), and a new API handler (`HandleGPGSign` in `internal/api/handlers.go`). Modified components are additive: a new `GPGSignInfo` struct on `approval.Request`, new types in `internal/api/types.go`, a new route in `server.go`, and display extensions in the CLI formatter, notification handler, and web UI.
-
-The key architectural decision is synchronous HTTP for signature delivery: the client POSTs and blocks; the daemon returns the signature in the HTTP response after approval. This is simpler than a WebSocket round-trip and matches the inherently blocking nature of git's `gpg.program` subprocess call.
+The system splits cleanly across a UID boundary. The companion side owns all secrets and approval logic; the desktop side owns a thin agent that bridges the standard Secret Service API to the system bus. The existing `approval.Manager` is reused unchanged — it is transport-agnostic. The existing `internal/proxy` handlers are reused with direction inverted: v1.0 proxied remote session bus -> local session bus; v2.0 proxies system bus -> companion session bus. The HTTP/WebSocket/API layer is removed wholesale.
 
 **Major components:**
-1. `gpg-sign` subcommand (thin client) — receives git's args, collects commit context, calls daemon, relays signature to stdout
-2. `internal/gpgsign/context.go` (NEW) — parses raw commit object from stdin; runs `git rev-parse` and `git diff --cached` for repo context and changed files
-3. `internal/api` handler extension — `HandleGPGSign` endpoint: creates `gpg_sign` approval request, blocks on manager, invokes real gpg on approval, returns signature
-4. `approval.Request` extension — adds `GPGSignInfo` struct with all commit context fields; raw `CommitObject []byte` stored in-memory only (not serialized to observers)
-5. Web UI card extension — displays GPG sign context distinctly from secret requests
+1. **System D-Bus interface** (`internal/systemdbus/`) — registers `net.mowaka.SecretsDispatcher1` on system bus; accepts GetSecret/GPGSign/Approve/Deny from desktop user; calls `approval.Manager`; emits RequestCreated/RequestResolved signals
+2. **VT manager + TUI** (`internal/vt/`) — opens `/dev/tty8`, sets VT_SETMODE VT_PROCESS, runs Bubble Tea TUI for approval display and keyboard input; hands fd to bubbletea via `tea.WithInput/WithOutput`
+3. **User-space agent** (`cmd/user-agent/`) — runs as desktop user; claims `org.freedesktop.secrets` on session bus; maintains path-mapping proxy to system bus; listens to signals and calls notification daemon
+4. **PAM hook** (`internal/pam/hook.go`) — fire-and-forget `pam_exec.so` call: starts companion session on `open_session`, decrements reference count and stops on `close_session`
+5. **Provisioning tool** (`cmd/provision/`) — creates companion user, home dir, D-Bus policy file, systemd units, PAM config fragment; runs all gopass/GPG setup as `secrets-nb`; `--check` validates full setup
 
-**Build order (dependency graph):**
-1. Approval types (`internal/approval/types.go`) — `RequestTypeGPGSign` + `GPGSignInfo`
-2. API types (`internal/api/types.go`) — `GPGSignRequest`, `GPGSignResponse`, `GPGSignInfo` on `PendingRequest`
-3. `internal/gpgsign/context.go` (new package) — commit parser + context collector
-4. `internal/api/handlers.go` — `HandleGPGSign` (depends on steps 1-3)
-5. Route registration in `server.go` (depends on step 4)
-6. Notification and CLI formatting extensions (depends on step 1)
-7. `gpg-sign` subcommand in `main.go` + `internal/gpgsign/client.go` (depends on steps 2-5)
-8. Web UI updates (depends on steps 2, 5)
+**Reused unchanged:** `internal/approval/`, `internal/gpgsign/commit.go`, `internal/gpgsign/gpg.go`, `internal/logging/`, `internal/proxy/session.go`, `internal/proxy/collection.go`, `internal/proxy/item.go`, `internal/testutil/mockservice.go`
 
-Steps 3 and 7 can be developed independently once step 2 types are stable.
+**Dropped:** `internal/api/` (entire HTTP/WebSocket/Web UI layer), `internal/cli/` (HTTP client), `internal/gpgsign/daemon.go`
+
+See `.planning/research/ARCHITECTURE.md` for full component inventory, data flow sequences, and system D-Bus interface definition.
 
 ### Critical Pitfalls
 
-1. **Wrong `--status-fd` direction corrupts PGP output** — Forward git's exact args verbatim via `os.Args[1:]`; never reconstruct them. If `--status-fd=2` is changed to `1`, GPG status lines mix into the signature on stdout and git sees a mangled PGP block. Silent commit failure.
+1. **D-Bus policy `<allow own>` missing for companion user** — the system bus defaults to deny-all; without an explicit `<policy user="secrets-nb"><allow own="net.mowaka.SecretsDispatcher1"/></policy>`, the daemon exits immediately on startup with no useful error. Write and test the policy file before writing daemon code. Use `<allow send_destination=...>` (not `send_interface`) for desktop user access rules.
 
-2. **Binary-unsafe stdin handling produces BAD signatures** — Read stdin into `[]byte` only (never string). Transmit to daemon as base64-encoded JSON field. Daemon decodes before passing to gpg. Any UTF-8 coercion or string normalization changes the bytes being signed; the commit writes successfully but `git verify-commit` shows BAD signature.
+2. **VT_SETMODE VT_PROCESS crash leaves VT frozen** — if the daemon dies while holding VT_PROCESS mode, the user cannot switch VTs (kernel waits for `VT_RELDISP` signal from a dead process). Prevention: install a `defer` cleanup calling `ioctl(VT_SETMODE, VT_AUTO)` on all exit paths, and a SIGUSR1 handler that calls `ioctl(VT_RELDISP, 1)`. Test with `kill -9` on the daemon.
 
-3. **Daemon without TTY breaks pinentry on cache miss** — The daemon runs without a controlling TTY. When gpg-agent passphrase cache is cold, pinentry fails with "Inappropriate ioctl for device." Mitigation: ensure daemon runs in user's graphical session, has `$DISPLAY`/`$WAYLAND_DISPLAY` set, and document the `gpg-agent.conf` cache TTL requirement.
+3. **PAM `open_session` must not block** — a PAM module that waits for the companion session to be ready will hang `login`, `sshd`, and `sudo` for all users. The PAM hook must be fire-and-forget (`systemctl start --no-block`). All readiness logic belongs in the user-agent, which retries with backoff.
 
-4. **gpg-agent socket not inherited** — If daemon is started by systemd without the user's environment, it may not find the gpg-agent socket. Explicitly pass `GNUPGHOME`, `XDG_RUNTIME_DIR`, `HOME`, `USER` to the exec'd gpg subprocess. Test from a clean systemd service context.
+4. **Secret Service proxy cannot thin-forward D-Bus object paths** — the Secret Service protocol uses object paths as handles (session refs, collection refs). These paths are bus-relative and meaningless across bus boundaries. The user-agent must maintain a bidirectional path-mapping table and intercept all subsequent calls to proxied paths. Reuse the existing `internal/proxy` pattern.
 
-5. **Silent unsigned commits when daemon is unreachable** — `gpg-sign` must exit non-zero immediately with a clear stderr message if it cannot connect to the daemon. Never exit 0 on connection failure and never fall back to calling real gpg directly.
+5. **Companion user linger must be enabled** — without `loginctl enable-linger secrets-nb`, `systemd --user` for the companion user is torn down as soon as there are no logind sessions for that user (which is always, since the companion never logs in interactively). `/run/user/<uid>/` vanishes; the D-Bus socket disappears; the companion daemon cannot start. This is a required provisioning step.
 
----
+6. **gpg-agent needs a TTY for pinentry** — the companion session has no DISPLAY or WAYLAND_DISPLAY. Without `GPG_TTY=/dev/tty8` and `pinentry-program /usr/bin/pinentry-tty` in gpg-agent.conf, GPG signing fails silently when the passphrase cache is cold.
+
+See `.planning/research/PITFALLS.md` for all 18 documented pitfalls with detection and prevention details.
 
 ## Implications for Roadmap
 
-Based on the build-order dependency graph from ARCHITECTURE.md and the critical pitfall phases from PITFALLS.md, the work naturally divides into three phases:
+Based on the dependency graph in ARCHITECTURE.md and the feature dependencies in FEATURES.md, the natural phase structure has 5 phases. FEATURES.md and ARCHITECTURE.md independently arrive at the same ordering, which is a strong signal the structure is correct.
 
-### Phase 1: Data Model and Protocol Foundation
+### Phase 1: Foundation — Companion User + System D-Bus Skeleton
 
-**Rationale:** All subsequent work depends on stable type definitions. Approval manager extension, API types, and the new package structure must be established first. No external unknowns — these are pure in-repo changes with direct codebase knowledge.
+**Rationale:** Everything else depends on the companion user existing and the system D-Bus interface being defined. The interface definition (types, method signatures, policy file) is a zero-dependency work item that unblocks parallel work in later phases. The provisioning tool is needed to create the companion user before any companion-side code can be tested.
 
-**Delivers:** New `gpg_sign` request type in approval pipeline; `GPGSignInfo` struct; `GPGSignRequest`/`GPGSignResponse` API types; new `internal/gpgsign` package skeleton; route registered in server.
+**Delivers:**
+- Companion user (`secrets-nb`) created by provisioning tool with correct home dir permissions
+- D-Bus policy file installed and verified: companion can own the name; desktop user can call methods
+- System D-Bus interface skeleton: service registered, method stubs return errors, signals defined
+- VT ioctl wrapper (`internal/vt/consts.go`, `internal/vt/ioctl.go`) — pure syscall layer with no business logic
+- `sd-provision --check` validation command
+- Interface definitions for VT, D-Bus, and Secret Service (needed for unit test mocks in Phase 2+)
 
-**Addresses:** Table-stakes features: new request type, approval manager extension, request expiry (inherited).
+**Avoids:** Pitfalls 1 (missing `<allow own>`), 2 (`send_interface` vs `send_destination`), 10 (dbus-broker compatibility), 18 (requester UID verification)
 
-**Avoids:** Pitfall 9 (type collision) — audit all `RequestType` switch statements before any rendering code ships.
+**Research flag:** Standard patterns — skip research-phase. D-Bus policy files, useradd, and systemd unit installation are well-documented.
 
-**Research flag:** None needed. Standard patterns, direct codebase extension.
+### Phase 2: Core Request/Approval Flow
 
----
+**Rationale:** The approval manager, system D-Bus wiring, and VT TUI form the core security-relevant logic. VT TUI is needed to test the approval flow interactively. The signal emitter (approval.Manager observer -> system D-Bus signals) is needed before the user-agent can be built in Phase 3. Secret access and GPG signing flows are the two primary use cases and should be validated together.
 
-### Phase 2: Core Signing Flow (Client + Daemon)
+**Delivers:**
+- Full system D-Bus interface: GetSecret, GPGSign, Approve, Deny, ListPending methods implemented
+- `approval.Manager` wired to system D-Bus interface (port from v1.0 — goroutine blocks on approval)
+- VT manager: opens `/dev/tty8`, sets VT_SETMODE VT_PROCESS, holds fd for lifetime
+- VT TUI (Bubble Tea v2): renders pending requests (secret path + requester chain; commit details for GPG), keyboard y/n approval
+- Signal emitter observer: approval.Manager events -> RequestCreated/RequestResolved signals on system bus
+- Secret access flow end-to-end: system bus -> approval -> companion session bus -> gopass-secret-service
+- GPG signing flow end-to-end: system bus -> approval -> gpg exec -> signature returned
+- GPG companion session setup: `GPG_TTY=/dev/tty8`, pinentry-tty configured
+- Integration tests with private D-Bus daemon verifying method signatures and signal delivery
 
-**Rationale:** The thin client and daemon handler are the functional core. This phase implements the full happy path: git calls `gpg-sign`, context is collected, daemon blocks on approval, real gpg is invoked, signature is returned. Critical pitfalls 1, 2, 3, 4, and 5 all live here and must be addressed during implementation.
+**Uses:** `charm.land/bubbletea/v2`, `golang.org/x/sys` (ioctl), `godbus/dbus/v5` (system bus), reused `internal/approval/`, `internal/gpgsign/`
 
-**Delivers:** Working end-to-end signing flow. `git commit -S` with `gpg.program = sd-gpg` blocks until user approves in the daemon, then commits with a valid signature.
+**Avoids:** Pitfalls 3 (VT_SETMODE crash -> VT frozen), 4 (VT_SETMODE race), 7 (gpg-agent no TTY), 12 (companion session D-Bus socket path hardcoded)
 
-**Addresses:** All table-stakes features: intercept gpg.program, parse commit object, block/approve/deny, return signature, non-zero on deny, changed files list (highest-value differentiator), repository name, key ID.
+**Research flag:** VT_SETMODE edge cases (Pitfalls 3 and 4) warrant a focused research pass during Phase 2 planning. The documented race in Ubuntu Bug #290197 may require a workaround specific to the display manager in use. Verify Bubble Tea v2 custom `io.Writer` output on a raw VT fd early before building the full TUI.
 
-**Avoids:**
-- Pitfall 1: pass `os.Args[1:]` verbatim to real gpg
-- Pitfall 2: `[]byte` + base64 throughout
-- Pitfall 3: TTY/pinentry setup
-- Pitfall 4: gpg-agent socket inheritance
-- Pitfall 5: non-zero exit when daemon unreachable
-- Pitfall 6: exit code propagation
+### Phase 3: Desktop Integration — User Agent + PAM
 
-**Uses:** `os/exec`, `bufio`/`bytes`/`strings`, `encoding/base64`, `net/http` (all stdlib).
+**Rationale:** The user-agent depends on Phase 2's signal definitions and method interface being stable. PAM hook depends on the companion service being deployable. These are the two integration points between the companion and the desktop world and should be built together to validate the full round-trip.
 
-**Research flag:** Needs validation of gpg.program installation approach (shell wrapper vs. symlink) before implementation starts. The decision is not complex but must be made explicitly.
+**Delivers:**
+- User-space agent (`cmd/user-agent/`): claims `org.freedesktop.secrets` on session bus with full path-mapping proxy to system bus
+- Agent notification listener: subscribes to system bus signals, shows desktop notifications via `org.freedesktop.Notifications`; calls Approve/Deny on notification button action
+- Signal startup race fixed: agent subscribes first, then queries ListPending to catch missed requests (Pitfall 13)
+- GPG thin client updated: replaces Unix socket + HTTP client with system D-Bus GPGSign method call
+- PAM hook: fire-and-forget `pam_exec.so` script; starts companion on open_session, reference-counts and stops on close_session
+- Companion user linger enabled in provisioning tool
+- Provisioning tool installs PAM fragment, user-agent systemd unit, GPG config for companion
 
----
+**Avoids:** Pitfalls 5 (PAM timing), 6 (linger missing), 8 (object path proxy), 9 (GNUPGHOME ownership), 13 (notification race), 14 (PAM blocks login), 16 (gopass root ownership)
 
-### Phase 3: UI and Observability Extensions
+**Research flag:** PAM + systemd --user interaction for a different UID (Pitfalls 5 and 14) has sparse official documentation. The pam_exec + machinectl pattern for cross-user session start needs validation during planning. Budget time to test the exact PAM ordering constraints relative to pam_systemd.so.
 
-**Rationale:** Notification, CLI, and web UI updates are straightforward display-layer changes once the data model (Phase 1) is stable. They do not block the core signing flow but are required for a usable product.
+### Phase 4: Hardening + Differentiators
 
-**Delivers:** Web UI displays `gpg_sign` requests distinctly with all commit context. CLI `list` and `show` handle the new type. Desktop notifications fire with commit summary. Session identity is shown prominently.
+**Rationale:** With the full request/approval/notification flow working, this phase adds the differentiating features and operational hardening. These are all independently implementable (no mutual dependencies) and can be prioritized by value.
 
-**Addresses:** Differentiator features: visual distinction in web UI, session identity prominence, file count summary, parent hash display. Pitfall 12 mitigation (parallel sessions confusion) lives here.
+**Delivers:**
+- Requester parent process chain displayed on VT (walk /proc PPid, 5 levels)
+- Desktop notification body includes requester identity
+- Structured audit log (slog JSON, companion home dir)
+- `Lock()` / `Unlock()` D-Bus methods wired to gpg-agent cache clear
+- Graceful "companion not running" error handling in user-agent
+- VT CLI mode for history and admin commands
+- Store unlock prompt on companion session start (TUI shown on VT8 at startup if store is locked)
 
-**Avoids:** Pitfall 9 (unhandled type in switch statements) — all rendering code updated together.
+**Research flag:** Standard patterns — skip research-phase. All features here implement already-designed interfaces.
 
-**Research flag:** None. Standard display-layer patterns, no novel integration.
+### Phase 5: VM E2E Validation
 
----
+**Rationale:** The three-tier testing strategy requires a VM layer for anything involving real VT switching, real PAM hooks, and real multi-user logind sessions. This cannot be substituted by CI container tests (Pitfall 17). The VM E2E tests are the final gate before the v2.0 milestone is declared complete.
+
+**Delivers:**
+- QEMU VM test harness with full provisioning: companion user, PAM hook, D-Bus policy, systemd units
+- E2E test: desktop login -> companion session starts -> secret request -> VT approval -> secret returned
+- E2E test: git commit -> GPG signing request -> VT approval -> signed commit
+- E2E test: desktop logout -> companion session stops
+- Separate CI pipeline: unit + integration tests run in CI; VT E2E is a manual gate
+- SKIP_VT_TESTS=1 environment gate for CI compatibility
+
+**Research flag:** VM E2E test harness construction is worth a targeted research pass during Phase 5 planning. NixOS VM test framework or systemd-nspawn may be significantly simpler than raw QEMU.
 
 ### Phase Ordering Rationale
 
-- Phase 1 before Phase 2: `HandleGPGSign` and the thin client depend on stable `GPGSignInfo` and API types.
-- Phase 2 before Phase 3: Web UI and CLI need real data flowing through the pipeline before display logic is meaningful to test.
-- Phases 1-3 are tightly scoped to this milestone. There is no deferred complexity requiring a Phase 4 — all table-stakes and differentiators fit in three phases.
-- The `gpg.program` installation UX decision (shell wrapper vs. symlink) should be resolved in Phase 1 planning, not deferred to Phase 2, because it affects the `main.go` dispatch logic and README instructions.
+- Phase 1 before everything: companion user and D-Bus policy are prerequisites for all companion-side code to be testable
+- Phase 2 before Phase 3: user-agent depends on signal interface and method signatures being stable; building them in parallel would require interface changes to propagate back
+- Phase 3 before Phase 4: differentiators build on the baseline flow; no point adding requester chain display before the approval loop is proven
+- Phase 5 last: VM E2E validates the complete integrated system; all components must be deployed together before the test is meaningful
+- PAM hook and user-agent deliberately colocated in Phase 3: they are the two integration seams (companion <-> desktop) and should be validated together to catch lifecycle races early
 
 ### Research Flags
 
-Phases needing deeper research during planning:
-- **Phase 2:** Validate the `gpg.program` installation approach (shell wrapper vs. symlink via `filepath.Base(os.Args[0])`). Confirm which git versions set `GIT_WORK_TREE` alongside `GIT_DIR` in worktree contexts (affects changed-files collection). Both are low-stakes decisions but must be made explicitly before code is written.
-- **Phase 3:** WebSocket message size — confirm `conn.SetReadLimit` applies only to reads in the current codebase before implementing signature delivery. One-line check, not a research task.
+Needs focused research during planning:
+- **Phase 2:** VT_SETMODE race conditions (Pitfall 4) and exact VT acquisition sequence on systems with GDM/SDDM; may need display-manager-specific workarounds
+- **Phase 3:** PAM + `systemd --user` for a different UID — the pam_exec + machinectl cross-user pattern has sparse authoritative documentation; validate timing constraints and ordering relative to pam_systemd.so
+- **Phase 5:** VM E2E harness selection — systemd-nspawn vs. QEMU vs. NixOS VM tests; significant effort difference between options
 
-Phases with standard patterns (skip research-phase):
-- **Phase 1:** Pure data model extension with direct codebase knowledge. No unknowns.
-- **Phase 3:** Standard display-layer extension. All patterns established in existing CLI formatter and web UI.
-
----
+Standard patterns, skip research-phase:
+- **Phase 1:** D-Bus policy files, useradd, systemd unit installation — all well-documented with official sources
+- **Phase 4:** All differentiating features implement already-designed interfaces; no novel integration points
 
 ## Confidence Assessment
 
 | Area | Confidence | Notes |
 |------|------------|-------|
-| Stack | HIGH | git gpg.program interface verified against git source code; stdlib approach confirmed correct; all "do not use" libraries verified as inappropriate |
-| Features | HIGH | git commit object format stable and well-documented; feature set derived from direct codebase analysis; "clear signing" UX principle well-established |
-| Architecture | HIGH | Based on direct codebase analysis; existing patterns are well-suited for additive extension; data flow verified step-by-step |
-| Pitfalls | HIGH | Critical pitfalls verified against git source, GnuPG issue tracker, Go stdlib issues; all are real, documented failure modes with known mitigations |
+| Stack | HIGH | All 4 new dependencies verified on pkg.go.dev with exact versions; VT constants verified against Linux kernel source; dropped dependencies confirmed |
+| Features | HIGH | Table stakes and anti-features derived from Linux kernel docs (VT, D-Bus spec, Secret Service spec) and systemd official docs; novel combination has no prior art but the component-level claims are sound |
+| Architecture | HIGH | Based on direct codebase analysis of existing `internal/proxy/`, `internal/approval/`, `internal/gpgsign/` plus official Linux VT and D-Bus documentation; component boundary decisions are well-motivated |
+| Pitfalls | HIGH (documented), MEDIUM (novel combinations) | 14 of 18 pitfalls sourced from official docs or confirmed bug reports; 4 (PAM cross-user ordering, VT race mitigations) are from community sources and need implementation validation |
 
-**Overall confidence:** HIGH
+**Overall confidence:** HIGH for architectural approach; MEDIUM for PAM and VT edge case behavior in the specific companion-user-via-systemd-linger configuration
 
 ### Gaps to Address
 
-- **gpg.program installation UX**: Shell wrapper vs. symlink dispatch. Research has identified both options and their tradeoffs. Decision needed before Phase 2 implementation. Recommendation: shell wrapper (simpler, no binary changes).
-- **Worktree GIT_DIR + GIT_WORK_TREE interaction**: STACK.md recommends `git rev-parse --show-toplevel` and `git -C <root> diff --cached`. PITFALLS.md confirms worktree risk. Implementation should use `--show-toplevel` approach and include a worktree test before shipping Phase 2.
-- **gpg-agent cache TTL guidance**: The correct value for `default-cache-ttl` in `gpg-agent.conf` relative to the approval timeout needs documentation. Low-risk but must appear in setup instructions.
+- **PAM + systemd --user for companion user via linger:** The pam_exec + machinectl pattern for starting another user's systemd service is confirmed to work in principle but the exact timing constraints (when is pam_systemd.so done, when is `systemd --user` for the companion available) are not fully documented. Plan for iteration during Phase 3 implementation.
 
----
+- **VT_SETMODE race with display manager:** The Ubuntu Bug #290197 race is documented but mitigations are workarounds. On systems with GDM or SDDM managing the same VT range, the companion daemon's VT_SETMODE may be reset. Accept as a documented limitation or test with the specific display manager in use.
+
+- **Bubble Tea v2 on non-stdout tty:** The custom `io.Writer` output (`tea.WithOutput(tty)`) for a VT is confirmed in GitHub issue #860 but the v2.0 release is very new (2026-02-24). Verify early in Phase 2 that the rendering is correct on a raw VT fd before building the full approval TUI on top of it.
+
+- **gopass-secret-service on companion session bus:** gopass-secret-service is assumed to work unchanged on the companion's session bus. This assumption should be verified in Phase 1 before building the proxy layer on top of it.
 
 ## Sources
 
 ### Primary (HIGH confidence)
-
-- [git/git — gpg-interface.c](https://github.com/git/git/blob/master/gpg-interface.c) — exact `--status-fd=2 -bsau <key-id>` invocation, `[GNUPG:] SIG_CREATED` success detection string
-- [gitformat-signature(5)](https://git-scm.com/docs/gitformat-signature) — raw commit object format (tree/parent/author/committer/message), pre-signature payload structure
-- [GnuPG T5885](https://dev.gnupg.org/T5885) — "Inappropriate ioctl for device" TTY error, confirmed behavior
-- [GnuPG Agent Forwarding wiki](https://wiki.gnupg.org/AgentForwarding) — socket environment inheritance requirements
-- [GnuPG Common Problems](https://www.gnupg.org/documentation/manuals/gnupg/Common-Problems.html) — GPG_TTY requirements
-- Existing codebase: `internal/approval/manager.go`, `internal/api/handlers.go`, `internal/api/websocket.go`, `internal/api/server.go`, `internal/cli/format.go`, `internal/notification/desktop.go`, `main.go`
+- Linux VT ioctl: [man7.org/linux/man-pages/man2/ioctl_vt.2.html](https://man7.org/linux/man-pages/man2/ioctl_vt.2.html)
+- Linux VT UAPI: [github.com/torvalds/linux/blob/master/include/uapi/linux/vt.h](https://github.com/torvalds/linux/blob/master/include/uapi/linux/vt.h)
+- D-Bus policy spec: [dbus.freedesktop.org/doc/dbus-daemon.1.html](https://dbus.freedesktop.org/doc/dbus-daemon.1.html)
+- D-Bus specification: [dbus.freedesktop.org/doc/dbus-specification.html](https://dbus.freedesktop.org/doc/dbus-specification.html)
+- Secret Service API: [specifications.freedesktop.org/secret-service/latest/](https://specifications.freedesktop.org/secret-service/latest/)
+- pam_systemd: [freedesktop.org/software/systemd/man/latest/pam_systemd.html](https://www.freedesktop.org/software/systemd/man/latest/pam_systemd.html)
+- Bubble Tea v2.0.0: [pkg.go.dev/charm.land/bubbletea/v2](https://pkg.go.dev/charm.land/bubbletea/v2) — published 2026-02-24
+- go-systemd v22.7.0: [pkg.go.dev/github.com/coreos/go-systemd/v22](https://pkg.go.dev/github.com/coreos/go-systemd/v22) — published 2026-01-27
+- msteinert/pam v2.1.0: [github.com/msteinert/pam](https://github.com/msteinert/pam) — published 2025-05-13
+- godbus/dbus v5.2.2: [github.com/godbus/dbus/releases](https://github.com/godbus/dbus/releases) — published 2024-12-29
+- GnuPG Agent Options (pinentry): [gnupg.org/documentation/manuals/gnupg/Agent-Options.html](https://www.gnupg.org/documentation/manuals/gnupg/Agent-Options.html)
+- dbus-broker deviations: [github.com/bus1/dbus-broker/wiki/Deviations](https://github.com/bus1/dbus-broker/wiki/Deviations)
+- Ubuntu VT race bug: [bugs.launchpad.net/ubuntu/+source/linux/+bug/290197](https://bugs.launchpad.net/ubuntu/+source/linux/+bug/290197)
+- systemd issue #2863 (PAM timing): [github.com/systemd/systemd/issues/2863](https://github.com/systemd/systemd/issues/2863)
+- Arch Wiki systemd/User (linger): [wiki.archlinux.org/title/Systemd/User](https://wiki.archlinux.org/title/Systemd/User)
+- Existing codebase: `internal/proxy/`, `internal/approval/`, `internal/gpgsign/`, `.planning/PROJECT.md`
 
 ### Secondary (MEDIUM confidence)
-
-- [Ledger — What Is Clear Signing?](https://www.ledger.com/academy/topics/ledgersolutions/what-is-clear-signing) — UX principle for showing full context before cryptographic approval
-- [atom/github gpg-wrapper.sh](https://github.com/atom/github/blob/master/bin/gpg-wrapper.sh) — gpg.program wrapper pattern (pass `"$@"`, intercept stdin)
-- [opentimestamps-client #87](https://github.com/opentimestamps/opentimestamps-client/issues/87) — git worktree GIT_DIR pitfall
-- [Daniel15 — GPG "Inappropriate ioctl"](https://d.sb/2016/11/gpg-inappropriate-ioctl-for-device-errors) — pinentry failure in non-TTY context
-- [go-git v5 object package](https://pkg.go.dev/github.com/go-git/go-git/v5/plumbing/object) — evaluated and rejected as overkill for commit object parsing
+- How VT-switching works: [dvdhrm.wordpress.com/2013/08/24/how-vt-switching-works/](https://dvdhrm.wordpress.com/2013/08/24/how-vt-switching-works/)
+- pam-gnupg: [github.com/cruegge/pam-gnupg](https://github.com/cruegge/pam-gnupg) — GPG passphrase presetting from login
+- OpenSSH Privilege Separation: [citi.umich.edu/u/provos/ssh/privsep.html](http://www.citi.umich.edu/u/provos/ssh/privsep.html) — companion user pattern reference
+- Bubble Tea issue #860: custom TTY output writer confirmed working on Linux
+- pam_exec + machinectl cross-user pattern: Arch BBS, multiple community sources
 
 ### Tertiary (LOW confidence)
-
-- [Zed discussion — AI agent accidentally making commits](https://github.com/zed-industries/zed/discussions/31762) — parallel agent commit risks (context only)
-- [git worktrees for parallel AI agents](https://dev.to/mashrulhaque/git-worktrees-for-ai-coding-run-multiple-agents-in-parallel-3pgb) — parallel session usage patterns
+- VT_PROCESS edge cases on Wayland+GDM systems — inferred from Ubuntu bug and dvdhrm blog; real behavior with modern compositors unconfirmed
+- Exact PAM ordering constraints for cross-user systemd --user start — community posts; needs validation during Phase 3
 
 ---
-*Research completed: 2026-02-24*
+*Research completed: 2026-02-25*
 *Ready for roadmap: yes*

@@ -1,284 +1,354 @@
-# Technology Stack: GPG Signing Proxy Milestone
+# Technology Stack: v2.0 Privilege Separation Milestone
 
-**Project:** secrets-dispatcher — GPG commit signing approval
-**Researched:** 2026-02-24
-**Scope:** New dependencies and tooling for the GPG milestone only. Existing stack (Go stdlib, coder/websocket, godbus/dbus, google/uuid, fsnotify, tint, yaml.v3) is already in place and not re-documented here.
+**Project:** secrets-dispatcher — VT trusted I/O, system D-Bus, PAM hooks, companion user
+**Researched:** 2026-02-25
+**Scope:** Stack additions for the v2.0 milestone ONLY. Existing dependencies (godbus/dbus v5.2.2, golang.org/x/sys v0.27.0, google/uuid, lmittmann/tint, yaml.v3, fsnotify) remain in place unless noted. The v1.0 dependencies (coder/websocket, Svelte, Deno, Playwright) are DROPPED in v2.0.
 
 ---
 
 ## Summary Recommendation
 
-**No new Go dependencies are needed.** The GPG signing feature is implemented entirely with the Go standard library plus the already-present dependencies. The only external tool is the system `gpg` binary, which is an existing runtime requirement (users must already have GPG for commit signing). The thin client uses existing HTTP + auth patterns; commit object parsing is simple text parsing; gpg invocation uses `os/exec`.
+Four new Go dependencies are needed for v2.0:
+
+1. **`charm.land/bubbletea/v2`** — TUI framework for the VT approval interface
+2. **`github.com/msteinert/pam/v2`** — PAM module development via CGo (for the session hook)
+3. **`github.com/coreos/go-systemd/v22`** — systemd logind API for companion session lifecycle management
+4. **`golang.org/x/sys`** upgrade to **v0.41.0** — VT ioctl constants are defined raw; the upgrade brings the current version in line with the rest of the dependency tree
+
+The VT ioctl constants (`VT_ACTIVATE`, `VT_SETMODE`, etc.) are **not exposed as named constants in golang.org/x/sys/unix**. They must be defined inline as numeric literals (the values are stable Linux ABI). This is the correct approach used by all Linux projects (mpv, X.org, psplash) that do VT management without a C layer.
+
+The Secret Service client (dispatcher → gopass-secret-service) is implemented directly on top of the existing `github.com/godbus/dbus/v5` — no additional Secret Service client library is needed or appropriate.
+
+The private D-Bus daemon for integration testing uses `dbus-run-session` launched as an `exec.Cmd` in `TestMain` — no additional Go dependency needed.
 
 ---
 
-## Core Framework
+## New Dependencies
 
-The existing stack handles all needs:
+### 1. TUI Framework
 
-| Component | Existing Dependency | Handles |
-|-----------|---------------------|---------|
-| HTTP client (gpg-sign) | `net/http` (stdlib) | POST to daemon |
-| HTTP server (daemon endpoint) | `net/http` (stdlib) | Handle `/api/v1/gpg-sign/request` |
-| Auth (gpg-sign client) | `internal/api` auth package | Load token from state dir |
-| GPG invocation | `os/exec` (stdlib) | Exec real gpg with args + stdin |
-| Commit object parsing | stdlib `bufio`, `bytes`, `strings` | Parse raw text format from stdin |
+| Technology | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| Bubble Tea v2 | v2.0.0 | `charm.land/bubbletea/v2` | VT approval TUI |
+| Lip Gloss v2 | v2.x | `charm.land/lipgloss/v2` | Terminal styling |
+| Bubbles v2 | v2.x | `charm.land/bubbles/v2` | Reusable TUI components |
 
----
+**Why Bubble Tea v2, not v1:** v2.0.0 was released 2026-02-24 (stable, MIT, `charm.land/bubbletea/v2`). It ships the "Cursed Renderer" built from the ncurses rendering algorithm — orders of magnitude faster repaint on custom output writers, which matters when writing to `/dev/ttyN` instead of stdout. The Elm Architecture (Model/Update/View) maps cleanly onto the approval state machine (pending → approved/denied/expired). v1 is still functional but v2 is the current stable release.
 
-## The git `gpg.program` Interface
+**Why not rivo/tview:** tview is an immediate-mode widget toolkit (object-oriented, stateful widgets). It is more complex for a use case that is essentially a state machine with a small number of views. Bubble Tea's functional approach is simpler to test in isolation. tview has no equivalent of v2's improved non-stdout rendering.
 
-**Confidence: HIGH — verified against git source code (gpg-interface.c)**
+**VT output redirection:** Bubble Tea v2 supports custom `io.Writer` output via `tea.WithOutput(tty)` where `tty` is a `*os.File` opened on `/dev/tty8`. The program also needs `tea.WithInput(tty)` so keyboard input comes from the VT rather than the process's stdin. This pattern is confirmed working on Linux in the project's GitHub issue tracker (issue #860, verified 2026-02-25).
 
-When git calls `gpg.program` to sign a commit, the exact invocation is:
-
-```
-<gpg.program> --status-fd=2 -bsau <key-id>
-```
-
-Where the flags decompose as:
-- `-b` — detached signature (not inline)
-- `-s` — sign
-- `-a` — ASCII armor
-- `-u <key-id>` — key to use
-
-**stdin:** Raw commit object bytes (the payload to be signed). This is the exact byte sequence git would have stored as the commit object, without the `gpgsig` header.
-
-**stdout:** The ASCII-armored PGP detached signature. Git reads this and embeds it as the `gpgsig` header in the final commit object.
-
-**stderr:** GPG status lines (because of `--status-fd=2`). Git scans stderr for the literal string `[GNUPG:] SIG_CREATED ` to verify the signing succeeded. The `gpg-sign` client must forward real gpg's stderr to its own stderr so git gets these status lines.
-
-**Success detection:** git searches stderr for `[GNUPG:] SIG_CREATED `. If absent, git reports "gpg failed to sign the data" and aborts the commit.
-
-### Implication for the thin client
-
-The `gpg-sign` subcommand receives these exact args from git. It does NOT invoke gpg itself. It:
-1. Reads the args to extract `<key-id>`
-2. Reads commit bytes from stdin
-3. Parses context from the commit bytes
-4. POSTs to the daemon, blocks for approval
-5. On success: writes signature to stdout, status lines to stderr, exits 0
-6. On denial/timeout: exits non-zero (git sees gpg failure, aborts commit)
-
-### Implication for the daemon
-
-The daemon invokes real gpg with the same args it received from the client:
+**Note on import path change:** v2 uses `charm.land/bubbletea/v2` not `github.com/charmbracelet/bubbletea`. The charm.land domain is a vanity redirect maintained by Charmbracelet.
 
 ```go
-cmd := exec.CommandContext(ctx, "gpg", "--status-fd=2", "-bsau", keyID)
-cmd.Stdin = bytes.NewReader(commitObject)
-var sigBuf, statusBuf bytes.Buffer
-cmd.Stdout = &sigBuf   // ASCII-armored signature
-cmd.Stderr = &statusBuf // [GNUPG:] SIG_CREATED etc.
-if err := cmd.Run(); err != nil {
-    // return HTTP 500
+import tea "charm.land/bubbletea/v2"
+import "charm.land/lipgloss/v2"
+
+tty, err := os.OpenFile("/dev/tty8", os.O_RDWR, 0)
+// ...
+p := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
+```
+
+**Confidence: HIGH** — verified against official release page and pkg.go.dev (v2.0.0, published 2026-02-24).
+
+---
+
+### 2. PAM Module (Session Lifecycle Hook)
+
+| Technology | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| msteinert/pam | v2.1.0 | `github.com/msteinert/pam/v2` | PAM session module via CGo |
+
+**Why msteinert/pam:** This is the standard Go wrapper for the Linux PAM C API. v2.1.0 was released 2025-05-13. It exposes `pam_sm_open_session` and `pam_sm_close_session` callbacks via CGo, allowing a Go binary to be compiled as a PAM shared library (`pam_secrets_dispatcher.so`). The alternative — a pure C PAM module — is correct but means maintaining C code in a Go project, adding complexity.
+
+**Architecture:** The PAM hook is compiled as a separate CGo shared library (`cmd/pam-module/main.go`), not linked into the main daemon binary. It is a small shim that calls `systemctl --user start secrets-dispatcher-session.service` (or a companion-user equivalent via `machinectl`) on `open_session` and `stop` on `close_session`.
+
+**Alternative considered — pam_exec:** `pam_exec` is a built-in PAM module that runs an external command. It is simpler to deploy (no custom .so) and sufficient for the use case: `pam_exec.so /usr/local/bin/sd-session-start`. Use pam_exec if the PAM hook is just a one-liner script. Use msteinert/pam if the hook needs Go logic (e.g., detecting the last session closing requires checking `loginctl` state). The tradeoff: pam_exec is simpler to deploy; msteinert/pam is more capable. **Flag for implementation phase:** start with pam_exec, escalate to msteinert/pam if pam_exec proves insufficient.
+
+**Known issue — CGo PAM + signal handling:** There is a documented SIGCHLD interaction between CGo-compiled PAM modules and systemd's pam_systemd. This is a known problem in the Go community (golang-nuts thread, 2016). msteinert/pam v2 addresses this in its documentation. Test carefully with signal-heavy scenarios.
+
+**pam_systemd timing:** When a PAM session hook runs via pam_exec after `pam_systemd.so`, the `systemd --user` instance for the target user may not be ready. The hook must either retry with backoff or use `systemctl is-system-running --wait` before attempting to control user units. This is a known timing issue in pam + systemd integration (systemd/systemd issue #2863).
+
+**Confidence: MEDIUM** — library confirmed active and versioned, known CGo caveats require validation during implementation.
+
+```bash
+go install github.com/msteinert/pam/v2
+# compile as shared library:
+# go build -buildmode=c-shared -o pam_secrets_dispatcher.so ./cmd/pam-module/
+```
+
+---
+
+### 3. systemd Login Manager Integration
+
+| Technology | Version | Module | Purpose |
+|------------|---------|--------|---------|
+| go-systemd/v22 | v22.7.0 | `github.com/coreos/go-systemd/v22` | logind API, session tracking |
+
+**Why go-systemd:** The companion session lifecycle needs to detect when the last regular-user session closes (to shut down the companion user session). The `login1` package in go-systemd wraps the `org.freedesktop.login1.Manager` D-Bus interface, which is the correct API for listing sessions, subscribing to session removal events, and querying whether any sessions remain for a given UID.
+
+**What it provides:**
+- `login1.New()` — connect to logind D-Bus interface
+- `login1.Manager.ListSessions()` — enumerate active sessions
+- `login1.Manager.SessionRemoved` signal — fire-and-forget companion shutdown trigger
+
+v22.7.0 was published 2026-01-27. The library is actively maintained by CoreOS/Red Hat.
+
+**Alternative:** Direct D-Bus calls to `org.freedesktop.login1` via the existing `godbus/dbus/v5`. This is functionally equivalent but requires hand-writing all the method call scaffolding. go-systemd provides type-safe bindings to logind, reducing error surface. Given the project already uses godbus for Secret Service proxy work, go-systemd wrapping logind in a typed API is worth the additional dependency.
+
+**Note:** go-systemd/v22 depends on godbus/dbus/v5 internally, so there is no version conflict.
+
+**Confidence: HIGH** — official CoreOS library, actively maintained, version confirmed on pkg.go.dev (2026-01-27).
+
+---
+
+### 4. golang.org/x/sys Upgrade
+
+| Technology | Current | Target | Reason |
+|------------|---------|--------|--------|
+| golang.org/x/sys | v0.27.0 | v0.41.0 | Current release (2026-02-08), VT ioctl work requires latest version |
+
+The upgrade is routine. v0.41.0 is the current stable release (published 2026-02-08). The go.mod currently pins v0.27.0. go-systemd/v22 and other new dependencies will require a newer version anyway — the upgrade happens naturally during `go mod tidy`.
+
+**Confidence: HIGH** — verified on pkg.go.dev.
+
+---
+
+## VT Management (No New Dependency)
+
+VT management is implemented directly using `unix.Syscall(unix.SYS_IOCTL, ...)` with inline numeric constants. The constants (`VT_ACTIVATE`, `VT_SETMODE`, etc.) are **not defined as named constants in golang.org/x/sys/unix** (verified by searching zerrors_linux.go and zerrors_linux_amd64.go in the golang/sys repo). They must be declared in the project's own VT package.
+
+These constants are part of the stable Linux UAPI (`include/uapi/linux/vt.h`) and do not change:
+
+```go
+// internal/vt/consts.go — Linux VT ioctl constants from include/uapi/linux/vt.h
+// These are stable Linux UAPI values; they do not change between kernel versions.
+const (
+    VT_OPENQRY  = 0x5600 // find available vt
+    VT_GETMODE  = 0x5601 // get current vt mode
+    VT_SETMODE  = 0x5602 // set vt mode
+    VT_GETSTATE = 0x5603 // get console state
+    VT_RELDISP  = 0x5605 // release display
+    VT_ACTIVATE = 0x5606 // switch to vt N
+    VT_WAITACTIVE = 0x5607 // wait until vt N is active
+
+    VT_AUTO    = 0x00 // auto VT switching
+    VT_PROCESS = 0x01 // process controls switching
+    VT_ACKACQ  = 0x02 // acknowledge VT acquisition
+)
+```
+
+**VT_SETMODE data structure:** The `vt_mode` struct is not defined in golang.org/x/sys/unix. Define it locally:
+
+```go
+// VtMode matches C struct vt_mode from <linux/vt.h>
+type VtMode struct {
+    Mode   byte  // VT_AUTO or VT_PROCESS
+    Waitv  byte  // if set, hang on writes if not active
+    Relsig int16 // signal to raise on release
+    Acqsig int16 // signal to raise on acquisition
+    Frsig  int16 // unused (set to 0)
 }
-// return sigBuf.Bytes() + statusBuf.String() in response
 ```
 
-The daemon must NOT add `--batch` or `--no-tty`, which would suppress pinentry. The daemon runs as the same user with the same `GPG_AGENT_INFO` / `GNUPGHOME` / `GPG_TTY` environment, so gpg-agent and pinentry work normally.
+**VT operations required:**
+- `VT_OPENQRY` on `/dev/tty0` — find a free VT number (used if we don't reserve a fixed VT)
+- `VT_ACTIVATE` on `/dev/tty0` or `/dev/console` — switch to the companion VT
+- `VT_SETMODE` — set `VT_PROCESS` mode to block unauthorized switching during approval
+- `VT_RELDISP` — release the display (acknowledge switch-away when approval completes)
+- Open `/dev/ttyN` directly — the companion process opens its VT as its controlling terminal
+
+**Permissions:** `VT_ACTIVATE` requires either root or the calling process to own the active VT (or hold `CAP_SYS_TTY_CONFIG`). The companion user process running on VT 8 can call `VT_ACTIVATE` on `/dev/ttyN` it owns. The provisioning tool grants the companion user appropriate group membership (`tty` group) or a udev rule for the specific VT device.
+
+**Confidence: HIGH** — VT ioctl constants verified against `include/uapi/linux/vt.h` in the Linux kernel source (torvalds/linux, 2026-02-25). Ioctl approach confirmed by chvt source, mpv, and psplash implementations.
 
 ---
 
-## Commit Object Parsing
+## System D-Bus Service (No New Dependency)
 
-**Confidence: HIGH — verified against git documentation (gitformat-signature) and go-git source**
+The system D-Bus service (secrets-dispatcher on the system bus) uses the existing `github.com/godbus/dbus/v5`. The key difference from v1.0 is connecting to the **system bus** instead of the session bus, and registering a well-known name with a D-Bus policy file.
 
-### Do NOT use go-git for this
-
-go-git v5 (v5.16.5, Feb 2026) has excellent commit parsing but requires wrapping raw bytes in a `plumbing.EncodedObject` interface. The raw bytes from stdin do not come from a git repository object store, making go-git's `Commit.Decode()` awkward to use without implementing the storer interface. More importantly, go-git is a large dependency (imports 57 packages) for parsing 20 lines of text.
-
-**Use stdlib text parsing instead.** The git commit object format is simple and stable.
-
-### Raw commit object format
-
-```
-tree <sha1-hex>\n
-parent <sha1-hex>\n          (zero or more)
-author <name> <email> <unix-ts> <tz-offset>\n
-committer <name> <email> <unix-ts> <tz-offset>\n
-\n
-<commit message>
+**System bus connection:**
+```go
+conn, err := dbus.ConnectSystemBus()
 ```
 
-Example (what git passes on stdin to gpg.program):
-
+**Policy file** (`/etc/dbus-1/system.d/secrets-dispatcher.conf`):
+```xml
+<!DOCTYPE busconfig PUBLIC
+  "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="secrets-nb">
+    <allow own="io.nb.SecretsDispatcher"/>
+  </policy>
+  <policy context="default">
+    <allow send_destination="io.nb.SecretsDispatcher"/>
+    <allow receive_sender="io.nb.SecretsDispatcher"/>
+  </policy>
+</busconfig>
 ```
-tree eebfed94e75e7760540d1485c740902590a00332
-parent 04b871796dc0420f8e7561a895b52484b701d51a
-author A U Thor <author@example.com> 1465981137 +0000
-committer C O Mitter <committer@example.com> 1465981137 +0000
 
-feat: add GPG signing proxy
-
-More detail here.
+**Service file** (`/usr/share/dbus-1/system-services/io.nb.SecretsDispatcher.service`):
+```ini
+[D-BUS Service]
+Name=io.nb.SecretsDispatcher
+Exec=/usr/local/bin/secrets-dispatcher-companion
+User=secrets-nb
 ```
 
-Note: this is the commit object WITHOUT the `gpgsig` header. Git sends the pre-signature payload to gpg.program, not the final committed object.
+The service file enables D-Bus activation (dbus-daemon starts the service on demand). For this project's lifecycle model (PAM starts the companion session which starts the service), D-Bus activation may not be needed — but the service file is correct to have for manual starts and tooling compatibility.
 
-### Parsing approach
+**Confidence: HIGH** — pattern verified against godbus documentation and Linux D-Bus policy documentation (pkg.go.dev/github.com/godbus/dbus/v5, published 2024-12-29).
+
+---
+
+## Private D-Bus for Integration Testing (No New Dependency)
+
+Integration tests that exercise the D-Bus protocol layer use a private `dbus-daemon` started as a subprocess via `exec.Cmd`. No additional Go dependency needed — `dbus-run-session` is available on all Arch/Debian/Ubuntu/Fedora systems.
 
 ```go
-// internal/gpgsign/parse.go
-func ParseCommitObject(data []byte) (*CommitInfo, error) {
-    // Use bufio.Scanner line-by-line
-    // Headers end at first blank line
-    // Remainder is commit message
-    // Each header: "key value\n", where key is "tree", "parent", "author", "committer"
-    // author/committer format: "Name <email> unixtimestamp tzoffset"
+// TestMain setup pattern
+func TestMain(m *testing.M) {
+    // Start private session bus
+    cmd := exec.Command("dbus-run-session", "--", "env")
+    out, _ := cmd.Output()
+    // parse DBUS_SESSION_BUS_ADDRESS from out
+    // set os.Setenv("DBUS_SESSION_BUS_ADDRESS", addr)
+    // run tests
+    // cleanup
 }
 ```
 
-This is ~50 lines of stdlib code. No external dependency needed.
+Alternatively, start `dbus-daemon --session --print-address --fork` directly with a temp config file (`mktemp`) pointing to a session config. This gives more control over service search paths (needed to load test service files without installing to system directories).
+
+**Confidence: HIGH** — dbus-run-session is the standard tool for this (documented in freedesktop.org test plan, verified against dbus-run-session manpage).
 
 ---
 
-## Changed Files Collection
+## Secret Service Client (No New Dependency)
 
-**Confidence: HIGH — exec approach; MEDIUM — timing constraint**
+The dispatcher calls gopass-secret-service (running on the companion user's session D-Bus) using the freedesktop Secret Service API. This uses the existing `github.com/godbus/dbus/v5` — no additional Secret Service client library is warranted.
 
-The `gpg-sign` thin client runs inside `git commit -S`, after git has staged changes but before it writes the commit object. The correct command to get staged files at this moment:
+**Why not use go-libsecret or go-dbus-keyring:**
+- `gsterjov/go-libsecret` — 2 total commits, created 2016, unmaintained. Do not use.
+- `ppacher/go-dbus-keyring` — marginally maintained, limited scope, wraps godbus anyway.
 
-```go
-cmd := exec.Command("git", "-C", repoRoot, "diff", "--cached", "--name-only")
-```
+Both libraries are thin wrappers over godbus that add a fixed abstraction on top of the Secret Service spec. Since the project already uses godbus directly and has Secret Service D-Bus expertise (internal/proxy/), writing the 4-6 method calls against gopass-secret-service directly is cleaner and keeps the dependency count down.
 
-This is the equivalent of `git diff --cached --name-only` run from the repo root. It lists all files staged for the commit. This is the correct timing: git invokes gpg.program after computing the commit object (which includes the tree hash) but before storing it. The index is fully staged at this point.
+**The calls needed (from Secret Service spec v0.2 DRAFT, 2025-11-26):**
+- `org.freedesktop.Secret.Service.OpenSession` — establish PLAIN or DH session
+- `org.freedesktop.Secret.Service.GetSecrets` — retrieve secrets by item path
+- `org.freedesktop.Secret.Collection.SearchItems` — find items by attribute
+- `org.freedesktop.Secret.Session.Close` — clean up session
 
-**Alternative — diff-tree against parent:** `git diff-tree --no-commit-id -r --name-only <tree-hash>`. This avoids a subprocess by using the tree hash from the parsed commit object. However, it requires git to have stored the tree object, which may or may not be done at the point gpg.program is invoked. The `--cached` approach is safer.
+This is roughly 100 lines of direct godbus usage with the existing patterns already present in `internal/proxy/`.
 
-**Repo root detection:** Walk up from `os.Getwd()` looking for `.git/` directory, or parse `git rev-parse --show-toplevel`. The git command approach is one line and reliable:
-
-```go
-cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-```
-
-**Repo name:** Use the directory basename of the repo root, or parse `git remote get-url origin` and extract the repo name from the URL. Basename is simpler and always works even without a remote.
+**Confidence: HIGH** — Secret Service spec verified at freedesktop.org (2025-11-26 draft). Library staleness verified on GitHub.
 
 ---
 
-## GPG Invocation in the Daemon
+## Dropped Dependencies (v1.0 → v2.0)
 
-**Confidence: HIGH — stdlib os/exec**
+| Dependency | v1.0 Use | v2.0 Status |
+|------------|----------|-------------|
+| `github.com/coder/websocket v1.8.14` | Real-time web UI updates | DROPPED — no web UI in v2.0 |
+| Svelte 5, Vite, TypeScript | Web UI frontend | DROPPED — web UI removed |
+| Playwright | E2E browser tests | DROPPED — no browser |
+| Deno | Frontend tooling | DROPPED — no frontend |
 
-No PGP library is needed in the daemon. The daemon passes through to real gpg. This is intentional:
+Running `go mod tidy` after removing websocket import sites will clean the go.mod.
 
-- gpg-agent handles key caching and passphrase
-- pinentry handles passphrase UI if not cached
-- The daemon does not need access to the private key material
-- Full gpg compatibility is guaranteed (whatever gpg supports, the proxy supports)
+---
 
-Using a Go PGP library (ProtonMail/go-crypto or golang.org/x/crypto/openpgp) would require the daemon to hold the private key in memory, bypass gpg-agent, and implement passphrase handling. This contradicts the project design (see PROJECT.md "Out of Scope").
+## Complete v2.0 Dependency Set
 
-**The daemon calls real gpg and relays the result.** That is the entire signing implementation on the daemon side, beyond the approval gate.
+After adding new and removing dropped:
+
+```go
+// go.mod (projected v2.0)
+require (
+    charm.land/bubbletea/v2         v2.0.0
+    charm.land/lipgloss/v2          v2.x.x   // added transitively by bubbletea
+    charm.land/bubbles/v2           v2.x.x   // optional, confirm during implementation
+    github.com/coreos/go-systemd/v22 v22.7.0
+    github.com/fsnotify/fsnotify    v1.9.0   // retained
+    github.com/godbus/dbus/v5       v5.2.2   // retained
+    github.com/google/uuid          v1.6.0   // retained
+    github.com/lmittmann/tint       v1.1.3   // retained
+    github.com/msteinert/pam/v2     v2.1.0
+    golang.org/x/sys                v0.41.0  // upgraded
+    gopkg.in/yaml.v3                v3.0.1   // retained
+    // DROPPED: github.com/coder/websocket
+)
+```
+
+---
+
+## Build Targets
+
+v2.0 produces multiple build artifacts (unlike v1.0's single binary):
+
+| Target | Type | Description |
+|--------|------|-------------|
+| `secrets-dispatcher` | binary | Companion-side daemon (system D-Bus + VT TUI) |
+| `sd-user-agent` | binary | Desktop session agent (org.freedesktop.secrets proxy + notification listener) |
+| `sd-gpg-sign` | binary | GPG thin client (replaces v1.0 gpg-sign subcommand, now uses system D-Bus) |
+| `pam_sd_session.so` | CGo shared lib | PAM session hook (built with `-buildmode=c-shared`) |
+| `sd-provision` | binary | Companion user setup tool |
+
+The PAM module requires CGo and a C toolchain. The other binaries do not require CGo and cross-compile normally.
+
+```makefile
+# PAM module requires CGo
+pam_sd_session.so:
+    CGO_ENABLED=1 go build -buildmode=c-shared -o $@ ./cmd/pam-module/
+
+# Other binaries: CGo optional (go-systemd uses CGo for some features, check --tags)
+secrets-dispatcher:
+    go build -o $@ ./cmd/dispatcher/
+```
+
+**Flag:** go-systemd v22 can be built without CGo on most paths. Verify with `CGO_ENABLED=0 go build` during initial setup — if it fails, the PAM module is the only CGo requirement.
 
 ---
 
 ## What NOT to Use
 
-### golang.org/x/crypto/openpgp — DO NOT USE
+### phoenix-tui/phoenix — DO NOT USE
+A newer TUI framework advertised as "modern alternative to Bubbletea". 29 stars on GitHub as of research date. No stable release. Unproven in production. Use Bubble Tea v2 which is mature, well-maintained by Charmbracelet, and has the custom output writer support this project needs.
 
-- Marked as deprecated by the Go team (redirects to ProtonMail/go-crypto)
-- Would require private key in memory — bypasses gpg-agent
-- Not needed: daemon shells out to real gpg
+### rivo/tview — DO NOT USE for this project
+Excellent library for traditional TUI applications with widget trees. The wrong fit here: the approval TUI is a state machine with 3-4 views, not a dashboard with independent widgets. tview's object-oriented widget model adds conceptual overhead for a focused single-purpose TUI. Bubble Tea's functional model maps directly onto the approval state machine.
 
-### ProtonMail/go-crypto (github.com/ProtonMail/go-crypto) — DO NOT USE for signing
+### gsterjov/go-libsecret — DO NOT USE
+2 commits total, 2016, effectively dead. No releases. Avoid.
 
-- v1.3.0 (May 2025) is current and well-maintained
-- Excellent for OpenPGP operations when you control the keys
-- Wrong tool for this use case: requires the private key in memory, does not interoperate with gpg-agent/pinentry
-- Not needed: daemon shells out to real gpg
-- Would be useful if the project ever needed native Go signing without gpg-agent — flag this for future consideration
+### ppacher/go-dbus-keyring — DO NOT USE
+Thin wrapper over godbus. Last meaningful activity years ago. No advantage over direct godbus usage for this project's needs.
 
-### github.com/go-git/go-git/v5 — DO NOT ADD as a dependency
+### pam_script (jeroennijhof/pam_script) — DO NOT USE as Go replacement
+pam_script is a C PAM module that runs shell scripts. It is a valid lightweight alternative to a custom PAM module for the session lifecycle hook. Evaluate against pam_exec first. Neither is a "Go library" — both are system-level components. The PAM hook does not need to be written in Go if a shell script suffices.
 
-- v5.16.5 (Feb 2026) is current and production-quality
-- Well-suited for commit object parsing IF you need a full git library
-- Overkill for this use case: commit object is plain text; stdlib parsing is 50 lines
-- Adds significant dependency weight (57 imported packages)
-- Would be justified if the project needed to open git repos, traverse history, etc.
-- The gpg-sign use case only needs to parse one commit header block from stdin
-
-### Assuan / gpg-agent protocol libraries — DO NOT USE
-
-- Intercepting at the gpg-agent Assuan protocol level (instead of at the gpg.program level) is significantly more complex
-- Requires implementing the Assuan socket protocol
-- The gpg.program approach gives full access to the commit object on stdin, which is exactly what is needed
-- PROJECT.md already validated this decision
-
----
-
-## Supporting Libraries (already present, new usage)
-
-These existing dependencies gain new usage patterns in this milestone:
-
-| Library | Existing Use | New Use |
-|---------|-------------|---------|
-| `os/exec` (stdlib) | None in current code | `gpg-sign`: `git rev-parse`, `git diff --cached`; daemon: real gpg invocation |
-| `encoding/base64` (stdlib) | None currently | Encode commit bytes in JSON request body |
-| `bytes`, `bufio`, `strings` (stdlib) | Scattered use | Commit object parsing in gpg-sign client |
-| `github.com/coder/websocket` | Web UI real-time updates | No new usage — design uses synchronous HTTP instead of WebSocket for signature delivery |
-
----
-
-## Configuration
-
-One new git configuration per user or per repository:
-
-```ini
-# ~/.gitconfig  or per-repo .git/config
-[gpg]
-    program = /path/to/secrets-dispatcher
-
-[commit]
-    gpgsign = true
-```
-
-No new daemon configuration is needed. The approval timeout (`serve.timeout`, default 5 min) covers GPG signing requests. If a user wants a shorter timeout for commits specifically, that is a future enhancement.
-
-**Environment variables the daemon must inherit:**
-
-| Variable | Purpose |
-|----------|---------|
-| `GPG_AGENT_INFO` | gpg-agent socket path (older gpg versions) |
-| `GNUPGHOME` | Alternate GPG home directory |
-| `GPG_TTY` | Terminal for pinentry |
-
-These are inherited automatically since the daemon runs in the user's session. No action required.
-
----
-
-## Installation
-
-No new packages to install. The feature is implemented with existing dependencies.
-
-The build produces the same single binary. The user configures git to use it as `gpg.program`.
-
-```bash
-# User-side git configuration (not part of the build)
-git config --global gpg.program "$(which secrets-dispatcher) gpg-sign"
-git config --global commit.gpgsign true
-```
-
-Wait — this is not quite right. `gpg.program` must be a path to an executable that git calls directly with the GPG args appended. It cannot be `secrets-dispatcher gpg-sign` (a command with args) because git exec's the path literally. The correct approach is one of:
-
-1. A shell wrapper: `#!/bin/sh\nexec secrets-dispatcher gpg-sign "$@"` installed at e.g. `~/.local/bin/sd-gpg`
-2. The binary detects when `$0` basename is not `secrets-dispatcher` (symlink support)
-3. A separate installed binary `secrets-dispatcher-gpg` that calls into the same main
-
-**Recommended:** Option 1 (shell wrapper). Simplest, no binary changes. User installs a one-line wrapper script. Document in README.
-
-Alternative: Option 2 — if the binary is symlinked as `sd-gpg`, `filepath.Base(os.Args[0])` equals `sd-gpg`, and main dispatches to gpg-sign mode automatically. This is the cleanest user experience but adds a symlink install step.
-
-**Flag for roadmap:** The install UX for gpg.program needs a decision before Phase 1 implementation.
+### golang.org/x/crypto/openpgp — ALREADY EXCLUDED
+Deprecated. Not needed. See v1.0 STACK.md.
 
 ---
 
 ## Sources
 
-- git source: [gpg-interface.c](https://github.com/git/git/blob/master/gpg-interface.c) — exact args and success detection string (HIGH confidence)
-- git docs: [gitformat-signature](https://git-scm.com/docs/gitformat-signature) — commit object format before/after signing (HIGH confidence)
-- [go-git v5 object package](https://pkg.go.dev/github.com/go-git/go-git/v5/plumbing/object) — Commit struct, Decode method, EncodeWithoutSignature (HIGH confidence)
-- [ProtonMail/go-crypto openpgp package](https://pkg.go.dev/github.com/ProtonMail/go-crypto/openpgp) — ArmoredDetachSign signature, private-key-in-memory requirement confirmed (HIGH confidence)
-- [ProtonMail/gopenpgp v3](https://pkg.go.dev/github.com/ProtonMail/gopenpgp/v3) — high-level PGP API, same key-in-memory limitation (MEDIUM confidence)
-- Existing codebase: `internal/api/`, `internal/approval/`, `internal/cli/`, `main.go` — auth patterns, existing API conventions (HIGH confidence — direct analysis)
+- Bubble Tea v2.0.0 release: [github.com/charmbracelet/bubbletea/releases/tag/v2.0.0](https://github.com/charmbracelet/bubbletea/releases/tag/v2.0.0) — release date 2026-02-24, import path `charm.land/bubbletea/v2` (HIGH confidence)
+- pkg.go.dev Bubble Tea v2: [pkg.go.dev/charm.land/bubbletea/v2](https://pkg.go.dev/charm.land/bubbletea/v2) — v2.0.0, published 2026-02-24 (HIGH confidence)
+- Bubble Tea WithOutput issue: [github.com/charmbracelet/bubbletea/issues/860](https://github.com/charmbracelet/bubbletea/issues/860) — custom TTY output writer confirmed working (MEDIUM confidence)
+- msteinert/pam v2.1.0: [github.com/msteinert/pam](https://github.com/msteinert/pam) — v2.1.0 released 2025-05-13 (HIGH confidence)
+- go-systemd v22.7.0: [pkg.go.dev/github.com/coreos/go-systemd/v22](https://pkg.go.dev/github.com/coreos/go-systemd/v22) — published 2026-01-27 (HIGH confidence)
+- golang.org/x/sys v0.41.0: [pkg.go.dev/golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) — published 2026-02-08 (HIGH confidence)
+- Linux VT ioctl constants: [github.com/torvalds/linux/blob/master/include/uapi/linux/vt.h](https://github.com/torvalds/linux/blob/master/include/uapi/linux/vt.h) — stable UAPI, verified 2026-02-25 (HIGH confidence)
+- VT constants NOT in golang.org/x/sys: verified by inspecting zerrors_linux.go and zerrors_linux_amd64.go in golang/sys repo (HIGH confidence — absence confirmed)
+- ioctl_vt(2) Linux man page: [man7.org/linux/man-pages/man2/ioctl_vt.2.html](https://man7.org/linux/man-pages/man2/ioctl_vt.2.html) — authoritative VT ioctl semantics (HIGH confidence)
+- godbus/dbus v5.2.2: [github.com/godbus/dbus/releases](https://github.com/godbus/dbus/releases) — published 2024-12-29, current (HIGH confidence)
+- Secret Service spec v0.2 DRAFT: [specifications.freedesktop.org/secret-service/latest/](https://specifications.freedesktop.org/secret-service/latest/) — updated 2025-11-26 (HIGH confidence)
+- go-libsecret status: [github.com/gsterjov/go-libsecret](https://github.com/gsterjov/go-libsecret) — 2 commits total, unmaintained (HIGH confidence)
+- pam_systemd timing issue: [github.com/systemd/systemd/issues/2863](https://github.com/systemd/systemd/issues/2863) — known pam_exec + systemd --user timing race (MEDIUM confidence)
+- dbus-run-session: [manpages.debian.org/testing/dbus-daemon/dbus-run-session.1.en.html](https://manpages.debian.org/testing/dbus-daemon/dbus-run-session.1.en.html) — standard test isolation tool (HIGH confidence)

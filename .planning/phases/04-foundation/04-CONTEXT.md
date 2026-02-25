@@ -39,6 +39,12 @@ Companion user exists, system D-Bus policy is verified, and the provisioning too
 - Old `serve` command continues to work as before
 - HTTP/WS kept as opt-in alternative permanently (not planned for removal)
 
+### Testing approach
+- All tests fully automated — no manual steps, no user-assisted testing, no "run this and verify"
+- Three test layers: unit (mocks), integration (private D-Bus daemon), VM E2E
+- Every layer runs with `go test` or equivalent CI-compatible command
+- Tests must prove success criteria without human intervention
+
 ### Claude's Discretion
 - D-Bus policy XML structure and exact method signatures for stubs
 - systemd unit file details (dependencies, ordering, environment)

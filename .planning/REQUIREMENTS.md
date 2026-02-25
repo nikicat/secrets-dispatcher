@@ -109,54 +109,54 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| COMP-01 | — | Pending |
-| COMP-02 | — | Pending |
-| COMP-03 | — | Pending |
-| COMP-04 | — | Pending |
-| COMP-05 | — | Pending |
-| COMP-06 | — | Pending |
-| COMP-07 | — | Pending |
-| DBUS-01 | — | Pending |
-| DBUS-02 | — | Pending |
-| DBUS-03 | — | Pending |
-| DBUS-04 | — | Pending |
-| DBUS-05 | — | Pending |
-| DBUS-06 | — | Pending |
-| DBUS-07 | — | Pending |
-| VT-01 | — | Pending |
-| VT-02 | — | Pending |
-| VT-03 | — | Pending |
-| VT-04 | — | Pending |
-| VT-05 | — | Pending |
-| VT-06 | — | Pending |
-| VT-07 | — | Pending |
-| VT-08 | — | Pending |
-| VT-09 | — | Pending |
-| AGENT-01 | — | Pending |
-| AGENT-02 | — | Pending |
-| AGENT-03 | — | Pending |
-| AGENT-04 | — | Pending |
-| AGENT-05 | — | Pending |
-| GPG-01 | — | Pending |
-| GPG-02 | — | Pending |
-| GPG-03 | — | Pending |
-| PROV-01 | — | Pending |
-| PROV-02 | — | Pending |
-| PROV-03 | — | Pending |
-| PROV-04 | — | Pending |
-| PROV-05 | — | Pending |
-| TEST-01 | — | Pending |
-| TEST-02 | — | Pending |
-| TEST-03 | — | Pending |
-| TEST-04 | — | Pending |
-| INFRA-01 | — | Pending |
-| INFRA-02 | — | Pending |
+| COMP-01 | Phase 4 | Pending |
+| COMP-02 | Phase 4 | Pending |
+| COMP-03 | Phase 6 | Pending |
+| COMP-04 | Phase 6 | Pending |
+| COMP-05 | Phase 4 | Pending |
+| COMP-06 | Phase 7 | Pending |
+| COMP-07 | Phase 7 | Pending |
+| DBUS-01 | Phase 4 | Pending |
+| DBUS-02 | Phase 4 | Pending |
+| DBUS-03 | Phase 5 | Pending |
+| DBUS-04 | Phase 5 | Pending |
+| DBUS-05 | Phase 5 | Pending |
+| DBUS-06 | Phase 5 | Pending |
+| DBUS-07 | Phase 5 | Pending |
+| VT-01 | Phase 5 | Pending |
+| VT-02 | Phase 5 | Pending |
+| VT-03 | Phase 5 | Pending |
+| VT-04 | Phase 5 | Pending |
+| VT-05 | Phase 5 | Pending |
+| VT-06 | Phase 5 | Pending |
+| VT-07 | Phase 7 | Pending |
+| VT-08 | Phase 7 | Pending |
+| VT-09 | Phase 5 | Pending |
+| AGENT-01 | Phase 6 | Pending |
+| AGENT-02 | Phase 6 | Pending |
+| AGENT-03 | Phase 6 | Pending |
+| AGENT-04 | Phase 6 | Pending |
+| AGENT-05 | Phase 6 | Pending |
+| GPG-01 | Phase 6 | Pending |
+| GPG-02 | Phase 5 | Pending |
+| GPG-03 | Phase 5 | Pending |
+| PROV-01 | Phase 4 | Pending |
+| PROV-02 | Phase 4 | Pending |
+| PROV-03 | Phase 4 | Pending |
+| PROV-04 | Phase 4 | Pending |
+| PROV-05 | Phase 4 | Pending |
+| TEST-01 | Phase 5 | Pending |
+| TEST-02 | Phase 5 | Pending |
+| TEST-03 | Phase 8 | Pending |
+| TEST-04 | Phase 4 | Pending |
+| INFRA-01 | Phase 4 | Pending |
+| INFRA-02 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 42 total
-- Mapped to phases: 0
-- Unmapped: 42 ⚠️
+- Mapped to phases: 42
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-02-25*
-*Last updated: 2026-02-25 after initial definition*
+*Last updated: 2026-02-25 — traceability filled after roadmap creation*

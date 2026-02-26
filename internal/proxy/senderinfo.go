@@ -5,6 +5,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 // dbusClient abstracts D-Bus operations for testing.
@@ -54,13 +55,19 @@ func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
 		info.UID = uid
 	}
 
-	// Get systemd unit name if we have a PID
+	// Resolve the user-facing invoker process via /proc.
+	// Falls back to systemd unit name if /proc walking fails.
 	if info.PID != 0 {
-		unitName, err := r.client.GetUnitByPID(info.PID)
-		if err != nil {
-			slog.Info("failed to get unit by PID", "pid", info.PID, "error", err)
+		if comm, invokerPID := procutil.ResolveInvoker(info.PID); comm != "" {
+			info.UnitName = comm
+			info.PID = invokerPID
 		} else {
-			info.UnitName = unitName
+			unitName, err := r.client.GetUnitByPID(pid)
+			if err != nil {
+				slog.Info("failed to get unit by PID", "pid", pid, "error", err)
+			} else {
+				info.UnitName = unitName
+			}
 		}
 	}
 

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 type connContextKey struct{}
@@ -20,17 +20,6 @@ type connContextKey struct{}
 // the underlying connection (e.g., for Unix socket peer credentials).
 func connContext(ctx context.Context, c net.Conn) context.Context {
 	return context.WithValue(ctx, connContextKey{}, c)
-}
-
-// shells is the set of known shell process names to skip when walking
-// up the process tree to find the user-facing invoker.
-var shells = map[string]bool{
-	"sh": true, "bash": true, "zsh": true, "fish": true,
-	"dash": true, "csh": true, "tcsh": true, "ksh": true,
-}
-
-func isShell(comm string) bool {
-	return shells[comm]
 }
 
 type procInfo struct {
@@ -76,8 +65,8 @@ func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 
 	// Build the process chain from peer up to init.
 	var chain []procInfo
-	for pid := cred.Pid; pid > 1; pid = readPPID(pid) {
-		chain = append(chain, procInfo{pid: pid, comm: readComm(pid)})
+	for pid := cred.Pid; pid > 1; pid = procutil.ReadPPID(pid) {
+		chain = append(chain, procInfo{pid: pid, comm: procutil.ReadComm(pid)})
 	}
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
@@ -93,7 +82,7 @@ func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 	invoker := chain[0] // fallback to peer
 	for i := 2; i < len(chain); i++ {
 		invoker = chain[i]
-		if !isShell(chain[i].comm) {
+		if !procutil.IsShell(chain[i].comm) {
 			break
 		}
 	}
@@ -103,38 +92,4 @@ func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 		UID:      uint32(cred.Uid),
 		UnitName: invoker.comm,
 	}
-}
-
-// readPPID reads the parent PID from /proc/<pid>/stat.
-// Returns 0 on any error.
-func readPPID(pid int32) int32 {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0
-	}
-	// Format: "pid (comm) state ppid ..."
-	// comm can contain spaces and parentheses, so find the last ')' first.
-	s := string(data)
-	i := strings.LastIndexByte(s, ')')
-	if i < 0 || i+2 >= len(s) {
-		return 0
-	}
-	// After ") " we have "state ppid ..."
-	fields := strings.Fields(s[i+2:])
-	if len(fields) < 2 {
-		return 0
-	}
-	var ppid int32
-	fmt.Sscanf(fields[1], "%d", &ppid)
-	return ppid
-}
-
-// readComm reads the process name from /proc/<pid>/comm.
-// Returns empty string on error.
-func readComm(pid int32) string {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
 }

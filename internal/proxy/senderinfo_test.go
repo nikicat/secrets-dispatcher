@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 // mockDBusClient implements dbusClient for testing.
@@ -178,5 +180,52 @@ func TestNewSenderInfoResolver(t *testing.T) {
 	}
 	if resolver.client == nil {
 		t.Error("expected non-nil client")
+	}
+}
+
+func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
+	// Use our own PID so /proc reading works and procutil resolves the invoker.
+	selfPID := uint32(os.Getpid())
+	client := &mockDBusClient{
+		pid:      selfPID,
+		uid:      1000,
+		unitName: "should-not-be-used.service",
+	}
+	resolver := newSenderInfoResolverWithClient(client)
+
+	info := resolver.Resolve(":1.42")
+
+	// procutil should have resolved the invoker, so UnitName is the process comm.
+	expectedComm, expectedPID := procutil.ResolveInvoker(selfPID)
+	if info.UnitName != expectedComm {
+		t.Errorf("expected UnitName %q (from procutil), got %q", expectedComm, info.UnitName)
+	}
+	if info.PID != expectedPID {
+		t.Errorf("expected PID %d (from procutil), got %d", expectedPID, info.PID)
+	}
+	// GetUnitByPID should NOT have been called since procutil succeeded.
+	if info.UnitName == "should-not-be-used.service" {
+		t.Error("systemd fallback was used despite procutil succeeding")
+	}
+}
+
+func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
+	// PID 12345 likely doesn't exist in /proc, so procutil returns empty
+	// and we fall back to systemd GetUnitByPID.
+	client := &mockDBusClient{
+		pid:      12345,
+		uid:      1000,
+		unitName: "fallback.service",
+	}
+	resolver := newSenderInfoResolverWithClient(client)
+
+	info := resolver.Resolve(":1.42")
+
+	if info.UnitName != "fallback.service" {
+		t.Errorf("expected UnitName %q from systemd fallback, got %q", "fallback.service", info.UnitName)
+	}
+	// PID should remain as the original D-Bus PID when procutil fails.
+	if info.PID != 12345 {
+		t.Errorf("expected PID 12345, got %d", info.PID)
 	}
 }

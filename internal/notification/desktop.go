@@ -326,8 +326,10 @@ func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string)
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		return "Sign commit", "emblem-important"
+	case approval.RequestTypeSearch:
+		return "Secrets searched", "dialog-password"
 	default:
-		return "Secret Request", "dialog-password"
+		return "Secret requested", "dialog-password"
 	}
 }
 
@@ -393,28 +395,31 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			fmt.Fprintf(&b, "<i>%s</i>", commitSubject(req.GPGSignInfo.CommitMsg))
 		}
 	default:
-		fmt.Fprintf(&b, "Client: %s\n", req.Client)
+		// Header: proc_name@client[pid]
 		if req.SenderInfo.UnitName != "" {
-			fmt.Fprintf(&b, "Process: %s [%d]\n", req.SenderInfo.UnitName, req.SenderInfo.PID)
+			fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", req.SenderInfo.UnitName, req.Client, req.SenderInfo.PID)
 		} else if req.SenderInfo.PID != 0 {
-			fmt.Fprintf(&b, "PID: %d\n", req.SenderInfo.PID)
+			fmt.Fprintf(&b, "<b>%s</b>[%d]: ", req.Client, req.SenderInfo.PID)
+		} else {
+			fmt.Fprintf(&b, "<b>%s</b>: ", req.Client)
 		}
 
 		switch req.Type {
 		case approval.RequestTypeGetSecret:
 			if len(req.Items) == 1 {
-				fmt.Fprintf(&b, "Secret: %s", req.Items[0].Label)
+				fmt.Fprintf(&b, "<i>%s</i>", req.Items[0].Label)
 			} else {
-				fmt.Fprintf(&b, "Secrets: %d items", len(req.Items))
+				fmt.Fprintf(&b, "<i>%d items</i>", len(req.Items))
 			}
 		case approval.RequestTypeSearch:
-			b.WriteString("Type: search")
 			if len(req.SearchAttributes) > 0 {
 				attrs := make([]string, 0, len(req.SearchAttributes))
 				for k, v := range req.SearchAttributes {
 					attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
 				}
-				fmt.Fprintf(&b, "\nQuery: %s", strings.Join(attrs, ", "))
+				fmt.Fprintf(&b, "<i>%s</i>", strings.Join(attrs, ", "))
+			} else {
+				b.WriteString("<i>all</i>")
 			}
 		}
 	}

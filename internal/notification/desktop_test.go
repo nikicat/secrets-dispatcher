@@ -142,17 +142,14 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 	}
 
 	call := mock.lastNotify()
-	if call.summary != "Secret Request" {
+	if call.summary != "Secret requested" {
 		t.Errorf("unexpected summary: %s", call.summary)
 	}
-	if !contains(call.body, "user@remote") {
-		t.Errorf("body should contain client name: %s", call.body)
+	if !contains(call.body, "<b>ssh-agent.service</b>@user@remote[1234]") {
+		t.Errorf("body should contain proc@client[pid] header: %s", call.body)
 	}
-	if !contains(call.body, "GitHub Token") {
-		t.Errorf("body should contain secret label: %s", call.body)
-	}
-	if !contains(call.body, "ssh-agent.service") {
-		t.Errorf("body should contain unit name: %s", call.body)
+	if !contains(call.body, "<i>GitHub Token</i>") {
+		t.Errorf("body should contain italic secret label: %s", call.body)
 	}
 }
 
@@ -264,18 +261,17 @@ func TestHandler_FormatBody_Search(t *testing.T) {
 		Type:   approval.RequestTypeSearch,
 		SearchAttributes: map[string]string{
 			"service": "github",
-			"user":    "admin",
 		},
 	}
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "search") {
-		t.Errorf("body should mention search: %s", call.body)
+	if call.summary != "Secrets searched" {
+		t.Errorf("expected summary 'Secrets searched', got %q", call.summary)
 	}
-	if !contains(call.body, "github") {
-		t.Errorf("body should contain search attribute: %s", call.body)
+	if !contains(call.body, "<i>service=github</i>") {
+		t.Errorf("body should contain italic search attributes: %s", call.body)
 	}
 }
 
@@ -296,8 +292,8 @@ func TestHandler_FormatBody_MultipleItems(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "3 items") {
-		t.Errorf("body should show item count: %s", call.body)
+	if !contains(call.body, "<i>3 items</i>") {
+		t.Errorf("body should show italic item count: %s", call.body)
 	}
 }
 
@@ -318,8 +314,8 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "PID: 5678") {
-		t.Errorf("body should show PID: %s", call.body)
+	if !contains(call.body, "<b>user@host</b>[5678]") {
+		t.Errorf("body should show client[pid]: %s", call.body)
 	}
 }
 
@@ -411,8 +407,8 @@ func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
 	}
 
 	call := mock.lastNotify()
-	if call.summary != "Secret Request" {
-		t.Errorf("expected summary 'Secret Request', got %q", call.summary)
+	if call.summary != "Secret requested" {
+		t.Errorf("expected summary 'Secret requested', got %q", call.summary)
 	}
 	if call.icon != "dialog-password" {
 		t.Errorf("expected icon 'dialog-password', got %q", call.icon)

@@ -139,17 +139,12 @@ func TestProxyBasicOperations(t *testing.T) {
 	mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
 	// Start the proxy
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	p := proxy.New(proxy.Config{
-		RemoteSocketPath: env.remoteSocketPath(),
 		ClientName:       "test-client",
 		LogLevel:         slog.LevelDebug,
 	})
 
-	// Override the local connection to use our isolated D-Bus
-	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -298,16 +293,12 @@ func TestProxyItemOperations(t *testing.T) {
 
 	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test-app"}, []byte("secret-value"))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	p := proxy.New(proxy.Config{
-		RemoteSocketPath: env.remoteSocketPath(),
 		ClientName:       "test-client",
 		LogLevel:         slog.LevelDebug,
 	})
 
-	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -380,16 +371,12 @@ func TestProxyCollectionOperations(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	p := proxy.New(proxy.Config{
-		RemoteSocketPath: env.remoteSocketPath(),
 		ClientName:       "test-client",
 		LogLevel:         slog.LevelDebug,
 	})
 
-	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -477,38 +464,20 @@ func TestProxyCollectionOperations(t *testing.T) {
 	})
 }
 
-// connectProxyWithLocalAddr is a helper that connects the proxy using custom D-Bus addresses.
-// This allows tests to use isolated D-Bus daemons instead of the system session bus.
-func connectProxyWithLocalAddr(p *proxy.Proxy, ctx context.Context, localAddr, remoteSocketPath string) error {
-	// We need to connect manually since proxy.Connect() uses dbus.ConnectSessionBus()
-	// which would connect to the user's session bus.
-
-	localConn, err := dbus.Connect(localAddr)
+// connectProxyWithConns connects the proxy using isolated D-Bus connections.
+func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteSocketPath string) error {
+	backendConn, err := dbus.Connect(localAddr)
 	if err != nil {
-		return fmt.Errorf("connect to local dbus: %w", err)
+		return fmt.Errorf("connect to backend dbus: %w", err)
 	}
 
-	remoteConn, err := dbus.Connect("unix:path=" + remoteSocketPath)
+	frontConn, err := dbus.Connect("unix:path=" + remoteSocketPath)
 	if err != nil {
-		localConn.Close()
-		return fmt.Errorf("connect to remote socket: %w", err)
+		backendConn.Close()
+		return fmt.Errorf("connect to front socket: %w", err)
 	}
 
-	// Use reflection or a test-specific method to set connections
-	// For now, we'll use a workaround: set DBUS_SESSION_BUS_ADDRESS and call Connect
-	// But that's not ideal. Let's add a ConnectWithConns method instead.
-
-	// Actually, the cleanest approach is to modify proxy to accept connections.
-	// For now, let's use environment variable hack.
-	origAddr := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
-	os.Setenv("DBUS_SESSION_BUS_ADDRESS", localAddr)
-	defer os.Setenv("DBUS_SESSION_BUS_ADDRESS", origAddr)
-
-	// Close the connections we made - Connect will make new ones
-	localConn.Close()
-	remoteConn.Close()
-
-	return p.Connect(ctx)
+	return p.ConnectWith(frontConn, backendConn)
 }
 
 // TestProxyClientDisconnectCancelsPendingRequest tests that when a client disconnects
@@ -531,17 +500,13 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	// Create an approval manager that requires approval (not auto-approve)
 	approvalMgr := approval.NewManager(30*time.Second, 100)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	p := proxy.New(proxy.Config{
-		RemoteSocketPath: env.remoteSocketPath(),
 		ClientName:       "test-client",
 		LogLevel:         slog.LevelDebug,
 		Approval:         approvalMgr,
 	})
 
-	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -630,16 +595,12 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	p := proxy.New(proxy.Config{
-		RemoteSocketPath: env.remoteSocketPath(),
 		ClientName:       "test-client",
 		LogLevel:         slog.LevelDebug,
 	})
 
-	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -675,12 +636,11 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 	defer cancel()
 
 	p := proxy.New(proxy.Config{
-		RemoteSocketPath: env.remoteSocketPath(),
 		ClientName:       "test-client",
 		LogLevel:         slog.LevelDebug,
 	})
 
-	if err := connectProxyWithLocalAddr(p, ctx, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()

@@ -10,9 +10,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/lmittmann/tint"
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -24,6 +26,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/service"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -55,6 +58,8 @@ func main() {
 		runCLI("deny", os.Args[2:])
 	case "history":
 		runCLI("history", os.Args[2:])
+	case "config":
+		runConfig(os.Args[2:])
 	case "service":
 		runService(os.Args[2:])
 	case "gpg-sign":
@@ -83,6 +88,7 @@ Commands:
   approve       Approve a pending request
   deny          Deny a pending request
   history       Show resolved requests
+  config        Show or manage configuration
   service       Manage the systemd user service
   gpg-sign      GPG signing proxy (called by git as gpg.program)
   gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
@@ -259,9 +265,6 @@ func runCLI(cmd string, args []string) {
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	remoteSocket := fs.String("remote-socket", "", "Path to the remote D-Bus socket (single-socket mode)")
-	socketsDir := fs.String("sockets-dir", "", "Directory to watch for socket files (default: $XDG_RUNTIME_DIR/secrets-dispatcher/sockets)")
-	clientName := fs.String("client", "unknown", "Name of the remote client (for logging, single-socket mode)")
 	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn, error")
 	logFormat := fs.String("log-format", "text", "Log format: text (colored) or json")
 	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
@@ -285,15 +288,6 @@ func runServe(args []string) {
 	if !set["listen"] && cfg.Listen != "" {
 		*listenAddr = cfg.Listen
 	}
-	if !set["sockets-dir"] && cfg.Serve.SocketsDir != "" {
-		*socketsDir = cfg.Serve.SocketsDir
-	}
-	if !set["remote-socket"] && cfg.Serve.RemoteSocket != "" {
-		*remoteSocket = cfg.Serve.RemoteSocket
-	}
-	if !set["client"] && cfg.Serve.Client != "" {
-		*clientName = cfg.Serve.Client
-	}
 	if !set["log-level"] && cfg.Serve.LogLevel != "" {
 		*logLevel = cfg.Serve.LogLevel
 	}
@@ -310,21 +304,11 @@ func runServe(args []string) {
 		*notifications = *cfg.Serve.Notifications
 	}
 
-	// Validate mode selection
-	if *remoteSocket != "" && *socketsDir != "" {
-		fmt.Fprintln(os.Stderr, "error: --remote-socket and --sockets-dir are mutually exclusive")
-		fs.Usage()
+	// Apply defaults and validate
+	cfg = cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
-	}
-
-	// Use default sockets directory if neither mode is specified
-	if *remoteSocket == "" && *socketsDir == "" && !*apiOnly {
-		defaultDir, err := getSocketsDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		*socketsDir = defaultDir
 	}
 
 	level := parseLogLevel(*logLevel)
@@ -410,15 +394,104 @@ func runServe(args []string) {
 		cancel()
 	}()
 
-	// Create proxy manager for multi-socket mode (needed before API server for ClientProvider)
-	var proxyMgr *proxy.Manager
-	if *socketsDir != "" {
-		var err error
-		proxyMgr, err = proxy.NewManager(*socketsDir, approvalMgr, level)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", err)
-			os.Exit(1)
+	// Resolve upstream address
+	var upstreamAddr string
+	if cfg.Serve.Upstream.Type == "socket" {
+		upstreamAddr = "unix:path=" + cfg.Serve.Upstream.Path
+	}
+
+	// Build topology from config: create providers and runners for each downstream
+	var providers []api.ClientProvider
+	type downstreamRunner func(context.Context) error
+
+	var runners []downstreamRunner
+
+	for _, ds := range cfg.Serve.Downstream {
+		switch ds.Type {
+		case "sockets":
+			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level)
+			if mgrErr != nil {
+				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
+				os.Exit(1)
+			}
+			providers = append(providers, mgr)
+			runners = append(runners, func(ctx context.Context) error {
+				return mgr.Run(ctx)
+			})
+
+		case "session_bus":
+			p := proxy.New(proxy.Config{
+				ClientName: "local",
+				LogLevel:   level,
+				Approval:   approvalMgr,
+			})
+			sp := &staticProvider{info: proxy.ClientInfo{Name: "local", SocketPath: "session_bus"}}
+			providers = append(providers, sp)
+			runners = append(runners, func(ctx context.Context) error {
+				// Connect front=session bus, backend=upstream
+				frontConn, connErr := dbus.ConnectSessionBus()
+				if connErr != nil {
+					return fmt.Errorf("connect to session bus (front): %w", connErr)
+				}
+				var backendConn *dbus.Conn
+				if upstreamAddr == "" {
+					return fmt.Errorf("upstream and downstream are both session_bus (should be caught by validation)")
+				}
+				backendConn, connErr = dbus.Connect(upstreamAddr)
+				if connErr != nil {
+					frontConn.Close()
+					return fmt.Errorf("connect to upstream %s: %w", upstreamAddr, connErr)
+				}
+				if connErr := p.ConnectWith(frontConn, backendConn); connErr != nil {
+					return connErr
+				}
+				defer p.Close()
+				return p.Run(ctx)
+			})
+
+		case "socket":
+			clientName := filepath.Base(ds.Path)
+			p := proxy.New(proxy.Config{
+				ClientName: clientName,
+				LogLevel:   level,
+				Approval:   approvalMgr,
+			})
+			sp := &staticProvider{info: proxy.ClientInfo{Name: clientName, SocketPath: ds.Path}}
+			providers = append(providers, sp)
+			runners = append(runners, func(ctx context.Context) error {
+				// Connect front=socket, backend=upstream
+				frontConn, connErr := dbus.Connect("unix:path=" + ds.Path)
+				if connErr != nil {
+					return fmt.Errorf("connect to downstream socket %s: %w", ds.Path, connErr)
+				}
+				var backendConn *dbus.Conn
+				if upstreamAddr == "" {
+					backendConn, connErr = dbus.ConnectSessionBus()
+				} else {
+					backendConn, connErr = dbus.Connect(upstreamAddr)
+				}
+				if connErr != nil {
+					frontConn.Close()
+					return fmt.Errorf("connect to upstream: %w", connErr)
+				}
+				if connErr := p.ConnectWith(frontConn, backendConn); connErr != nil {
+					return connErr
+				}
+				defer p.Close()
+				return p.Run(ctx)
+			})
 		}
+	}
+
+	// Build composite ClientProvider
+	var provider api.ClientProvider
+	switch len(providers) {
+	case 0:
+		provider = &staticProvider{}
+	case 1:
+		provider = providers[0]
+	default:
+		provider = &multiProvider{providers: providers}
 	}
 
 	// Compute Unix socket path for thin client (gpg-sign subcommand).
@@ -427,8 +500,6 @@ func runServe(args []string) {
 	if !*apiOnly {
 		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 		if runtimeDir == "" {
-			// Graceful fallback: no Unix socket if XDG_RUNTIME_DIR is unset.
-			// The thin client uses the same fallback, so both sides agree.
 			slog.Warn("XDG_RUNTIME_DIR is not set; Unix socket for gpg-sign will not be created")
 		} else {
 			apiUnixSocket = filepath.Join(runtimeDir, "secrets-dispatcher", "api.sock")
@@ -436,12 +507,7 @@ func runServe(args []string) {
 	}
 
 	// Create API server
-	var apiServer *api.Server
-	if proxyMgr != nil {
-		apiServer, err = api.NewServerWithProvider(*listenAddr, approvalMgr, proxyMgr, auth, apiUnixSocket)
-	} else {
-		apiServer, err = api.NewServer(*listenAddr, approvalMgr, *remoteSocket, *clientName, auth, apiUnixSocket)
-	}
+	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
@@ -478,40 +544,117 @@ func runServe(args []string) {
 		return
 	}
 
-	// Multi-socket mode
-	if proxyMgr != nil {
-		slog.Info("running in multi-socket mode", "sockets_dir", *socketsDir)
-
-		// Subscribe WebSocket handler to receive client connect/disconnect events
-		proxyMgr.Subscribe(apiServer.WSHandler())
-
-		if err := proxyMgr.Run(ctx); err != nil && err != context.Canceled {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+	// Subscribe WebSocket handler to Manager observers
+	for _, p := range providers {
+		if mgr, ok := p.(*proxy.Manager); ok {
+			mgr.Subscribe(apiServer.WSHandler())
 		}
-		return
 	}
 
-	// Single-socket mode
-	proxyCfg := proxy.Config{
-		RemoteSocketPath: *remoteSocket,
-		ClientName:       *clientName,
-		LogLevel:         level,
-		Approval:         approvalMgr,
+	// Run all downstreams
+	slog.Info("starting proxy topology",
+		"upstream", cfg.Serve.Upstream.Type,
+		"downstreams", len(cfg.Serve.Downstream))
+
+	var wg sync.WaitGroup
+	for i, run := range runners {
+		wg.Add(1)
+		go func(idx int, runFn downstreamRunner) {
+			defer wg.Done()
+			if err := runFn(ctx); err != nil && err != context.Canceled {
+				slog.Error("downstream error", "index", idx, "error", err)
+			}
+		}(i, run)
+	}
+	wg.Wait()
+}
+
+// staticProvider wraps a single client info for the API ClientProvider interface.
+type staticProvider struct {
+	info proxy.ClientInfo
+}
+
+func (s *staticProvider) Clients() []proxy.ClientInfo {
+	if s.info.Name == "" {
+		return nil
+	}
+	return []proxy.ClientInfo{s.info}
+}
+
+// multiProvider aggregates multiple ClientProviders.
+type multiProvider struct {
+	providers []api.ClientProvider
+}
+
+func (m *multiProvider) Clients() []proxy.ClientInfo {
+	var all []proxy.ClientInfo
+	for _, p := range m.providers {
+		all = append(all, p.Clients()...)
+	}
+	return all
+}
+
+// runConfig handles the "config" subcommand group.
+func runConfig(args []string) {
+	if len(args) == 0 {
+		printConfigUsage()
+		os.Exit(1)
 	}
 
-	p := proxy.New(proxyCfg)
+	switch args[0] {
+	case "show":
+		runConfigShow(args[1:])
+	case "-h", "--help", "help":
+		printConfigUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown config command: %s\n\n", args[0])
+		printConfigUsage()
+		os.Exit(1)
+	}
+}
 
-	if err := p.Connect(ctx); err != nil {
+func runConfigShow(args []string) {
+	fs := flag.NewFlagSet("config show", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	defaults := fs.Bool("defaults", false, "Show all fields with program defaults filled in")
+	fs.Parse(args)
+
+	// Determine which path to display
+	path := *configPath
+	if path == "" {
+		path = config.DefaultPath()
+	}
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer p.Close()
 
-	if err := p.Run(ctx); err != nil && err != context.Canceled {
+	if *defaults {
+		cfg = cfg.WithDefaults()
+	}
+
+	fmt.Fprintf(os.Stderr, "# %s\n", path)
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	os.Stdout.Write(out)
+}
+
+func printConfigUsage() {
+	fmt.Fprintf(os.Stderr, `Usage: %s config <command> [options]
+
+Commands:
+  show          Show the current configuration
+
+Show options:
+  --config      Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
+  --defaults    Show all fields with program defaults filled in
+`, progName)
 }
 
 // runService handles the "service" subcommand group (install/uninstall/status).
@@ -702,15 +845,6 @@ func getStateDir() (string, error) {
 		stateHome = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(stateHome, "secrets-dispatcher"), nil
-}
-
-func getSocketsDir() (string, error) {
-	// Use XDG_RUNTIME_DIR for runtime files like sockets
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return "", fmt.Errorf("XDG_RUNTIME_DIR is not set")
-	}
-	return filepath.Join(runtimeDir, "secrets-dispatcher", "sockets"), nil
 }
 
 // loadConfig loads a config file. An explicit path that doesn't exist is an error.

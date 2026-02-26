@@ -12,15 +12,14 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
 
-// Proxy connects to a remote D-Bus (via SSH tunnel socket) and the local
-// session bus, registering as org.freedesktop.secrets on the remote bus
-// and proxying requests to the local Secret Service.
+// Proxy connects to a front-facing D-Bus (where clients connect) and a backend
+// D-Bus (where the real Secret Service lives), registering as
+// org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
-	remoteSocketPath string
-	clientName       string
+	clientName string
 
-	remoteConn *dbus.Conn
-	localConn  *dbus.Conn
+	frontConn   *dbus.Conn // clients connect here (session bus or remote socket)
+	backendConn *dbus.Conn // real Secret Service lives here (session bus or private bus)
 
 	sessions *SessionManager
 	logger   *logging.Logger
@@ -36,10 +35,9 @@ type Proxy struct {
 
 // Config holds configuration for the proxy.
 type Config struct {
-	RemoteSocketPath string
-	ClientName       string
-	LogLevel         slog.Level
-	Approval         *approval.Manager
+	ClientName string
+	LogLevel   slog.Level
+	Approval   *approval.Manager
 }
 
 // New creates a new Proxy with the given configuration.
@@ -56,86 +54,69 @@ func New(cfg Config) *Proxy {
 	}
 
 	return &Proxy{
-		remoteSocketPath: cfg.RemoteSocketPath,
-		clientName:       clientName,
-		sessions:         NewSessionManager(),
-		logger:           logging.New(cfg.LogLevel, clientName),
-		approval:         approvalMgr,
+		clientName: clientName,
+		sessions:   NewSessionManager(),
+		logger:     logging.New(cfg.LogLevel, clientName),
+		approval:   approvalMgr,
 	}
 }
 
-// Connect establishes connections to both the remote socket and local session bus.
-func (p *Proxy) Connect(ctx context.Context) error {
-	var err error
-
-	// Connect to local session bus
-	p.localConn, err = dbus.ConnectSessionBus()
-	if err != nil {
-		return fmt.Errorf("connect to local session bus: %w", err)
-	}
-
-	// Connect to remote D-Bus via socket
-	p.remoteConn, err = dbus.Connect("unix:path=" + p.remoteSocketPath)
-	if err != nil {
-		p.localConn.Close()
-		return fmt.Errorf("connect to remote socket %s: %w", p.remoteSocketPath, err)
-	}
+// ConnectWith sets up the proxy using pre-created D-Bus connections.
+// frontConn is where clients connect; backendConn is where the real Secret Service lives.
+func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
+	p.frontConn = frontConn
+	p.backendConn = backendConn
 
 	// Create client tracker to detect disconnects
-	p.tracker, err = newClientTracker(p.remoteConn)
+	var err error
+	p.tracker, err = newClientTracker(p.frontConn)
 	if err != nil {
-		p.localConn.Close()
-		p.remoteConn.Close()
+		p.Close()
 		return fmt.Errorf("create client tracker: %w", err)
 	}
 
 	// Create sender info resolver
-	p.resolver = NewSenderInfoResolver(p.remoteConn)
+	p.resolver = NewSenderInfoResolver(p.frontConn)
 
-	// Create handlers
-	p.service = NewService(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
-	p.collection = NewCollectionHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
-	p.item = NewItemHandler(p.localConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
-	p.subtreeProperties = NewSubtreePropertiesHandler(p.localConn, p.sessions, p.logger)
+	// Create handlers — they talk to the backend
+	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
+	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
+	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
+	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 
-	// Export the Service interface on the remote connection
-	if err := p.remoteConn.Export(p.service, dbustypes.ServicePath, dbustypes.ServiceInterface); err != nil {
+	// Export interfaces on the front connection (where clients call us)
+	if err := p.frontConn.Export(p.service, dbustypes.ServicePath, dbustypes.ServiceInterface); err != nil {
 		p.Close()
 		return fmt.Errorf("export Service interface: %w", err)
 	}
 
-	// Export Properties interface for Service
-	if err := p.remoteConn.Export(p.service, dbustypes.ServicePath, "org.freedesktop.DBus.Properties"); err != nil {
+	if err := p.frontConn.Export(p.service, dbustypes.ServicePath, "org.freedesktop.DBus.Properties"); err != nil {
 		p.Close()
 		return fmt.Errorf("export Properties interface for Service: %w", err)
 	}
 
-	// Export introspectable interface
-	if err := p.remoteConn.Export(introspectable{p.service.Introspect}, dbustypes.ServicePath, "org.freedesktop.DBus.Introspectable"); err != nil {
+	if err := p.frontConn.Export(introspectable{p.service.Introspect}, dbustypes.ServicePath, "org.freedesktop.DBus.Introspectable"); err != nil {
 		p.Close()
 		return fmt.Errorf("export Introspectable interface: %w", err)
 	}
 
-	// Export collection handler using subtree for /org/freedesktop/secrets/collection/*
-	if err := p.remoteConn.ExportSubtree(p.collection, "/org/freedesktop/secrets/collection", dbustypes.CollectionInterface); err != nil {
+	if err := p.frontConn.ExportSubtree(p.collection, "/org/freedesktop/secrets/collection", dbustypes.CollectionInterface); err != nil {
 		p.Close()
 		return fmt.Errorf("export Collection subtree: %w", err)
 	}
 
-	// Export unified Properties handler for collections and items
-	if err := p.remoteConn.ExportSubtree(p.subtreeProperties, "/org/freedesktop/secrets/collection", "org.freedesktop.DBus.Properties"); err != nil {
+	if err := p.frontConn.ExportSubtree(p.subtreeProperties, "/org/freedesktop/secrets/collection", "org.freedesktop.DBus.Properties"); err != nil {
 		p.Close()
 		return fmt.Errorf("export Properties subtree: %w", err)
 	}
 
-	// Export item handler - items are at paths like /org/freedesktop/secrets/collection/xxx/yyy
-	if err := p.remoteConn.ExportSubtree(p.item, "/org/freedesktop/secrets/collection", dbustypes.ItemInterface); err != nil {
+	if err := p.frontConn.ExportSubtree(p.item, "/org/freedesktop/secrets/collection", dbustypes.ItemInterface); err != nil {
 		p.Close()
 		return fmt.Errorf("export Item subtree: %w", err)
 	}
 
-	// Request the bus name
-	reply, err := p.remoteConn.RequestName(dbustypes.BusName, dbus.NameFlagReplaceExisting)
+	// Request the bus name on the front connection
+	reply, err := p.frontConn.RequestName(dbustypes.BusName, dbus.NameFlagReplaceExisting)
 	if err != nil {
 		p.Close()
 		return fmt.Errorf("request bus name: %w", err)
@@ -145,21 +126,17 @@ func (p *Proxy) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to become primary owner of %s (reply=%d)", dbustypes.BusName, reply)
 	}
 
-	p.logger.Info("connected and registered",
-		"remote_socket", p.remoteSocketPath,
-		"bus_name", dbustypes.BusName)
-
 	return nil
 }
 
-// Run blocks until the context is cancelled or the remote connection is closed.
+// Run blocks until the context is cancelled or the front connection is closed.
 func (p *Proxy) Run(ctx context.Context) error {
-	if p.remoteConn == nil {
+	if p.frontConn == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	remoteCtx := p.remoteConn.Context()
-	if remoteCtx == nil {
+	frontCtx := p.frontConn.Context()
+	if frontCtx == nil {
 		// Fallback if context is not available
 		<-ctx.Done()
 		return ctx.Err()
@@ -168,9 +145,9 @@ func (p *Proxy) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-remoteCtx.Done():
-		// Remote connection closed (e.g., SSH tunnel disconnected)
-		return fmt.Errorf("remote connection closed")
+	case <-frontCtx.Done():
+		// Front connection closed (e.g., SSH tunnel disconnected)
+		return fmt.Errorf("front connection closed")
 	}
 }
 
@@ -182,15 +159,15 @@ func (p *Proxy) Close() error {
 		p.tracker.close()
 	}
 
-	if p.sessions != nil && p.localConn != nil {
-		p.sessions.CloseAll(p.localConn)
+	if p.sessions != nil && p.backendConn != nil {
+		p.sessions.CloseAll(p.backendConn)
 	}
 
-	if p.remoteConn != nil {
-		p.remoteConn.Close()
+	if p.frontConn != nil {
+		p.frontConn.Close()
 	}
-	if p.localConn != nil {
-		p.localConn.Close()
+	if p.backendConn != nil {
+		p.backendConn.Close()
 	}
 
 	return nil

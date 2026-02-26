@@ -9,8 +9,106 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Defaults for serve-subcommand settings.
+const (
+	DefaultListenAddr   = "127.0.0.1:8484"
+	DefaultTimeout      = 5 * time.Minute
+	DefaultHistoryLimit = 100
+	DefaultLogLevel     = "info"
+	DefaultLogFormat    = "text"
+)
+
+var defaultNotifications = true
+
+// BusConfig describes a D-Bus endpoint (upstream backend or downstream front).
+type BusConfig struct {
+	Type string `yaml:"type"`           // "session_bus", "socket", "sockets"
+	Path string `yaml:"path,omitempty"` // required for "socket" and "sockets" types
+}
+
+// WithDefaults returns a copy of cfg with zero-value fields filled from program defaults.
+func (cfg *Config) WithDefaults() *Config {
+	out := *cfg
+	if out.Listen == "" {
+		out.Listen = DefaultListenAddr
+	}
+	s := &out.Serve
+	if s.LogLevel == "" {
+		s.LogLevel = DefaultLogLevel
+	}
+	if s.LogFormat == "" {
+		s.LogFormat = DefaultLogFormat
+	}
+	if s.Timeout == 0 {
+		s.Timeout = Duration(DefaultTimeout)
+	}
+	if s.HistoryLimit == 0 {
+		s.HistoryLimit = DefaultHistoryLimit
+	}
+	if s.Notifications == nil {
+		s.Notifications = &defaultNotifications
+	}
+	if s.Upstream.Type == "" {
+		s.Upstream = BusConfig{Type: "session_bus"}
+	}
+	if len(s.Downstream) == 0 {
+		s.Downstream = []BusConfig{{Type: "sockets", Path: defaultSocketsDir()}}
+	}
+	return &out
+}
+
+// Validate checks the config for logical errors.
+func (cfg *Config) Validate() error {
+	s := &cfg.Serve
+
+	switch s.Upstream.Type {
+	case "session_bus", "socket":
+	default:
+		return fmt.Errorf("upstream type must be \"session_bus\" or \"socket\", got %q", s.Upstream.Type)
+	}
+	if s.Upstream.Type == "socket" && s.Upstream.Path == "" {
+		return fmt.Errorf("upstream type \"socket\" requires a non-empty path")
+	}
+
+	hasSessionBusDown := false
+	for i, d := range s.Downstream {
+		switch d.Type {
+		case "session_bus":
+			if hasSessionBusDown {
+				return fmt.Errorf("downstream[%d]: at most one session_bus downstream is allowed", i)
+			}
+			hasSessionBusDown = true
+		case "socket", "sockets":
+			if d.Path == "" {
+				return fmt.Errorf("downstream[%d]: type %q requires a non-empty path", i, d.Type)
+			}
+		default:
+			return fmt.Errorf("downstream[%d]: type must be \"session_bus\", \"socket\", or \"sockets\", got %q", i, d.Type)
+		}
+	}
+
+	if s.Upstream.Type == "session_bus" && hasSessionBusDown {
+		return fmt.Errorf("upstream and downstream cannot both be session_bus (same bus)")
+	}
+
+	return nil
+}
+
+// defaultSocketsDir returns $XDG_RUNTIME_DIR/secrets-dispatcher/sockets.
+func defaultSocketsDir() string {
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return ""
+	}
+	return filepath.Join(runtimeDir, "secrets-dispatcher", "sockets")
+}
+
 // Duration wraps time.Duration with YAML unmarshalling for human-readable strings.
 type Duration time.Duration
+
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return time.Duration(d).String(), nil
+}
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	var s string
@@ -27,14 +125,13 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 // ServeConfig holds serve-subcommand settings.
 type ServeConfig struct {
-	SocketsDir   string   `yaml:"sockets_dir"`
-	RemoteSocket string   `yaml:"remote_socket"`
-	Client       string   `yaml:"client"`
-	LogLevel     string   `yaml:"log_level"`
-	LogFormat    string   `yaml:"log_format"`
-	Timeout      Duration `yaml:"timeout"`
-	HistoryLimit int      `yaml:"history_limit"`
-	Notifications *bool   `yaml:"notifications"`
+	Upstream      BusConfig   `yaml:"upstream"`
+	Downstream    []BusConfig `yaml:"downstream"`
+	LogLevel      string      `yaml:"log_level"`
+	LogFormat     string      `yaml:"log_format"`
+	Timeout       Duration    `yaml:"timeout"`
+	HistoryLimit  int         `yaml:"history_limit"`
+	Notifications *bool       `yaml:"notifications"`
 }
 
 // Config is the top-level configuration file structure.

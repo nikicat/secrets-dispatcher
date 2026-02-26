@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
@@ -33,19 +34,21 @@ type proxyInstance struct {
 
 // Manager watches a directory for socket files and manages proxy connections.
 type Manager struct {
-	socketsDir string
-	proxies    map[string]*proxyInstance // socketPath -> proxyInstance
-	mu         sync.RWMutex
-	watcher    *fsnotify.Watcher
-	approval   *approval.Manager
-	logLevel   slog.Level
+	socketsDir   string
+	upstreamAddr string // D-Bus address for upstream (empty = session bus)
+	proxies      map[string]*proxyInstance // socketPath -> proxyInstance
+	mu           sync.RWMutex
+	watcher      *fsnotify.Watcher
+	approval     *approval.Manager
+	logLevel     slog.Level
 
 	observersMu sync.RWMutex
 	observers   []ClientObserver
 }
 
 // NewManager creates a new proxy manager.
-func NewManager(socketsDir string, approval *approval.Manager, logLevel slog.Level) (*Manager, error) {
+// upstreamAddr is the D-Bus address for the upstream backend; empty means session bus.
+func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, logLevel slog.Level) (*Manager, error) {
 	// Create the sockets directory if it doesn't exist
 	if err := os.MkdirAll(socketsDir, 0755); err != nil {
 		return nil, fmt.Errorf("create sockets directory: %w", err)
@@ -57,11 +60,12 @@ func NewManager(socketsDir string, approval *approval.Manager, logLevel slog.Lev
 	}
 
 	return &Manager{
-		socketsDir: socketsDir,
-		proxies:    make(map[string]*proxyInstance),
-		watcher:    watcher,
-		approval:   approval,
-		logLevel:   logLevel,
+		socketsDir:   socketsDir,
+		upstreamAddr: upstreamAddr,
+		proxies:      make(map[string]*proxyInstance),
+		watcher:      watcher,
+		approval:     approval,
+		logLevel:     logLevel,
 	}, nil
 }
 
@@ -217,19 +221,42 @@ func (m *Manager) startProxy(ctx context.Context, socketPath string) {
 
 	clientName := clientNameFromSocket(socketPath)
 
-	cfg := Config{
-		RemoteSocketPath: socketPath,
-		ClientName:       clientName,
-		LogLevel:         m.logLevel,
-		Approval:         m.approval,
-	}
-
-	p := New(cfg)
+	p := New(Config{
+		ClientName: clientName,
+		LogLevel:   m.logLevel,
+		Approval:   m.approval,
+	})
 
 	proxyCtx, cancel := context.WithCancel(ctx)
 
-	// Try to connect
-	if err := p.Connect(proxyCtx); err != nil {
+	// Connect to upstream (backend)
+	var backendConn *dbus.Conn
+	var err error
+	if m.upstreamAddr == "" {
+		backendConn, err = dbus.ConnectSessionBus()
+	} else {
+		backendConn, err = dbus.Connect(m.upstreamAddr)
+	}
+	if err != nil {
+		slog.Error("failed to connect to upstream",
+			"upstream", m.upstreamAddr,
+			"error", err)
+		cancel()
+		return
+	}
+
+	// Connect to downstream socket (front)
+	frontConn, err := dbus.Connect("unix:path=" + socketPath)
+	if err != nil {
+		backendConn.Close()
+		slog.Error("failed to connect to downstream socket",
+			"socket", socketPath,
+			"error", err)
+		cancel()
+		return
+	}
+
+	if err := p.ConnectWith(frontConn, backendConn); err != nil {
 		slog.Error("failed to connect proxy",
 			"socket", socketPath,
 			"client", clientName,

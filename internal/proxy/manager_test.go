@@ -57,7 +57,7 @@ func TestNewManager(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(5*time.Minute, 100)
 
-	mgr, err := NewManager(tempDir, approvalMgr, slog.LevelInfo)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestManager_ClientsEmpty(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(5*time.Minute, 100)
 
-	mgr, err := NewManager(tempDir, approvalMgr, slog.LevelInfo)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestManager_ScanExistingSockets_NoSockets(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(5*time.Minute, 100)
 
-	mgr, err := NewManager(tempDir, approvalMgr, slog.LevelInfo)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}

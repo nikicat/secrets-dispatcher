@@ -44,7 +44,13 @@ func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, erro
 			"Authorization": {"Bearer " + c.token},
 		},
 	})
-	return conn, err
+	if err != nil {
+		return nil, err
+	}
+	// The default read limit (32KB) is too small for snapshot messages
+	// containing large commit objects. 1MB accommodates any realistic commit.
+	conn.SetReadLimit(1 << 20)
+	return conn, nil
 }
 
 // PostSigningRequest sends a gpg_sign approval request to the daemon and returns

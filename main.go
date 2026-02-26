@@ -686,12 +686,16 @@ func runService(args []string) {
 func runServiceInstall(args []string) {
 	fs := flag.NewFlagSet("service install", flag.ExitOnError)
 	start := fs.Bool("start", false, "Start the service immediately after installing")
-	configPath := fs.String("config", "", "Config file path to embed in the unit file")
+	configPath := fs.String("config", "", "Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	mode := fs.String("mode", "remote", "Topology mode: remote, local, or full")
+	backend := fs.String("backend", "", "Backend binary path (default: gopass-secret-service from PATH)")
 	fs.Parse(args)
 
 	if err := service.Install(service.Options{
-		ConfigPath: *configPath,
-		Start:      *start,
+		ConfigPath:  *configPath,
+		Start:       *start,
+		Mode:        *mode,
+		BackendPath: *backend,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -708,7 +712,9 @@ Commands:
 
 Install options:
   --start       Start the service immediately after installing
-  --config      Config file path to embed in the unit file's ExecStart
+  --config      Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
+  --mode        Topology mode: remote, local, or full (default: remote)
+  --backend     Backend binary path for local/full modes (default: gopass-secret-service from PATH)
 `, progName)
 }
 

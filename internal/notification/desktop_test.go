@@ -1,12 +1,18 @@
 package notification
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
@@ -641,4 +647,108 @@ func stringContains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// startTestDBus launches a private dbus-daemon for integration tests.
+// Returns the bus address. Skips if dbus-daemon is not available.
+func startTestDBus(t *testing.T) string {
+	t.Helper()
+
+	path, err := exec.LookPath("dbus-daemon")
+	if err != nil {
+		t.Skipf("dbus-daemon not found: %v", err)
+	}
+
+	cmd := exec.Command(path, "--session", "--print-address=1", "--nofork")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("pipe stdout: %v", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start dbus-daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
+	})
+
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() {
+		t.Fatal("dbus-daemon produced no output")
+	}
+	addr := strings.TrimSpace(scanner.Text())
+	if addr == "" {
+		t.Fatal("dbus-daemon returned empty address")
+	}
+	return addr
+}
+
+// newTestDBusNotifier creates a DBusNotifier connected to a private test bus.
+func newTestDBusNotifier(t *testing.T) *DBusNotifier {
+	t.Helper()
+
+	addr := startTestDBus(t)
+	prev := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
+	os.Setenv("DBUS_SESSION_BUS_ADDRESS", addr)
+	t.Cleanup(func() {
+		if prev != "" {
+			os.Setenv("DBUS_SESSION_BUS_ADDRESS", prev)
+		} else {
+			os.Unsetenv("DBUS_SESSION_BUS_ADDRESS")
+		}
+	})
+
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		t.Fatalf("connect to test bus: %v", err)
+	}
+
+	n := &DBusNotifier{
+		conn:    conn,
+		signals: make(chan *dbus.Signal, 16),
+		actions: make(chan Action, 16),
+		done:    make(chan struct{}),
+	}
+
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchInterface(notifyInterface),
+		dbus.WithMatchMember("ActionInvoked"),
+	); err != nil {
+		conn.Close()
+		t.Fatalf("subscribe to ActionInvoked: %v", err)
+	}
+
+	conn.Signal(n.signals)
+	go n.processSignals()
+	t.Cleanup(func() { n.Stop() })
+	return n
+}
+
+func TestDBusNotifier_NotifyReconnectsOnClosedConn(t *testing.T) {
+	n := newTestDBusNotifier(t)
+
+	// Simulate connection death.
+	n.conn.Close()
+
+	// Notify should reconnect. It will fail because there's no notification
+	// daemon on the test bus, but it must NOT fail with ErrClosed.
+	_, err := n.Notify("test", "after reconnect", "", nil)
+	if errors.Is(err, dbus.ErrClosed) {
+		t.Errorf("Notify should have reconnected, but got ErrClosed: %v", err)
+	}
+}
+
+func TestDBusNotifier_CloseReconnectsOnClosedConn(t *testing.T) {
+	n := newTestDBusNotifier(t)
+
+	// Simulate connection death.
+	n.conn.Close()
+
+	// Close should reconnect. The notification ID is bogus, but we only
+	// verify it doesn't return a connection-closed error.
+	err := n.Close(999)
+	if errors.Is(err, dbus.ErrClosed) {
+		t.Errorf("Close should have reconnected, but got ErrClosed: %v", err)
+	}
 }

@@ -43,39 +43,69 @@ type Action struct {
 }
 
 // DBusNotifier sends notifications via D-Bus and listens for action button clicks.
+// It automatically reconnects if the session bus connection drops.
 type DBusNotifier struct {
+	mu      sync.Mutex
 	conn    *dbus.Conn
 	signals chan *dbus.Signal
 	actions chan Action
 	done    chan struct{}
 }
 
-// NewDBusNotifier creates a notifier using the session bus and starts listening
-// for ActionInvoked signals.
+// NewDBusNotifier creates a notifier using a private session bus connection and
+// starts listening for ActionInvoked signals.
 func NewDBusNotifier() (*DBusNotifier, error) {
-	conn, err := dbus.SessionBus()
-	if err != nil {
-		return nil, fmt.Errorf("connect to session bus: %w", err)
-	}
-
 	n := &DBusNotifier{
-		conn:    conn,
 		signals: make(chan *dbus.Signal, 16),
 		actions: make(chan Action, 16),
 		done:    make(chan struct{}),
+	}
+
+	if err := n.connect(); err != nil {
+		return nil, err
+	}
+
+	go n.processSignals()
+
+	return n, nil
+}
+
+// connect establishes a private session bus connection and subscribes to
+// ActionInvoked signals. Must be called with n.mu held (or during construction).
+func (n *DBusNotifier) connect() error {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return fmt.Errorf("connect to session bus: %w", err)
 	}
 
 	if err := conn.AddMatchSignal(
 		dbus.WithMatchInterface(notifyInterface),
 		dbus.WithMatchMember("ActionInvoked"),
 	); err != nil {
-		return nil, fmt.Errorf("subscribe to ActionInvoked: %w", err)
+		conn.Close()
+		return fmt.Errorf("subscribe to ActionInvoked: %w", err)
 	}
 
 	conn.Signal(n.signals)
-	go n.processSignals()
+	n.conn = conn
+	return nil
+}
 
-	return n, nil
+// reconnect closes the dead connection and establishes a new one.
+// It creates a fresh signals channel and restarts the processSignals goroutine
+// (the old one exits when godbus closes its channel via Terminate).
+// Must be called with n.mu held.
+func (n *DBusNotifier) reconnect() error {
+	if n.conn != nil {
+		n.conn.Close()
+	}
+	n.signals = make(chan *dbus.Signal, 16)
+	if err := n.connect(); err != nil {
+		return fmt.Errorf("reconnect: %w", err)
+	}
+	go n.processSignals()
+	slog.Info("reconnected to D-Bus session bus")
+	return nil
 }
 
 // Actions returns a channel that receives action button clicks.
@@ -83,20 +113,28 @@ func (n *DBusNotifier) Actions() <-chan Action {
 	return n.actions
 }
 
-// Stop stops the signal listener goroutine.
+// Stop stops the signal listener goroutine and closes the D-Bus connection.
 func (n *DBusNotifier) Stop() {
 	close(n.done)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.conn != nil {
+		n.conn.Close()
+	}
 }
 
 func (n *DBusNotifier) processSignals() {
-	defer close(n.actions)
+	// Capture the channel at start so this goroutine only reads from the
+	// channel it was launched with. On reconnect, a new goroutine is started
+	// with the replacement channel.
+	ch := n.signals
 	for {
 		select {
 		case <-n.done:
 			return
-		case sig, ok := <-n.signals:
+		case sig, ok := <-ch:
 			if !ok {
-				return
+				return // channel closed (connection died)
 			}
 			if sig.Name != notifyInterface+".ActionInvoked" {
 				continue
@@ -119,7 +157,22 @@ func (n *DBusNotifier) processSignals() {
 }
 
 // Notify sends a desktop notification with optional action buttons.
+// If the D-Bus connection is dead, it reconnects and retries once.
 func (n *DBusNotifier) Notify(summary, body, icon string, actions []string) (uint32, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	id, err := n.doNotify(summary, body, icon, actions)
+	if err != nil && errors.Is(err, dbus.ErrClosed) {
+		if reconnErr := n.reconnect(); reconnErr != nil {
+			return 0, fmt.Errorf("notify call: %w (reconnect failed: %v)", err, reconnErr)
+		}
+		id, err = n.doNotify(summary, body, icon, actions)
+	}
+	return id, err
+}
+
+func (n *DBusNotifier) doNotify(summary, body, icon string, actions []string) (uint32, error) {
 	obj := n.conn.Object(notifyDest, notifyPath)
 	call := obj.Call(
 		notifyInterface+".Notify",
@@ -147,7 +200,22 @@ func (n *DBusNotifier) Notify(summary, body, icon string, actions []string) (uin
 }
 
 // Close closes a notification by ID.
+// If the D-Bus connection is dead, it reconnects and retries once.
 func (n *DBusNotifier) Close(id uint32) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	err := n.doClose(id)
+	if err != nil && errors.Is(err, dbus.ErrClosed) {
+		if reconnErr := n.reconnect(); reconnErr != nil {
+			return fmt.Errorf("close notification: %w (reconnect failed: %v)", err, reconnErr)
+		}
+		err = n.doClose(id)
+	}
+	return err
+}
+
+func (n *DBusNotifier) doClose(id uint32) error {
 	obj := n.conn.Object(notifyDest, notifyPath)
 	call := obj.Call(notifyInterface+".CloseNotification", 0, id)
 	if call.Err != nil {

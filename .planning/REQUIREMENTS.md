@@ -21,11 +21,11 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 - [x] **DBUS-01**: Daemon registers on system bus, accepting requests from desktop user UID only
 - [x] **DBUS-02**: D-Bus policy file gates access: companion user owns name, desktop user can call methods
-- [ ] **DBUS-03**: Dispatcher exposes D-Bus interface for secret and signing requests on system bus (custom protocol; full freedesktop Secret Service lives on session bus via agent in Phase 6)
-- [ ] **DBUS-04**: GPG signing uses existing D-Bus protocol if available (research needed), otherwise custom interface
+- [x] **DBUS-03**: Dispatcher exposes D-Bus interface for secret and signing requests on system bus (custom protocol; full freedesktop Secret Service lives on session bus via agent in Phase 6)
+- [x] **DBUS-04**: GPG signing uses existing D-Bus protocol if available (research needed), otherwise custom interface
 - [ ] **DBUS-05**: System D-Bus signals restricted to requesting user's processes only (D-Bus policy or unicast) — deferred from Phase 5 (no signals emitted; blocking RPC only)
-- [ ] **DBUS-06**: Request expiry/timeout enforced (same as v1.0 approval manager)
-- [ ] **DBUS-07**: Graceful error when companion not running — actionable message to desktop user
+- [x] **DBUS-06**: Request expiry/timeout enforced (same as v1.0 approval manager)
+- [x] **DBUS-07**: Graceful error when companion not running — actionable message to desktop user
 
 ### VT Trusted I/O
 
@@ -51,7 +51,7 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 - [ ] **GPG-01**: GPG thin client (runs as desktop user, invoked by git as gpg.program) uses system D-Bus to reach companion
 - [ ] **GPG-02**: Companion's gpg-agent configured with pinentry-tty pointing to approval VT
-- [ ] **GPG-03**: Companion daemon signs via existing GPGRunner interface (calls real gpg, same as v1.0)
+- [x] **GPG-03**: Companion daemon signs via existing GPGRunner interface (calls real gpg, same as v1.0)
 
 ### Provisioning
 
@@ -118,11 +118,11 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | COMP-07 | Phase 7 | Pending |
 | DBUS-01 | Phase 4 | Complete |
 | DBUS-02 | Phase 4 | Complete |
-| DBUS-03 | Phase 5 | Pending |
-| DBUS-04 | Phase 5 | Pending |
+| DBUS-03 | Phase 5 | Complete |
+| DBUS-04 | Phase 5 | Complete |
 | DBUS-05 | Phase 6 | Pending |
-| DBUS-06 | Phase 5 | Pending |
-| DBUS-07 | Phase 5 | Pending |
+| DBUS-06 | Phase 5 | Complete |
+| DBUS-07 | Phase 5 | Complete |
 | VT-01 | Phase 5 | Complete |
 | VT-02 | Phase 5 | Complete |
 | VT-03 | Phase 5 | Complete |
@@ -139,7 +139,7 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | AGENT-05 | Phase 6 | Pending |
 | GPG-01 | Phase 6 | Pending |
 | GPG-02 | Phase 5 | Pending |
-| GPG-03 | Phase 5 | Pending |
+| GPG-03 | Phase 5 | Complete |
 | PROV-01 | Phase 4 | Complete |
 | PROV-02 | Phase 4 | Complete |
 | PROV-03 | Phase 4 | Complete |

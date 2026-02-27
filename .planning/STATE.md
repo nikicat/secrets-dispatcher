@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Privilege Separation
 status: unknown
-last_updated: "2026-02-27T10:56:08.304Z"
+last_updated: "2026-02-27T11:02:34Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 5
 ---
 
 # Project State
@@ -23,25 +23,25 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 5 of 8 (Core Flow)
-Plan: 2 of 4 in current phase (completed)
+Plan: 3 of 4 in current phase (completed)
 Status: In progress
-Last activity: 2026-02-27 — completed 05-02 (bubbletea TUI with two-pane layout, type badges, countdown, process chain rendering)
+Last activity: 2026-02-27 — completed 05-03 (D-Bus handler wiring: RequestSecret/RequestSign blocking methods, tuiObserver, daemon.Run() with TUI startup)
 
-Progress: [███░░░░░░░░░░░░░░░░░] 20% (v2.0 phases, 4 plans complete)
+Progress: [████░░░░░░░░░░░░░░░░] 25% (v2.0 phases, 5 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v2.0): 4
-- Average duration: 6.75 min
-- Total execution time: 27 min
+- Total plans completed (v2.0): 5
+- Average duration: 6.2 min
+- Total execution time: 31 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 04-foundation | 2 | 12 min | 6 min |
-| 05-core-flow | 2 | 15 min | 7.5 min |
+| 05-core-flow | 3 | 19 min | 6.3 min |
 
 *Updated after each plan completion*
 
@@ -72,6 +72,10 @@ Key decisions from 04-02 (daemon skeleton):
 - [Phase 05-core-flow]: Custom listPane (not bubbles/list) for split active+history display: simpler than bubbles/list item interface
 - [Phase 05-core-flow]: Injected approveFn/denyFn callbacks in Model: approval.Manager not referenced directly; tests use closures
 - [Phase 05-core-flow]: Async tea.Cmd for approve/deny: prevents blocking bubbletea event loop during D-Bus call
+- [Phase 05-core-flow 05-03]: CreateSecretRequest+WaitForResult split: non-blocking create sends to TUI, then blocking wait — allows TUI to show request before handler sleeps
+- [Phase 05-core-flow 05-03]: tuiObserver skips EventRequestCreated: D-Bus handler sends NewRequestMsg directly to avoid duplicate TUI entries
+- [Phase 05-core-flow 05-03]: Headless mode (VTPath+VTFile both nil): daemon exports D-Bus without TUI; requests timeout — preserves all Phase 4 integration tests
+- [Phase 05-core-flow 05-03]: RequestSecret returns "approved:<path>" placeholder in Phase 5; real gopass fetch deferred to Phase 6
 
 ### Critical Pitfalls (from research)
 
@@ -93,5 +97,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 05-02-PLAN.md (bubbletea TUI with two-pane layout, type badges, countdown timers, process chain rendering)
+Stopped at: Completed 05-03-PLAN.md (D-Bus handler wiring: RequestSecret/RequestSign blocking methods, tuiObserver, daemon.Run() with TUI startup and headless test mode)
 Resume file: None

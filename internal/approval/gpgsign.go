@@ -59,9 +59,14 @@ func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderI
 			// resolved by Approve or Deny — no action needed
 		case <-time.After(m.timeout):
 			m.mu.Lock()
-			delete(m.pending, req.ID)
-			m.mu.Unlock()
-			m.notify(Event{Type: EventRequestExpired, Request: req})
+			if _, stillPending := m.pending[req.ID]; stillPending {
+				req.expired = true
+				delete(m.pending, req.ID)
+				m.mu.Unlock()
+				m.notify(Event{Type: EventRequestExpired, Request: req})
+			} else {
+				m.mu.Unlock()
+			}
 		}
 	}()
 	return req.ID, nil

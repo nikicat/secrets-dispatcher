@@ -87,9 +87,10 @@ type Request struct {
 	// Set by ApproveGPGFailed.
 	GPGExitCode int `json:"-"`
 
-	// Internal: channel signaled when request is approved/denied
-	done   chan struct{}
-	result bool // true = approved, false = denied
+	// Internal: channel signaled when request is approved/denied/expired
+	done    chan struct{}
+	result  bool // true = approved, false = denied
+	expired bool // true = request expired (timeout goroutine fired)
 }
 
 // Resolution represents how a request was resolved.
@@ -427,6 +428,7 @@ func (m *Manager) CreateSecretRequest(client, path string, senderInfo SenderInfo
 			m.mu.Lock()
 			// Only fire expired if still pending (not already resolved).
 			if _, stillPending := m.pending[req.ID]; stillPending {
+				req.expired = true
 				delete(m.pending, req.ID)
 				m.mu.Unlock()
 				close(req.done)
@@ -441,8 +443,8 @@ func (m *Manager) CreateSecretRequest(client, path string, senderInfo SenderInfo
 
 // WaitForResult blocks until the request with the given ID is resolved (approved,
 // denied, or expired via the timeout goroutine closing the done channel).
-// Returns (true, nil) if approved, (false, nil) if denied, (false, ErrNotFound)
-// if the ID is unknown, and (false, ErrTimeout) if the request was already expired.
+// Returns (true, nil) if approved, (false, nil) if denied, (false, ErrTimeout) if
+// the request timed out, or (false, ErrNotFound) if the ID is unknown.
 func (m *Manager) WaitForResult(id string) (approved bool, err error) {
 	m.mu.RLock()
 	req, ok := m.pending[id]
@@ -454,6 +456,9 @@ func (m *Manager) WaitForResult(id string) (approved bool, err error) {
 
 	// Block until the done channel closes (Approve/Deny/Expire all close it).
 	<-req.done
+	if req.expired {
+		return false, ErrTimeout
+	}
 	return req.result, nil
 }
 

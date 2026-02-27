@@ -29,11 +29,18 @@ type gpgSigner interface {
 	Sign(commitObject []byte, keyID string) (signature, status []byte, exitCode int, err error)
 }
 
+// messageSender is a subset of *tea.Program used by Dispatcher.
+// Defined as an interface for unit-test substitution — the real tea.Program
+// satisfies it; tests provide a mock channel-based implementation.
+type messageSender interface {
+	Send(msg tea.Msg)
+}
+
 // Dispatcher is the D-Bus object exported under ObjectPath/Interface.
 type Dispatcher struct {
 	version  string
 	mgr      *approval.Manager
-	program  *tea.Program  // nil until TUI starts; methods return NotReady if nil
+	program  messageSender  // nil until TUI starts; methods return NotReady if nil
 	resolver senderResolver
 	signer   gpgSigner
 }
@@ -51,6 +58,7 @@ func NewDispatcher(version string, mgr *approval.Manager, resolver senderResolve
 
 // SetProgram injects the running bubbletea program. Must be called before the
 // daemon accepts D-Bus calls (Run() does this after tea.NewProgram returns).
+// *tea.Program satisfies the messageSender interface.
 func (d *Dispatcher) SetProgram(p *tea.Program) {
 	d.program = p
 }

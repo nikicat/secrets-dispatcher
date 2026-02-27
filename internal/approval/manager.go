@@ -394,6 +394,69 @@ func (m *Manager) ApproveWithSignature(id string, sig, status []byte) error {
 	return nil
 }
 
+// CreateSecretRequest creates a pending get_secret approval request and returns
+// its ID. It does NOT block — the caller is expected to send a NewRequestMsg to
+// the TUI and then call WaitForResult to block until the user decides.
+//
+// A timeout goroutine is started that fires EventRequestExpired and closes the
+// request's done channel when the manager timeout elapses, mirroring the
+// pattern used by CreateGPGSignRequest.
+func (m *Manager) CreateSecretRequest(client, path string, senderInfo SenderInfo) (string, error) {
+	now := time.Now()
+	req := &Request{
+		ID:        uuid.New().String(),
+		Client:    client,
+		Items:     []ItemInfo{{Path: path, Label: path}},
+		CreatedAt: now,
+		ExpiresAt: now.Add(m.timeout),
+		Type:      RequestTypeGetSecret,
+		SenderInfo: senderInfo,
+		done:      make(chan struct{}),
+	}
+	m.mu.Lock()
+	m.pending[req.ID] = req
+	m.mu.Unlock()
+	m.notify(Event{Type: EventRequestCreated, Request: req})
+
+	// Timeout goroutine — mirrors CreateGPGSignRequest.
+	go func() {
+		select {
+		case <-req.done:
+			// Resolved by Approve or Deny — no action needed.
+		case <-time.After(m.timeout):
+			m.mu.Lock()
+			// Only fire expired if still pending (not already resolved).
+			if _, stillPending := m.pending[req.ID]; stillPending {
+				delete(m.pending, req.ID)
+				m.mu.Unlock()
+				close(req.done)
+				m.notify(Event{Type: EventRequestExpired, Request: req})
+			} else {
+				m.mu.Unlock()
+			}
+		}
+	}()
+	return req.ID, nil
+}
+
+// WaitForResult blocks until the request with the given ID is resolved (approved,
+// denied, or expired via the timeout goroutine closing the done channel).
+// Returns (true, nil) if approved, (false, nil) if denied, (false, ErrNotFound)
+// if the ID is unknown, and (false, ErrTimeout) if the request was already expired.
+func (m *Manager) WaitForResult(id string) (approved bool, err error) {
+	m.mu.RLock()
+	req, ok := m.pending[id]
+	m.mu.RUnlock()
+	if !ok {
+		// Request may have already been resolved and removed from pending.
+		return false, ErrNotFound
+	}
+
+	// Block until the done channel closes (Approve/Deny/Expire all close it).
+	<-req.done
+	return req.result, nil
+}
+
 // ApproveGPGFailed stores the gpg failure status and exit code, then signals
 // the request as approved so the done channel fires. The WebSocket message will
 // carry the non-zero ExitCode; the thin client exits with it.

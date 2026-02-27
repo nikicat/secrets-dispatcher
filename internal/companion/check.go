@@ -17,7 +17,7 @@ type CheckResult struct {
 }
 
 // Check validates the full companion user deployment and returns a slice of
-// CheckResult, one per component. All checks are read-only; Check does not
+// 11 CheckResults, one per component. All checks are read-only; Check does not
 // require root.
 func Check(cfg Config) []CheckResult {
 	cfg.defaults()
@@ -152,6 +152,22 @@ func Check(cfg Config) []CheckResult {
 		),
 	})
 
+	// 10. Companion user in tty group (required for /dev/ttyN access).
+	// /dev/ttyN devices are mode 0620 owned by root:tty; the companion user must
+	// be in the tty group so pinentry-tty and the approval TUI can open the VT.
+	inTTYGroup := false
+	if userErr == nil {
+		inTTYGroup = userInGroup(u, "tty")
+	}
+	results = append(results, CheckResult{
+		Name: "companion user in tty group",
+		Pass: inTTYGroup,
+		Message: passOrFix(inTTYGroup,
+			fmt.Sprintf("user %q is a member of the tty group", companionUser),
+			fmt.Sprintf("run: sudo usermod --append --groups tty %s", companionUser),
+		),
+	})
+
 	return results
 }
 
@@ -199,4 +215,28 @@ func statUID(path string) int {
 		return -1
 	}
 	return int(sys.Uid)
+}
+
+// userInGroup returns true if u is a member of the named group.
+// It uses u.GroupIds() to get the user's supplementary group GIDs, then
+// compares against the GID of groupName from user.LookupGroup.
+func userInGroup(u *user.User, groupName string) bool {
+	if u == nil {
+		return false
+	}
+	grp, err := user.LookupGroup(groupName)
+	if err != nil {
+		// Group doesn't exist on this system.
+		return false
+	}
+	gids, err := u.GroupIds()
+	if err != nil {
+		return false
+	}
+	for _, gid := range gids {
+		if gid == grp.Gid {
+			return true
+		}
+	}
+	return false
 }

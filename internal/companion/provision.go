@@ -87,6 +87,13 @@ func Provision(cfg Config) error {
 		return fmt.Errorf("ensure companion user: %w", err)
 	}
 
+	// 2b. Ensure companion user is in the tty group (required for /dev/ttyN access).
+	// /dev/ttyN devices are owned by root:tty with mode 0620, so the companion
+	// user must be in the tty group to open them for the approval TUI.
+	if err := ensureTTYGroup(companionUser); err != nil {
+		return fmt.Errorf("ensure tty group: %w", err)
+	}
+
 	// Look up the companion user to get UID/GID for chown.
 	u, err := userLookupFunc(companionUser)
 	if err != nil {
@@ -134,6 +141,15 @@ func Provision(cfg Config) error {
 
 	slog.Info("provisioning complete", "companion_user", companionUser)
 	return nil
+}
+
+// ensureTTYGroup adds username to the tty group using usermod --append --groups tty.
+// The tty group grants write access to /dev/ttyN devices (mode 0620, owner root:tty),
+// which the companion daemon needs for the approval VT TUI (pinentry-tty also needs this).
+// This call is idempotent: usermod --append with an already-present group is a no-op.
+func ensureTTYGroup(username string) error {
+	slog.Info("adding companion user to tty group", "username", username)
+	return usermodFunc(username, "--append", "--groups", "tty")
 }
 
 // ensureUser creates the companion Linux user if it does not already exist.

@@ -15,6 +15,7 @@ import (
 
 var (
 	userAddFunc     = defaultUserAdd
+	usermodFunc     = defaultUsermod
 	loginctlFunc    = defaultLoginctl
 	userLookupFunc  = defaultUserLookup
 	mkdirAllFunc    = os.MkdirAll
@@ -38,6 +39,19 @@ func defaultUserAdd(username, homeDir, shell string) error {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("useradd: %w", err)
+	}
+	return nil
+}
+
+// defaultUsermod runs usermod with the given arguments followed by the username.
+// The username is always the last argument (matching usermod's CLI convention).
+func defaultUsermod(username string, args ...string) error {
+	allArgs := append(args, username)
+	cmd := exec.Command("usermod", allArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("usermod: %w", err)
 	}
 	return nil
 }

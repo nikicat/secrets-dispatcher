@@ -14,6 +14,7 @@ import (
 func saveOrigFuncs(t *testing.T) {
 	t.Helper()
 	origUserAdd := userAddFunc
+	origUsermod := usermodFunc
 	origLoginctl := loginctlFunc
 	origUserLookup := userLookupFunc
 	origMkdirAll := mkdirAllFunc
@@ -23,6 +24,7 @@ func saveOrigFuncs(t *testing.T) {
 	origGeteuid := geteuidFunc
 	t.Cleanup(func() {
 		userAddFunc = origUserAdd
+		usermodFunc = origUsermod
 		loginctlFunc = origLoginctl
 		userLookupFunc = origUserLookup
 		mkdirAllFunc = origMkdirAll
@@ -58,6 +60,7 @@ func mockUserFound(username, uid, gid string) {
 // noopFuncs stubs out all filesystem/exec calls to be no-ops.
 func noopFuncs() {
 	userAddFunc = func(username, homeDir, shell string) error { return nil }
+	usermodFunc = func(username string, args ...string) error { return nil }
 	loginctlFunc = func(args ...string) error { return nil }
 	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
 	chownFunc = func(path string, uid, gid int) error { return nil }
@@ -151,6 +154,55 @@ func mockLookupAlwaysFound(username, uid, gid string) func(string) (*user.User, 
 	}
 }
 
+func TestProvision_AddsTTYGroup(t *testing.T) {
+	saveOrigFuncs(t)
+	mockRootEuid()
+	noopFuncs()
+	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+
+	type usermodCall struct {
+		username string
+		args     []string
+	}
+	var calls []usermodCall
+	usermodFunc = func(username string, args ...string) error {
+		calls = append(calls, usermodCall{username: username, args: args})
+		return nil
+	}
+
+	cfg := Config{DesktopUser: "nb"}
+	if err := Provision(cfg); err != nil {
+		t.Fatalf("Provision() unexpected error: %v", err)
+	}
+
+	// Find a call that adds to tty group.
+	found := false
+	for _, c := range calls {
+		if c.username != "secrets-nb" {
+			continue
+		}
+		hasAppend := false
+		hasGroups := false
+		hasTTY := false
+		for i, a := range c.args {
+			if a == "--append" {
+				hasAppend = true
+			}
+			if a == "--groups" && i+1 < len(c.args) && c.args[i+1] == "tty" {
+				hasGroups = true
+				hasTTY = true
+			}
+		}
+		if hasAppend && hasGroups && hasTTY {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("usermodFunc should be called with --append --groups tty secrets-nb; got calls: %v", calls)
+	}
+}
+
 func TestProvision_CreatesDirectories(t *testing.T) {
 	saveOrigFuncs(t)
 	mockRootEuid()
@@ -221,6 +273,7 @@ func TestProvision_WritesDBusPolicy(t *testing.T) {
 	chownFunc = func(path string, uid, gid int) error { return nil }
 	chmodFunc = func(path string, mode os.FileMode) error { return nil }
 	userAddFunc = func(username, homeDir, shell string) error { return nil }
+	usermodFunc = func(username string, args ...string) error { return nil }
 	loginctlFunc = func(args ...string) error { return nil }
 	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
 	_ = tmpDir
@@ -264,6 +317,7 @@ func TestProvision_WritesSystemdUnit(t *testing.T) {
 	chownFunc = func(path string, uid, gid int) error { return nil }
 	chmodFunc = func(path string, mode os.FileMode) error { return nil }
 	userAddFunc = func(username, homeDir, shell string) error { return nil }
+	usermodFunc = func(username string, args ...string) error { return nil }
 	loginctlFunc = func(args ...string) error { return nil }
 
 	var systemdContent string
@@ -299,6 +353,7 @@ func TestProvision_WritesPAMConfig(t *testing.T) {
 	chownFunc = func(path string, uid, gid int) error { return nil }
 	chmodFunc = func(path string, mode os.FileMode) error { return nil }
 	userAddFunc = func(username, homeDir, shell string) error { return nil }
+	usermodFunc = func(username string, args ...string) error { return nil }
 	loginctlFunc = func(args ...string) error { return nil }
 
 	var pamContent string

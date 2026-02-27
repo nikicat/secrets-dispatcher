@@ -158,11 +158,69 @@ func TestCheck_ReturnsExpectedCheckCount(t *testing.T) {
 	cfg := Config{DesktopUser: "counttest", HomeBase: t.TempDir()}
 	results := Check(cfg)
 
-	// There should be exactly 10 checks (documented in check.go):
-	// user, home-exists, home-mode, home-owned, gopass, gnupg, dbus, systemd-unit, pam, linger.
-	const expectedChecks = 10
+	// There should be exactly 11 checks (documented in check.go):
+	// user, home-exists, home-mode, home-owned, gopass, gnupg, dbus, systemd-unit, pam, linger, tty-group.
+	const expectedChecks = 11
 	if len(results) != expectedChecks {
 		t.Errorf("Check() returned %d results, want %d; results: %v", len(results), expectedChecks, resultNames(results))
+	}
+}
+
+func TestCheck_TTYGroupFail(t *testing.T) {
+	origUserLookup := userLookupFunc
+	t.Cleanup(func() { userLookupFunc = origUserLookup })
+
+	// Mock user exists but is a fake user — GroupIds() will fail for a non-existent
+	// user, so the tty group check should fail.
+	userLookupFunc = func(username string) (*user.User, error) {
+		return &user.User{Username: username, Uid: "99998", Gid: "99998"}, nil
+	}
+
+	cfg := Config{DesktopUser: "nosuchttyuser", HomeBase: t.TempDir()}
+	results := Check(cfg)
+
+	checkMap := make(map[string]CheckResult, len(results))
+	for _, r := range results {
+		checkMap[r.Name] = r
+	}
+
+	r, ok := checkMap["companion user in tty group"]
+	if !ok {
+		t.Fatal("Check() missing 'companion user in tty group' result")
+	}
+	// A fake user with UID 99998 won't be in any real group; the check should fail.
+	if r.Pass {
+		t.Error("'companion user in tty group' should FAIL for a fake user not in any real group")
+	}
+	if r.Message == "" {
+		t.Error("failed tty group check should include a fix hint message")
+	}
+}
+
+func TestCheck_TTYGroupMissingWhenUserMissing(t *testing.T) {
+	origUserLookup := userLookupFunc
+	t.Cleanup(func() { userLookupFunc = origUserLookup })
+
+	// User does not exist — tty group check should still be present but fail
+	// (userErr != nil means inTTYGroup stays false).
+	userLookupFunc = func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	}
+
+	cfg := Config{DesktopUser: "ghost", HomeBase: t.TempDir()}
+	results := Check(cfg)
+
+	checkMap := make(map[string]CheckResult, len(results))
+	for _, r := range results {
+		checkMap[r.Name] = r
+	}
+
+	r, ok := checkMap["companion user in tty group"]
+	if !ok {
+		t.Fatal("Check() missing 'companion user in tty group' result (must always be present)")
+	}
+	if r.Pass {
+		t.Error("'companion user in tty group' should FAIL when user does not exist")
 	}
 }
 

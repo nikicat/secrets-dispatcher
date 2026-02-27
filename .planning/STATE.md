@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Privilege Separation
 status: unknown
-last_updated: "2026-02-25T21:30:45.123Z"
+last_updated: "2026-02-27T10:50:42.737Z"
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  total_plans: 6
+  completed_plans: 3
 ---
 
 # Project State
@@ -18,29 +18,30 @@ progress:
 See: .planning/PROJECT.md (updated 2026-02-25)
 
 **Core value:** The user always knows exactly what they're approving before it happens, and no process in their desktop session can observe or tamper with the approval.
-**Current focus:** v2.0 Privilege Separation — Phase 4: Foundation
+**Current focus:** v2.0 Privilege Separation — Phase 5: Core Flow
 
 ## Current Position
 
-Phase: 4 of 8 (Foundation)
-Plan: 2 of 2 in current phase
+Phase: 5 of 8 (Core Flow)
+Plan: 1 of 4 in current phase (completed)
 Status: In progress
-Last activity: 2026-02-25 — completed 04-02 (daemon skeleton with D-Bus stubs and integration tests)
+Last activity: 2026-02-27 — completed 05-01 (procchain package, VT ioctl helpers, companion tty group)
 
-Progress: [█░░░░░░░░░░░░░░░░░░░] 10% (v2.0 phases, 2 plans complete)
+Progress: [██░░░░░░░░░░░░░░░░░░] 15% (v2.0 phases, 3 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v2.0): 2
-- Average duration: 6 min
-- Total execution time: 12 min
+- Total plans completed (v2.0): 3
+- Average duration: 5.7 min
+- Total execution time: 17 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 04-foundation | 2 | 12 min | 6 min |
+| 05-core-flow | 1 | 5 min | 5 min |
 
 *Updated after each plan completion*
 
@@ -59,12 +60,15 @@ Key decisions from 04-01 (companion provisioning):
 - Regular user (no --system flag): systemd --user requires normal UID range; nologin shell prevents interactive login
 - PROV-03 Phase 4 scope = directory skeleton only; gopass init + GPG key generation deferred to Phase 5
 - geteuidFunc injectable for root-check testability without running tests as root
-- check.go implements 10 checks (not 9 as plan stated) — home-exists and home-mode-0700 are separate for better diagnostics
+- check.go implements 10 checks (not 9 as plan stated) — home-exists and home-mode-0700 are separate for better diagnostics (extended to 11 in 05-01 with tty group check)
 
 Key decisions from 04-02 (daemon skeleton):
 - Config.BusAddress is the test seam: empty = ConnectSystemBus() (prod), non-empty = Connect(addr) (tests with private bus)
 - godbus introspect subpackage (introspect.Methods + introspect.NewIntrospectable) — dbus.DefaultIntrospectHandler does not exist
 - Numeric UID string (os.Getuid()) in dbus-daemon policy config user= attribute — avoids username lookup issues in test environments
+- [Phase 05-core-flow]: userInGroup uses real user.LookupGroup + u.GroupIds() (not injectable); test coverage via fake UID with no OS groups
+- [Phase 05-core-flow]: vtMode struct ABI verified via unsafe.Sizeof (8 bytes) + Offsetof tests to catch kernel ABI drift at compile time
+- [Phase 05-core-flow]: Walk stops at PID <= 1 (not just == 1) to correctly handle PID 0 as sentinel
 
 ### Critical Pitfalls (from research)
 
@@ -85,6 +89,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-02-25
-Stopped at: Completed 04-02-PLAN.md (daemon skeleton with D-Bus stubs and integration tests)
+Last session: 2026-02-27
+Stopped at: Completed 05-01-PLAN.md (procchain package, VT ioctl helpers, companion tty group)
 Resume file: None

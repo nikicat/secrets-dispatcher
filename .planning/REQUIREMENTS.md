@@ -29,15 +29,15 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 ### VT Trusted I/O
 
-- [ ] **VT-01**: Companion session owns a persistent dedicated VT
-- [ ] **VT-02**: VT_SETMODE VT_PROCESS blocks unauthorized VT switching during active approval
+- [x] **VT-01**: Companion session owns a persistent dedicated VT
+- [x] **VT-02**: VT_SETMODE VT_PROCESS blocks unauthorized VT switching during active approval
 - [ ] **VT-03**: TUI displays rich context for secret requests (path, requester PID/UID/process name, working directory)
 - [ ] **VT-04**: TUI displays rich context for GPG signing (repo, message, author, files, key ID)
-- [ ] **VT-05**: TUI displays requester parent process chain (up to 5 levels via /proc PPid)
+- [x] **VT-05**: TUI displays requester parent process chain (up to 5 levels via /proc PPid)
 - [ ] **VT-06**: Keyboard approve/deny input on VT (y/n)
 - [ ] **VT-07**: VT CLI mode available for history, pending requests, admin commands
 - [ ] **VT-08**: Store unlock prompt displayed on VT at companion session start
-- [ ] **VT-09**: Crash recovery: VT returns to VT_AUTO mode if daemon dies (cleanup handlers + signal handlers)
+- [x] **VT-09**: Crash recovery: VT returns to VT_AUTO mode if daemon dies (cleanup handlers + signal handlers)
 
 ### User-Space Agent
 
@@ -63,7 +63,7 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 ### Testing
 
-- [ ] **TEST-01**: Unit tests with interface mocks for VT, D-Bus connections, Secret Service client
+- [x] **TEST-01**: Unit tests with interface mocks for VT, D-Bus connections, Secret Service client
 - [ ] **TEST-02**: Integration tests with private D-Bus daemon (runs as regular user, no root)
 - [ ] **TEST-03**: VM E2E tests validating real multi-user, VT, PAM, systemd deployment
 - [x] **TEST-04**: CI-compatible: unit + integration run in CI; VM E2E gated by environment variable
@@ -123,15 +123,15 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | DBUS-05 | Phase 6 | Pending |
 | DBUS-06 | Phase 5 | Pending |
 | DBUS-07 | Phase 5 | Pending |
-| VT-01 | Phase 5 | Pending |
-| VT-02 | Phase 5 | Pending |
+| VT-01 | Phase 5 | Complete |
+| VT-02 | Phase 5 | Complete |
 | VT-03 | Phase 5 | Pending |
 | VT-04 | Phase 5 | Pending |
-| VT-05 | Phase 5 | Pending |
+| VT-05 | Phase 5 | Complete |
 | VT-06 | Phase 5 | Pending |
 | VT-07 | Phase 7 | Pending |
 | VT-08 | Phase 7 | Pending |
-| VT-09 | Phase 5 | Pending |
+| VT-09 | Phase 5 | Complete |
 | AGENT-01 | Phase 6 | Pending |
 | AGENT-02 | Phase 6 | Pending |
 | AGENT-03 | Phase 6 | Pending |
@@ -145,7 +145,7 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | PROV-03 | Phase 4 | Complete |
 | PROV-04 | Phase 4 | Complete |
 | PROV-05 | Phase 4 | Complete |
-| TEST-01 | Phase 5 | Pending |
+| TEST-01 | Phase 5 | Complete |
 | TEST-02 | Phase 5 | Pending |
 | TEST-03 | Phase 8 | Pending |
 | TEST-04 | Phase 4 | Complete |

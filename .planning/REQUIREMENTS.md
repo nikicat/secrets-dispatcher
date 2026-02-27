@@ -31,10 +31,10 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 
 - [x] **VT-01**: Companion session owns a persistent dedicated VT
 - [x] **VT-02**: VT_SETMODE VT_PROCESS blocks unauthorized VT switching during active approval
-- [ ] **VT-03**: TUI displays rich context for secret requests (path, requester PID/UID/process name, working directory)
-- [ ] **VT-04**: TUI displays rich context for GPG signing (repo, message, author, files, key ID)
+- [x] **VT-03**: TUI displays rich context for secret requests (path, requester PID/UID/process name, working directory)
+- [x] **VT-04**: TUI displays rich context for GPG signing (repo, message, author, files, key ID)
 - [x] **VT-05**: TUI displays requester parent process chain (up to 5 levels via /proc PPid)
-- [ ] **VT-06**: Keyboard approve/deny input on VT (y/n)
+- [x] **VT-06**: Keyboard approve/deny input on VT (y/n)
 - [ ] **VT-07**: VT CLI mode available for history, pending requests, admin commands
 - [ ] **VT-08**: Store unlock prompt displayed on VT at companion session start
 - [x] **VT-09**: Crash recovery: VT returns to VT_AUTO mode if daemon dies (cleanup handlers + signal handlers)
@@ -125,10 +125,10 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | DBUS-07 | Phase 5 | Pending |
 | VT-01 | Phase 5 | Complete |
 | VT-02 | Phase 5 | Complete |
-| VT-03 | Phase 5 | Pending |
-| VT-04 | Phase 5 | Pending |
+| VT-03 | Phase 5 | Complete |
+| VT-04 | Phase 5 | Complete |
 | VT-05 | Phase 5 | Complete |
-| VT-06 | Phase 5 | Pending |
+| VT-06 | Phase 5 | Complete |
 | VT-07 | Phase 7 | Pending |
 | VT-08 | Phase 7 | Pending |
 | VT-09 | Phase 5 | Complete |

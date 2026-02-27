@@ -3,12 +3,12 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: Privilege Separation
 status: unknown
-last_updated: "2026-02-27T10:50:42.737Z"
+last_updated: "2026-02-27T10:56:08.304Z"
 progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 6
-  completed_plans: 3
+  completed_plans: 4
 ---
 
 # Project State
@@ -23,25 +23,25 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 5 of 8 (Core Flow)
-Plan: 1 of 4 in current phase (completed)
+Plan: 2 of 4 in current phase (completed)
 Status: In progress
-Last activity: 2026-02-27 — completed 05-01 (procchain package, VT ioctl helpers, companion tty group)
+Last activity: 2026-02-27 — completed 05-02 (bubbletea TUI with two-pane layout, type badges, countdown, process chain rendering)
 
-Progress: [██░░░░░░░░░░░░░░░░░░] 15% (v2.0 phases, 3 plans complete)
+Progress: [███░░░░░░░░░░░░░░░░░] 20% (v2.0 phases, 4 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v2.0): 3
-- Average duration: 5.7 min
-- Total execution time: 17 min
+- Total plans completed (v2.0): 4
+- Average duration: 6.75 min
+- Total execution time: 27 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 04-foundation | 2 | 12 min | 6 min |
-| 05-core-flow | 1 | 5 min | 5 min |
+| 05-core-flow | 2 | 15 min | 7.5 min |
 
 *Updated after each plan completion*
 
@@ -69,6 +69,9 @@ Key decisions from 04-02 (daemon skeleton):
 - [Phase 05-core-flow]: userInGroup uses real user.LookupGroup + u.GroupIds() (not injectable); test coverage via fake UID with no OS groups
 - [Phase 05-core-flow]: vtMode struct ABI verified via unsafe.Sizeof (8 bytes) + Offsetof tests to catch kernel ABI drift at compile time
 - [Phase 05-core-flow]: Walk stops at PID <= 1 (not just == 1) to correctly handle PID 0 as sentinel
+- [Phase 05-core-flow]: Custom listPane (not bubbles/list) for split active+history display: simpler than bubbles/list item interface
+- [Phase 05-core-flow]: Injected approveFn/denyFn callbacks in Model: approval.Manager not referenced directly; tests use closures
+- [Phase 05-core-flow]: Async tea.Cmd for approve/deny: prevents blocking bubbletea event loop during D-Bus call
 
 ### Critical Pitfalls (from research)
 
@@ -90,5 +93,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 05-01-PLAN.md (procchain package, VT ioctl helpers, companion tty group)
+Stopped at: Completed 05-02-PLAN.md (bubbletea TUI with two-pane layout, type badges, countdown timers, process chain rendering)
 Resume file: None

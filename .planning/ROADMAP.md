@@ -104,7 +104,7 @@ Plans:
 | 2. Core Signing Flow | v1.0 | 4/4 | Complete | 2026-02-24 |
 | 3. UI and Observability | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 4. Foundation | v2.0 | 2/2 | Complete | - |
-| 5. Core Flow | 1/4 | In Progress|  | - |
+| 5. Core Flow | 2/4 | In Progress|  | - |
 | 6. Desktop Integration | v2.0 | 0/? | Not started | - |
 | 7. Hardening | v2.0 | 0/? | Not started | - |
 | 8. VM E2E | v2.0 | 0/? | Not started | - |

@@ -72,7 +72,12 @@ Plans:
   3. `git commit -S` from the desktop session triggers a GPG signing request on VT8; the commit completes with a valid signature after keyboard approval
   4. Logging in as the desktop user automatically starts the companion session; logging out stops it after all sessions end
   5. When the companion is not running, the user-space agent shows an actionable notification rather than a silent hang
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [ ] 06-01-PLAN.md — Session bus migration: daemon connects to session bus, provisioning writes activation file + ACL
+- [ ] 06-02-PLAN.md — GPG thin client D-Bus migration: replace HTTP/WS transport with D-Bus call to companion session bus
+- [ ] 06-03-PLAN.md — Secret Service proxy agent: desktop session bus bridge to companion session bus
+- [ ] 06-04-PLAN.md — Companion lifecycle: logind session watcher for COMP-04, AGENT-03/AGENT-04 deferred
 
 ### Phase 7: Hardening
 **Goal**: All differentiating features and operational polish are in place: store lock/unlock, VT CLI mode, and store unlock prompt on companion start
@@ -105,6 +110,6 @@ Plans:
 | 3. UI and Observability | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 4. Foundation | v2.0 | 2/2 | Complete | - |
 | 5. Core Flow | v2.0 | 4/4 | Complete | 2026-02-27 |
-| 6. Desktop Integration | v2.0 | 0/? | Not started | - |
+| 6. Desktop Integration | v2.0 | 0/4 | Planned | - |
 | 7. Hardening | v2.0 | 0/? | Not started | - |
 | 8. VM E2E | v2.0 | 0/? | Not started | - |

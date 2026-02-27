@@ -23,7 +23,7 @@ See: `.planning/milestones/v1.0-ROADMAP.md` for full details.
 **Milestone Goal:** Move secrets-dispatcher and gopass-secret-service to a companion user with kernel-enforced trusted I/O, eliminating userspace attack surface.
 
 - [x] **Phase 4: Foundation** — Companion user + system D-Bus policy + daemon skeleton (2/2 plans done)
-- [ ] **Phase 5: Core Flow** — Approval manager wired to system D-Bus + VT TUI end-to-end
+- [x] **Phase 5: Core Flow** — Approval manager wired to system D-Bus + VT TUI end-to-end (4/4 plans done)
 - [ ] **Phase 6: Desktop Integration** — User-space agent + PAM hook + GPG thin client update
 - [ ] **Phase 7: Hardening** — Differentiating features and operational polish
 - [ ] **Phase 8: VM E2E** — Full deployment validation in a real multi-user VM
@@ -57,10 +57,10 @@ Plans:
   5. Integration tests with a private D-Bus daemon verify method signatures and signal delivery without root
 **Plans**: 4 plans
 Plans:
-- [ ] 05-01-PLAN.md — Foundation utilities: procchain package, VT ioctl helpers, tty group provisioning patch
-- [ ] 05-02-PLAN.md — bubbletea TUI: two-pane master-detail layout, request rendering, y/n approval, lock modes
-- [ ] 05-03-PLAN.md — D-Bus handler wiring: RequestSecret/RequestSign methods, TUI startup in daemon.Run(), activation file
-- [ ] 05-04-PLAN.md — Integration tests and GPG-02: D-Bus wire protocol tests, concurrent callers, pinentry-tty config
+- [x] 05-01-PLAN.md — Foundation utilities: procchain package, VT ioctl helpers, tty group provisioning patch
+- [x] 05-02-PLAN.md — bubbletea TUI: two-pane master-detail layout, request rendering, y/n approval, lock modes
+- [x] 05-03-PLAN.md — D-Bus handler wiring: RequestSecret/RequestSign methods, TUI startup in daemon.Run(), activation file
+- [x] 05-04-PLAN.md — Integration tests and GPG-02: D-Bus wire protocol tests, concurrent callers, pinentry-tty config
 
 ### Phase 6: Desktop Integration
 **Goal**: Desktop applications transparently use the companion's secret store via the user-space agent; git commits trigger VT approval via the updated GPG thin client; PAM automatically starts and stops the companion session
@@ -104,7 +104,7 @@ Plans:
 | 2. Core Signing Flow | v1.0 | 4/4 | Complete | 2026-02-24 |
 | 3. UI and Observability | v1.0 | 3/3 | Complete | 2026-02-24 |
 | 4. Foundation | v2.0 | 2/2 | Complete | - |
-| 5. Core Flow | 3/4 | In Progress|  | - |
+| 5. Core Flow | v2.0 | 4/4 | Complete | 2026-02-27 |
 | 6. Desktop Integration | v2.0 | 0/? | Not started | - |
 | 7. Hardening | v2.0 | 0/? | Not started | - |
 | 8. VM E2E | v2.0 | 0/? | Not started | - |

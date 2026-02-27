@@ -8,7 +8,7 @@ progress:
   total_phases: 2
   completed_phases: 1
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
 ---
 
 # Project State
@@ -23,25 +23,25 @@ See: .planning/PROJECT.md (updated 2026-02-25)
 ## Current Position
 
 Phase: 5 of 8 (Core Flow)
-Plan: 3 of 4 in current phase (completed)
+Plan: 4 of 4 in current phase (completed)
 Status: In progress
-Last activity: 2026-02-27 — completed 05-03 (D-Bus handler wiring: RequestSecret/RequestSign blocking methods, tuiObserver, daemon.Run() with TUI startup)
+Last activity: 2026-02-27 — completed 05-04 (D-Bus integration tests, handler unit tests, messageSender interface, GPG-02 pinentry-tty config)
 
-Progress: [████░░░░░░░░░░░░░░░░] 25% (v2.0 phases, 5 plans complete)
+Progress: [████░░░░░░░░░░░░░░░░] 30% (v2.0 phases, 6 plans complete)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed (v2.0): 5
-- Average duration: 6.2 min
-- Total execution time: 31 min
+- Total plans completed (v2.0): 6
+- Average duration: 6.8 min
+- Total execution time: 41 min
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 04-foundation | 2 | 12 min | 6 min |
-| 05-core-flow | 3 | 19 min | 6.3 min |
+| 05-core-flow | 4 | 29 min | 7.3 min |
 
 *Updated after each plan completion*
 
@@ -76,6 +76,9 @@ Key decisions from 04-02 (daemon skeleton):
 - [Phase 05-core-flow 05-03]: tuiObserver skips EventRequestCreated: D-Bus handler sends NewRequestMsg directly to avoid duplicate TUI entries
 - [Phase 05-core-flow 05-03]: Headless mode (VTPath+VTFile both nil): daemon exports D-Bus without TUI; requests timeout — preserves all Phase 4 integration tests
 - [Phase 05-core-flow 05-03]: RequestSecret returns "approved:<path>" placeholder in Phase 5; real gopass fetch deferred to Phase 6
+- [Phase 05-core-flow 05-04]: MessageSender interface exported (not unexported) so daemon_test external package can provide mock implementations
+- [Phase 05-core-flow 05-04]: req.expired bool on Request struct: WaitForResult uses it to return ErrTimeout vs ErrDenied; timeout goroutines set it before close(done)
+- [Phase 05-core-flow 05-04]: GPG-02: gpg-agent.conf writes keep-tty to force gpg-agent to use the companion VT TTY regardless of which process triggered signing
 
 ### Critical Pitfalls (from research)
 
@@ -97,5 +100,5 @@ None.
 ## Session Continuity
 
 Last session: 2026-02-27
-Stopped at: Completed 05-03-PLAN.md (D-Bus handler wiring: RequestSecret/RequestSign blocking methods, tuiObserver, daemon.Run() with TUI startup and headless test mode)
+Stopped at: Completed 05-04-PLAN.md (D-Bus integration tests, handler unit tests, messageSender interface, GPG-02 pinentry-tty config — Phase 5 complete)
 Resume file: None

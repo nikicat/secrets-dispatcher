@@ -50,7 +50,7 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 ### GPG Signing
 
 - [ ] **GPG-01**: GPG thin client (runs as desktop user, invoked by git as gpg.program) uses system D-Bus to reach companion
-- [ ] **GPG-02**: Companion's gpg-agent configured with pinentry-tty pointing to approval VT
+- [x] **GPG-02**: Companion's gpg-agent configured with pinentry-tty pointing to approval VT
 - [x] **GPG-03**: Companion daemon signs via existing GPGRunner interface (calls real gpg, same as v1.0)
 
 ### Provisioning
@@ -64,7 +64,7 @@ Requirements for v2.0 milestone. Each maps to roadmap phases.
 ### Testing
 
 - [x] **TEST-01**: Unit tests with interface mocks for VT, D-Bus connections, Secret Service client
-- [ ] **TEST-02**: Integration tests with private D-Bus daemon (runs as regular user, no root)
+- [x] **TEST-02**: Integration tests with private D-Bus daemon (runs as regular user, no root)
 - [ ] **TEST-03**: VM E2E tests validating real multi-user, VT, PAM, systemd deployment
 - [x] **TEST-04**: CI-compatible: unit + integration run in CI; VM E2E gated by environment variable
 
@@ -138,7 +138,7 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | AGENT-04 | Phase 6 | Pending |
 | AGENT-05 | Phase 6 | Pending |
 | GPG-01 | Phase 6 | Pending |
-| GPG-02 | Phase 5 | Pending |
+| GPG-02 | Phase 5 | Complete |
 | GPG-03 | Phase 5 | Complete |
 | PROV-01 | Phase 4 | Complete |
 | PROV-02 | Phase 4 | Complete |
@@ -146,7 +146,7 @@ Deferred to post-v2.0. Tracked but not in current roadmap.
 | PROV-04 | Phase 4 | Complete |
 | PROV-05 | Phase 4 | Complete |
 | TEST-01 | Phase 5 | Complete |
-| TEST-02 | Phase 5 | Pending |
+| TEST-02 | Phase 5 | Complete |
 | TEST-03 | Phase 8 | Pending |
 | TEST-04 | Phase 4 | Complete |
 | INFRA-01 | Phase 4 | Complete |

@@ -523,3 +523,79 @@ func TestProvision_CompanionNameOverride(t *testing.T) {
 		t.Errorf("userAdd should use CompanionName override %q; got %q", "sd-companion", addedUser)
 	}
 }
+
+// TestProvision_WritesGPGAgentConf verifies that Provision writes
+// gpg-agent.conf with pinentry-tty and keep-tty settings.
+func TestProvision_WritesGPGAgentConf(t *testing.T) {
+	saveOrigFuncs(t)
+	mockRootEuid()
+	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
+	chownFunc = func(path string, uid, gid int) error { return nil }
+	chmodFunc = func(path string, mode os.FileMode) error { return nil }
+	userAddFunc = func(username, homeDir, shell string) error { return nil }
+	usermodFunc = func(username string, args ...string) error { return nil }
+	loginctlFunc = func(args ...string) error { return nil }
+
+	var gpgAgentContent string
+	expectedPath := filepath.Join("/var/lib/secret-companion/nb", ".gnupg", "gpg-agent.conf")
+	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+		if path == expectedPath {
+			gpgAgentContent = string(data)
+		}
+		return nil
+	}
+
+	cfg := Config{DesktopUser: "nb"}
+	if err := Provision(cfg); err != nil {
+		t.Fatalf("Provision() unexpected error: %v", err)
+	}
+
+	if gpgAgentContent == "" {
+		t.Fatalf("gpg-agent.conf was not written to %q", expectedPath)
+	}
+	if !strings.Contains(gpgAgentContent, "pinentry-program /usr/bin/pinentry-tty") {
+		t.Errorf("gpg-agent.conf should contain pinentry-tty; got:\n%s", gpgAgentContent)
+	}
+	if !strings.Contains(gpgAgentContent, "keep-tty") {
+		t.Errorf("gpg-agent.conf should contain keep-tty; got:\n%s", gpgAgentContent)
+	}
+}
+
+// TestProvision_SystemdUnitHasGPGTTY verifies that the systemd unit template
+// includes GPG_TTY environment variable pointing to the companion VT.
+func TestProvision_SystemdUnitHasGPGTTY(t *testing.T) {
+	saveOrigFuncs(t)
+	mockRootEuid()
+	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
+	chownFunc = func(path string, uid, gid int) error { return nil }
+	chmodFunc = func(path string, mode os.FileMode) error { return nil }
+	userAddFunc = func(username, homeDir, shell string) error { return nil }
+	usermodFunc = func(username string, args ...string) error { return nil }
+	loginctlFunc = func(args ...string) error { return nil }
+
+	var systemdContent string
+	unitPath := filepath.Join("/var/lib/secret-companion/nb", ".config", "systemd", "user", "secrets-dispatcher-daemon.service")
+	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+		if path == unitPath {
+			systemdContent = string(data)
+		}
+		return nil
+	}
+
+	cfg := Config{DesktopUser: "nb"}
+	if err := Provision(cfg); err != nil {
+		t.Fatalf("Provision() unexpected error: %v", err)
+	}
+
+	if systemdContent == "" {
+		t.Fatalf("systemd unit not written to %q", unitPath)
+	}
+	if !strings.Contains(systemdContent, "GPG_TTY=") {
+		t.Errorf("systemd unit should contain GPG_TTY; got:\n%s", systemdContent)
+	}
+	if !strings.Contains(systemdContent, "GNUPGHOME=") {
+		t.Errorf("systemd unit should contain GNUPGHOME; got:\n%s", systemdContent)
+	}
+}

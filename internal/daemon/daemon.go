@@ -53,6 +53,18 @@ type Config struct {
 
 	// Signer overrides the GPG signer. When nil, a real GPG signer is used.
 	Signer gpgSigner
+
+	// ApprovalManager overrides the internally-created approval.Manager.
+	// When non-nil, Run() uses this manager instead of creating a new one.
+	// Used by integration tests to control approval state.
+	ApprovalManager *approval.Manager
+
+	// MessageSender injects a MessageSender for the dispatcher in headless mode.
+	// When non-nil and VTPath/VTFile are both empty, Run() calls
+	// dispatcher.SetProgram(MessageSender) so RequestSecret/RequestSign
+	// do not return NotReady. Used by integration tests that test the full
+	// approve/deny flow without a real VT.
+	MessageSender MessageSender
 }
 
 // tuiObserver bridges approval.Manager events to bubbletea messages.
@@ -94,8 +106,11 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.HistoryMax = 100
 	}
 
-	// Create approval manager.
-	mgr := approval.NewManager(cfg.Timeout, cfg.HistoryMax)
+	// Create approval manager (or use the injected test seam).
+	mgr := cfg.ApprovalManager
+	if mgr == nil {
+		mgr = approval.NewManager(cfg.Timeout, cfg.HistoryMax)
+	}
 
 	// Connect to the appropriate D-Bus bus.
 	var conn *dbus.Conn
@@ -207,6 +222,12 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// Headless mode: no TUI — just export dispatcher and block.
+	// If MessageSender is injected (integration tests), wire it so that
+	// RequestSecret/RequestSign do not return NotReady.
+	if cfg.MessageSender != nil {
+		dispatcher.program = cfg.MessageSender
+	}
+
 	if err := exportDispatcher(conn, dispatcher); err != nil {
 		return err
 	}

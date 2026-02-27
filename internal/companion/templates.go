@@ -28,6 +28,8 @@ const dbusPolicyTemplate = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BU
 // systemdUnitTemplate is the systemd user unit file for the companion daemon.
 // Installed to companion user's ~/.config/systemd/user/.
 // Type=notify requires sd-notify readiness notification before systemd considers it started.
+// GPG_TTY points pinentry-tty at the companion's dedicated VT so passphrase
+// prompts appear on the isolated VT rather than any active user tty.
 const systemdUnitTemplate = `[Unit]
 Description=Secrets Dispatcher Companion Daemon
 Documentation=https://github.com/nikicat/secrets-dispatcher
@@ -39,6 +41,8 @@ Type=notify
 ExecStart=/usr/local/bin/secrets-dispatcher daemon
 Environment=HOME={{.CompanionHome}}
 Environment=XDG_RUNTIME_DIR=/run/user/{{.CompanionUID}}
+Environment=GPG_TTY={{.VTPath}}
+Environment=GNUPGHOME={{.CompanionHome}}/.gnupg
 Restart=on-failure
 RestartSec=5
 

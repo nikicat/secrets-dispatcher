@@ -29,12 +29,17 @@ type gpgSigner interface {
 	Sign(commitObject []byte, keyID string) (signature, status []byte, exitCode int, err error)
 }
 
-// messageSender is a subset of *tea.Program used by Dispatcher.
-// Defined as an interface for unit-test substitution — the real tea.Program
-// satisfies it; tests provide a mock channel-based implementation.
-type messageSender interface {
+// MessageSender is a subset of *tea.Program used by Dispatcher.
+// Defined as an interface for test substitution — the real *tea.Program
+// satisfies it; tests provide a simple mock implementation.
+// Exposed so integration tests in the daemon_test package can provide a mock.
+type MessageSender interface {
 	Send(msg tea.Msg)
 }
+
+// messageSender is the unexported alias used by Dispatcher internals.
+// The exported MessageSender is the same interface.
+type messageSender = MessageSender
 
 // Dispatcher is the D-Bus object exported under ObjectPath/Interface.
 type Dispatcher struct {

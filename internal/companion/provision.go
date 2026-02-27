@@ -118,13 +118,18 @@ func Provision(cfg Config) error {
 		return fmt.Errorf("ensure directory skeleton: %w", err)
 	}
 
+	// 4b. Write gpg-agent.conf with pinentry-tty pointing to the companion VT.
+	if err := writeGPGAgentConf(homeDir, uid, gid, "/dev/tty8"); err != nil {
+		return fmt.Errorf("write gpg-agent.conf: %w", err)
+	}
+
 	// 5. Write D-Bus system bus policy file.
 	if err := writeDBusPolicy(cfg.DesktopUser, companionUser); err != nil {
 		return fmt.Errorf("write D-Bus policy: %w", err)
 	}
 
 	// 6. Write systemd user unit file to companion's XDG config directory.
-	if err := writeSystemdUnit(homeDir, companionUser, u.Uid, uid, gid); err != nil {
+	if err := writeSystemdUnit(homeDir, companionUser, u.Uid, "/dev/tty8", uid, gid); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 
@@ -227,15 +232,20 @@ func writeDBusPolicy(desktopUser, companionUser string) error {
 }
 
 // writeSystemdUnit renders and writes the systemd user unit file to the companion's XDG dir.
-func writeSystemdUnit(homeDir, companionUser, uidStr string, uid, gid int) error {
+func writeSystemdUnit(homeDir, companionUser, uidStr, vtPath string, uid, gid int) error {
 	type templateVars struct {
 		CompanionHome string
 		CompanionUID  string
+		VTPath        string
+	}
+	if vtPath == "" {
+		vtPath = "/dev/tty8"
 	}
 
 	content, err := renderTemplate("systemd-unit", systemdUnitTemplate, templateVars{
 		CompanionHome: homeDir,
 		CompanionUID:  uidStr,
+		VTPath:        vtPath,
 	})
 	if err != nil {
 		return err
@@ -262,6 +272,25 @@ func writePAMConfig() error {
 	path := "/etc/pam.d/secrets-dispatcher"
 	slog.Info("writing PAM config", "path", path)
 	return writeFileFunc(path, []byte(pamConfigTemplate), 0644)
+}
+
+// writeGPGAgentConf writes .gnupg/gpg-agent.conf with pinentry-tty and keep-tty.
+// pinentry-tty uses the terminal directly (no Gtk/Qt dependency).
+// keep-tty tells gpg-agent to always use the configured TTY even when the
+// requesting process is on a different terminal — essential for VT-based approval.
+// The vtPath default is "/dev/tty8" when empty.
+func writeGPGAgentConf(homeDir string, uid, gid int, vtPath string) error {
+	if vtPath == "" {
+		vtPath = "/dev/tty8"
+	}
+	_ = vtPath // vtPath informs the systemd unit; gpg-agent.conf uses keep-tty.
+	content := "pinentry-program /usr/bin/pinentry-tty\nkeep-tty\n"
+	confPath := filepath.Join(homeDir, ".gnupg", "gpg-agent.conf")
+	slog.Info("writing gpg-agent.conf", "path", confPath)
+	if err := writeFileFunc(confPath, []byte(content), 0600); err != nil {
+		return err
+	}
+	return chownFunc(confPath, uid, gid)
 }
 
 // renderTemplate executes a text/template and returns the rendered bytes.

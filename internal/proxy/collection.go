@@ -114,6 +114,24 @@ func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath) approval.Ite
 	return info
 }
 
+// extractItemInfo extracts label and attributes from CreateItem properties.
+func extractItemInfo(collectionPath string, properties map[string]dbus.Variant) approval.ItemInfo {
+	info := approval.ItemInfo{Path: collectionPath}
+
+	if v, ok := properties[dbustypes.ItemInterface+".Label"]; ok {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+	if v, ok := properties[dbustypes.ItemInterface+".Attributes"]; ok {
+		if attrs, ok := v.Value().(map[string]string); ok {
+			info.Attributes = attrs
+		}
+	}
+
+	return info
+}
+
 // SearchItems searches for items in this collection matching the given attributes.
 // Signature: SearchItems(attributes Dict<String,String>) -> (results Array<ObjectPath>)
 func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
@@ -149,6 +167,24 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
 	if !isCollectionPath(path) {
 		return "/", "/", dbustypes.ErrObjectNotFound(string(path))
+	}
+
+	// Extract item info from properties for the approval prompt
+	itemInfo := extractItemInfo(string(path), properties)
+
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := c.tracker.contextForSender(context.Background(), sender)
+	defer c.tracker.remove(sender)
+
+	// Resolve sender information
+	senderInfo := c.resolver.Resolve(sender)
+
+	// Require approval before creating item
+	items := []approval.ItemInfo{itemInfo}
+	if err := c.approval.RequireApproval(ctx, c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "denied", err)
+		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	// Map remote session to local session

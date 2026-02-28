@@ -332,6 +332,8 @@ func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string)
 		return "Secrets searched", "dialog-password"
 	case approval.RequestTypeDelete:
 		return "Deletion requested", "dialog-warning"
+	case approval.RequestTypeWrite:
+		return "Secret write requested", "dialog-warning"
 	default:
 		return "Secret requested", "dialog-password"
 	}
@@ -402,7 +404,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 		if len(req.SenderInfo.ProcessChain) > 0 {
 			// New format: item label, then process chain (parent → child order)
 			switch req.Type {
-			case approval.RequestTypeGetSecret, approval.RequestTypeDelete:
+			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
 				if len(req.Items) == 1 {
 					fmt.Fprintf(&b, "<b>%s</b>", req.Items[0].Label)
 				} else {
@@ -442,7 +444,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			}
 
 			switch req.Type {
-			case approval.RequestTypeGetSecret, approval.RequestTypeDelete:
+			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
 				if len(req.Items) == 1 {
 					fmt.Fprintf(&b, "<i>%s</i>", req.Items[0].Label)
 				} else {

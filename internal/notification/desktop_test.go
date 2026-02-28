@@ -453,6 +453,33 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 	}
 }
 
+func TestHandler_OnEvent_WriteRequest(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	req := &approval.Request{
+		ID:     "write-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeWrite,
+		Items: []approval.ItemInfo{
+			{Label: "New Secret", Path: "/org/secrets/collection/default"},
+		},
+		SenderInfo: approval.SenderInfo{PID: 1234},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	call := mock.lastNotify()
+	if call.summary != "Secret write requested" {
+		t.Errorf("expected summary 'Secret write requested', got %q", call.summary)
+	}
+	if call.icon != "dialog-warning" {
+		t.Errorf("expected icon 'dialog-warning', got %q", call.icon)
+	}
+	if !contains(call.body, "New Secret") {
+		t.Errorf("body should contain item label: %s", call.body)
+	}
+}
+
 func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
 	h, mock, _ := newTestHandler()
 

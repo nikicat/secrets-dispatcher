@@ -154,6 +154,24 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
+	// Fetch item info (label + attributes)
+	itemInfo := i.getItemInfo(path)
+
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := i.tracker.contextForSender(context.Background(), sender)
+	defer i.tracker.remove(sender)
+
+	// Resolve sender information
+	senderInfo := i.resolver.Resolve(sender)
+
+	// Require approval before writing secret
+	items := []approval.ItemInfo{itemInfo}
+	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "denied", err)
+		return dbustypes.ErrAccessDenied(err.Error())
+	}
+
 	// Map remote session to local session
 	localSession, ok := i.sessions.GetLocalSession(secret.Session)
 	if !ok {

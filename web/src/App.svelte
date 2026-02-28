@@ -396,6 +396,8 @@
                             Search
                           {:else if entry.request.type === "delete"}
                             Delete
+                          {:else if entry.request.type === "write"}
+                            Write
                           {:else}
                             Secret
                           {/if}
@@ -443,6 +445,8 @@
                             Search
                           {:else if entry.request.type === "delete"}
                             Delete
+                          {:else if entry.request.type === "write"}
+                            Write
                           {:else}
                             Secret
                           {/if}
@@ -834,7 +838,8 @@
     background-color: var(--color-gpg-sign-bg);
   }
 
-  .history-type--delete {
+  .history-type--delete,
+  .history-type--write {
     color: var(--color-danger);
     border-color: var(--color-danger);
     background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);

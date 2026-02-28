@@ -1037,6 +1037,185 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	}
 }
 
+// TestProxySetSecretRequiresApproval tests that Item.SetSecret is gated by approval.
+func TestProxySetSecretRequiresApproval(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test"}, []byte("old-value"))
+
+	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	// Open session
+	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	if call.Err != nil {
+		t.Fatalf("OpenSession: %v", call.Err)
+	}
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// Start SetSecret in a goroutine — it should block
+	setErr := make(chan error, 1)
+	go func() {
+		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
+		newSecret := dbustypes.Secret{
+			Session:     sessionPath,
+			Value:       []byte("new-value"),
+			ContentType: "text/plain",
+		}
+		call := itemObj.Call(dbustypes.ItemInterface+".SetSecret", 0, newSecret)
+		setErr <- call.Err
+	}()
+
+	// Wait for pending request
+	var reqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("approval request did not appear for SetSecret")
+	}
+
+	req := approvalMgr.GetPending(reqID)
+	if req.Type != approval.RequestTypeWrite {
+		t.Errorf("expected request type 'write', got %q", req.Type)
+	}
+
+	approvalMgr.Approve(reqID)
+
+	select {
+	case err := <-setErr:
+		if err != nil {
+			t.Errorf("SetSecret returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for SetSecret to complete")
+	}
+}
+
+// TestProxyCreateItemRequiresApproval tests that Collection.CreateItem is gated by approval.
+func TestProxyCreateItemRequiresApproval(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	// Open session
+	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	if call.Err != nil {
+		t.Fatalf("OpenSession: %v", call.Err)
+	}
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// Start CreateItem in a goroutine — it should block
+	createErr := make(chan error, 1)
+	go func() {
+		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+		properties := map[string]dbus.Variant{
+			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("New Item"),
+			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"svc": "test"}),
+		}
+		secret := dbustypes.Secret{
+			Session:     sessionPath,
+			Value:       []byte("secret-value"),
+			ContentType: "text/plain",
+		}
+		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		createErr <- call.Err
+	}()
+
+	// Wait for pending request
+	var reqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("approval request did not appear for CreateItem")
+	}
+
+	req := approvalMgr.GetPending(reqID)
+	if req.Type != approval.RequestTypeWrite {
+		t.Errorf("expected request type 'write', got %q", req.Type)
+	}
+	if len(req.Items) != 1 || req.Items[0].Label != "New Item" {
+		t.Errorf("expected item label 'New Item', got %v", req.Items)
+	}
+
+	approvalMgr.Approve(reqID)
+
+	select {
+	case err := <-createErr:
+		if err != nil {
+			t.Errorf("CreateItem returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for CreateItem to complete")
+	}
+}
+
 // TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects non-plain algorithms.
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)

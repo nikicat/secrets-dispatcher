@@ -1086,6 +1086,44 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 	}
 }
 
+func TestApprovalCache_WriteBypassesCache(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, time.Second)
+
+	items := []ItemInfo{{Path: "/test/item1"}}
+	sender := SenderInfo{Sender: ":1.100"}
+
+	// Approve a GetSecret request first — populates cache
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	}()
+
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("first request did not appear")
+	}
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Write should NOT use cache
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeWrite, nil, sender)
+	if err == nil {
+		t.Fatal("Write should not be auto-approved from cache")
+	}
+}
+
 func TestApprovalCache_DifferentItem(t *testing.T) {
 	mgr := NewManager(5*time.Second, 100, time.Second)
 

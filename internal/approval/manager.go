@@ -55,6 +55,7 @@ const (
 	RequestTypeGetSecret RequestType = "get_secret"
 	RequestTypeSearch    RequestType = "search"
 	RequestTypeDelete    RequestType = "delete"
+	RequestTypeWrite     RequestType = "write"
 )
 
 // Request represents a secret access request awaiting approval.
@@ -246,8 +247,8 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 	}
 
 	// Check approval cache: if all items were recently approved for this sender, skip.
-	// Delete requests always require explicit approval — never use cached approvals.
-	if reqType != RequestTypeDelete && m.approvalWindow > 0 && len(items) > 0 {
+	// Delete and write requests always require explicit approval — never use cached approvals.
+	if reqType != RequestTypeDelete && reqType != RequestTypeWrite && m.approvalWindow > 0 && len(items) > 0 {
 		if m.checkApprovalCache(senderInfo.Sender, items) {
 			return nil
 		}

@@ -58,6 +58,7 @@
       case "gpg_sign": return "GPG Sign";
       case "search": return "Search";
       case "delete": return "Delete";
+      case "write": return "Write";
       default: return "Secret";
     }
   }
@@ -271,7 +272,7 @@
     </div>
   {:else}
     <div class="items">
-      <h4>{request.type === "delete" ? "Items to Delete" : "Requested Secrets"}</h4>
+      <h4>{request.type === "delete" ? "Items to Delete" : request.type === "write" ? "Items to Write" : "Requested Secrets"}</h4>
       {#each request.items as item}
         <div class="item-card">
           <div class="item-header">
@@ -349,7 +350,8 @@
     border-left: 3px solid var(--color-gpg-sign-border);
   }
 
-  .card.card--delete {
+  .card.card--delete,
+  .card.card--write {
     border-left: 3px solid var(--color-danger);
   }
 
@@ -392,7 +394,8 @@
     border-color: var(--color-gpg-sign);
   }
 
-  .type-badge--delete {
+  .type-badge--delete,
+  .type-badge--write {
     color: var(--color-danger);
     background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
     border-color: var(--color-danger);

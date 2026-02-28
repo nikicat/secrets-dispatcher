@@ -488,6 +488,62 @@ test.describe("GPG Sign Corner Cases", () => {
       headers: { Authorization: `Bearer ${token}` },
     });
   });
+
+  test("process chain rendered when sender has process_chain", async ({
+    page,
+  }) => {
+    // Intercept the WebSocket to inject a request_created message
+    // with process_chain — tests the {#if hasProcessChain()} branch.
+    let sendToClient: ((msg: string) => void) | undefined;
+    await page.routeWebSocket(/\/api\/v1\/ws/, (ws) => {
+      const server = ws.connectToServer();
+      sendToClient = (msg) => ws.send(msg);
+      // Forward all messages bidirectionally.
+      ws.onMessage((msg) => server.send(msg));
+      server.onMessage((msg) => ws.send(msg));
+    });
+
+    await authenticate(page);
+
+    // Inject a fake request with process_chain via the intercepted WebSocket.
+    const fakeRequest = {
+      type: "request_created",
+      request: {
+        id: "chain-test-001",
+        client: "chain-client",
+        items: [{ path: "/secrets/collection/test/1", label: "ChainItem", attributes: {} }],
+        session: "/secrets/session/s0",
+        created_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 300000).toISOString(),
+        type: "get_secret",
+        sender_info: {
+          sender: ":1.42",
+          pid: 1234,
+          uid: 1000,
+          user_name: "dev",
+          unit_name: "claude",
+          process_chain: [
+            { name: "secrets-dispatcher", pid: 1234 },
+            { name: "git", pid: 1230 },
+            { name: "zsh", pid: 1200 },
+            { name: "claude", pid: 1100 },
+          ],
+        },
+      },
+    };
+    sendToClient!(JSON.stringify(fakeRequest));
+
+    const card = page.locator(".card").filter({ hasText: "ChainItem" });
+    await expect(card).toBeVisible();
+
+    // The process-chain div should render with chain-entry elements.
+    const chain = card.locator(".process-chain");
+    await expect(chain).toBeVisible();
+    const entries = chain.locator(".chain-entry");
+    await expect(entries).toHaveCount(4);
+    await expect(entries.nth(0)).toContainText("secrets-dispatcher");
+    await expect(entries.nth(3)).toContainText("claude");
+  });
 });
 
 test.describe("GPG Sign Approval Flow", () => {

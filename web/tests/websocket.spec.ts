@@ -33,8 +33,8 @@ test.describe("WebSocket Connection", () => {
     // Wait for WebSocket connection and snapshot
     await expect(page.getByText("No pending requests")).toBeVisible();
 
-    // Verify the connected clients are shown
-    await expect(page.getByText("test-client")).toBeVisible();
+    // Default config has a "local" client (session_bus downstream)
+    await expect(page.getByText("local")).toBeVisible();
   });
 
   test("shows unauthenticated state without valid session", async ({ page }) => {
@@ -76,11 +76,9 @@ test.describe("WebSocket Real-time Updates", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    // The single-socket test backend has one client: "test-client"
+    // Default config has one "local" client
     await expect(page.getByText("1 client connected")).toBeVisible();
-
-    // Clients list should show the client name
-    await expect(page.getByText("test-client")).toBeVisible();
+    await expect(page.getByText("local")).toBeVisible();
   });
 
   test("persists connection across page visibility changes", async ({
@@ -153,12 +151,12 @@ test.describe("WebSocket API Integration", () => {
     expect(response.status()).toBe(200);
     const status = await response.json();
 
-    // Both should report the same client
-    expect(status.client).toBe("test-client");
+    // Default config has a "local" client
     expect(status.running).toBe(true);
+    expect(status.clients).toEqual([{ name: "local", socket_path: "session_bus" }]);
 
-    // The UI should also show this client
-    await expect(page.getByText("test-client")).toBeVisible();
+    // UI shows the client
+    await expect(page.getByText("local")).toBeVisible();
   });
 
   test("pending requests from REST API matches WebSocket snapshot", async ({

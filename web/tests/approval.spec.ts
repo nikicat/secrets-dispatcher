@@ -74,7 +74,7 @@ test.describe("Approval Flow", () => {
     expect(statusResponse.status()).toBe(200);
     const status = await statusResponse.json();
     expect(status.running).toBe(true);
-    expect(status.client).toBe("test-client");
+    expect(status.clients).toEqual([{ name: "local", socket_path: "session_bus" }]);
     expect(status.pending_count).toBe(0);
   });
 

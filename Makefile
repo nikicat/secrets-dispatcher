@@ -27,7 +27,7 @@ dev:
 	cd web && deno task dev
 
 # Run all tests
-test: test-go
+test: test-go test-e2e
 
 # Go tests only
 test-go:

@@ -75,8 +75,6 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
         stateDir,
         "--listen",
         listenAddr,
-        "--client",
-        "test-client",
         ...extraArgs,
       ],
       {

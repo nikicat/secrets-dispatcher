@@ -66,10 +66,10 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 	// Build the process chain from peer up to init.
 	var chain []procInfo
 	for pid := cred.Pid; pid > 1; pid = procutil.ReadPPID(pid) {
+		chain = append(chain, procInfo{pid: pid, comm: procutil.ReadComm(pid)})
 		if trimAtSessionLeader && procutil.IsSessionLeader(pid) {
 			break
 		}
-		chain = append(chain, procInfo{pid: pid, comm: procutil.ReadComm(pid)})
 	}
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {

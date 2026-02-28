@@ -67,27 +67,6 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 		return nil, nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
 	}
 
-	// Fetch item info for all results
-	allPaths := append(unlocked, locked...)
-	itemInfos := make([]approval.ItemInfo, len(allPaths))
-	for i, path := range allPaths {
-		itemInfos[i] = s.getItemInfo(path)
-	}
-
-	// Get a context that will be cancelled if the client disconnects
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
-	ctx := s.tracker.contextForSender(context.Background(), sender)
-	defer s.tracker.remove(sender)
-
-	// Resolve sender information
-	senderInfo := s.resolver.Resolve(sender)
-
-	// Require approval before returning search results
-	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, "", approval.RequestTypeSearch, attributes, senderInfo); err != nil {
-		s.logger.LogSearchItems(ctx, attributes, len(unlocked), len(locked), "denied", err)
-		return nil, nil, dbustypes.ErrAccessDenied(err.Error())
-	}
-
 	s.logger.LogSearchItems(context.Background(), attributes, len(unlocked), len(locked), "ok", nil)
 	return unlocked, locked, nil
 }

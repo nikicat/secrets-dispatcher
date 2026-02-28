@@ -16,7 +16,7 @@ const (
 	DefaultHistoryLimit   = 100
 	DefaultLogLevel       = "info"
 	DefaultLogFormat      = "text"
-	DefaultApprovalWindow = 500 * time.Millisecond
+	DefaultApprovalWindow = 5 * time.Second
 )
 
 var defaultNotifications = true

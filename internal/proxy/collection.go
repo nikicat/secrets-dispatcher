@@ -212,6 +212,9 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
 	}
 
+	// Cache the new item path so immediate read-back (e.g., gh verification) is auto-approved.
+	c.approval.CacheItemForSender(sender, string(item))
+
 	c.logger.LogMethod(context.Background(), "Collection.CreateItem", map[string]any{
 		"collection": string(path),
 		"item":       string(item),

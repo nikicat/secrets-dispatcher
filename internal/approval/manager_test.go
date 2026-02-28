@@ -1124,6 +1124,41 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 	}
 }
 
+func TestCacheItemForSender_AutoApprovesRead(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, time.Second)
+
+	sender := SenderInfo{Sender: ":1.200"}
+	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+
+	// Manually cache the item (simulates post-CreateItem caching)
+	mgr.CacheItemForSender(sender.Sender, itemPath)
+
+	// GetSecret for the same item should be auto-approved
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, sender)
+	if err != nil {
+		t.Fatalf("GetSecret should be auto-approved after CacheItemForSender, got: %v", err)
+	}
+}
+
+func TestCacheItemForSender_DifferentSenderNotCached(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, time.Second)
+
+	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+
+	// Cache for sender :1.200
+	mgr.CacheItemForSender(":1.200", itemPath)
+
+	// Different sender should NOT be auto-approved
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.300"})
+	if err == nil {
+		t.Fatal("different sender should not be auto-approved")
+	}
+}
+
 func TestApprovalCache_DifferentItem(t *testing.T) {
 	mgr := NewManager(5*time.Second, 100, time.Second)
 

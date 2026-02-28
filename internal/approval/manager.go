@@ -467,6 +467,21 @@ func (m *Manager) checkApprovalCache(sender string, items []ItemInfo) bool {
 	return true
 }
 
+// CacheItemForSender records an item approval in the cache for a specific sender.
+// This allows auto-approving a subsequent read of an item that was just written
+// (e.g., gh verifies keyring storage by reading back a secret right after CreateItem).
+func (m *Manager) CacheItemForSender(sender, itemPath string) {
+	if m.approvalWindow <= 0 || m.disabled {
+		return
+	}
+
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+
+	key := approvalCacheKey(sender, itemPath)
+	m.cache[key] = time.Now()
+}
+
 // cacheApproval records approved (sender, item) pairs in the cache.
 func (m *Manager) cacheApproval(req *Request) {
 	if m.approvalWindow <= 0 {

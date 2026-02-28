@@ -699,6 +699,344 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	}
 }
 
+// TestProxyItemDeleteRequiresApproval tests that Item.Delete is gated by approval.
+func TestProxyItemDeleteRequiresApproval(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	itemPath := mock.AddItem("Delete Me", map[string]string{"app": "test"}, []byte("secret"))
+
+	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	// Start Item.Delete in a goroutine — it should block waiting for approval
+	deleteErr := make(chan error, 1)
+	go func() {
+		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
+		call := itemObj.Call(dbustypes.ItemInterface+".Delete", 0)
+		deleteErr <- call.Err
+	}()
+
+	// Wait for pending request
+	var reqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("approval request did not appear for Item.Delete")
+	}
+
+	// Verify request type
+	req := approvalMgr.GetPending(reqID)
+	if req.Type != approval.RequestTypeDelete {
+		t.Errorf("expected request type 'delete', got %q", req.Type)
+	}
+
+	// Approve the request
+	if err := approvalMgr.Approve(reqID); err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+
+	// Delete should succeed
+	select {
+	case err := <-deleteErr:
+		if err != nil {
+			t.Errorf("Item.Delete returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Item.Delete to complete")
+	}
+}
+
+// TestProxyItemDeleteDenied tests that denying Item.Delete returns an access denied error.
+func TestProxyItemDeleteDenied(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	itemPath := mock.AddItem("Don't Delete Me", map[string]string{"app": "test"}, []byte("secret"))
+
+	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	deleteErr := make(chan error, 1)
+	go func() {
+		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
+		call := itemObj.Call(dbustypes.ItemInterface+".Delete", 0)
+		deleteErr <- call.Err
+	}()
+
+	// Wait for pending request
+	var reqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("approval request did not appear")
+	}
+
+	// Deny the request
+	if err := approvalMgr.Deny(reqID); err != nil {
+		t.Fatalf("deny failed: %v", err)
+	}
+
+	// Delete should fail with access denied
+	select {
+	case err := <-deleteErr:
+		if err == nil {
+			t.Error("expected error after denial, got nil")
+		} else if !strings.Contains(err.Error(), "denied") {
+			t.Errorf("expected access denied error, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Item.Delete to complete")
+	}
+}
+
+// TestProxyCollectionDeleteRequiresApproval tests that Collection.Delete is gated by approval.
+func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	collPath := dbus.ObjectPath("/org/freedesktop/secrets/collection/default")
+
+	// Start Collection.Delete in a goroutine — it should block waiting for approval
+	deleteErr := make(chan error, 1)
+	go func() {
+		collObj := remoteConn.Object(dbustypes.BusName, collPath)
+		call := collObj.Call(dbustypes.CollectionInterface+".Delete", 0)
+		deleteErr <- call.Err
+	}()
+
+	// Wait for pending request
+	var reqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if reqID == "" {
+		t.Fatal("approval request did not appear for Collection.Delete")
+	}
+
+	// Verify request type and that it captured the collection label
+	req := approvalMgr.GetPending(reqID)
+	if req.Type != approval.RequestTypeDelete {
+		t.Errorf("expected request type 'delete', got %q", req.Type)
+	}
+	if len(req.Items) != 1 {
+		t.Fatalf("expected 1 item in request, got %d", len(req.Items))
+	}
+	if req.Items[0].Label != "Default" {
+		t.Errorf("expected collection label 'Default', got %q", req.Items[0].Label)
+	}
+
+	// Approve the request
+	if err := approvalMgr.Approve(reqID); err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+
+	// Delete should succeed
+	select {
+	case err := <-deleteErr:
+		if err != nil {
+			t.Errorf("Collection.Delete returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Collection.Delete to complete")
+	}
+}
+
+// TestProxyItemDeleteNoAutoApprove tests that approving a GetSecret does not
+// auto-approve a subsequent Delete for the same item (cache bypass).
+func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	itemPath := mock.AddItem("Cached Secret", map[string]string{"app": "test"}, []byte("secret"))
+
+	// Use approval window so GetSecret gets cached
+	approvalMgr := approval.NewManager(30*time.Second, 100, time.Minute)
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	// First: open session and GetSecret (approve it to populate cache)
+	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	if call.Err != nil {
+		t.Fatalf("OpenSession: %v", call.Err)
+	}
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// GetSecret blocks on approval
+	getSecretDone := make(chan error, 1)
+	go func() {
+		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
+		call := itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		getSecretDone <- call.Err
+	}()
+
+	// Approve GetSecret
+	var reqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("GetSecret approval request did not appear")
+	}
+	approvalMgr.Approve(reqID)
+	<-getSecretDone
+
+	// Now try Delete — it should still require approval (not use cache)
+	deleteErr := make(chan error, 1)
+	go func() {
+		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
+		call := itemObj.Call(dbustypes.ItemInterface+".Delete", 0)
+		deleteErr <- call.Err
+	}()
+
+	// Should see a new pending request
+	var deleteReqID string
+	for i := 0; i < 50; i++ {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			deleteReqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if deleteReqID == "" {
+		t.Fatal("Delete should require explicit approval even when GetSecret was cached")
+	}
+
+	req := approvalMgr.GetPending(deleteReqID)
+	if req.Type != approval.RequestTypeDelete {
+		t.Errorf("expected request type 'delete', got %q", req.Type)
+	}
+
+	approvalMgr.Approve(deleteReqID)
+
+	select {
+	case err := <-deleteErr:
+		if err != nil {
+			t.Errorf("Delete returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Delete to complete")
+	}
+}
+
 // TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects non-plain algorithms.
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)

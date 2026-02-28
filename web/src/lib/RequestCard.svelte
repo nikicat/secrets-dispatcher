@@ -57,6 +57,7 @@
     switch (type) {
       case "gpg_sign": return "GPG Sign";
       case "search": return "Search";
+      case "delete": return "Delete";
       default: return "Secret";
     }
   }
@@ -270,7 +271,7 @@
     </div>
   {:else}
     <div class="items">
-      <h4>Requested Secrets</h4>
+      <h4>{request.type === "delete" ? "Items to Delete" : "Requested Secrets"}</h4>
       {#each request.items as item}
         <div class="item-card">
           <div class="item-header">
@@ -348,6 +349,10 @@
     border-left: 3px solid var(--color-gpg-sign-border);
   }
 
+  .card.card--delete {
+    border-left: 3px solid var(--color-danger);
+  }
+
   .card-header {
     display: flex;
     justify-content: space-between;
@@ -385,6 +390,12 @@
     color: var(--color-gpg-sign);
     background-color: var(--color-gpg-sign-bg);
     border-color: var(--color-gpg-sign);
+  }
+
+  .type-badge--delete {
+    color: var(--color-danger);
+    background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
+    border-color: var(--color-danger);
   }
 
   .session-id {

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
@@ -12,17 +13,25 @@ import (
 // CollectionHandler handles Collection interface calls for collection objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*.
 type CollectionHandler struct {
-	localConn *dbus.Conn
-	sessions  *SessionManager
-	logger    *logging.Logger
+	localConn  *dbus.Conn
+	sessions   *SessionManager
+	logger     *logging.Logger
+	approval   *approval.Manager
+	clientName string
+	tracker    *clientTracker
+	resolver   *SenderInfoResolver
 }
 
 // NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger) *CollectionHandler {
+func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *CollectionHandler {
 	return &CollectionHandler{
-		localConn: localConn,
-		sessions:  sessions,
-		logger:    logger,
+		localConn:  localConn,
+		sessions:   sessions,
+		logger:     logger,
+		approval:   approvalMgr,
+		clientName: clientName,
+		tracker:    tracker,
+		resolver:   resolver,
 	}
 }
 
@@ -53,6 +62,24 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 		return "/", dbustypes.ErrObjectNotFound(string(path))
 	}
 
+	// Fetch collection label for the approval prompt
+	collectionInfo := c.getCollectionInfo(path)
+
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := c.tracker.contextForSender(context.Background(), sender)
+	defer c.tracker.remove(sender)
+
+	// Resolve sender information
+	senderInfo := c.resolver.Resolve(sender)
+
+	// Require approval before deleting
+	items := []approval.ItemInfo{collectionInfo}
+	if err := c.approval.RequireApproval(ctx, c.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+		c.logger.LogMethod(ctx, "Collection.Delete", map[string]any{"collection": string(path)}, "denied", err)
+		return "/", dbustypes.ErrAccessDenied(err.Error())
+	}
+
 	obj := c.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call(dbustypes.CollectionInterface+".Delete", 0)
 	if call.Err != nil {
@@ -64,7 +91,27 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
 	}
 
+	c.logger.LogMethod(context.Background(), "Collection.Delete", map[string]any{
+		"collection": string(path),
+	}, "ok", nil)
+
 	return prompt, nil
+}
+
+// getCollectionInfo fetches label for a collection from D-Bus.
+func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath) approval.ItemInfo {
+	info := approval.ItemInfo{Path: string(path)}
+
+	obj := c.localConn.Object(dbustypes.BusName, path)
+
+	// Get Label property
+	if v, err := obj.GetProperty(dbustypes.CollectionInterface + ".Label"); err == nil {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+
+	return info
 }
 
 // SearchItems searches for items in this collection matching the given attributes.

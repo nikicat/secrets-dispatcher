@@ -83,7 +83,7 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 
 	// Create handlers — they talk to the backend
 	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
-	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger)
+	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
 	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 

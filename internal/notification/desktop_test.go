@@ -390,6 +390,69 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 	}
 }
 
+func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	req := &approval.Request{
+		ID:     "delete-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeDelete,
+		Items: []approval.ItemInfo{
+			{Label: "GitHub Token", Path: "/org/secrets/github"},
+		},
+		SenderInfo: approval.SenderInfo{
+			PID:      1234,
+			UnitName: "secret-tool.service",
+		},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	if mock.notifyCount() != 1 {
+		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
+	}
+
+	call := mock.lastNotify()
+	if call.summary != "Deletion requested" {
+		t.Errorf("expected summary 'Deletion requested', got %q", call.summary)
+	}
+	if call.icon != "dialog-warning" {
+		t.Errorf("expected icon 'dialog-warning', got %q", call.icon)
+	}
+	if !contains(call.body, "GitHub Token") {
+		t.Errorf("body should contain item label: %s", call.body)
+	}
+}
+
+func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	req := &approval.Request{
+		ID:     "delete-chain-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeDelete,
+		Items: []approval.ItemInfo{
+			{Label: "My Secret", Path: "/org/secrets/item1"},
+		},
+		SenderInfo: approval.SenderInfo{
+			ProcessChain: []approval.ProcessInfo{
+				{Name: "bash", PID: 100},
+				{Name: "secret-tool", PID: 200},
+			},
+		},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	call := mock.lastNotify()
+	if !contains(call.body, "<b>My Secret</b>") {
+		t.Errorf("body should contain bold item label: %s", call.body)
+	}
+	if !contains(call.body, "secret-tool") {
+		t.Errorf("body should contain process chain: %s", call.body)
+	}
+}
+
 func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
 	h, mock, _ := newTestHandler()
 

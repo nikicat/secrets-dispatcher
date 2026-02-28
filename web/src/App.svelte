@@ -394,6 +394,8 @@
                             GPG Sign
                           {:else if entry.request.type === "search"}
                             Search
+                          {:else if entry.request.type === "delete"}
+                            Delete
                           {:else}
                             Secret
                           {/if}
@@ -439,6 +441,8 @@
                             GPG Sign
                           {:else if entry.request.type === "search"}
                             Search
+                          {:else if entry.request.type === "delete"}
+                            Delete
                           {:else}
                             Secret
                           {/if}
@@ -828,6 +832,12 @@
     color: var(--color-gpg-sign);
     border-color: var(--color-gpg-sign);
     background-color: var(--color-gpg-sign-bg);
+  }
+
+  .history-type--delete {
+    color: var(--color-danger);
+    border-color: var(--color-danger);
+    background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
   }
 
   .resolution-approved {

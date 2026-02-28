@@ -57,6 +57,24 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		return "/", dbustypes.ErrObjectNotFound(string(path))
 	}
 
+	// Fetch item info (label + attributes)
+	itemInfo := i.getItemInfo(path)
+
+	// Get a context that will be cancelled if the client disconnects
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	ctx := i.tracker.contextForSender(context.Background(), sender)
+	defer i.tracker.remove(sender)
+
+	// Resolve sender information
+	senderInfo := i.resolver.Resolve(sender)
+
+	// Require approval before deleting
+	items := []approval.ItemInfo{itemInfo}
+	if err := i.approval.RequireApproval(ctx, i.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+		i.logger.LogMethod(ctx, "Item.Delete", map[string]any{"item": string(path)}, "denied", err)
+		return "/", dbustypes.ErrAccessDenied(err.Error())
+	}
+
 	obj := i.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call(dbustypes.ItemInterface+".Delete", 0)
 	if call.Err != nil {

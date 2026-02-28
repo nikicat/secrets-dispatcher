@@ -100,19 +100,24 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 		return fmt.Errorf("export Introspectable interface: %w", err)
 	}
 
-	if err := p.frontConn.ExportSubtree(p.collection, "/org/freedesktop/secrets/collection", dbustypes.CollectionInterface); err != nil {
-		p.Close()
-		return fmt.Errorf("export Collection subtree: %w", err)
-	}
+	// Export subtree handlers for both /collection and /aliases prefixes.
+	// libsecret (secret-tool) calls methods on alias paths like
+	// /org/freedesktop/secrets/aliases/default directly.
+	for _, prefix := range []string{"/org/freedesktop/secrets/collection", "/org/freedesktop/secrets/aliases"} {
+		if err := p.frontConn.ExportSubtree(p.collection, dbus.ObjectPath(prefix), dbustypes.CollectionInterface); err != nil {
+			p.Close()
+			return fmt.Errorf("export Collection subtree at %s: %w", prefix, err)
+		}
 
-	if err := p.frontConn.ExportSubtree(p.subtreeProperties, "/org/freedesktop/secrets/collection", "org.freedesktop.DBus.Properties"); err != nil {
-		p.Close()
-		return fmt.Errorf("export Properties subtree: %w", err)
-	}
+		if err := p.frontConn.ExportSubtree(p.subtreeProperties, dbus.ObjectPath(prefix), "org.freedesktop.DBus.Properties"); err != nil {
+			p.Close()
+			return fmt.Errorf("export Properties subtree at %s: %w", prefix, err)
+		}
 
-	if err := p.frontConn.ExportSubtree(p.item, "/org/freedesktop/secrets/collection", dbustypes.ItemInterface); err != nil {
-		p.Close()
-		return fmt.Errorf("export Item subtree: %w", err)
+		if err := p.frontConn.ExportSubtree(p.item, dbus.ObjectPath(prefix), dbustypes.ItemInterface); err != nil {
+			p.Close()
+			return fmt.Errorf("export Item subtree at %s: %w", prefix, err)
+		}
 	}
 
 	// Request the bus name on the front connection

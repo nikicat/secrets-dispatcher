@@ -57,13 +57,19 @@ func (m *MockSecretService) Register(conn *dbus.Conn) error {
 		return fmt.Errorf("export Introspectable: %w", err)
 	}
 
-	// Export collection at /org/freedesktop/secrets/collection/default
-	coll := &mockCollection{service: m, path: "/org/freedesktop/secrets/collection/default"}
-	if err := conn.Export(coll, coll.path, dbustypes.CollectionInterface); err != nil {
-		return fmt.Errorf("export Collection: %w", err)
-	}
-	if err := conn.Export(coll, coll.path, "org.freedesktop.DBus.Properties"); err != nil {
-		return fmt.Errorf("export Collection Properties: %w", err)
+	// Export collection at both /collection/default and /aliases/default paths.
+	// Real backends (gopass-secret-service, gnome-keyring) export both.
+	for _, collPath := range []dbus.ObjectPath{
+		"/org/freedesktop/secrets/collection/default",
+		"/org/freedesktop/secrets/aliases/default",
+	} {
+		coll := &mockCollection{service: m, path: collPath}
+		if err := conn.Export(coll, collPath, dbustypes.CollectionInterface); err != nil {
+			return fmt.Errorf("export Collection at %s: %w", collPath, err)
+		}
+		if err := conn.Export(coll, collPath, "org.freedesktop.DBus.Properties"); err != nil {
+			return fmt.Errorf("export Collection Properties at %s: %w", collPath, err)
+		}
 	}
 
 	// Request the bus name

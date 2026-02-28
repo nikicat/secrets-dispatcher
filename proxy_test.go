@@ -464,6 +464,123 @@ func TestProxyCollectionOperations(t *testing.T) {
 	})
 }
 
+// TestProxyAliasPathOperations tests that the proxy correctly handles
+// collection operations via /org/freedesktop/secrets/aliases/default paths,
+// which is how libsecret (secret-tool) accesses collections.
+func TestProxyAliasPathOperations(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	mock.AddItem("Existing Secret", map[string]string{"app": "test"}, []byte("existing-value"))
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	aliasPath := dbus.ObjectPath("/org/freedesktop/secrets/aliases/default")
+
+	// Test: CreateItem via alias path (this is what secret-tool store does)
+	t.Run("CreateItemViaAlias", func(t *testing.T) {
+		// Open session first
+		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+		call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+		if call.Err != nil {
+			t.Fatalf("OpenSession: %v", call.Err)
+		}
+
+		var output dbus.Variant
+		var sessionPath dbus.ObjectPath
+		if err := call.Store(&output, &sessionPath); err != nil {
+			t.Fatalf("store result: %v", err)
+		}
+
+		// Create item via alias path
+		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
+		properties := map[string]dbus.Variant{
+			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("Alias Item"),
+			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"alias-attr": "alias-value"}),
+		}
+		secret := dbustypes.Secret{
+			Session:     sessionPath,
+			Parameters:  nil,
+			Value:       []byte("alias-secret"),
+			ContentType: "text/plain",
+		}
+
+		call = collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		if call.Err != nil {
+			t.Fatalf("CreateItem via alias: %v", call.Err)
+		}
+
+		var itemPath, promptPath dbus.ObjectPath
+		if err := call.Store(&itemPath, &promptPath); err != nil {
+			t.Fatalf("store result: %v", err)
+		}
+
+		if itemPath == "/" || itemPath == "" {
+			t.Error("expected valid item path")
+		}
+		t.Logf("Created item via alias: %s", itemPath)
+	})
+
+	// Test: SearchItems via alias path
+	t.Run("SearchItemsViaAlias", func(t *testing.T) {
+		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
+		call := collObj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"app": "test"})
+		if call.Err != nil {
+			t.Fatalf("SearchItems via alias: %v", call.Err)
+		}
+
+		var results []dbus.ObjectPath
+		if err := call.Store(&results); err != nil {
+			t.Fatalf("store result: %v", err)
+		}
+
+		if len(results) != 1 {
+			t.Errorf("expected 1 result, got %d", len(results))
+		}
+		t.Logf("Search results via alias: %v", results)
+	})
+
+	// Test: Properties via alias path
+	t.Run("GetPropertiesViaAlias", func(t *testing.T) {
+		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
+
+		label, err := collObj.GetProperty(dbustypes.CollectionInterface + ".Label")
+		if err != nil {
+			t.Fatalf("get Label via alias: %v", err)
+		}
+		if label.Value().(string) != "Default" {
+			t.Errorf("wrong label: got %q, want %q", label.Value(), "Default")
+		}
+
+		locked, err := collObj.GetProperty(dbustypes.CollectionInterface + ".Locked")
+		if err != nil {
+			t.Fatalf("get Locked via alias: %v", err)
+		}
+		if locked.Value().(bool) != false {
+			t.Error("expected collection to be unlocked")
+		}
+	})
+}
+
 // connectProxyWithConns connects the proxy using isolated D-Bus connections.
 func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteSocketPath string) error {
 	backendConn, err := dbus.Connect(localAddr)

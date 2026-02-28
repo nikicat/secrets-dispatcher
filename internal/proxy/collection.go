@@ -37,16 +37,21 @@ func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger
 
 // isCollectionPath checks if the path is a collection (not an item).
 // Collection paths: /org/freedesktop/secrets/collection/xxx
+// Alias paths: /org/freedesktop/secrets/aliases/xxx
 // Item paths: /org/freedesktop/secrets/collection/xxx/yyy
 func isCollectionPath(path dbus.ObjectPath) bool {
 	p := string(path)
-	prefix := "/org/freedesktop/secrets/collection/"
-	if !strings.HasPrefix(p, prefix) {
-		return false
+	for _, prefix := range []string{
+		"/org/freedesktop/secrets/collection/",
+		"/org/freedesktop/secrets/aliases/",
+	} {
+		if strings.HasPrefix(p, prefix) {
+			remainder := p[len(prefix):]
+			// Collection/alias has no additional slashes, items do
+			return remainder != "" && !strings.Contains(remainder, "/")
+		}
 	}
-	remainder := p[len(prefix):]
-	// Collection has no additional slashes, items do
-	return !strings.Contains(remainder, "/")
+	return false
 }
 
 // Delete deletes the collection.

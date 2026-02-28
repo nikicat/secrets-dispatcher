@@ -806,7 +806,7 @@ func newTestDBusNotifier(t *testing.T) *DBusNotifier {
 	}
 
 	conn.Signal(n.signals)
-	go n.processSignals()
+	go n.processSignals(n.signals)
 	t.Cleanup(func() { n.Stop() })
 	return n
 }

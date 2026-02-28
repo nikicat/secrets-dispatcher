@@ -65,7 +65,7 @@ func NewDBusNotifier() (*DBusNotifier, error) {
 		return nil, err
 	}
 
-	go n.processSignals()
+	go n.processSignals(n.signals)
 
 	return n, nil
 }
@@ -103,7 +103,7 @@ func (n *DBusNotifier) reconnect() error {
 	if err := n.connect(); err != nil {
 		return fmt.Errorf("reconnect: %w", err)
 	}
-	go n.processSignals()
+	go n.processSignals(n.signals)
 	slog.Info("reconnected to D-Bus session bus")
 	return nil
 }
@@ -123,11 +123,7 @@ func (n *DBusNotifier) Stop() {
 	}
 }
 
-func (n *DBusNotifier) processSignals() {
-	// Capture the channel at start so this goroutine only reads from the
-	// channel it was launched with. On reconnect, a new goroutine is started
-	// with the replacement channel.
-	ch := n.signals
+func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 	for {
 		select {
 		case <-n.done:

@@ -35,7 +35,10 @@ const (
 	defaultHistoryLimit = 100
 )
 
-var progName = filepath.Base(os.Args[0])
+var (
+	progName = filepath.Base(os.Args[0])
+	version  = "dev" // injected via -ldflags "-X main.version=..."
+)
 
 func main() {
 	if len(os.Args) < 2 {
@@ -68,6 +71,8 @@ func main() {
 		runProvision(os.Args[2:])
 	case "daemon":
 		runDaemon(os.Args[2:])
+	case "version":
+		fmt.Println(version)
 	case "-h", "--help", "help":
 		printUsage()
 	default:
@@ -94,6 +99,7 @@ Commands:
   gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
   provision     Provision companion user and deployment artifacts (requires root)
   daemon        Run companion daemon (registers on system D-Bus)
+  version       Print the version and exit
 
 Run '%s <command> -h' for command-specific help.
 `, progName, progName)
@@ -832,7 +838,7 @@ func runDaemon(args []string) {
 
 	cfg := daemon.Config{
 		BusAddress: *busAddress,
-		Version:    "dev",
+		Version:    version,
 	}
 
 	if err := daemon.Run(ctx, cfg); err != nil {

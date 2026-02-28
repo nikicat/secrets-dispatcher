@@ -16,7 +16,8 @@ import (
 // D-Bus (where the real Secret Service lives), registering as
 // org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
-	clientName string
+	clientName       string
+	trimProcessChain bool
 
 	frontConn   *dbus.Conn // clients connect here (session bus or remote socket)
 	backendConn *dbus.Conn // real Secret Service lives here (session bus or private bus)
@@ -35,9 +36,10 @@ type Proxy struct {
 
 // Config holds configuration for the proxy.
 type Config struct {
-	ClientName string
-	LogLevel   slog.Level
-	Approval   *approval.Manager
+	ClientName       string
+	LogLevel         slog.Level
+	Approval         *approval.Manager
+	TrimProcessChain bool
 }
 
 // New creates a new Proxy with the given configuration.
@@ -54,10 +56,11 @@ func New(cfg Config) *Proxy {
 	}
 
 	return &Proxy{
-		clientName: clientName,
-		sessions:   NewSessionManager(),
-		logger:     logging.New(cfg.LogLevel, clientName),
-		approval:   approvalMgr,
+		clientName:       clientName,
+		trimProcessChain: cfg.TrimProcessChain,
+		sessions:         NewSessionManager(),
+		logger:           logging.New(cfg.LogLevel, clientName),
+		approval:         approvalMgr,
 	}
 }
 
@@ -76,7 +79,7 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 	}
 
 	// Create sender info resolver
-	p.resolver = NewSenderInfoResolver(p.frontConn)
+	p.resolver = NewSenderInfoResolver(p.frontConn, p.trimProcessChain)
 
 	// Create handlers — they talk to the backend
 	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)

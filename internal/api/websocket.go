@@ -244,14 +244,8 @@ func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
 			ExpiresAt:        req.ExpiresAt,
 			Type:             string(req.Type),
 			SearchAttributes: req.SearchAttributes,
-			SenderInfo: SenderInfo{
-				Sender:   req.SenderInfo.Sender,
-				PID:      req.SenderInfo.PID,
-				UID:      req.SenderInfo.UID,
-				UserName: req.SenderInfo.UserName,
-				UnitName: req.SenderInfo.UnitName,
-			},
-			GPGSignInfo: req.GPGSignInfo,
+			SenderInfo:       convertSenderInfo(req.SenderInfo),
+			GPGSignInfo:      req.GPGSignInfo,
 		},
 		Resolution: resolution,
 		ResolvedAt: time.Now(),
@@ -398,14 +392,8 @@ func convertRequest(req *approval.Request) *PendingRequest {
 		ExpiresAt:        req.ExpiresAt,
 		Type:             string(req.Type),
 		SearchAttributes: req.SearchAttributes,
-		SenderInfo: SenderInfo{
-			Sender:   req.SenderInfo.Sender,
-			PID:      req.SenderInfo.PID,
-			UID:      req.SenderInfo.UID,
-			UserName: req.SenderInfo.UserName,
-			UnitName: req.SenderInfo.UnitName,
-		},
-		GPGSignInfo: req.GPGSignInfo,
+		SenderInfo:       convertSenderInfo(req.SenderInfo),
+		GPGSignInfo:      req.GPGSignInfo,
 	}
 }
 

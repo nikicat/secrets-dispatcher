@@ -38,7 +38,7 @@ func (p procInfo) String() string {
 // Process chain example: claude → zsh → git → secrets-dispatcher → (HTTP)
 // We walk up from the peer PID, skip the thin client and git, then skip
 // any intermediate shells to find the real invoker (e.g., "claude").
-func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
+func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.SenderInfo {
 	c, ok := ctx.Value(connContextKey{}).(net.Conn)
 	if !ok || c == nil {
 		return approval.SenderInfo{}
@@ -66,6 +66,9 @@ func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 	// Build the process chain from peer up to init.
 	var chain []procInfo
 	for pid := cred.Pid; pid > 1; pid = procutil.ReadPPID(pid) {
+		if trimAtSessionLeader && procutil.IsSessionLeader(pid) {
+			break
+		}
 		chain = append(chain, procInfo{pid: pid, comm: procutil.ReadComm(pid)})
 	}
 
@@ -87,9 +90,19 @@ func resolvePeerInfo(ctx context.Context) approval.SenderInfo {
 		}
 	}
 
+	// Convert the full chain to ProcessChain for the API.
+	processChain := make([]approval.ProcessInfo, len(chain))
+	for i, p := range chain {
+		processChain[i] = approval.ProcessInfo{
+			Name: p.comm,
+			PID:  uint32(p.pid),
+		}
+	}
+
 	return approval.SenderInfo{
-		PID:      uint32(invoker.pid),
-		UID:      uint32(cred.Uid),
-		UnitName: invoker.comm,
+		PID:          uint32(invoker.pid),
+		UID:          uint32(cred.Uid),
+		UnitName:     invoker.comm,
+		ProcessChain: processChain,
 	}
 }

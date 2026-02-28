@@ -82,7 +82,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	if req.Client == "" {
 		req.Client = "unknown"
 	}
-	senderInfo := resolvePeerInfo(r.Context())
+	senderInfo := resolvePeerInfo(r.Context(), h.trimProcessChain)
 	id, err := h.manager.CreateGPGSignRequest(req.Client, req.GPGSignInfo, senderInfo)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)

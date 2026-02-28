@@ -147,7 +147,15 @@
           {request.items.map(i => i.label || i.path).join(", ") || "Secret request"}
         {/if}
       </span>
-      <span class="sender-info" title="Client: {request.client}">{formatSenderInfo()}</span>
+      {#if hasProcessChain()}
+        <div class="process-chain">
+          {#each request.sender_info.process_chain! as proc}
+            <span class="chain-entry">{proc.name}[{proc.pid}]</span>
+          {/each}
+        </div>
+      {:else}
+        <span class="sender-info" title="Client: {request.client}">{formatSenderInfo()}</span>
+      {/if}
     </div>
     <span class="expires">Expires: {timeLeft}</span>
   </div>
@@ -397,6 +405,23 @@
   .sender-info {
     font-size: 12px;
     color: var(--color-text-muted);
+  }
+
+  .process-chain {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .chain-entry {
+    font-size: 11px;
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
+    color: var(--color-text-muted);
+    background-color: var(--color-bg);
+    padding: 1px 5px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
   }
 
   .expires {

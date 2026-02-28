@@ -16,9 +16,10 @@ type ClientProvider interface {
 
 // Handlers provides HTTP handlers for the REST API.
 type Handlers struct {
-	manager        *approval.Manager
-	resolver       *Resolver
-	clientProvider ClientProvider
+	manager          *approval.Manager
+	resolver         *Resolver
+	clientProvider   ClientProvider
+	trimProcessChain bool
 	// For backward compatibility in single-socket mode
 	remoteSocket string
 	clientName   string
@@ -27,23 +28,25 @@ type Handlers struct {
 }
 
 // NewHandlers creates new API handlers for single-socket mode.
-func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, auth *Auth) *Handlers {
+func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, auth *Auth, trimProcessChain bool) *Handlers {
 	return &Handlers{
-		manager:      manager,
-		resolver:     NewResolver(manager),
-		remoteSocket: remoteSocket,
-		clientName:   clientName,
-		auth:         auth,
+		manager:          manager,
+		resolver:         NewResolver(manager),
+		remoteSocket:     remoteSocket,
+		clientName:       clientName,
+		auth:             auth,
+		trimProcessChain: trimProcessChain,
 	}
 }
 
 // NewHandlersWithProvider creates new API handlers for multi-socket mode.
-func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider, auth *Auth) *Handlers {
+func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider, auth *Auth, trimProcessChain bool) *Handlers {
 	return &Handlers{
-		manager:        manager,
-		resolver:       NewResolver(manager),
-		clientProvider: provider,
-		auth:           auth,
+		manager:          manager,
+		resolver:         NewResolver(manager),
+		clientProvider:   provider,
+		auth:             auth,
+		trimProcessChain: trimProcessChain,
 	}
 }
 
@@ -108,14 +111,8 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 			ExpiresAt:        req.ExpiresAt,
 			Type:             string(req.Type),
 			SearchAttributes: req.SearchAttributes,
-			SenderInfo: SenderInfo{
-				Sender:   req.SenderInfo.Sender,
-				PID:      req.SenderInfo.PID,
-				UID:      req.SenderInfo.UID,
-				UserName: req.SenderInfo.UserName,
-				UnitName: req.SenderInfo.UnitName,
-			},
-			GPGSignInfo: req.GPGSignInfo,
+			SenderInfo:       convertSenderInfo(req.SenderInfo),
+			GPGSignInfo:      req.GPGSignInfo,
 		}
 	}
 
@@ -215,6 +212,24 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// convertSenderInfo converts approval.SenderInfo to api.SenderInfo.
+func convertSenderInfo(s approval.SenderInfo) SenderInfo {
+	info := SenderInfo{
+		Sender:   s.Sender,
+		PID:      s.PID,
+		UID:      s.UID,
+		UserName: s.UserName,
+		UnitName: s.UnitName,
+	}
+	if len(s.ProcessChain) > 0 {
+		info.ProcessChain = make([]ProcessInfo, len(s.ProcessChain))
+		for i, p := range s.ProcessChain {
+			info.ProcessChain[i] = ProcessInfo{Name: p.Name, PID: p.PID}
+		}
+	}
+	return info
+}
+
 // convertHistoryEntry converts an approval.HistoryEntry to an API HistoryEntry.
 func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 	items := make([]ItemInfo, len(entry.Request.Items))
@@ -235,14 +250,8 @@ func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 			ExpiresAt:        entry.Request.ExpiresAt,
 			Type:             string(entry.Request.Type),
 			SearchAttributes: entry.Request.SearchAttributes,
-			SenderInfo: SenderInfo{
-				Sender:   entry.Request.SenderInfo.Sender,
-				PID:      entry.Request.SenderInfo.PID,
-				UID:      entry.Request.SenderInfo.UID,
-				UserName: entry.Request.SenderInfo.UserName,
-				UnitName: entry.Request.SenderInfo.UnitName,
-			},
-			GPGSignInfo: entry.Request.GPGSignInfo,
+			SenderInfo:       convertSenderInfo(entry.Request.SenderInfo),
+			GPGSignInfo:      entry.Request.GPGSignInfo,
 		},
 		Resolution: string(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,
@@ -335,6 +344,20 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
+	approvalSender := approval.SenderInfo{
+		Sender:   entry.Request.SenderInfo.Sender,
+		PID:      entry.Request.SenderInfo.PID,
+		UID:      entry.Request.SenderInfo.UID,
+		UserName: entry.Request.SenderInfo.UserName,
+		UnitName: entry.Request.SenderInfo.UnitName,
+	}
+	if len(entry.Request.SenderInfo.ProcessChain) > 0 {
+		approvalSender.ProcessChain = make([]approval.ProcessInfo, len(entry.Request.SenderInfo.ProcessChain))
+		for i, p := range entry.Request.SenderInfo.ProcessChain {
+			approvalSender.ProcessChain[i] = approval.ProcessInfo{Name: p.Name, PID: p.PID}
+		}
+	}
+
 	approvalEntry := approval.HistoryEntry{
 		Request: &approval.Request{
 			ID:               entry.Request.ID,
@@ -345,13 +368,7 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 			ExpiresAt:        entry.Request.ExpiresAt,
 			Type:             approval.RequestType(entry.Request.Type),
 			SearchAttributes: entry.Request.SearchAttributes,
-			SenderInfo: approval.SenderInfo{
-				Sender:   entry.Request.SenderInfo.Sender,
-				PID:      entry.Request.SenderInfo.PID,
-				UID:      entry.Request.SenderInfo.UID,
-				UserName: entry.Request.SenderInfo.UserName,
-				UnitName: entry.Request.SenderInfo.UnitName,
-			},
+			SenderInfo:       approvalSender,
 		},
 		Resolution: approval.Resolution(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,

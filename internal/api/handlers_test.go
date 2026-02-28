@@ -19,7 +19,7 @@ func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
 	}
-	return NewHandlers(mgr, "/path/to/socket", "test-client", auth)
+	return NewHandlers(mgr, "/path/to/socket", "test-client", auth, false)
 }
 
 func TestHandleStatus(t *testing.T) {

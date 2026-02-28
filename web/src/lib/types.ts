@@ -4,12 +4,18 @@ export interface ItemInfo {
   attributes: Record<string, string>;
 }
 
+export interface ProcessInfo {
+  name: string;
+  pid: number;
+}
+
 export interface SenderInfo {
   sender: string;
   pid: number;
   uid: number;
   user_name: string;
   unit_name: string;
+  process_chain?: ProcessInfo[];
 }
 
 export interface GPGSignInfo {

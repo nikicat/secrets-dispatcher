@@ -30,28 +30,69 @@ func ReadComm(pid int32) string {
 	return strings.TrimSpace(string(data))
 }
 
-// ReadPPID reads the parent PID from /proc/<pid>/stat.
-// Returns 0 on any error.
-func ReadPPID(pid int32) int32 {
+// readStatFields parses /proc/<pid>/stat and returns the fields after ") ".
+// Format: "pid (comm) state ppid pgrp session ..."
+// Returns nil on error.
+func readStatFields(pid int32) []string {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return 0
+		return nil
 	}
-	// Format: "pid (comm) state ppid ..."
-	// comm can contain spaces and parentheses, so find the last ')' first.
 	s := string(data)
 	i := strings.LastIndexByte(s, ')')
 	if i < 0 || i+2 >= len(s) {
-		return 0
+		return nil
 	}
-	// After ") " we have "state ppid ..."
-	fields := strings.Fields(s[i+2:])
+	return strings.Fields(s[i+2:])
+}
+
+// ReadPPID reads the parent PID from /proc/<pid>/stat.
+// Returns 0 on any error.
+func ReadPPID(pid int32) int32 {
+	fields := readStatFields(pid)
 	if len(fields) < 2 {
 		return 0
 	}
 	var ppid int32
 	fmt.Sscanf(fields[1], "%d", &ppid)
 	return ppid
+}
+
+// IsSessionLeader reports whether pid is a session leader (SID == PID).
+func IsSessionLeader(pid int32) bool {
+	fields := readStatFields(pid)
+	if len(fields) < 4 {
+		return false
+	}
+	// fields[0]=state, [1]=ppid, [2]=pgrp, [3]=session
+	var sid int32
+	fmt.Sscanf(fields[3], "%d", &sid)
+	return sid == pid
+}
+
+// ProcEntry represents a single process in the process chain.
+type ProcEntry struct {
+	Comm string
+	PID  int32
+}
+
+// ReadProcessChain walks from pid up to (but not including) PID 1,
+// returning the process chain. When trimAtSessionLeader is true, the
+// walk stops after including the first session leader encountered
+// (the process whose SID equals its PID).
+func ReadProcessChain(pid int32, trimAtSessionLeader bool) []ProcEntry {
+	var chain []ProcEntry
+	for p := pid; p > 1; p = ReadPPID(p) {
+		comm := ReadComm(p)
+		if comm == "" {
+			break
+		}
+		if trimAtSessionLeader && IsSessionLeader(p) {
+			break
+		}
+		chain = append(chain, ProcEntry{Comm: comm, PID: p})
+	}
+	return chain
 }
 
 // ResolveInvoker walks from pid up to init, skipping shell processes,

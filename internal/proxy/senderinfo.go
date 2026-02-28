@@ -17,12 +17,13 @@ type dbusClient interface {
 
 // SenderInfoResolver resolves D-Bus sender information (PID, UID, systemd unit).
 type SenderInfoResolver struct {
-	client dbusClient
+	client            dbusClient
+	trimProcessChain  bool
 }
 
 // NewSenderInfoResolver creates a new resolver using the given D-Bus connection.
-func NewSenderInfoResolver(conn *dbus.Conn) *SenderInfoResolver {
-	return &SenderInfoResolver{client: &realDBusClient{conn: conn}}
+func NewSenderInfoResolver(conn *dbus.Conn, trimProcessChain bool) *SenderInfoResolver {
+	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, trimProcessChain: trimProcessChain}
 }
 
 // newSenderInfoResolverWithClient creates a resolver with a custom client (for testing).
@@ -58,7 +59,18 @@ func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
 	// Resolve the user-facing invoker process via /proc.
 	// Falls back to systemd unit name if /proc walking fails.
 	if info.PID != 0 {
-		if comm, invokerPID := procutil.ResolveInvoker(info.PID); comm != "" {
+		chain := procutil.ReadProcessChain(int32(info.PID), r.trimProcessChain)
+		if len(chain) > 0 {
+			// Populate the full process chain.
+			info.ProcessChain = make([]approval.ProcessInfo, len(chain))
+			for i, entry := range chain {
+				info.ProcessChain[i] = approval.ProcessInfo{
+					Name: entry.Comm,
+					PID:  uint32(entry.PID),
+				}
+			}
+			// Resolve invoker (skip shells) for backward-compat UnitName.
+			comm, invokerPID := procutil.ResolveInvoker(info.PID)
 			info.UnitName = comm
 			info.PID = invokerPID
 		} else {

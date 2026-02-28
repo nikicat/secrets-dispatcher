@@ -230,6 +230,7 @@ type Handler struct {
 	notifier Notifier
 	approver Approver
 	baseURL  string
+	showPIDs bool
 	openURL  func(string) // injectable for testing; defaults to xdg-open
 
 	mu            sync.Mutex
@@ -239,11 +240,12 @@ type Handler struct {
 
 // NewHandler creates a notification handler.
 // baseURL is the web UI URL opened when the user clicks the notification body.
-func NewHandler(notifier Notifier, approver Approver, baseURL string) *Handler {
+func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool) *Handler {
 	return &Handler{
 		notifier:      notifier,
 		approver:      approver,
 		baseURL:       baseURL,
+		showPIDs:      showPIDs,
 		openURL:       func(u string) { exec.Command("xdg-open", u).Start() },
 		notifications: make(map[string]uint32),
 		requests:      make(map[uint32]string),
@@ -395,31 +397,65 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			fmt.Fprintf(&b, "<i>%s</i>", commitSubject(req.GPGSignInfo.CommitMsg))
 		}
 	default:
-		// Header: proc_name@client[pid]
-		if req.SenderInfo.UnitName != "" {
-			fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", req.SenderInfo.UnitName, req.Client, req.SenderInfo.PID)
-		} else if req.SenderInfo.PID != 0 {
-			fmt.Fprintf(&b, "<b>%s</b>[%d]: ", req.Client, req.SenderInfo.PID)
-		} else {
-			fmt.Fprintf(&b, "<b>%s</b>: ", req.Client)
-		}
-
-		switch req.Type {
-		case approval.RequestTypeGetSecret:
-			if len(req.Items) == 1 {
-				fmt.Fprintf(&b, "<i>%s</i>", req.Items[0].Label)
-			} else {
-				fmt.Fprintf(&b, "<i>%d items</i>", len(req.Items))
-			}
-		case approval.RequestTypeSearch:
-			if len(req.SearchAttributes) > 0 {
-				attrs := make([]string, 0, len(req.SearchAttributes))
-				for k, v := range req.SearchAttributes {
-					attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
+		if len(req.SenderInfo.ProcessChain) > 0 {
+			// New format: item label, then process chain (parent → child order)
+			switch req.Type {
+			case approval.RequestTypeGetSecret:
+				if len(req.Items) == 1 {
+					fmt.Fprintf(&b, "<b>%s</b>", req.Items[0].Label)
+				} else {
+					fmt.Fprintf(&b, "<b>%d items</b>", len(req.Items))
 				}
-				fmt.Fprintf(&b, "<i>%s</i>", strings.Join(attrs, ", "))
+			case approval.RequestTypeSearch:
+				if len(req.SearchAttributes) > 0 {
+					attrs := make([]string, 0, len(req.SearchAttributes))
+					for k, v := range req.SearchAttributes {
+						attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
+					}
+					fmt.Fprintf(&b, "<b>%s</b>", strings.Join(attrs, ", "))
+				} else {
+					b.WriteString("<b>all</b>")
+				}
+			}
+			chain := req.SenderInfo.ProcessChain
+			for i, p := range chain {
+				if i == 0 {
+					b.WriteString("\n")
+				} else {
+					b.WriteString(" ← ")
+				}
+				b.WriteString(p.Name)
+				if h.showPIDs {
+					fmt.Fprintf(&b, "[%d]", p.PID)
+				}
+			}
+		} else {
+			// Fallback: old format for remote requests without process chain
+			if req.SenderInfo.UnitName != "" {
+				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", req.SenderInfo.UnitName, req.Client, req.SenderInfo.PID)
+			} else if req.SenderInfo.PID != 0 {
+				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", req.Client, req.SenderInfo.PID)
 			} else {
-				b.WriteString("<i>all</i>")
+				fmt.Fprintf(&b, "<b>%s</b>: ", req.Client)
+			}
+
+			switch req.Type {
+			case approval.RequestTypeGetSecret:
+				if len(req.Items) == 1 {
+					fmt.Fprintf(&b, "<i>%s</i>", req.Items[0].Label)
+				} else {
+					fmt.Fprintf(&b, "<i>%d items</i>", len(req.Items))
+				}
+			case approval.RequestTypeSearch:
+				if len(req.SearchAttributes) > 0 {
+					attrs := make([]string, 0, len(req.SearchAttributes))
+					for k, v := range req.SearchAttributes {
+						attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
+					}
+					fmt.Fprintf(&b, "<i>%s</i>", strings.Join(attrs, ", "))
+				} else {
+					b.WriteString("<i>all</i>")
+				}
 			}
 		}
 	}

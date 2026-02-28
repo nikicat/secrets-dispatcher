@@ -350,7 +350,7 @@ func runServe(args []string) {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
 		} else {
 			desktopNotifier = notifier
-			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr), "http://"+*listenAddr)
+			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr), "http://"+*listenAddr, *cfg.Serve.ShowPIDs)
 			approvalMgr.Subscribe(notifHandler)
 			slog.Debug("desktop notifications enabled")
 		}
@@ -409,7 +409,7 @@ func runServe(args []string) {
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
 		case "sockets":
-			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level)
+			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, *cfg.Serve.TrimProcessChain)
 			if mgrErr != nil {
 				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
 				os.Exit(1)
@@ -430,9 +430,10 @@ func runServe(args []string) {
 				backoff := time.Second
 				for {
 					p := proxy.New(proxy.Config{
-						ClientName: "local",
-						LogLevel:   level,
-						Approval:   approvalMgr,
+						ClientName:       "local",
+						LogLevel:         level,
+						Approval:         approvalMgr,
+						TrimProcessChain: *cfg.Serve.TrimProcessChain,
 					})
 					frontConn, err := dbus.ConnectSessionBus()
 					if err == nil {
@@ -466,9 +467,10 @@ func runServe(args []string) {
 		case "socket":
 			clientName := filepath.Base(ds.Path)
 			p := proxy.New(proxy.Config{
-				ClientName: clientName,
-				LogLevel:   level,
-				Approval:   approvalMgr,
+				ClientName:       clientName,
+				LogLevel:         level,
+				Approval:         approvalMgr,
+				TrimProcessChain: *cfg.Serve.TrimProcessChain,
 			})
 			sp := &staticProvider{info: proxy.ClientInfo{Name: clientName, SocketPath: ds.Path}}
 			providers = append(providers, sp)
@@ -521,7 +523,7 @@ func runServe(args []string) {
 	}
 
 	// Create API server
-	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket)
+	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket, *cfg.Serve.TrimProcessChain)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)

@@ -27,8 +27,8 @@ type Server struct {
 // NewServer creates a new API server for single-socket mode.
 // If unixSocketPath is non-empty, the server also listens on that Unix socket
 // to serve the thin client (gpg-sign subcommand).
-func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth, unixSocketPath string) (*Server, error) {
-	handlers := NewHandlers(manager, remoteSocket, clientName, auth)
+func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth, unixSocketPath string, trimProcessChain bool) (*Server, error) {
+	handlers := NewHandlers(manager, remoteSocket, clientName, auth, trimProcessChain)
 	wsHandler := NewWSHandler(manager, nil, auth, remoteSocket, clientName)
 	return newServerWithHandlers(addr, handlers, wsHandler, auth, unixSocketPath)
 }
@@ -36,8 +36,8 @@ func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName 
 // NewServerWithProvider creates a new API server for multi-socket mode.
 // If unixSocketPath is non-empty, the server also listens on that Unix socket
 // to serve the thin client (gpg-sign subcommand).
-func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth, unixSocketPath string) (*Server, error) {
-	handlers := NewHandlersWithProvider(manager, provider, auth)
+func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth, unixSocketPath string, trimProcessChain bool) (*Server, error) {
+	handlers := NewHandlersWithProvider(manager, provider, auth, trimProcessChain)
 	wsHandler := NewWSHandler(manager, provider, auth, "", "")
 	return newServerWithHandlers(addr, handlers, wsHandler, auth, unixSocketPath)
 }

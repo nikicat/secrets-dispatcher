@@ -174,7 +174,7 @@ func TestSenderInfoResolver_Resolve_PartialInfo(t *testing.T) {
 
 func TestNewSenderInfoResolver(t *testing.T) {
 	// Test that NewSenderInfoResolver creates a valid resolver
-	resolver := NewSenderInfoResolver(nil)
+	resolver := NewSenderInfoResolver(nil, false)
 	if resolver == nil {
 		t.Error("NewSenderInfoResolver returned nil")
 	}

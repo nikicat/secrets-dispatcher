@@ -115,7 +115,7 @@ func (a *mockApprover) Deny(id string) error {
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
-	h := NewHandler(mock, approver, "http://127.0.0.1:8484")
+	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false)
 	return h, mock, approver
 }
 

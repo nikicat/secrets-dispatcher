@@ -20,6 +20,8 @@ const (
 )
 
 var defaultNotifications = true
+var defaultShowPIDs = false
+var defaultTrimProcessChain = true
 
 // BusConfig describes a D-Bus endpoint (upstream backend or downstream front).
 type BusConfig struct {
@@ -48,6 +50,12 @@ func (cfg *Config) WithDefaults() *Config {
 	}
 	if s.Notifications == nil {
 		s.Notifications = &defaultNotifications
+	}
+	if s.ShowPIDs == nil {
+		s.ShowPIDs = &defaultShowPIDs
+	}
+	if s.TrimProcessChain == nil {
+		s.TrimProcessChain = &defaultTrimProcessChain
 	}
 	if s.ApprovalWindow == 0 {
 		s.ApprovalWindow = Duration(DefaultApprovalWindow)
@@ -136,7 +144,9 @@ type ServeConfig struct {
 	Timeout        Duration    `yaml:"timeout"`
 	HistoryLimit   int         `yaml:"history_limit"`
 	Notifications  *bool       `yaml:"notifications"`
-	ApprovalWindow Duration    `yaml:"approval_window"`
+	ShowPIDs          *bool       `yaml:"show_pids"`
+	TrimProcessChain  *bool       `yaml:"trim_process_chain"`
+	ApprovalWindow    Duration    `yaml:"approval_window"`
 }
 
 // Config is the top-level configuration file structure.

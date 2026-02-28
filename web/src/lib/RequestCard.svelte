@@ -63,6 +63,10 @@
     }
   }
 
+  function hasProcessChain(): boolean {
+    return !!(request.sender_info?.process_chain?.length);
+  }
+
   async function copyToClipboard(path: string) {
     await navigator.clipboard.writeText(path);
     copiedPath = path;

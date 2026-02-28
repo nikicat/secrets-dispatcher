@@ -195,6 +195,72 @@ func (h *Handlers) HandleCancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, ActionResponse{Status: "cancelled"})
 }
 
+// HandleAutoApproveList handles GET /api/v1/auto-approve.
+func (h *Handlers) HandleAutoApproveList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rules := h.manager.ListAutoApproveRules()
+	if rules == nil {
+		rules = []approval.AutoApproveRule{}
+	}
+	writeJSON(w, rules)
+}
+
+// HandleAutoApproveCreate handles POST /api/v1/auto-approve.
+func (h *Handlers) HandleAutoApproveCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.resolver.AutoApprove(req.RequestID); err != nil {
+		if err == approval.ErrNotFound {
+			writeError(w, "cancelled request not found", http.StatusNotFound)
+			return
+		}
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, ActionResponse{Status: "created"})
+}
+
+// HandleAutoApproveDelete handles DELETE /api/v1/auto-approve/{id}.
+func (h *Handlers) HandleAutoApproveDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/auto-approve/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, "invalid rule ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.manager.RemoveAutoApproveRule(id); err != nil {
+		if err == approval.ErrNotFound {
+			writeError(w, "rule not found", http.StatusNotFound)
+			return
+		}
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, ActionResponse{Status: "deleted"})
+}
+
 // HandleLog handles GET /api/v1/log.
 func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

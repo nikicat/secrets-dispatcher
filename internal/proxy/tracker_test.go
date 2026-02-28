@@ -135,7 +135,7 @@ func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 	defer tracker.close()
 
 	// Create approval manager
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	// Connect a client and get its unique name
 	clientConn, err := dbus.Connect(addr)

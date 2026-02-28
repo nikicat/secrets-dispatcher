@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/coder/websocket"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 

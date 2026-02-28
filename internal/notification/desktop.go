@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
@@ -34,6 +35,7 @@ type Notifier interface {
 type Approver interface {
 	Approve(id string) error
 	Deny(id string) error
+	AutoApprove(requestID string) error
 }
 
 // Action represents a user interaction with a notification button.
@@ -232,19 +234,29 @@ type Handler struct {
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
 	requests      map[uint32]string // notification ID -> request ID (reverse)
+
+	// cancelledRequests stores recently cancelled requests for auto-approve lookup.
+	// Keys are request IDs, values expire after 5 minutes.
+	cancelledRequests map[string]cancelledEntry
+}
+
+type cancelledEntry struct {
+	request   *approval.Request
+	expiresAt time.Time
 }
 
 // NewHandler creates a notification handler.
 // baseURL is the web UI URL opened when the user clicks the notification body.
 func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool) *Handler {
 	return &Handler{
-		notifier:      notifier,
-		approver:      approver,
-		baseURL:       baseURL,
-		showPIDs:      showPIDs,
-		openURL:       func(u string) { exec.Command("xdg-open", u).Start() },
-		notifications: make(map[string]uint32),
-		requests:      make(map[uint32]string),
+		notifier:          notifier,
+		approver:          approver,
+		baseURL:           baseURL,
+		showPIDs:          showPIDs,
+		openURL:           func(u string) { exec.Command("xdg-open", u).Start() },
+		notifications:     make(map[string]uint32),
+		requests:          make(map[uint32]string),
+		cancelledRequests: make(map[string]cancelledEntry),
 	}
 }
 
@@ -291,6 +303,10 @@ func (h *Handler) handleAction(action Action) {
 		err = h.approver.Approve(reqID)
 	case "deny":
 		err = h.approver.Deny(reqID)
+	case "auto_approve":
+		err = h.approver.AutoApprove(reqID)
+	case "dismiss":
+		return // just close the notification, do nothing
 	default:
 		slog.Debug("unknown action key", "action", action.ActionKey, "request_id", reqID)
 		return
@@ -313,8 +329,10 @@ func (h *Handler) OnEvent(event approval.Event) {
 	switch event.Type {
 	case approval.EventRequestCreated:
 		h.handleCreated(event.Request)
+	case approval.EventRequestCancelled:
+		h.handleCancelled(event.Request)
 	case approval.EventRequestApproved, approval.EventRequestDenied,
-		approval.EventRequestExpired, approval.EventRequestCancelled:
+		approval.EventRequestExpired, approval.EventRequestAutoApproved:
 		h.handleResolved(event.Request.ID)
 	}
 }
@@ -354,6 +372,60 @@ func (h *Handler) handleCreated(req *approval.Request) {
 	slog.Debug("sent desktop notification", "request_id", req.ID, "notification_id", id)
 }
 
+func (h *Handler) handleCancelled(req *approval.Request) {
+	// Close the original approval notification
+	h.mu.Lock()
+	notifID, ok := h.notifications[req.ID]
+	if ok {
+		delete(h.notifications, req.ID)
+		delete(h.requests, notifID)
+	}
+	h.mu.Unlock()
+
+	if ok {
+		if err := h.notifier.Close(notifID); err != nil {
+			slog.Debug("failed to close notification", "error", err, "notification_id", notifID)
+		}
+	}
+
+	// Store the cancelled request for auto-approve lookup
+	h.mu.Lock()
+	h.cancelledRequests[req.ID] = cancelledEntry{
+		request:   req,
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	// Clean expired entries
+	now := time.Now()
+	for id, entry := range h.cancelledRequests {
+		if entry.expiresAt.Before(now) {
+			delete(h.cancelledRequests, id)
+		}
+	}
+	h.mu.Unlock()
+
+	// Send a follow-up "Auto-approve?" notification
+	invoker := req.SenderInfo.UnitName
+	if invoker == "" {
+		invoker = "client"
+	}
+	summary := fmt.Sprintf("%s timed out", invoker)
+	body := "Auto-approve similar requests for 2 min?"
+	actions := []string{"auto_approve", "Auto-approve", "dismiss", "Dismiss"}
+
+	newID, err := h.notifier.Notify(summary, body, "dialog-question", actions)
+	if err != nil {
+		slog.Error("failed to send auto-approve notification", "error", err, "request_id", req.ID)
+		return
+	}
+
+	h.mu.Lock()
+	h.notifications[req.ID] = newID
+	h.requests[newID] = req.ID
+	h.mu.Unlock()
+
+	slog.Debug("sent auto-approve notification", "request_id", req.ID, "notification_id", newID)
+}
+
 func (h *Handler) handleResolved(requestID string) {
 	h.mu.Lock()
 	notifID, ok := h.notifications[requestID]
@@ -389,12 +461,20 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		if req.GPGSignInfo != nil {
-			if req.SenderInfo.UnitName != "" {
-				fmt.Fprintf(&b, "<b>%s@%s</b>: ", req.SenderInfo.UnitName, req.GPGSignInfo.RepoName)
-			} else {
-				fmt.Fprintf(&b, "<b>%s</b>: ", req.GPGSignInfo.RepoName)
+			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", req.GPGSignInfo.RepoName, commitSubject(req.GPGSignInfo.CommitMsg))
+			if len(req.SenderInfo.ProcessChain) > 0 {
+				for i, p := range req.SenderInfo.ProcessChain {
+					if i == 0 {
+						b.WriteString("\n")
+					} else {
+						b.WriteString(" ← ")
+					}
+					b.WriteString(p.Name)
+					if h.showPIDs {
+						fmt.Fprintf(&b, "[%d]", p.PID)
+					}
+				}
 			}
-			fmt.Fprintf(&b, "<i>%s</i>", commitSubject(req.GPGSignInfo.CommitMsg))
 		}
 	default:
 		if len(req.SenderInfo.ProcessChain) > 0 {

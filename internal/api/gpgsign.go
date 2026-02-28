@@ -51,6 +51,15 @@ func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) ([
 	return sigBuf.Bytes(), statusBuf.Bytes(), exitCode, nil
 }
 
+// runGPG finds the real gpg binary and signs the commit object.
+func (h *Handlers) runGPG(info *approval.GPGSignInfo) (sig, status []byte, exitCode int, err error) {
+	gpgPath, err := h.resolver.GPGRunner.FindGPG()
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return h.resolver.GPGRunner.RunGPG(gpgPath, info.KeyID, []byte(info.CommitObject))
+}
+
 // GPGSignRequest is the POST body for /api/v1/gpg-sign/request.
 type GPGSignRequest struct {
 	Client      string               `json:"client"`
@@ -83,16 +92,46 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 		req.Client = "unknown"
 	}
 	senderInfo := resolvePeerInfo(r.Context(), h.trimProcessChain)
+
+	commitSubject := req.GPGSignInfo.CommitMsg
+	if i := strings.IndexByte(commitSubject, '\n'); i >= 0 {
+		commitSubject = commitSubject[:i]
+	}
+
+	// Trusted signer: run gpg and record the result directly, bypassing the
+	// pending request flow so no desktop notification appears.
+	if h.manager.CheckTrustedSigner(senderInfo, req.GPGSignInfo.RepoName, req.GPGSignInfo.ChangedFiles) {
+		sig, status, exitCode, err := h.runGPG(req.GPGSignInfo)
+		if err != nil {
+			writeError(w, fmt.Sprintf("gpg exec failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if exitCode != 0 {
+			slog.Error("trusted signer gpg failed", "exit_code", exitCode)
+		}
+
+		id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, sig, status)
+		if err != nil {
+			writeError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		slog.Info("gpg sign auto-approved (trusted signer)",
+			"request_id", id,
+			"repo", req.GPGSignInfo.RepoName,
+			"process", senderInfo.UnitName,
+			"pid", senderInfo.PID,
+			"commit", commitSubject,
+		)
+		writeJSON(w, GPGSignResponse{RequestID: id})
+		return
+	}
+
 	id, err := h.manager.CreateGPGSignRequest(req.Client, req.GPGSignInfo, senderInfo)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	commitSubject := req.GPGSignInfo.CommitMsg
-	if i := strings.IndexByte(commitSubject, '\n'); i >= 0 {
-		commitSubject = commitSubject[:i]
-	}
 	slog.Info("gpg sign request created",
 		"request_id", id,
 		"repo", req.GPGSignInfo.RepoName,

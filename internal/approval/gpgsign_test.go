@@ -32,7 +32,7 @@ func findEvent(events []Event, et EventType) *Event {
 // CreateGPGSignRequest with valid GPGSignInfo returns a non-empty ID and
 // the request appears in the pending list. EventRequestCreated fires.
 func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -67,7 +67,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 // TestCreateGPGSignRequest_NilInfo verifies Case 2:
 // CreateGPGSignRequest with nil GPGSignInfo returns "", non-nil error.
 func TestCreateGPGSignRequest_NilInfo(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	id, err := mgr.CreateGPGSignRequest("test-client", nil, SenderInfo{})
 	if err == nil {
@@ -82,7 +82,7 @@ func TestCreateGPGSignRequest_NilInfo(t *testing.T) {
 // A gpg_sign request fires EventRequestExpired after the manager timeout and
 // is then removed from the pending map.
 func TestCreateGPGSignRequest_Expiry(t *testing.T) {
-	mgr := NewManager(50*time.Millisecond, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 50 * time.Millisecond, HistoryMax: 100})
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -120,7 +120,7 @@ func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 // TestCreateGPGSignRequest_Approve verifies Case 4:
 // Approve(id) fires EventRequestApproved and removes the request from pending.
 func TestCreateGPGSignRequest_Approve(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -154,7 +154,7 @@ func TestCreateGPGSignRequest_Approve(t *testing.T) {
 // TestCreateGPGSignRequest_Deny verifies Case 5:
 // Deny(id) fires EventRequestDenied.
 func TestCreateGPGSignRequest_Deny(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -180,7 +180,7 @@ func TestCreateGPGSignRequest_Deny(t *testing.T) {
 // TestCreateGPGSignRequest_Cancel verifies that Cancel(id) fires EventRequestCancelled
 // and removes the request from pending.
 func TestCreateGPGSignRequest_Cancel(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -224,7 +224,7 @@ func TestCreateGPGSignRequest_Cancel(t *testing.T) {
 // TestCreateGPGSignRequest_GPGSignInfoPreserved verifies that GPGSignInfo fields
 // are correctly stored on the Request and visible via List().
 func TestCreateGPGSignRequest_GPGSignInfoPreserved(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	info := sampleGPGSignInfo()
 	id, err := mgr.CreateGPGSignRequest("test-client", info, SenderInfo{})
@@ -258,7 +258,7 @@ func TestCreateGPGSignRequest_GPGSignInfoPreserved(t *testing.T) {
 // TestCreateGPGSignRequest_Concurrent verifies that multiple concurrent
 // CreateGPGSignRequest calls don't race or corrupt state.
 func TestCreateGPGSignRequest_Concurrent(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100, 0)
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	const n = 5
 	var (

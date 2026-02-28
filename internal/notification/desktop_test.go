@@ -112,6 +112,16 @@ func (a *mockApprover) Deny(id string) error {
 	return nil
 }
 
+func (a *mockApprover) AutoApprove(requestID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.err != nil {
+		return a.err
+	}
+	a.approved = append(a.approved, "auto:"+requestID)
+	return nil
+}
+
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
@@ -352,8 +362,8 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 	if call.icon != "emblem-important" {
 		t.Errorf("expected icon 'emblem-important', got %q", call.icon)
 	}
-	if !contains(call.body, "<b>ssh-agent.service@my-project</b>: ") {
-		t.Errorf("body should contain bold process@repo: %s", call.body)
+	if !contains(call.body, "<b>my-project</b>: ") {
+		t.Errorf("body should contain bold repo: %s", call.body)
 	}
 	if !contains(call.body, "<i>Add feature</i>") {
 		t.Errorf("body should contain italic commit subject: %s", call.body)

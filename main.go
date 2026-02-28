@@ -345,7 +345,21 @@ func runServe(args []string) {
 	slog.SetDefault(slog.New(handler))
 
 	// Create approval manager
-	approvalMgr := approval.NewManager(*timeout, *historyLimit, time.Duration(cfg.Serve.ApprovalWindow))
+	var trustedSigners []approval.TrustedSigner
+	for _, ts := range cfg.Serve.TrustedSigners {
+		trustedSigners = append(trustedSigners, approval.TrustedSigner{
+			ExePath:    ts.ExePath,
+			RepoPath:   ts.RepoPath,
+			FilePrefix: ts.FilePrefix,
+		})
+	}
+	approvalMgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:             *timeout,
+		HistoryMax:          *historyLimit,
+		ApprovalWindow:      time.Duration(cfg.Serve.ApprovalWindow),
+		AutoApproveDuration: time.Duration(cfg.Serve.AutoApproveDuration),
+		TrustedSigners:      trustedSigners,
+	})
 
 	// Set up desktop notifications
 	var desktopNotifier *notification.DBusNotifier

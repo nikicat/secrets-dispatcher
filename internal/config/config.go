@@ -11,12 +11,13 @@ import (
 
 // Defaults for serve-subcommand settings.
 const (
-	DefaultListenAddr     = "127.0.0.1:8484"
-	DefaultTimeout        = 5 * time.Minute
-	DefaultHistoryLimit   = 100
-	DefaultLogLevel       = "info"
-	DefaultLogFormat      = "text"
-	DefaultApprovalWindow = 5 * time.Second
+	DefaultListenAddr          = "127.0.0.1:8484"
+	DefaultTimeout             = 5 * time.Minute
+	DefaultHistoryLimit        = 100
+	DefaultLogLevel            = "info"
+	DefaultLogFormat           = "text"
+	DefaultApprovalWindow      = 5 * time.Second
+	DefaultAutoApproveDuration = 2 * time.Minute
 )
 
 var defaultNotifications = true
@@ -59,6 +60,9 @@ func (cfg *Config) WithDefaults() *Config {
 	}
 	if s.ApprovalWindow == 0 {
 		s.ApprovalWindow = Duration(DefaultApprovalWindow)
+	}
+	if s.AutoApproveDuration == 0 {
+		s.AutoApproveDuration = Duration(DefaultAutoApproveDuration)
 	}
 	if s.Upstream.Type == "" {
 		s.Upstream = BusConfig{Type: "session_bus"}
@@ -145,8 +149,18 @@ type ServeConfig struct {
 	HistoryLimit   int         `yaml:"history_limit"`
 	Notifications  *bool       `yaml:"notifications"`
 	ShowPIDs          *bool       `yaml:"show_pids"`
-	TrimProcessChain  *bool       `yaml:"trim_process_chain"`
-	ApprovalWindow    Duration    `yaml:"approval_window"`
+	TrimProcessChain    *bool       `yaml:"trim_process_chain"`
+	ApprovalWindow      Duration    `yaml:"approval_window"`
+	AutoApproveDuration Duration         `yaml:"auto_approve_duration"`
+	TrustedSigners      []TrustedSigner  `yaml:"trusted_signers,omitempty"`
+}
+
+// TrustedSigner defines a process that is auto-approved for GPG signing.
+// All three fields must match for auto-approval. Empty optional fields match anything.
+type TrustedSigner struct {
+	ExePath    string `yaml:"exe_path"`              // Required: absolute path to the executable
+	RepoPath   string `yaml:"repo_path,omitempty"`   // Optional: repo basename (from git rev-parse --show-toplevel)
+	FilePrefix string `yaml:"file_prefix,omitempty"` // Optional: all changed files must have this prefix
 }
 
 // Config is the top-level configuration file structure.

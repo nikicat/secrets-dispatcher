@@ -26,6 +26,33 @@ type GPGSignInfo struct {
 	CommitObject string `json:"commit_object,omitempty"`
 }
 
+// RecordAutoApprovedGPGSign creates a resolved gpg_sign request for history and
+// WebSocket delivery WITHOUT firing EventRequestCreated (so no desktop notification
+// appears). The request is never added to pending and no timeout goroutine is started.
+// sig and status are the gpg output to deliver to the thin client via WebSocket.
+func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, senderInfo SenderInfo, sig, status []byte) (string, error) {
+	if info == nil {
+		return "", errors.New("gpg sign info is required")
+	}
+
+	now := time.Now()
+	req := &Request{
+		ID:          uuid.New().String(),
+		Client:      client,
+		CreatedAt:   now,
+		ExpiresAt:   now,
+		Type:        RequestTypeGPGSign,
+		GPGSignInfo: info,
+		SenderInfo:  senderInfo,
+		Signature:   sig,
+		GPGStatus:   status,
+		done:        make(chan struct{}),
+	}
+	close(req.done)
+	m.notify(Event{Type: EventRequestApproved, Request: req})
+	return req.ID, nil
+}
+
 // CreateGPGSignRequest creates a pending gpg_sign approval request and returns its ID.
 // It does NOT block — the result is delivered to the caller via the WebSocket observer
 // pipeline (EventRequestApproved / EventRequestDenied / EventRequestExpired).
@@ -35,6 +62,7 @@ func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderI
 	if info == nil {
 		return "", errors.New("gpg sign info is required")
 	}
+
 	now := time.Now()
 	req := &Request{
 		ID:          uuid.New().String(),

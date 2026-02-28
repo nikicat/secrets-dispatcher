@@ -3,6 +3,7 @@ import type {
   PendingListResponse,
   ActionResponse,
   ErrorResponse,
+  AutoApproveRule,
 } from "./types";
 
 const API_BASE = "/api/v1";
@@ -102,6 +103,44 @@ export async function approve(id: string): Promise<ActionResponse> {
 export async function deny(id: string): Promise<ActionResponse> {
   const result = await request<ActionResponse>(`/pending/${id}/deny`, {
     method: "POST",
+  });
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
+ * Create an auto-approve rule from a cancelled request.
+ */
+export async function createAutoApprove(requestId: string): Promise<ActionResponse> {
+  const result = await request<ActionResponse>("/auto-approve", {
+    method: "POST",
+    body: JSON.stringify({ request_id: requestId }),
+  });
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
+ * List active auto-approve rules.
+ */
+export async function listAutoApproveRules(): Promise<AutoApproveRule[]> {
+  const result = await request<AutoApproveRule[]>("/auto-approve");
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
+ * Delete an auto-approve rule by ID.
+ */
+export async function deleteAutoApproveRule(id: string): Promise<ActionResponse> {
+  const result = await request<ActionResponse>(`/auto-approve/${id}`, {
+    method: "DELETE",
   });
   if (result === null) {
     throw new ApiError(401, "Unauthenticated");

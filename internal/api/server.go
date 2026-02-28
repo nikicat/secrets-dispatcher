@@ -57,6 +57,17 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	apiMux.HandleFunc("/api/v1/ws", wsHandler.HandleWS)
 	apiMux.HandleFunc("/api/v1/test/history", handlers.HandleTestInjectHistory)
 	apiMux.HandleFunc("/api/v1/gpg-sign/request", handlers.HandleGPGSignRequest)
+	apiMux.HandleFunc("/api/v1/auto-approve", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			handlers.HandleAutoApproveList(w, r)
+		case http.MethodPost:
+			handlers.HandleAutoApproveCreate(w, r)
+		default:
+			writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	apiMux.HandleFunc("/api/v1/auto-approve/", handlers.HandleAutoApproveDelete)
 
 	// Routes with path parameters need pattern matching
 	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {

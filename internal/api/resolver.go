@@ -41,6 +41,19 @@ func (r *Resolver) Deny(id string) error {
 	return r.Manager.Deny(id)
 }
 
+// AutoApprove creates an auto-approve rule from a cancelled request.
+func (r *Resolver) AutoApprove(requestID string) error {
+	entry := r.Manager.GetHistoryEntry(requestID)
+	if entry == nil {
+		return approval.ErrNotFound
+	}
+	if entry.Resolution != approval.ResolutionCancelled {
+		return approval.ErrNotFound
+	}
+	r.Manager.AddAutoApproveRule(entry.Request)
+	return nil
+}
+
 func (r *Resolver) approveGPGSign(id string, req *approval.Request) error {
 	gpgPath, err := r.GPGRunner.FindGPG()
 	if err != nil {

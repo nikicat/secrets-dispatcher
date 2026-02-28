@@ -70,12 +70,21 @@ export interface ErrorResponse {
 
 export type AuthState = "checking" | "authenticated" | "unauthenticated";
 
-export type Resolution = "approved" | "denied" | "expired" | "cancelled";
+export type Resolution = "approved" | "denied" | "expired" | "cancelled" | "auto_approved";
 
 export interface HistoryEntry {
   request: PendingRequest;
   resolution: Resolution;
   resolved_at: string;
+}
+
+export interface AutoApproveRule {
+  id: string;
+  invoker_name: string;
+  request_type: string;
+  collection: string;
+  attributes?: Record<string, string>;
+  expires_at: string;
 }
 
 // WebSocket message types

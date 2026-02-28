@@ -4,6 +4,10 @@ package approval
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +32,9 @@ const (
 	EventRequestDenied
 	EventRequestExpired
 	EventRequestCancelled
+	EventRequestAutoApproved
+	EventAutoApproveRuleAdded
+	EventAutoApproveRuleRemoved
 )
 
 // Event represents an approval event for observers.
@@ -98,10 +105,11 @@ type Request struct {
 type Resolution string
 
 const (
-	ResolutionApproved  Resolution = "approved"
-	ResolutionDenied    Resolution = "denied"
-	ResolutionExpired   Resolution = "expired"
-	ResolutionCancelled Resolution = "cancelled"
+	ResolutionApproved     Resolution = "approved"
+	ResolutionDenied       Resolution = "denied"
+	ResolutionExpired      Resolution = "expired"
+	ResolutionCancelled    Resolution = "cancelled"
+	ResolutionAutoApproved Resolution = "auto_approved"
 )
 
 // HistoryEntry represents a resolved approval request.
@@ -109,6 +117,24 @@ type HistoryEntry struct {
 	Request    *Request   `json:"request"`
 	Resolution Resolution `json:"resolution"`
 	ResolvedAt time.Time  `json:"resolved_at"`
+}
+
+// TrustedSigner defines a process auto-approved for GPG signing.
+// All three fields must match. Empty optional fields match anything.
+type TrustedSigner struct {
+	ExePath    string // Required: absolute path to the executable
+	RepoPath   string // Optional: repo basename; empty matches any repo
+	FilePrefix string // Optional: all changed files must have this prefix; empty matches any
+}
+
+// AutoApproveRule defines a temporary rule that auto-approves matching requests.
+type AutoApproveRule struct {
+	ID          string            `json:"id"`
+	InvokerName string            `json:"invoker_name"`
+	RequestType RequestType       `json:"request_type"`
+	Collection  string            `json:"collection"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
+	ExpiresAt   time.Time         `json:"expires_at"`
 }
 
 // Manager tracks pending approval requests and handles blocking until decision.
@@ -128,20 +154,40 @@ type Manager struct {
 	approvalWindow time.Duration
 	cacheMu        sync.Mutex
 	cache          map[string]time.Time // key = sender + "\x00" + itemPath
+
+	autoApproveMu       sync.Mutex
+	autoApproveRules     []AutoApproveRule
+	autoApproveDuration  time.Duration
+	trustedSigners       []TrustedSigner // exe+repo combos auto-approved for gpg_sign
+}
+
+// ManagerConfig holds configuration for the approval Manager.
+type ManagerConfig struct {
+	// Timeout is how long a request waits for user approval before expiring.
+	Timeout time.Duration
+	// HistoryMax is the maximum number of resolved requests kept in history.
+	HistoryMax int
+	// ApprovalWindow controls how long an approved (sender, item) pair is cached;
+	// a second request for the same pair within this window is auto-approved.
+	// Set to 0 to disable caching.
+	ApprovalWindow time.Duration
+	// AutoApproveDuration controls how long an auto-approve rule lasts after creation.
+	AutoApproveDuration time.Duration
+	// TrustedSigners is a list of executable paths auto-approved for gpg_sign requests.
+	TrustedSigners []TrustedSigner
 }
 
 // NewManager creates a new approval manager.
-// approvalWindow controls how long an approved (sender, item) pair is cached;
-// a second request for the same pair within this window is auto-approved.
-// Set to 0 to disable caching.
-func NewManager(timeout time.Duration, historyMax int, approvalWindow time.Duration) *Manager {
+func NewManager(cfg ManagerConfig) *Manager {
 	return &Manager{
-		pending:        make(map[string]*Request),
-		timeout:        timeout,
-		observers:      make(map[Observer]struct{}),
-		historyMax:     historyMax,
-		approvalWindow: approvalWindow,
-		cache:          make(map[string]time.Time),
+		pending:             make(map[string]*Request),
+		timeout:             cfg.Timeout,
+		observers:           make(map[Observer]struct{}),
+		historyMax:          cfg.HistoryMax,
+		approvalWindow:      cfg.ApprovalWindow,
+		cache:               make(map[string]time.Time),
+		autoApproveDuration: cfg.AutoApproveDuration,
+		trustedSigners:      cfg.TrustedSigners,
 	}
 }
 
@@ -177,8 +223,10 @@ func (m *Manager) notify(event Event) {
 		go o.OnEvent(event)
 	}
 
-	// Record history for terminal events
-	if event.Type != EventRequestCreated {
+	// Record history for terminal request events (not rule-management events)
+	if event.Type != EventRequestCreated &&
+		event.Type != EventAutoApproveRuleAdded &&
+		event.Type != EventAutoApproveRuleRemoved {
 		m.addHistory(event)
 	}
 }
@@ -195,6 +243,8 @@ func (m *Manager) addHistory(event Event) {
 		resolution = ResolutionExpired
 	case EventRequestCancelled:
 		resolution = ResolutionCancelled
+	case EventRequestAutoApproved:
+		resolution = ResolutionAutoApproved
 	default:
 		return
 	}
@@ -222,6 +272,18 @@ func (m *Manager) History() []HistoryEntry {
 	m.historyMu.RLock()
 	defer m.historyMu.RUnlock()
 	return append([]HistoryEntry{}, m.history...)
+}
+
+// GetHistoryEntry returns the history entry with the given request ID, or nil if not found.
+func (m *Manager) GetHistoryEntry(requestID string) *HistoryEntry {
+	m.historyMu.RLock()
+	defer m.historyMu.RUnlock()
+	for i := range m.history {
+		if m.history[i].Request.ID == requestID {
+			return &m.history[i]
+		}
+	}
+	return nil
 }
 
 // AddHistoryEntry adds an entry directly to history. For testing only.
@@ -252,6 +314,28 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		if m.checkApprovalCache(senderInfo.Sender, items) {
 			return nil
 		}
+	}
+
+	// Check auto-approve rules (for timed-out client retries).
+	if rule := m.checkAutoApproveRules(senderInfo, items, reqType); rule != nil {
+		slog.Info("auto-approve rule matched",
+			"rule_id", rule.ID,
+			"invoker", rule.InvokerName,
+			"type", rule.RequestType)
+		now := time.Now()
+		req := &Request{
+			ID:               uuid.New().String(),
+			Client:           client,
+			Items:            items,
+			Session:          session,
+			CreatedAt:        now,
+			ExpiresAt:        now,
+			Type:             reqType,
+			SearchAttributes: searchAttrs,
+			SenderInfo:       senderInfo,
+		}
+		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+		return nil
 	}
 
 	now := time.Now()
@@ -480,6 +564,206 @@ func (m *Manager) CacheItemForSender(sender, itemPath string) {
 
 	key := approvalCacheKey(sender, itemPath)
 	m.cache[key] = time.Now()
+}
+
+// extractCollection extracts the collection name from a Secret Service item path.
+// E.g., "/org/freedesktop/secrets/collection/default/123" → "default".
+// Returns "" if the path doesn't match the expected format.
+func extractCollection(itemPath string) string {
+	const prefix = "/org/freedesktop/secrets/collection/"
+	if !strings.HasPrefix(itemPath, prefix) {
+		return ""
+	}
+	rest := itemPath[len(prefix):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i]
+	}
+	return rest
+}
+
+// AddAutoApproveRule creates a temporary auto-approve rule from a cancelled request.
+// Returns the rule ID.
+func (m *Manager) AddAutoApproveRule(req *Request) string {
+	duration := m.autoApproveDuration
+	if duration <= 0 {
+		duration = 2 * time.Minute
+	}
+
+	rule := AutoApproveRule{
+		ID:          uuid.New().String(),
+		InvokerName: req.SenderInfo.UnitName,
+		RequestType: req.Type,
+		ExpiresAt:   time.Now().Add(duration),
+	}
+
+	// Extract collection and attributes from first item
+	if len(req.Items) > 0 {
+		rule.Collection = extractCollection(req.Items[0].Path)
+		rule.Attributes = req.Items[0].Attributes
+	}
+
+	// For search requests, use search attributes
+	if req.Type == RequestTypeSearch && len(req.SearchAttributes) > 0 {
+		rule.Attributes = req.SearchAttributes
+	}
+
+	m.autoApproveMu.Lock()
+	m.autoApproveRules = append(m.autoApproveRules, rule)
+	m.autoApproveMu.Unlock()
+
+	m.notify(Event{Type: EventAutoApproveRuleAdded, Request: req})
+	slog.Info("auto-approve rule added",
+		"rule_id", rule.ID,
+		"invoker", rule.InvokerName,
+		"type", rule.RequestType,
+		"collection", rule.Collection,
+		"expires_at", rule.ExpiresAt)
+
+	return rule.ID
+}
+
+// checkAutoApproveRules checks if the request matches any active auto-approve rule.
+// Returns the matching rule or nil.
+func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType) *AutoApproveRule {
+	m.autoApproveMu.Lock()
+	defer m.autoApproveMu.Unlock()
+
+	now := time.Now()
+	// Clean expired rules while iterating
+	active := m.autoApproveRules[:0]
+	var match *AutoApproveRule
+
+	for i := range m.autoApproveRules {
+		rule := &m.autoApproveRules[i]
+		if rule.ExpiresAt.Before(now) {
+			continue // expired, skip
+		}
+		active = append(active, *rule)
+
+		if match != nil {
+			continue // already found a match, just cleaning
+		}
+
+		// Match invoker name
+		if rule.InvokerName != senderInfo.UnitName {
+			continue
+		}
+		// Match request type
+		if rule.RequestType != reqType {
+			continue
+		}
+		// Match collection
+		reqCollection := ""
+		if len(items) > 0 {
+			reqCollection = extractCollection(items[0].Path)
+		}
+		if rule.Collection != "" && rule.Collection != reqCollection {
+			continue
+		}
+		// Match attributes (subset match: all rule attrs must be present in request)
+		reqAttrs := map[string]string{}
+		if len(items) > 0 && items[0].Attributes != nil {
+			reqAttrs = items[0].Attributes
+		}
+		if attributesMatch(rule.Attributes, reqAttrs) {
+			matched := *rule
+			match = &matched
+		}
+	}
+
+	m.autoApproveRules = active
+	return match
+}
+
+// attributesMatch returns true if all entries in ruleAttrs are present in reqAttrs.
+func attributesMatch(ruleAttrs, reqAttrs map[string]string) bool {
+	for k, v := range ruleAttrs {
+		if reqAttrs[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// ListAutoApproveRules returns all active (non-expired) auto-approve rules.
+func (m *Manager) ListAutoApproveRules() []AutoApproveRule {
+	m.autoApproveMu.Lock()
+	defer m.autoApproveMu.Unlock()
+
+	now := time.Now()
+	var active []AutoApproveRule
+	for _, rule := range m.autoApproveRules {
+		if rule.ExpiresAt.After(now) {
+			active = append(active, rule)
+		}
+	}
+	return active
+}
+
+// RemoveAutoApproveRule removes an auto-approve rule by ID.
+func (m *Manager) RemoveAutoApproveRule(id string) error {
+	m.autoApproveMu.Lock()
+	defer m.autoApproveMu.Unlock()
+
+	for i, rule := range m.autoApproveRules {
+		if rule.ID == id {
+			m.autoApproveRules = append(m.autoApproveRules[:i], m.autoApproveRules[i+1:]...)
+			slog.Info("auto-approve rule removed", "rule_id", id)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// CheckTrustedSigner checks if a GPG sign request comes from a trusted signer.
+// Returns true if ANY process in the sender's process chain matches a
+// trusted_signers entry (exe_path + repo_path + file_prefix all match).
+func (m *Manager) CheckTrustedSigner(senderInfo SenderInfo, repoName string, changedFiles []string) bool {
+	if len(m.trustedSigners) == 0 {
+		return false
+	}
+
+	for _, proc := range senderInfo.ProcessChain {
+		exePath := readExePath(proc.PID)
+		if exePath == "" {
+			continue
+		}
+		for _, ts := range m.trustedSigners {
+			if exePath != ts.ExePath {
+				continue
+			}
+			if ts.RepoPath != "" && repoName != ts.RepoPath {
+				continue
+			}
+			if ts.FilePrefix != "" && !allFilesMatch(changedFiles, ts.FilePrefix) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// allFilesMatch returns true if every file starts with prefix.
+func allFilesMatch(files []string, prefix string) bool {
+	for _, f := range files {
+		if !strings.HasPrefix(f, prefix) {
+			return false
+		}
+	}
+	return true
+}
+
+// readExePath reads the executable path from /proc/PID/exe.
+func readExePath(pid uint32) string {
+	if pid == 0 {
+		return ""
+	}
+	target, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return ""
+	}
+	return target
 }
 
 // cacheApproval records approved (sender, item) pairs in the cache.

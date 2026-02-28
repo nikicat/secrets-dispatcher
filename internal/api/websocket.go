@@ -204,6 +204,12 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Type:         "history_entry",
 			HistoryEntry: &entry,
 		})
+	case approval.EventRequestAutoApproved:
+		entry := makeHistoryEntry(event.Request, "auto_approved")
+		msgs = append(msgs, WSMessage{
+			Type:         "history_entry",
+			HistoryEntry: &entry,
+		})
 	default:
 		return
 	}

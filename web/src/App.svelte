@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry } from "./lib/types";
-  import { exchangeToken, getStatus } from "./lib/api";
+  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule } from "./lib/types";
+  import { exchangeToken, getStatus, createAutoApprove, listAutoApproveRules, deleteAutoApproveRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
   import { requestPermission, showRequestNotification } from "./lib/notifications";
@@ -10,6 +10,7 @@
   let requests = $state<PendingRequest[]>([]);
   let clients = $state<ClientInfo[]>([]);
   let history = $state<HistoryEntry[]>([]);
+  let autoApproveRules = $state<AutoApproveRule[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
@@ -47,7 +48,7 @@
         version = ver;
         loading = false;
         error = null;
-        // Request notification permission after successful connection
+        refreshAutoApproveRules();
         requestPermission();
       },
       onRequestCreated: (req) => {
@@ -201,6 +202,8 @@
         return "resolution-approved";
       case "denied":
         return "resolution-denied";
+      case "auto_approved":
+        return "resolution-auto-approved";
       default:
         return "resolution-other";
     }
@@ -243,6 +246,41 @@
       return request.gpg_sign_info.commit_msg.split('\n')[0];
     }
     return request.items.map(i => i.label || i.path).join(", ");
+  }
+
+  async function refreshAutoApproveRules() {
+    try {
+      autoApproveRules = await listAutoApproveRules();
+    } catch {
+      // Silently ignore — rules are supplementary info
+    }
+  }
+
+  async function handleAutoApprove(requestId: string) {
+    try {
+      await createAutoApprove(requestId);
+      await refreshAutoApproveRules();
+    } catch {
+      // Ignore errors silently for now
+    }
+  }
+
+  async function handleDeleteRule(ruleId: string) {
+    try {
+      await deleteAutoApproveRule(ruleId);
+      autoApproveRules = autoApproveRules.filter(r => r.id !== ruleId);
+    } catch {
+      // Ignore
+    }
+  }
+
+  function formatRuleExpiry(expiresAt: string): string {
+    const diff = new Date(expiresAt).getTime() - Date.now();
+    if (diff <= 0) return "expired";
+    const min = Math.floor(diff / 60000);
+    const sec = Math.floor((diff % 60000) / 1000);
+    if (min > 0) return `${min}m ${sec}s`;
+    return `${sec}s`;
   }
 
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
@@ -288,6 +326,25 @@
           </ul>
         {/if}
       </div>
+      {#if autoApproveRules.length > 0}
+        <div class="sidebar-rules">
+          <h3>Auto-Approve Rules</h3>
+          <ul class="rules-list">
+            {#each autoApproveRules as rule (rule.id)}
+              <li class="rule-entry">
+                <div class="rule-header">
+                  <span class="rule-invoker">{rule.invoker_name}</span>
+                  <button class="rule-delete" onclick={() => handleDeleteRule(rule.id)} title="Remove rule">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                </div>
+                <span class="rule-detail">{rule.request_type}{rule.collection ? ` / ${rule.collection}` : ""}</span>
+                <span class="rule-expiry">{formatRuleExpiry(rule.expires_at)}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
       {#if version}
         <div class="sidebar-footer">
           <span class="version">{version}</span>
@@ -409,6 +466,9 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
+                    {#if entry.resolution === "cancelled"}
+                      <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>Auto-approve similar</button>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -458,6 +518,9 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
+                    {#if entry.resolution === "cancelled"}
+                      <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>Auto-approve similar</button>
+                    {/if}
                   </li>
                 {/each}
               </ul>
@@ -855,6 +918,11 @@
     background-color: rgba(239, 68, 68, 0.1);
   }
 
+  .resolution-auto-approved {
+    color: var(--color-primary);
+    background-color: rgba(59, 130, 246, 0.1);
+  }
+
   .resolution-other {
     color: var(--color-text-muted);
     background-color: var(--color-bg);
@@ -896,6 +964,91 @@
   .history-sender {
     font-size: 12px;
     color: var(--color-text-muted);
+  }
+
+  .btn-auto-approve {
+    margin-top: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-primary);
+    background: transparent;
+    border: 1px solid var(--color-primary);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .btn-auto-approve:hover {
+    background-color: rgba(59, 130, 246, 0.1);
+  }
+
+  /* Sidebar auto-approve rules */
+  .sidebar-rules {
+    padding: 16px;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .sidebar-rules h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0 0 8px 0;
+  }
+
+  .rules-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .rule-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px;
+    background-color: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
+  }
+
+  .rule-entry:last-child {
+    margin-bottom: 0;
+  }
+
+  .rule-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .rule-invoker {
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--color-text);
+  }
+
+  .rule-delete {
+    display: flex;
+    padding: 2px;
+    background: transparent;
+    border: none;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .rule-delete:hover {
+    color: var(--color-danger);
+  }
+
+  .rule-detail {
+    font-size: 12px;
+    color: var(--color-text-muted);
+  }
+
+  .rule-expiry {
+    font-size: 11px;
+    color: var(--color-warning);
   }
 
   /* Desktop: show sidebar by default, hide toggle */

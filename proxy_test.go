@@ -615,7 +615,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	itemPath := mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
 	// Create an approval manager that requires approval (not auto-approve)
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
 		ClientName:       "test-client",
@@ -714,7 +714,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 
 	itemPath := mock.AddItem("Delete Me", map[string]string{"app": "test"}, []byte("secret"))
 
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",
@@ -790,7 +790,7 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 
 	itemPath := mock.AddItem("Don't Delete Me", map[string]string{"app": "test"}, []byte("secret"))
 
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",
@@ -859,7 +859,7 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",
@@ -945,7 +945,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	itemPath := mock.AddItem("Cached Secret", map[string]string{"app": "test"}, []byte("secret"))
 
 	// Use approval window so GetSecret gets cached
-	approvalMgr := approval.NewManager(30*time.Second, 100, time.Minute)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100, ApprovalWindow: time.Minute})
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",
@@ -1052,7 +1052,7 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 
 	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test"}, []byte("old-value"))
 
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",
@@ -1137,7 +1137,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",

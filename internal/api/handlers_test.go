@@ -23,7 +23,7 @@ func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 }
 
 func TestHandleStatus(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
@@ -66,7 +66,7 @@ func TestHandleStatus(t *testing.T) {
 }
 
 func TestHandleStatus_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
@@ -80,7 +80,7 @@ func TestHandleStatus_WrongMethod(t *testing.T) {
 }
 
 func TestHandlePendingList_Empty(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending", nil)
@@ -103,7 +103,7 @@ func TestHandlePendingList_Empty(t *testing.T) {
 }
 
 func TestHandlePendingList_WithRequests(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -152,7 +152,7 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 }
 
 func TestHandleApprove_Success(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -206,7 +206,7 @@ func TestHandleApprove_Success(t *testing.T) {
 }
 
 func TestHandleApprove_NotFound(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/approve", nil)
@@ -229,7 +229,7 @@ func TestHandleApprove_NotFound(t *testing.T) {
 }
 
 func TestHandleApprove_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/approve", nil)
@@ -243,7 +243,7 @@ func TestHandleApprove_WrongMethod(t *testing.T) {
 }
 
 func TestHandleDeny_Success(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -297,7 +297,7 @@ func TestHandleDeny_Success(t *testing.T) {
 }
 
 func TestHandleCancel_Success(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	// Start a pending request
@@ -341,7 +341,7 @@ func TestHandleCancel_Success(t *testing.T) {
 }
 
 func TestHandleCancel_NotFound(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/cancel", nil)
@@ -355,7 +355,7 @@ func TestHandleCancel_NotFound(t *testing.T) {
 }
 
 func TestHandleCancel_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/cancel", nil)
@@ -369,7 +369,7 @@ func TestHandleCancel_WrongMethod(t *testing.T) {
 }
 
 func TestHandleLog_Empty(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
@@ -393,7 +393,7 @@ func TestHandleLog_Empty(t *testing.T) {
 }
 
 func TestHandleLog_WithHistory(t *testing.T) {
-	mgr := approval.NewManager(5*time.Minute, 100, 0)
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 	handlers := testHandlers(t, mgr)
 
 	// Start and approve a request to create history

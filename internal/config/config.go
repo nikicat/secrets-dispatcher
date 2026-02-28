@@ -11,11 +11,12 @@ import (
 
 // Defaults for serve-subcommand settings.
 const (
-	DefaultListenAddr   = "127.0.0.1:8484"
-	DefaultTimeout      = 5 * time.Minute
-	DefaultHistoryLimit = 100
-	DefaultLogLevel     = "info"
-	DefaultLogFormat    = "text"
+	DefaultListenAddr     = "127.0.0.1:8484"
+	DefaultTimeout        = 5 * time.Minute
+	DefaultHistoryLimit   = 100
+	DefaultLogLevel       = "info"
+	DefaultLogFormat      = "text"
+	DefaultApprovalWindow = 500 * time.Millisecond
 )
 
 var defaultNotifications = true
@@ -47,6 +48,9 @@ func (cfg *Config) WithDefaults() *Config {
 	}
 	if s.Notifications == nil {
 		s.Notifications = &defaultNotifications
+	}
+	if s.ApprovalWindow == 0 {
+		s.ApprovalWindow = Duration(DefaultApprovalWindow)
 	}
 	if s.Upstream.Type == "" {
 		s.Upstream = BusConfig{Type: "session_bus"}
@@ -125,13 +129,14 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 // ServeConfig holds serve-subcommand settings.
 type ServeConfig struct {
-	Upstream      BusConfig   `yaml:"upstream"`
-	Downstream    []BusConfig `yaml:"downstream"`
-	LogLevel      string      `yaml:"log_level"`
-	LogFormat     string      `yaml:"log_format"`
-	Timeout       Duration    `yaml:"timeout"`
-	HistoryLimit  int         `yaml:"history_limit"`
-	Notifications *bool       `yaml:"notifications"`
+	Upstream       BusConfig   `yaml:"upstream"`
+	Downstream     []BusConfig `yaml:"downstream"`
+	LogLevel       string      `yaml:"log_level"`
+	LogFormat      string      `yaml:"log_format"`
+	Timeout        Duration    `yaml:"timeout"`
+	HistoryLimit   int         `yaml:"history_limit"`
+	Notifications  *bool       `yaml:"notifications"`
+	ApprovalWindow Duration    `yaml:"approval_window"`
 }
 
 // Config is the top-level configuration file structure.

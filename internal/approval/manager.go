@@ -122,15 +122,24 @@ type Manager struct {
 	historyMu  sync.RWMutex
 	history    []HistoryEntry
 	historyMax int
+
+	approvalWindow time.Duration
+	cacheMu        sync.Mutex
+	cache          map[string]time.Time // key = sender + "\x00" + itemPath
 }
 
 // NewManager creates a new approval manager.
-func NewManager(timeout time.Duration, historyMax int) *Manager {
+// approvalWindow controls how long an approved (sender, item) pair is cached;
+// a second request for the same pair within this window is auto-approved.
+// Set to 0 to disable caching.
+func NewManager(timeout time.Duration, historyMax int, approvalWindow time.Duration) *Manager {
 	return &Manager{
-		pending:    make(map[string]*Request),
-		timeout:    timeout,
-		observers:  make(map[Observer]struct{}),
-		historyMax: historyMax,
+		pending:        make(map[string]*Request),
+		timeout:        timeout,
+		observers:      make(map[Observer]struct{}),
+		historyMax:     historyMax,
+		approvalWindow: approvalWindow,
+		cache:          make(map[string]time.Time),
 	}
 }
 
@@ -235,6 +244,13 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		return nil
 	}
 
+	// Check approval cache: if all items were recently approved for this sender, skip.
+	if m.approvalWindow > 0 && len(items) > 0 {
+		if m.checkApprovalCache(senderInfo.Sender, items) {
+			return nil
+		}
+	}
+
 	now := time.Now()
 	req := &Request{
 		ID:               uuid.New().String(),
@@ -313,6 +329,7 @@ func (m *Manager) Approve(id string) error {
 	m.mu.Unlock()
 
 	m.notify(Event{Type: EventRequestApproved, Request: req})
+	m.cacheApproval(req)
 	return nil
 }
 
@@ -391,6 +408,7 @@ func (m *Manager) ApproveWithSignature(id string, sig, status []byte) error {
 	m.mu.Unlock()
 
 	m.notify(Event{Type: EventRequestApproved, Request: req})
+	m.cacheApproval(req)
 	return nil
 }
 
@@ -414,4 +432,50 @@ func (m *Manager) ApproveGPGFailed(id string, status []byte, exitCode int) error
 
 	m.notify(Event{Type: EventRequestApproved, Request: req})
 	return nil
+}
+
+// approvalCacheKey returns the cache key for a (sender, itemPath) pair.
+func approvalCacheKey(sender, itemPath string) string {
+	return sender + "\x00" + itemPath
+}
+
+// checkApprovalCache returns true if ALL items have a valid cache entry for the sender.
+// Expired entries encountered during the check are lazily deleted.
+func (m *Manager) checkApprovalCache(sender string, items []ItemInfo) bool {
+	if m.approvalWindow <= 0 {
+		return false
+	}
+	now := time.Now()
+	cutoff := now.Add(-m.approvalWindow)
+
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+
+	for _, item := range items {
+		key := approvalCacheKey(sender, item.Path)
+		ts, ok := m.cache[key]
+		if !ok || ts.Before(cutoff) {
+			if ok {
+				delete(m.cache, key)
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// cacheApproval records approved (sender, item) pairs in the cache.
+func (m *Manager) cacheApproval(req *Request) {
+	if m.approvalWindow <= 0 {
+		return
+	}
+	now := time.Now()
+
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+
+	for _, item := range req.Items {
+		key := approvalCacheKey(req.SenderInfo.Sender, item.Path)
+		m.cache[key] = now
+	}
 }

@@ -29,7 +29,7 @@ const validGPGSignBody = `{
 // TestHandleGPGSignRequest_ValidBody verifies Case 6:
 // POST with a valid body returns 200 and a non-empty request_id.
 func TestHandleGPGSignRequest_ValidBody(t *testing.T) {
-	mgr := approval.NewManager(5*time.Second, 100)
+	mgr := approval.NewManager(5*time.Second, 100, 0)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
@@ -64,7 +64,7 @@ func TestHandleGPGSignRequest_ValidBody(t *testing.T) {
 // TestHandleGPGSignRequest_MissingGPGSignInfo verifies Case 7:
 // POST without gpg_sign_info returns 400.
 func TestHandleGPGSignRequest_MissingGPGSignInfo(t *testing.T) {
-	mgr := approval.NewManager(5*time.Second, 100)
+	mgr := approval.NewManager(5*time.Second, 100, 0)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
@@ -82,7 +82,7 @@ func TestHandleGPGSignRequest_MissingGPGSignInfo(t *testing.T) {
 // TestHandleGPGSignRequest_WrongMethod verifies Case 8:
 // GET to the endpoint returns 405 Method Not Allowed.
 func TestHandleGPGSignRequest_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(5*time.Second, 100)
+	mgr := approval.NewManager(5*time.Second, 100, 0)
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/gpg-sign/request", nil)
@@ -99,7 +99,7 @@ func TestHandleGPGSignRequest_WrongMethod(t *testing.T) {
 // After a successful POST, the pending list includes the request and its
 // gpg_sign_info.key_id is visible.
 func TestHandleGPGSignRequest_KeyIDVisibleInPendingList(t *testing.T) {
-	mgr := approval.NewManager(5*time.Second, 100)
+	mgr := approval.NewManager(5*time.Second, 100, 0)
 	handlers := testHandlers(t, mgr)
 
 	// POST to create the request.
@@ -188,7 +188,7 @@ func (o *wsEventObserver) WaitForMessages(count int, timeout time.Duration) []WS
 // When a gpg_sign request is approved, the resulting WSMessage has a non-empty
 // Signature field.
 func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
-	mgr := approval.NewManager(5*time.Second, 100)
+	mgr := approval.NewManager(5*time.Second, 100, 0)
 	obs := &wsEventObserver{}
 	mgr.Subscribe(obs)
 

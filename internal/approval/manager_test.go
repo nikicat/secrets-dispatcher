@@ -9,7 +9,7 @@ import (
 )
 
 func TestManager_RequireApproval_Approved(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -48,7 +48,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 }
 
 func TestManager_RequireApproval_Denied(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -87,7 +87,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 }
 
 func TestManager_RequireApproval_Timeout(t *testing.T) {
-	mgr := NewManager(100*time.Millisecond, 100)
+	mgr := NewManager(100*time.Millisecond, 100, 0)
 
 	err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
@@ -97,7 +97,7 @@ func TestManager_RequireApproval_Timeout(t *testing.T) {
 }
 
 func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -129,7 +129,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 }
 
 func TestManager_List(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	// Start multiple approval requests
 	var wg sync.WaitGroup
@@ -160,7 +160,7 @@ func TestManager_List(t *testing.T) {
 }
 
 func TestManager_Cancel_Success(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	var approvalErr error
@@ -206,7 +206,7 @@ func TestManager_Cancel_Success(t *testing.T) {
 }
 
 func TestManager_Cancel_NotFound(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	err := mgr.Cancel("nonexistent-id")
 	if err != ErrNotFound {
@@ -215,7 +215,7 @@ func TestManager_Cancel_NotFound(t *testing.T) {
 }
 
 func TestManager_Approve_NotFound(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	err := mgr.Approve("nonexistent-id")
 	if err != ErrNotFound {
@@ -224,7 +224,7 @@ func TestManager_Approve_NotFound(t *testing.T) {
 }
 
 func TestManager_Deny_NotFound(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	err := mgr.Deny("nonexistent-id")
 	if err != ErrNotFound {
@@ -233,7 +233,7 @@ func TestManager_Deny_NotFound(t *testing.T) {
 }
 
 func TestManager_Concurrent(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	const numRequests = 10
 	var wg sync.WaitGroup
@@ -303,7 +303,7 @@ func TestManager_Disabled(t *testing.T) {
 }
 
 func TestManager_RequestFields(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -354,7 +354,7 @@ func TestManager_RequestFields(t *testing.T) {
 }
 
 func TestManager_CleanupAfterApproval(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -420,7 +420,7 @@ func (o *testObserver) WaitForEvents(count int, timeout time.Duration) []Event {
 }
 
 func TestManager_Observer_Created(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -450,7 +450,7 @@ func TestManager_Observer_Created(t *testing.T) {
 }
 
 func TestManager_Observer_Approved(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -497,7 +497,7 @@ func TestManager_Observer_Approved(t *testing.T) {
 }
 
 func TestManager_Observer_Denied(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -537,7 +537,7 @@ func TestManager_Observer_Denied(t *testing.T) {
 }
 
 func TestManager_Observer_Expired(t *testing.T) {
-	mgr := NewManager(100*time.Millisecond, 100)
+	mgr := NewManager(100*time.Millisecond, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -561,7 +561,7 @@ func TestManager_Observer_Expired(t *testing.T) {
 }
 
 func TestManager_Observer_CancelMethod(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -608,7 +608,7 @@ func TestManager_Observer_CancelMethod(t *testing.T) {
 }
 
 func TestManager_Observer_Cancelled(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
@@ -651,7 +651,7 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 }
 
 func TestManager_Observer_Unsubscribe(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 	mgr.Unsubscribe(obs)
@@ -675,7 +675,7 @@ func TestManager_Observer_Unsubscribe(t *testing.T) {
 }
 
 func TestManager_Observer_MultipleObservers(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 	obs1 := &testObserver{}
 	obs2 := &testObserver{}
 	mgr.Subscribe(obs1)
@@ -707,7 +707,7 @@ func TestManager_Observer_MultipleObservers(t *testing.T) {
 }
 
 func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	var subscribed atomic.Int32
@@ -731,7 +731,7 @@ func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
 }
 
 func TestHistory_RecordsApproved(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -776,7 +776,7 @@ func TestHistory_RecordsApproved(t *testing.T) {
 }
 
 func TestHistory_RecordsDenied(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -814,7 +814,7 @@ func TestHistory_RecordsDenied(t *testing.T) {
 }
 
 func TestHistory_RecordsExpired(t *testing.T) {
-	mgr := NewManager(100*time.Millisecond, 100)
+	mgr := NewManager(100*time.Millisecond, 100, 0)
 
 	// This will timeout
 	mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
@@ -833,7 +833,7 @@ func TestHistory_RecordsExpired(t *testing.T) {
 }
 
 func TestHistory_RecordsCancelled(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -871,7 +871,7 @@ func TestHistory_RecordsCancelled(t *testing.T) {
 
 func TestHistory_LimitEnforced(t *testing.T) {
 	historyMax := 5
-	mgr := NewManager(100*time.Millisecond, historyMax)
+	mgr := NewManager(100*time.Millisecond, historyMax, 0)
 
 	// Create more requests than the history limit
 	for i := 0; i < historyMax+3; i++ {
@@ -886,7 +886,7 @@ func TestHistory_LimitEnforced(t *testing.T) {
 }
 
 func TestHistory_NewestFirst(t *testing.T) {
-	mgr := NewManager(5*time.Second, 100)
+	mgr := NewManager(5*time.Second, 100, 0)
 
 	// Create and resolve 3 requests in sequence
 	for i := 0; i < 3; i++ {
@@ -928,5 +928,150 @@ func TestHistory_NewestFirst(t *testing.T) {
 		if history[i].ResolvedAt.Before(history[i+1].ResolvedAt) {
 			t.Errorf("history entry %d resolved before entry %d, but should be after (newest first)", i, i+1)
 		}
+	}
+}
+
+func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, time.Second)
+
+	items := []ItemInfo{{Path: "/test/item1"}}
+	sender := SenderInfo{Sender: ":1.100"}
+
+	// First request: must be manually approved
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	}()
+
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("first request did not appear")
+	}
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Second request: same sender+item within window → auto-approved (no pending)
+	err := mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	if err != nil {
+		t.Fatalf("expected auto-approval from cache, got: %v", err)
+	}
+	if mgr.PendingCount() != 0 {
+		t.Error("cached approval should not create a pending request")
+	}
+}
+
+func TestApprovalCache_Expired(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, 50*time.Millisecond)
+
+	items := []ItemInfo{{Path: "/test/item1"}}
+	sender := SenderInfo{Sender: ":1.100"}
+
+	// Approve first request
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	}()
+
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Wait for cache to expire
+	time.Sleep(60 * time.Millisecond)
+
+	// Second request should NOT be auto-approved
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	if err == nil {
+		t.Fatal("expected approval to be required after cache expiry")
+	}
+}
+
+func TestApprovalCache_DifferentSender(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, time.Second)
+
+	items := []ItemInfo{{Path: "/test/item1"}}
+
+	// Approve for sender1
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.100"})
+	}()
+
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Different sender should NOT be auto-approved
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.999"})
+	if err == nil {
+		t.Fatal("different sender should not be auto-approved from cache")
+	}
+}
+
+func TestApprovalCache_DifferentItem(t *testing.T) {
+	mgr := NewManager(5*time.Second, 100, time.Second)
+
+	sender := SenderInfo{Sender: ":1.100"}
+
+	// Approve for item1
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		mgr.RequireApproval(context.Background(), "client", []ItemInfo{{Path: "/test/item1"}}, "/s/1", RequestTypeGetSecret, nil, sender)
+	}()
+
+	var reqID string
+	for i := 0; i < 100; i++ {
+		reqs := mgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mgr.Approve(reqID)
+	wg.Wait()
+
+	// Different item should NOT be auto-approved
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: "/test/item2"}}, "/s/1", RequestTypeGetSecret, nil, sender)
+	if err == nil {
+		t.Fatal("different item should not be auto-approved from cache")
 	}
 }

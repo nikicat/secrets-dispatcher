@@ -339,7 +339,7 @@ func runServe(args []string) {
 	slog.SetDefault(slog.New(handler))
 
 	// Create approval manager
-	approvalMgr := approval.NewManager(*timeout, *historyLimit)
+	approvalMgr := approval.NewManager(*timeout, *historyLimit, time.Duration(cfg.Serve.ApprovalWindow))
 
 	// Set up desktop notifications
 	var desktopNotifier *notification.DBusNotifier

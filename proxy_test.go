@@ -615,7 +615,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	itemPath := mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
 	// Create an approval manager that requires approval (not auto-approve)
-	approvalMgr := approval.NewManager(30*time.Second, 100)
+	approvalMgr := approval.NewManager(30*time.Second, 100, 0)
 
 	p := proxy.New(proxy.Config{
 		ClientName:       "test-client",

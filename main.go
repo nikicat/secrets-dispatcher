@@ -420,33 +420,47 @@ func runServe(args []string) {
 			})
 
 		case "session_bus":
-			p := proxy.New(proxy.Config{
-				ClientName: "local",
-				LogLevel:   level,
-				Approval:   approvalMgr,
-			})
 			sp := &staticProvider{info: proxy.ClientInfo{Name: "local", SocketPath: "session_bus"}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
-				// Connect front=session bus, backend=upstream
-				frontConn, connErr := dbus.ConnectSessionBus()
-				if connErr != nil {
-					return fmt.Errorf("connect to session bus (front): %w", connErr)
-				}
-				var backendConn *dbus.Conn
 				if upstreamAddr == "" {
 					return fmt.Errorf("upstream and downstream are both session_bus (should be caught by validation)")
 				}
-				backendConn, connErr = dbus.Connect(upstreamAddr)
-				if connErr != nil {
-					frontConn.Close()
-					return fmt.Errorf("connect to upstream %s: %w", upstreamAddr, connErr)
+				const maxBackoff = 30 * time.Second
+				backoff := time.Second
+				for {
+					p := proxy.New(proxy.Config{
+						ClientName: "local",
+						LogLevel:   level,
+						Approval:   approvalMgr,
+					})
+					frontConn, err := dbus.ConnectSessionBus()
+					if err == nil {
+						var backendConn *dbus.Conn
+						backendConn, err = dbus.Connect(upstreamAddr)
+						if err != nil {
+							frontConn.Close()
+						} else {
+							err = p.ConnectWith(frontConn, backendConn)
+							if err == nil {
+								backoff = time.Second
+								err = p.Run(ctx)
+								p.Close()
+							}
+						}
+					}
+					if ctx.Err() != nil {
+						return ctx.Err()
+					}
+					slog.Warn("session bus downstream disconnected, reconnecting",
+						"error", err, "after", backoff)
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(backoff):
+					}
+					backoff = min(backoff*2, maxBackoff)
 				}
-				if connErr := p.ConnectWith(frontConn, backendConn); connErr != nil {
-					return connErr
-				}
-				defer p.Close()
-				return p.Run(ctx)
 			})
 
 		case "socket":

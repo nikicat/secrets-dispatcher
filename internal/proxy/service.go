@@ -313,6 +313,15 @@ func (s *Service) Introspect() string {
       <arg name="collection" type="o" direction="in"/>
     </method>
     <property name="Collections" type="ao" access="read"/>
+    <signal name="CollectionCreated">
+      <arg name="collection" type="o"/>
+    </signal>
+    <signal name="CollectionDeleted">
+      <arg name="collection" type="o"/>
+    </signal>
+    <signal name="CollectionChanged">
+      <arg name="collection" type="o"/>
+    </signal>
   </interface>
   <interface name="org.freedesktop.DBus.Properties">
     <method name="Get">

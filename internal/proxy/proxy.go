@@ -32,6 +32,7 @@ type Proxy struct {
 	collection        *CollectionHandler
 	item              *ItemHandler
 	subtreeProperties *SubtreePropertiesHandler
+	signals           *signalForwarder
 }
 
 // Config holds configuration for the proxy.
@@ -134,6 +135,13 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 		return fmt.Errorf("failed to become primary owner of %s (reply=%d)", dbustypes.BusName, reply)
 	}
 
+	// Forward signals from backend to frontend so clients see live updates
+	p.signals, err = newSignalForwarder(p.backendConn, p.frontConn, p.logger)
+	if err != nil {
+		p.Close()
+		return fmt.Errorf("start signal forwarder: %w", err)
+	}
+
 	return nil
 }
 
@@ -162,6 +170,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Close shuts down the proxy and closes all connections.
 func (p *Proxy) Close() error {
 	p.logger.Info("shutting down")
+
+	if p.signals != nil {
+		p.signals.close()
+	}
 
 	if p.tracker != nil {
 		p.tracker.close()

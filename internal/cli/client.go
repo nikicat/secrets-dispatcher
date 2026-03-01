@@ -79,6 +79,13 @@ type HistoryEntry struct {
 	ResolvedAt time.Time      `json:"resolved_at"`
 }
 
+// ShowResult represents the result of showing a request (pending or resolved).
+type ShowResult struct {
+	Request    PendingRequest `json:"request"`
+	Resolution string         `json:"resolution,omitempty"`
+	ResolvedAt time.Time      `json:"resolved_at,omitempty"`
+}
+
 // PendingResponse is the response from the pending endpoint.
 type PendingResponse struct {
 	Requests []PendingRequest `json:"requests"`
@@ -156,23 +163,55 @@ func (c *Client) Deny(id string) error {
 }
 
 // Show returns a single request by ID (supports partial ID).
-func (c *Client) Show(id string) (*PendingRequest, error) {
-	fullID, err := c.resolveID(id)
-	if err != nil {
-		return nil, err
-	}
-
+// Searches pending requests first, then history.
+func (c *Client) Show(id string) (*ShowResult, error) {
 	requests, err := c.List()
 	if err != nil {
 		return nil, err
 	}
 
-	for _, req := range requests {
-		if req.ID == fullID {
-			return &req, nil
+	entries, err := c.History()
+	if err != nil {
+		return nil, err
+	}
+
+	// Search both pending and history, exact match first
+	var matches []*ShowResult
+
+	for i := range requests {
+		if requests[i].ID == id {
+			return &ShowResult{Request: requests[i]}, nil
+		}
+		if strings.HasPrefix(requests[i].ID, id) {
+			matches = append(matches, &ShowResult{Request: requests[i]})
 		}
 	}
-	return nil, fmt.Errorf("request not found: %s", id)
+
+	for i := range entries {
+		if entries[i].Request.ID == id {
+			return &ShowResult{
+				Request:    entries[i].Request,
+				Resolution: entries[i].Resolution,
+				ResolvedAt: entries[i].ResolvedAt,
+			}, nil
+		}
+		if strings.HasPrefix(entries[i].Request.ID, id) {
+			matches = append(matches, &ShowResult{
+				Request:    entries[i].Request,
+				Resolution: entries[i].Resolution,
+				ResolvedAt: entries[i].ResolvedAt,
+			})
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no request found matching: %s", id)
+	case 1:
+		return matches[0], nil
+	default:
+		return nil, fmt.Errorf("ambiguous ID %q matches %d requests", id, len(matches))
+	}
 }
 
 func (c *Client) action(id, action string) error {

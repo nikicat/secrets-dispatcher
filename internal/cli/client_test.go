@@ -217,25 +217,62 @@ func TestClient_PartialID_NotFound(t *testing.T) {
 	}
 }
 
-func TestClient_Show(t *testing.T) {
+func TestClient_Show_Pending(t *testing.T) {
 	requests := []PendingRequest{
 		{ID: "req-111", Client: "client1"},
 		{ID: "req-222", Client: "client2"},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
+		switch r.URL.Path {
+		case "/api/v1/pending":
+			json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
+		case "/api/v1/log":
+			json.NewEncoder(w).Encode(HistoryResponse{})
+		}
 	}))
 	defer server.Close()
 
 	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
 
-	req, err := client.Show("req-222")
+	result, err := client.Show("req-222")
 	if err != nil {
 		t.Fatalf("Show failed: %v", err)
 	}
-	if req.Client != "client2" {
-		t.Errorf("unexpected client: %s", req.Client)
+	if result.Request.Client != "client2" {
+		t.Errorf("unexpected client: %s", result.Request.Client)
+	}
+	if result.Resolution != "" {
+		t.Errorf("expected empty resolution for pending, got: %s", result.Resolution)
+	}
+}
+
+func TestClient_Show_History(t *testing.T) {
+	resolvedAt := time.Now().Add(-time.Minute)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/pending":
+			json.NewEncoder(w).Encode(PendingResponse{})
+		case "/api/v1/log":
+			json.NewEncoder(w).Encode(HistoryResponse{Entries: []HistoryEntry{
+				{Request: PendingRequest{ID: "old-req", Client: "client3"}, Resolution: "approved", ResolvedAt: resolvedAt},
+			}})
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+
+	result, err := client.Show("old-req")
+	if err != nil {
+		t.Fatalf("Show failed: %v", err)
+	}
+	if result.Request.Client != "client3" {
+		t.Errorf("unexpected client: %s", result.Request.Client)
+	}
+	if result.Resolution != "approved" {
+		t.Errorf("expected approved resolution, got: %s", result.Resolution)
 	}
 }
 

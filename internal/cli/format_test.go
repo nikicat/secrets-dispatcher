@@ -89,7 +89,7 @@ func TestFormatRequest_GPGSign(t *testing.T) {
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatRequest(req); err != nil {
+	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
 		t.Fatalf("FormatRequest failed: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestFormatRequest_GPGSign_SameCommitter(t *testing.T) {
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatRequest(req); err != nil {
+	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
 		t.Fatalf("FormatRequest failed: %v", err)
 	}
 
@@ -160,7 +160,7 @@ func TestFormatRequest_GetSecret_Unchanged(t *testing.T) {
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatRequest(req); err != nil {
+	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
 		t.Fatalf("FormatRequest failed: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestFormatRequest_ShowsCollection(t *testing.T) {
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatRequest(req); err != nil {
+	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
 		t.Fatalf("FormatRequest failed: %v", err)
 	}
 

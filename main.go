@@ -90,7 +90,7 @@ Commands:
   serve         Start the proxy server and API
   login         Generate a login URL for the web UI
   list          List pending approval requests
-  show          Show details of a pending request
+  show          Show details of a request (pending or resolved)
   approve       Approve a pending request
   deny          Deny a pending request
   history       Show resolved requests
@@ -228,12 +228,12 @@ func runCLI(cmd string, args []string) {
 			fmt.Fprintf(os.Stderr, "usage: %s show <request-id>\n", progName)
 			os.Exit(1)
 		}
-		req, err := client.Show(fs.Arg(0))
+		result, err := client.Show(fs.Arg(0))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
-		formatter.FormatRequest(req)
+		formatter.FormatShowResult(result)
 
 	case "approve":
 		if fs.NArg() < 1 {

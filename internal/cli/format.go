@@ -100,18 +100,20 @@ func formatUID(uid uint32) string {
 	return fmt.Sprintf("%d", uid)
 }
 
-// FormatRequest outputs a single request.
-func (f *Formatter) FormatRequest(req *PendingRequest) error {
+// FormatShowResult outputs a single request (pending or resolved).
+func (f *Formatter) FormatShowResult(result *ShowResult) error {
 	if f.asJSON {
-		return json.NewEncoder(f.w).Encode(req)
+		return json.NewEncoder(f.w).Encode(result)
 	}
-	f.formatRequest(req)
+	f.formatRequest(&result.Request)
+	if result.Resolution != "" {
+		fmt.Fprintf(f.w, "Result:  %s\n", result.Resolution)
+		fmt.Fprintf(f.w, "Resolved: %s (%s)\n", result.ResolvedAt.Format(time.RFC3339), formatAgo(result.ResolvedAt))
+	}
 	return nil
 }
 
 func (f *Formatter) formatRequest(req *PendingRequest) {
-	remaining := max(time.Until(req.ExpiresAt).Round(time.Second), 0)
-
 	fmt.Fprintf(f.w, "ID:      %s\n", req.ID)
 	fmt.Fprintf(f.w, "Client:  %s\n", req.Client)
 	fmt.Fprintf(f.w, "Type:    %s\n", req.Type)
@@ -164,7 +166,7 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 		}
 	}
 
-	fmt.Fprintf(f.w, "Expires: %s (%s remaining)\n", req.ExpiresAt.Format(time.RFC3339), remaining)
+	fmt.Fprintf(f.w, "Created: %s\n", req.CreatedAt.Format(time.RFC3339))
 }
 
 func commitSubject(msg string) string {

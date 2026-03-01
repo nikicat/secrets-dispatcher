@@ -62,6 +62,41 @@ func TestResolveInvoker_Self(t *testing.T) {
 	t.Logf("invoker: %s [%d]", comm, pid)
 }
 
+func TestReadProcessChain_TrimIncludesSessionLeader(t *testing.T) {
+	pid := int32(os.Getpid())
+
+	// Find the nearest session leader ancestor.
+	var leaderPID int32
+	for p := pid; p > 1; p = ReadPPID(p) {
+		if IsSessionLeader(p) {
+			leaderPID = p
+			break
+		}
+	}
+	if leaderPID == 0 {
+		t.Skip("no session leader ancestor found")
+	}
+
+	// With trim=true, chain should include processes up to and including the leader.
+	chain := ReadProcessChain(pid, true)
+	if len(chain) == 0 {
+		t.Fatal("ReadProcessChain(trim=true) returned empty chain")
+	}
+	last := chain[len(chain)-1]
+	if last.PID != leaderPID {
+		t.Errorf("last entry PID = %d, want session leader %d", last.PID, leaderPID)
+	}
+
+	// Also verify: starting directly at the session leader should return it.
+	leaderChain := ReadProcessChain(leaderPID, true)
+	if len(leaderChain) == 0 {
+		t.Fatal("ReadProcessChain starting at session leader returned empty chain")
+	}
+	if leaderChain[0].PID != leaderPID {
+		t.Errorf("chain[0].PID = %d, want %d", leaderChain[0].PID, leaderPID)
+	}
+}
+
 func TestResolveInvoker_InvalidPID(t *testing.T) {
 	comm, pid := ResolveInvoker(0)
 	if comm != "" {

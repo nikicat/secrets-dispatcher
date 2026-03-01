@@ -87,10 +87,10 @@ func ReadProcessChain(pid int32, trimAtSessionLeader bool) []ProcEntry {
 		if comm == "" {
 			break
 		}
+		chain = append(chain, ProcEntry{Comm: comm, PID: p})
 		if trimAtSessionLeader && IsSessionLeader(p) {
 			break
 		}
-		chain = append(chain, ProcEntry{Comm: comm, PID: p})
 	}
 	return chain
 }

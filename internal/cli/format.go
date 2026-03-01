@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -122,10 +123,17 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 		fmt.Fprintf(f.w, "Coll:    %s\n", coll)
 	}
 
+	// Sender process info
 	if req.SenderInfo.UnitName != "" {
 		fmt.Fprintf(f.w, "Process: %s (PID %d)\n", req.SenderInfo.UnitName, req.SenderInfo.PID)
 	} else if req.SenderInfo.PID != 0 {
 		fmt.Fprintf(f.w, "PID:     %d\n", req.SenderInfo.PID)
+	}
+	if req.SenderInfo.UserName != "" {
+		fmt.Fprintf(f.w, "User:    %s (UID %d)\n", req.SenderInfo.UserName, req.SenderInfo.UID)
+	}
+	if req.SenderInfo.Sender != "" {
+		fmt.Fprintf(f.w, "Sender:  %s\n", req.SenderInfo.Sender)
 	}
 
 	if req.GPGSignInfo != nil {
@@ -153,10 +161,13 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 	} else {
 		if len(req.Items) == 1 {
 			fmt.Fprintf(f.w, "Secret:  %s\n", req.Items[0].Label)
+			fmt.Fprintf(f.w, "Path:    %s\n", req.Items[0].Path)
+			formatItemAttrs(f.w, req.Items[0].Attributes, "  ")
 		} else if len(req.Items) > 1 {
 			fmt.Fprintf(f.w, "Secrets: %d items\n", len(req.Items))
 			for _, item := range req.Items {
-				fmt.Fprintf(f.w, "  - %s\n", item.Label)
+				fmt.Fprintf(f.w, "  - %s  %s\n", item.Label, item.Path)
+				formatItemAttrs(f.w, item.Attributes, "    ")
 			}
 		}
 
@@ -166,7 +177,18 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 		}
 	}
 
+	if req.Session != "" {
+		fmt.Fprintf(f.w, "Session: %s\n", req.Session)
+	}
 	fmt.Fprintf(f.w, "Created: %s\n", req.CreatedAt.Format(time.RFC3339))
+	if !req.ExpiresAt.IsZero() {
+		remaining := time.Until(req.ExpiresAt).Round(time.Second)
+		if remaining > 0 {
+			fmt.Fprintf(f.w, "Expires: %s (%s remaining)\n", req.ExpiresAt.Format(time.RFC3339), remaining)
+		} else {
+			fmt.Fprintf(f.w, "Expires: %s (expired)\n", req.ExpiresAt.Format(time.RFC3339))
+		}
+	}
 }
 
 func commitSubject(msg string) string {
@@ -244,6 +266,21 @@ func extractCollection(req PendingRequest) string {
 		return ""
 	}
 	return dbustypes.ExtractCollection(req.Items[0].Path)
+}
+
+func formatItemAttrs(w io.Writer, attrs map[string]string, indent string) {
+	if len(attrs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintf(w, "%sAttrs:\n", indent)
+	for _, k := range keys {
+		fmt.Fprintf(w, "%s  %s: %s\n", indent, k, attrs[k])
+	}
 }
 
 func formatAttrs(attrs map[string]string) string {

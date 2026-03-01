@@ -166,9 +166,76 @@ func TestFormatRequest_GetSecret_Unchanged(t *testing.T) {
 
 	out := buf.String()
 	mustContain(t, out, "Secret:  DatabasePassword")
+	mustContain(t, out, "Path:    /org/secrets/1")
 	mustNotContain(t, out, "Coll:")
 	mustNotContain(t, out, "Repo:")
 	mustNotContain(t, out, "Author:")
+}
+
+func TestFormatRequest_ShowsItemAttributes(t *testing.T) {
+	req := &PendingRequest{
+		ID:     "xyz-456",
+		Client: "myapp",
+		Type:   "get_secret",
+		Items: []ItemInfo{{
+			Label:      "MySecret",
+			Path:       "/org/freedesktop/secrets/collection/login/42",
+			Attributes: map[string]string{"service": "ssh", "user": "alice"},
+		}},
+		SenderInfo: SenderInfo{
+			Sender:   ":1.42",
+			PID:      1234,
+			UID:      1000,
+			UserName: "alice",
+			UnitName: "myapp.service",
+		},
+		Session:   "/org/freedesktop/secrets/session/s1",
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
+		t.Fatalf("FormatRequest failed: %v", err)
+	}
+
+	out := buf.String()
+	mustContain(t, out, "Secret:  MySecret")
+	mustContain(t, out, "Path:    /org/freedesktop/secrets/collection/login/42")
+	mustContain(t, out, "  Attrs:\n")
+	mustContain(t, out, "    service: ssh\n")
+	mustContain(t, out, "    user: alice\n")
+	mustContain(t, out, "User:    alice (UID 1000)")
+	mustContain(t, out, "Sender:  :1.42")
+	mustContain(t, out, "Session: /org/freedesktop/secrets/session/s1")
+	mustContain(t, out, "Expires:")
+	mustContain(t, out, "remaining)")
+}
+
+func TestFormatRequest_MultipleItemsShowAttributes(t *testing.T) {
+	req := &PendingRequest{
+		ID:     "xyz-789",
+		Client: "myapp",
+		Type:   "get_secret",
+		Items: []ItemInfo{
+			{Label: "Secret1", Path: "/org/secrets/1", Attributes: map[string]string{"service": "foo"}},
+			{Label: "Secret2", Path: "/org/secrets/2"},
+		},
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
+		t.Fatalf("FormatRequest failed: %v", err)
+	}
+
+	out := buf.String()
+	mustContain(t, out, "Secrets: 2 items")
+	mustContain(t, out, "- Secret1  /org/secrets/1")
+	mustContain(t, out, "    Attrs:\n")
+	mustContain(t, out, "      service: foo\n")
+	mustContain(t, out, "- Secret2  /org/secrets/2")
 }
 
 func TestFormatRequest_ShowsCollection(t *testing.T) {

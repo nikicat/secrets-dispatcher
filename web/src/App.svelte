@@ -498,8 +498,8 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
-                    {#if entry.resolution === "cancelled" && !hasMatchingRule(entry)}
-                      <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>Auto-approve similar</button>
+                    {#if entry.resolution === "cancelled"}
+                      <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>{hasMatchingRule(entry) ? "Reset auto-approve timer" : "Auto-approve similar"}</button>
                     {/if}
                   </li>
                 {/each}
@@ -550,8 +550,8 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
-                    {#if entry.resolution === "cancelled" && !hasMatchingRule(entry)}
-                      <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>Auto-approve similar</button>
+                    {#if entry.resolution === "cancelled"}
+                      <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>{hasMatchingRule(entry) ? "Reset auto-approve timer" : "Auto-approve similar"}</button>
                     {/if}
                   </li>
                 {/each}

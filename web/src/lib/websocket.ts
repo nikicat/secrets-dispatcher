@@ -3,10 +3,11 @@ import type {
   PendingRequest,
   ClientInfo,
   HistoryEntry,
+  AutoApproveRule,
 } from "./types";
 
 export interface ApprovalWebSocketCallbacks {
-  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[], version: string) => void;
+  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[], version: string, autoApproveRules: AutoApproveRule[]) => void;
   onRequestCreated?: (request: PendingRequest) => void;
   onRequestResolved?: (id: string, result: "approved" | "denied") => void;
   onRequestExpired?: (id: string) => void;
@@ -14,6 +15,8 @@ export interface ApprovalWebSocketCallbacks {
   onClientConnected?: (client: ClientInfo) => void;
   onClientDisconnected?: (client: ClientInfo) => void;
   onHistoryEntry?: (entry: HistoryEntry) => void;
+  onAutoApproveRuleAdded?: (rule: AutoApproveRule) => void;
+  onAutoApproveRuleRemoved?: (id: string) => void;
   onConnectionChange?: (isConnected: boolean) => void;
   onAuthError?: () => void;
   onVersionMismatch?: () => void;
@@ -134,7 +137,7 @@ export class ApprovalWebSocket {
           this.callbacks.onVersionMismatch?.();
           return;
         }
-        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? [], msg.version ?? "");
+        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? [], msg.version ?? "", msg.auto_approve_rules ?? []);
         break;
       case "request_created":
         this.callbacks.onRequestCreated?.(msg.request);
@@ -156,6 +159,12 @@ export class ApprovalWebSocket {
         break;
       case "history_entry":
         this.callbacks.onHistoryEntry?.(msg.history_entry);
+        break;
+      case "auto_approve_rule_added":
+        this.callbacks.onAutoApproveRuleAdded?.(msg.auto_approve_rule);
+        break;
+      case "auto_approve_rule_removed":
+        this.callbacks.onAutoApproveRuleRemoved?.(msg.id);
         break;
       case "ping":
         // Server ping, no action needed

@@ -41,6 +41,7 @@ const (
 type Event struct {
 	Type    EventType
 	Request *Request
+	Rule    *AutoApproveRule // For EventAutoApproveRuleAdded/Removed
 }
 
 // Observer receives notifications about approval events.
@@ -611,7 +612,7 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 	m.autoApproveRules = append(m.autoApproveRules, rule)
 	m.autoApproveMu.Unlock()
 
-	m.notify(Event{Type: EventAutoApproveRuleAdded, Request: req})
+	m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: &rule})
 	slog.Info("auto-approve rule added",
 		"rule_id", rule.ID,
 		"invoker", rule.InvokerName,
@@ -703,16 +704,25 @@ func (m *Manager) ListAutoApproveRules() []AutoApproveRule {
 // RemoveAutoApproveRule removes an auto-approve rule by ID.
 func (m *Manager) RemoveAutoApproveRule(id string) error {
 	m.autoApproveMu.Lock()
-	defer m.autoApproveMu.Unlock()
-
+	var removed AutoApproveRule
+	found := false
 	for i, rule := range m.autoApproveRules {
 		if rule.ID == id {
+			removed = rule
 			m.autoApproveRules = append(m.autoApproveRules[:i], m.autoApproveRules[i+1:]...)
-			slog.Info("auto-approve rule removed", "rule_id", id)
-			return nil
+			found = true
+			break
 		}
 	}
-	return ErrNotFound
+	m.autoApproveMu.Unlock()
+
+	if !found {
+		return ErrNotFound
+	}
+
+	m.notify(Event{Type: EventAutoApproveRuleRemoved, Rule: &removed})
+	slog.Info("auto-approve rule removed", "rule_id", id)
+	return nil
 }
 
 // CheckTrustedSigner checks if a GPG sign request comes from a trusted signer.

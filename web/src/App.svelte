@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule } from "./lib/types";
-  import { exchangeToken, getStatus, createAutoApprove, listAutoApproveRules, deleteAutoApproveRule } from "./lib/api";
+  import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
   import { requestPermission, showRequestNotification } from "./lib/notifications";
@@ -23,6 +23,9 @@
   let focusRequestId = $state<string | null>(null);
   let focusRequestGone = $state(false); // true when the focused request was cancelled/expired
 
+  // Tick counter for auto-approve rule timer display (increments every second)
+  let tick = $state(0);
+
   function toggleTimeFormat() {
     useAbsoluteTime = !useAbsoluteTime;
     localStorage.setItem('timeFormat', useAbsoluteTime ? 'absolute' : 'relative');
@@ -41,14 +44,14 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver) => {
+      onSnapshot: (reqs, cls, hist, ver, rules) => {
         requests = reqs;
         clients = cls;
         history = hist;
         version = ver;
+        autoApproveRules = rules;
         loading = false;
         error = null;
-        refreshAutoApproveRules();
         requestPermission();
       },
       onRequestCreated: (req) => {
@@ -79,6 +82,12 @@
       onHistoryEntry: (entry) => {
         // Prepend new entry to history (newest first)
         history = [entry, ...history];
+      },
+      onAutoApproveRuleAdded: (rule) => {
+        autoApproveRules = [...autoApproveRules, rule];
+      },
+      onAutoApproveRuleRemoved: (id) => {
+        autoApproveRules = autoApproveRules.filter(r => r.id !== id);
       },
       onConnectionChange: (isConnected) => {
         connected = isConnected;
@@ -248,18 +257,10 @@
     return request.items.map(i => i.label || i.path).join(", ");
   }
 
-  async function refreshAutoApproveRules() {
-    try {
-      autoApproveRules = await listAutoApproveRules();
-    } catch {
-      // Silently ignore — rules are supplementary info
-    }
-  }
-
   async function handleAutoApprove(requestId: string) {
     try {
       await createAutoApprove(requestId);
-      await refreshAutoApproveRules();
+      // Rule update will arrive via WebSocket
     } catch {
       // Ignore errors silently for now
     }
@@ -274,7 +275,7 @@
     }
   }
 
-  function formatRuleExpiry(expiresAt: string): string {
+  function formatRuleExpiry(expiresAt: string, _tick: number): string {
     const diff = new Date(expiresAt).getTime() - Date.now();
     if (diff <= 0) return "expired";
     const min = Math.floor(diff / 60000);
@@ -290,7 +291,19 @@
 
   onMount(() => {
     handleAuth();
-    return () => stopWebSocket();
+    const timer = setInterval(() => {
+      tick++;
+      // Clean up expired rules
+      if (autoApproveRules.length > 0) {
+        autoApproveRules = autoApproveRules.filter(
+          r => new Date(r.expires_at).getTime() > Date.now()
+        );
+      }
+    }, 1000);
+    return () => {
+      clearInterval(timer);
+      stopWebSocket();
+    };
   });
 </script>
 
@@ -339,7 +352,7 @@
                   </button>
                 </div>
                 <span class="rule-detail">{rule.request_type}{rule.collection ? ` / ${rule.collection}` : ""}</span>
-                <span class="rule-expiry">{formatRuleExpiry(rule.expires_at)}</span>
+                <span class="rule-expiry">{formatRuleExpiry(rule.expires_at, tick)}</span>
               </li>
             {/each}
           </ul>

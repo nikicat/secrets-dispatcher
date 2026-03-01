@@ -34,9 +34,10 @@ type WSMessage struct {
 	Version string `json:"version,omitempty"`
 
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
-	Requests []PendingRequest   `json:"requests"`
-	Clients  []proxy.ClientInfo `json:"clients"`
-	History  []HistoryEntry     `json:"history"`
+	Requests         []PendingRequest          `json:"requests"`
+	Clients          []proxy.ClientInfo        `json:"clients"`
+	History          []HistoryEntry            `json:"history"`
+	AutoApproveRules []approval.AutoApproveRule `json:"auto_approve_rules"`
 
 	// For request_created
 	Request *PendingRequest `json:"request,omitempty"`
@@ -59,6 +60,9 @@ type WSMessage struct {
 
 	// For history_entry
 	HistoryEntry *HistoryEntry `json:"history_entry,omitempty"`
+
+	// For auto_approve_rule_added / auto_approve_rule_removed
+	AutoApproveRule *approval.AutoApproveRule `json:"auto_approve_rule,omitempty"`
 }
 
 // WSHandler handles WebSocket connections for real-time updates.
@@ -210,6 +214,16 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Type:         "history_entry",
 			HistoryEntry: &entry,
 		})
+	case approval.EventAutoApproveRuleAdded:
+		msgs = append(msgs, WSMessage{
+			Type:            "auto_approve_rule_added",
+			AutoApproveRule: event.Rule,
+		})
+	case approval.EventAutoApproveRuleRemoved:
+		msgs = append(msgs, WSMessage{
+			Type: "auto_approve_rule_removed",
+			ID:   event.Rule.ID,
+		})
 	default:
 		return
 	}
@@ -286,12 +300,19 @@ func (wsc *wsConnection) sendSnapshot() error {
 		history[i] = convertHistoryEntry(entry)
 	}
 
+	// Get auto-approve rules
+	autoApproveRules := h.manager.ListAutoApproveRules()
+	if autoApproveRules == nil {
+		autoApproveRules = []approval.AutoApproveRule{}
+	}
+
 	msg := WSMessage{
-		Type:     "snapshot",
-		Version:  BuildVersion,
-		Requests: requests,
-		Clients:  clients,
-		History:  history,
+		Type:             "snapshot",
+		Version:          BuildVersion,
+		Requests:         requests,
+		Clients:          clients,
+		History:          history,
+		AutoApproveRules: autoApproveRules,
 	}
 
 	data, err := json.Marshal(msg)

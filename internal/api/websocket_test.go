@@ -431,6 +431,194 @@ func TestWSHandler_BroadcastClient(t *testing.T) {
 	}
 }
 
+func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+	auth, err := NewAuth(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create auth: %v", err)
+	}
+
+	// Add a rule before connecting
+	req := &approval.Request{
+		Type:       approval.RequestTypeGetSecret,
+		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		SenderInfo: approval.SenderInfo{UnitName: "gh"},
+	}
+	mgr.AddAutoApproveRule(req)
+
+	handler := NewWSHandler(mgr, nil, auth, "", "")
+	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Cookie": []string{"session=" + auth.Token()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Read snapshot
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("failed to read snapshot: %v", err)
+	}
+
+	var msg WSMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("failed to parse message: %v", err)
+	}
+
+	if msg.Type != "snapshot" {
+		t.Fatalf("expected snapshot, got %s", msg.Type)
+	}
+	if len(msg.AutoApproveRules) != 1 {
+		t.Fatalf("expected 1 auto-approve rule in snapshot, got %d", len(msg.AutoApproveRules))
+	}
+	if msg.AutoApproveRules[0].InvokerName != "gh" {
+		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRules[0].InvokerName)
+	}
+	if msg.AutoApproveRules[0].RequestType != approval.RequestTypeGetSecret {
+		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRules[0].RequestType)
+	}
+}
+
+func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+	auth, err := NewAuth(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create auth: %v", err)
+	}
+
+	handler := NewWSHandler(mgr, nil, auth, "", "")
+	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Cookie": []string{"session=" + auth.Token()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Read and discard snapshot
+	_, _, _ = conn.Read(ctx)
+
+	// Add an auto-approve rule
+	req := &approval.Request{
+		Type:       approval.RequestTypeGetSecret,
+		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
+		SenderInfo: approval.SenderInfo{UnitName: "gh"},
+	}
+	mgr.AddAutoApproveRule(req)
+
+	// Read auto_approve_rule_added message
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("failed to read message: %v", err)
+	}
+
+	var msg WSMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("failed to parse message: %v", err)
+	}
+
+	if msg.Type != "auto_approve_rule_added" {
+		t.Errorf("expected auto_approve_rule_added, got %s", msg.Type)
+	}
+	if msg.AutoApproveRule == nil {
+		t.Fatal("expected auto_approve_rule in message")
+	}
+	if msg.AutoApproveRule.InvokerName != "gh" {
+		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRule.InvokerName)
+	}
+	if msg.AutoApproveRule.RequestType != approval.RequestTypeGetSecret {
+		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRule.RequestType)
+	}
+	if msg.AutoApproveRule.Collection != "default" {
+		t.Errorf("expected collection 'default', got '%s'", msg.AutoApproveRule.Collection)
+	}
+	if msg.AutoApproveRule.ID == "" {
+		t.Error("expected non-empty rule ID")
+	}
+}
+
+func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+	auth, err := NewAuth(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create auth: %v", err)
+	}
+
+	handler := NewWSHandler(mgr, nil, auth, "", "")
+	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Cookie": []string{"session=" + auth.Token()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to connect: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Read and discard snapshot
+	_, _, _ = conn.Read(ctx)
+
+	// Add a rule
+	req := &approval.Request{
+		Type:       approval.RequestTypeGetSecret,
+		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		SenderInfo: approval.SenderInfo{UnitName: "gh"},
+	}
+	ruleID := mgr.AddAutoApproveRule(req)
+
+	// Read and discard the rule_added message
+	_, _, _ = conn.Read(ctx)
+
+	// Remove the rule
+	if err := mgr.RemoveAutoApproveRule(ruleID); err != nil {
+		t.Fatalf("failed to remove rule: %v", err)
+	}
+
+	// Read auto_approve_rule_removed message
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("failed to read message: %v", err)
+	}
+
+	var msg WSMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("failed to parse message: %v", err)
+	}
+
+	if msg.Type != "auto_approve_rule_removed" {
+		t.Errorf("expected auto_approve_rule_removed, got %s", msg.Type)
+	}
+	if msg.ID != ruleID {
+		t.Errorf("expected rule ID '%s', got '%s'", ruleID, msg.ID)
+	}
+}
+
 func TestWSHandler_MultipleConnections(t *testing.T) {
 	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	auth, err := NewAuth(t.TempDir())

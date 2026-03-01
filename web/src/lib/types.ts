@@ -97,6 +97,8 @@ export type WSMessage =
   | WSClientConnectedMessage
   | WSClientDisconnectedMessage
   | WSHistoryEntryMessage
+  | WSAutoApproveRuleAddedMessage
+  | WSAutoApproveRuleRemovedMessage
   | WSPingMessage;
 
 export interface WSSnapshotMessage {
@@ -105,6 +107,7 @@ export interface WSSnapshotMessage {
   requests: PendingRequest[];
   clients: ClientInfo[];
   history: HistoryEntry[];
+  auto_approve_rules: AutoApproveRule[];
 }
 
 export interface WSRequestCreatedMessage {
@@ -141,6 +144,16 @@ export interface WSClientDisconnectedMessage {
 export interface WSHistoryEntryMessage {
   type: "history_entry";
   history_entry: HistoryEntry;
+}
+
+export interface WSAutoApproveRuleAddedMessage {
+  type: "auto_approve_rule_added";
+  auto_approve_rule: AutoApproveRule;
+}
+
+export interface WSAutoApproveRuleRemovedMessage {
+  type: "auto_approve_rule_removed";
+  id: string;
 }
 
 export interface WSPingMessage {

@@ -34,11 +34,12 @@ type WSMessage struct {
 	Version string `json:"version,omitempty"`
 
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
-	Requests         []PendingRequest           `json:"requests"`
-	Clients          []proxy.ClientInfo         `json:"clients"`
-	History          []HistoryEntry             `json:"history"`
-	AutoApproveRules []approval.AutoApproveRule `json:"auto_approve_rules"`
-	TrustedSigners   []approval.TrustedSigner   `json:"trusted_signers"`
+	Requests                   []PendingRequest           `json:"requests"`
+	Clients                    []proxy.ClientInfo         `json:"clients"`
+	History                    []HistoryEntry             `json:"history"`
+	AutoApproveRules           []approval.AutoApproveRule `json:"auto_approve_rules"`
+	TrustedSigners             []approval.TrustedSigner   `json:"trusted_signers"`
+	AutoApproveDurationSeconds int                        `json:"auto_approve_duration_seconds,omitempty"`
 
 	// For request_created
 	Request *PendingRequest `json:"request,omitempty"`
@@ -328,13 +329,14 @@ func (wsc *wsConnection) sendSnapshot() error {
 	}
 
 	msg := WSMessage{
-		Type:             "snapshot",
-		Version:          BuildVersion,
-		Requests:         requests,
-		Clients:          clients,
-		History:          history,
-		AutoApproveRules: autoApproveRules,
-		TrustedSigners:   trustedSigners,
+		Type:                       "snapshot",
+		Version:                    BuildVersion,
+		Requests:                   requests,
+		Clients:                    clients,
+		History:                    history,
+		AutoApproveRules:           autoApproveRules,
+		TrustedSigners:             trustedSigners,
+		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
 	}
 
 	data, err := json.Marshal(msg)

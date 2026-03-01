@@ -62,6 +62,15 @@ button:disabled {
   background-color: var(--color-success-hover);
 }
 
+.btn-approve-auto {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.btn-approve-auto:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-primary) 85%, black);
+}
+
 .btn-deny {
   background-color: var(--color-danger);
   color: white;

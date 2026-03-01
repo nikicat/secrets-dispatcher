@@ -115,6 +115,7 @@ export interface WSSnapshotMessage {
   history: HistoryEntry[];
   auto_approve_rules: AutoApproveRule[];
   trusted_signers: TrustedSigner[];
+  auto_approve_duration_seconds?: number;
 }
 
 export interface WSRequestCreatedMessage {

@@ -122,10 +122,20 @@ func (a *mockApprover) AutoApprove(requestID string) error {
 	return nil
 }
 
+func (a *mockApprover) ApproveAndAutoApprove(id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.err != nil {
+		return a.err
+	}
+	a.approved = append(a.approved, "approve_auto:"+id)
+	return nil
+}
+
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
-	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false)
+	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false, 2*time.Minute)
 	return h, mock, approver
 }
 
@@ -176,9 +186,9 @@ func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	wantActions := []string{"default", "", "approve", "Approve", "deny", "Deny"}
+	wantActions := []string{"default", "", "approve", "Approve", "approve_and_auto_approve", "Approve 2m", "deny", "Deny"}
 	if len(call.actions) != len(wantActions) {
-		t.Fatalf("expected %d actions, got %d", len(wantActions), len(call.actions))
+		t.Fatalf("expected %d actions, got %d: %v", len(wantActions), len(call.actions), call.actions)
 	}
 	for i, a := range wantActions {
 		if call.actions[i] != a {

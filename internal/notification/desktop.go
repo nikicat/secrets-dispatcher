@@ -36,6 +36,7 @@ type Approver interface {
 	Approve(id string) error
 	Deny(id string) error
 	AutoApprove(requestID string) error
+	ApproveAndAutoApprove(id string) error
 }
 
 // Action represents a user interaction with a notification button.
@@ -225,11 +226,12 @@ func (n *DBusNotifier) doClose(id uint32) error {
 // Handler receives approval events and shows desktop notifications.
 // It also processes notification action button clicks (Approve/Deny).
 type Handler struct {
-	notifier Notifier
-	approver Approver
-	baseURL  string
-	showPIDs bool
-	openURL  func(string) // injectable for testing; defaults to xdg-open
+	notifier             Notifier
+	approver             Approver
+	baseURL              string
+	showPIDs             bool
+	autoApproveDuration  time.Duration
+	openURL              func(string) // injectable for testing; defaults to xdg-open
 
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
@@ -247,16 +249,19 @@ type cancelledEntry struct {
 
 // NewHandler creates a notification handler.
 // baseURL is the web UI URL opened when the user clicks the notification body.
-func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool) *Handler {
+// autoApproveDuration controls the label shown on the "Approve Nm" button and
+// the body text of the post-timeout auto-approve notification.
+func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool, autoApproveDuration time.Duration) *Handler {
 	return &Handler{
-		notifier:          notifier,
-		approver:          approver,
-		baseURL:           baseURL,
-		showPIDs:          showPIDs,
-		openURL:           func(u string) { exec.Command("xdg-open", u).Start() },
-		notifications:     make(map[string]uint32),
-		requests:          make(map[uint32]string),
-		cancelledRequests: make(map[string]cancelledEntry),
+		notifier:            notifier,
+		approver:            approver,
+		baseURL:             baseURL,
+		showPIDs:            showPIDs,
+		autoApproveDuration: autoApproveDuration,
+		openURL:             func(u string) { exec.Command("xdg-open", u).Start() },
+		notifications:       make(map[string]uint32),
+		requests:            make(map[uint32]string),
+		cancelledRequests:   make(map[string]cancelledEntry),
 	}
 }
 
@@ -301,6 +306,8 @@ func (h *Handler) handleAction(action Action) {
 		return
 	case "approve":
 		err = h.approver.Approve(reqID)
+	case "approve_and_auto_approve":
+		err = h.approver.ApproveAndAutoApprove(reqID)
 	case "deny":
 		err = h.approver.Deny(reqID)
 	case "auto_approve":
@@ -353,10 +360,32 @@ func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string)
 	}
 }
 
+// formatDurationShort formats a duration as a compact human-readable string (e.g. "2m", "90s").
+func formatDurationShort(d time.Duration) string {
+	if d <= 0 {
+		return "0s"
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if m > 0 && s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
+}
+
 func (h *Handler) handleCreated(req *approval.Request) {
 	summary, icon := h.notificationMeta(req)
 	body := h.formatBody(req)
-	actions := []string{"default", "", "approve", "Approve", "deny", "Deny"}
+	durLabel := formatDurationShort(h.autoApproveDuration)
+	actions := []string{
+		"default", "",
+		"approve", "Approve",
+		"approve_and_auto_approve", "Approve " + durLabel,
+		"deny", "Deny",
+	}
 
 	id, err := h.notifier.Notify(summary, body, icon, actions)
 	if err != nil {
@@ -409,7 +438,7 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 		invoker = "client"
 	}
 	summary := fmt.Sprintf("%s timed out", invoker)
-	body := "Auto-approve similar requests for 2 min?"
+	body := fmt.Sprintf("Auto-approve similar requests for %s?", formatDurationShort(h.autoApproveDuration))
 	actions := []string{"auto_approve", "Auto-approve", "dismiss", "Dismiss"}
 
 	newID, err := h.notifier.Notify(summary, body, "dialog-question", actions)

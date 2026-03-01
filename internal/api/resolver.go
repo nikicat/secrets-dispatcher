@@ -54,6 +54,39 @@ func (r *Resolver) AutoApprove(requestID string) error {
 	return nil
 }
 
+// ApproveAndAutoApprove approves a pending request and creates an auto-approve
+// rule for similar future requests. For GPG signing requests, it runs the real
+// gpg binary to produce the signature before approving.
+func (r *Resolver) ApproveAndAutoApprove(id string) error {
+	req := r.Manager.GetPending(id)
+	if req == nil {
+		return approval.ErrNotFound
+	}
+
+	if req.Type == approval.RequestTypeGPGSign && req.GPGSignInfo != nil {
+		// GPG sign: produce signature, then approve + auto-approve
+		gpgPath, err := r.GPGRunner.FindGPG()
+		if err != nil {
+			slog.Error("failed to find real gpg", "error", err)
+			return r.Manager.ApproveGPGFailed(id, nil, 2)
+		}
+
+		sig, status, exitCode, err := r.GPGRunner.RunGPG(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject))
+		if err != nil || exitCode != 0 {
+			slog.Error("gpg signing failed", "error", err, "exit_code", exitCode)
+			return r.Manager.ApproveGPGFailed(id, status, exitCode)
+		}
+
+		if err := r.Manager.ApproveWithSignature(id, sig, status); err != nil {
+			return err
+		}
+		r.Manager.AddAutoApproveRule(req)
+		return nil
+	}
+
+	return r.Manager.ApproveAndAutoApprove(id)
+}
+
 func (r *Resolver) approveGPGSign(id string, req *approval.Request) error {
 	gpgPath, err := r.GPGRunner.FindGPG()
 	if err != nil {

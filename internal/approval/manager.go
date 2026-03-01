@@ -422,6 +422,27 @@ func (m *Manager) Approve(id string) error {
 	return nil
 }
 
+// ApproveAndAutoApprove approves a pending request and creates an auto-approve
+// rule for similar future requests.
+func (m *Manager) ApproveAndAutoApprove(id string) error {
+	m.mu.Lock()
+	req, ok := m.pending[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+
+	req.result = true
+	delete(m.pending, id)
+	close(req.done)
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestApproved, Request: req})
+	m.cacheApproval(req)
+	m.AddAutoApproveRule(req)
+	return nil
+}
+
 // Deny denies a pending request by ID.
 func (m *Manager) Deny(id string) error {
 	m.mu.Lock()
@@ -566,6 +587,15 @@ func (m *Manager) CacheItemForSender(sender, itemPath string) {
 
 	key := approvalCacheKey(sender, itemPath)
 	m.cache[key] = time.Now()
+}
+
+// AutoApproveDuration returns the configured auto-approve rule duration.
+func (m *Manager) AutoApproveDuration() time.Duration {
+	d := m.autoApproveDuration
+	if d <= 0 {
+		d = 2 * time.Minute
+	}
+	return d
 }
 
 // extractCollection extracts the collection name from a Secret Service item path.

@@ -25,6 +25,9 @@
   let focusRequestId = $state<string | null>(null);
   let focusRequestGone = $state(false); // true when the focused request was cancelled/expired
 
+  // Auto-approve duration from server config (seconds)
+  let autoApproveDurationSeconds = $state(120);
+
   // Tick counter for auto-approve rule timer display (increments every second)
   let tick = $state(0);
 
@@ -46,13 +49,14 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver, rules, signers) => {
+      onSnapshot: (reqs, cls, hist, ver, rules, signers, aaDuration) => {
         requests = reqs;
         clients = cls;
         history = hist;
         version = ver;
         autoApproveRules = rules;
         trustedSigners = signers;
+        autoApproveDurationSeconds = aaDuration;
         loading = false;
         error = null;
         requestPermission();
@@ -511,7 +515,7 @@
         <!-- Single-request mode: opened from desktop notification -->
         {@const focusedRequest = requests.find(r => r.id === focusRequestId)}
         {#if focusedRequest}
-          <RequestCard request={focusedRequest} onAction={handleAction} />
+          <RequestCard request={focusedRequest} onAction={handleAction} {autoApproveDurationSeconds} />
         {:else if focusRequestGone}
           <div class="empty-state">
             <p>Request is no longer pending</p>
@@ -575,7 +579,7 @@
         <section>
           <h2>Pending Requests ({requests.length})</h2>
           {#each [...requests].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) as request (request.id)}
-            <RequestCard {request} onAction={handleAction} />
+            <RequestCard {request} onAction={handleAction} {autoApproveDurationSeconds} />
           {/each}
         </section>
         <!-- Show history section below pending requests -->

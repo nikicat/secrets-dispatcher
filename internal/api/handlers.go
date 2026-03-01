@@ -145,6 +145,31 @@ func (h *Handlers) HandleApprove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, ActionResponse{Status: "approved"})
 }
 
+// HandleApproveAndAutoApprove handles POST /api/v1/pending/{id}/approve-and-auto-approve.
+func (h *Handlers) HandleApproveAndAutoApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := extractRequestID(r.URL.Path, "/api/v1/pending/", "/approve-and-auto-approve")
+	if id == "" {
+		writeError(w, "invalid request path", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.resolver.ApproveAndAutoApprove(id); err != nil {
+		if err == approval.ErrNotFound {
+			writeError(w, "request not found or expired", http.StatusNotFound)
+			return
+		}
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, ActionResponse{Status: "approved"})
+}
+
 // HandleDeny handles POST /api/v1/pending/{id}/deny.
 func (h *Handlers) HandleDeny(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

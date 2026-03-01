@@ -73,6 +73,8 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
+		case strings.HasSuffix(path, "/approve-and-auto-approve"):
+			handlers.HandleApproveAndAutoApprove(w, r)
 		case strings.HasSuffix(path, "/approve"):
 			handlers.HandleApprove(w, r)
 		case strings.HasSuffix(path, "/deny"):

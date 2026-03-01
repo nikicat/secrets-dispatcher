@@ -1,15 +1,24 @@
 <script lang="ts">
   import type { PendingRequest } from "./types";
-  import { approve, deny, ApiError } from "./api";
+  import { approve, approveAndAutoApprove, deny, ApiError } from "./api";
 
   interface Props {
     request: PendingRequest;
     onAction: () => void;
+    autoApproveDurationSeconds: number;
   }
 
-  let { request, onAction }: Props = $props();
+  let { request, onAction, autoApproveDurationSeconds }: Props = $props();
 
-  let loading = $state<"approve" | "deny" | null>(null);
+  let loading = $state<"approve" | "approve_auto" | "deny" | null>(null);
+
+  function formatDurationShort(seconds: number): string {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m > 0 && s === 0) return `${m}m`;
+    if (m > 0) return `${m}m${s}s`;
+    return `${s}s`;
+  }
   let error = $state<string | null>(null);
   let timeLeft = $state("");
   let copiedPath = $state<string | null>(null);
@@ -101,6 +110,23 @@
     error = null;
     try {
       await approve(request.id);
+      onAction();
+    } catch (e) {
+      if (e instanceof ApiError) {
+        error = e.message;
+      } else {
+        error = "Failed to approve";
+      }
+    } finally {
+      loading = null;
+    }
+  }
+
+  async function handleApproveAndAutoApprove() {
+    loading = "approve_auto";
+    error = null;
+    try {
+      await approveAndAutoApprove(request.id);
       onAction();
     } catch (e) {
       if (e instanceof ApiError) {
@@ -329,6 +355,18 @@
         Approving...
       {:else}
         Approve
+      {/if}
+    </button>
+    <button
+      class="btn-approve-auto"
+      onclick={handleApproveAndAutoApprove}
+      disabled={loading !== null}
+      title="Approve and auto-approve similar requests for {formatDurationShort(autoApproveDurationSeconds)}"
+    >
+      {#if loading === "approve_auto"}
+        Approving...
+      {:else}
+        Approve {formatDurationShort(autoApproveDurationSeconds)}
       {/if}
     </button>
     <button class="btn-deny" onclick={handleDeny} disabled={loading !== null}>

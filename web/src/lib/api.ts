@@ -98,6 +98,19 @@ export async function approve(id: string): Promise<ActionResponse> {
 }
 
 /**
+ * Approve a pending request and create an auto-approve rule for similar future requests.
+ */
+export async function approveAndAutoApprove(id: string): Promise<ActionResponse> {
+  const result = await request<ActionResponse>(`/pending/${id}/approve-and-auto-approve`, {
+    method: "POST",
+  });
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
  * Deny a pending request by ID.
  */
 export async function deny(id: string): Promise<ActionResponse> {

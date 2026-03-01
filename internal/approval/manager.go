@@ -124,9 +124,9 @@ type HistoryEntry struct {
 // TrustedSigner defines a process auto-approved for GPG signing.
 // All three fields must match. Empty optional fields match anything.
 type TrustedSigner struct {
-	ExePath    string // Required: absolute path to the executable
-	RepoPath   string // Optional: repo basename; empty matches any repo
-	FilePrefix string // Optional: all changed files must have this prefix; empty matches any
+	ExePath    string `json:"exe_path"`              // Required: absolute path to the executable
+	RepoPath   string `json:"repo_path,omitempty"`   // Optional: repo basename; empty matches any repo
+	FilePrefix string `json:"file_prefix,omitempty"` // Optional: all changed files must have this prefix; empty matches any
 }
 
 // AutoApproveRule defines a temporary rule that auto-approves matching requests.
@@ -704,6 +704,11 @@ func (m *Manager) ListAutoApproveRules() []AutoApproveRule {
 		}
 	}
 	return active
+}
+
+// ListTrustedSigners returns the configured trusted signers.
+func (m *Manager) ListTrustedSigners() []TrustedSigner {
+	return m.trustedSigners
 }
 
 // RemoveAutoApproveRule removes an auto-approve rule by ID.

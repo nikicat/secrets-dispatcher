@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule } from "./lib/types";
+  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule, TrustedSigner } from "./lib/types";
   import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
@@ -12,6 +12,7 @@
   let clients = $state<ClientInfo[]>([]);
   let history = $state<HistoryEntry[]>([]);
   let autoApproveRules = $state<AutoApproveRule[]>([]);
+  let trustedSigners = $state<TrustedSigner[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
@@ -45,12 +46,13 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver, rules) => {
+      onSnapshot: (reqs, cls, hist, ver, rules, signers) => {
         requests = reqs;
         clients = cls;
         history = hist;
         version = ver;
         autoApproveRules = rules;
+        trustedSigners = signers;
         loading = false;
         error = null;
         requestPermission();
@@ -322,6 +324,11 @@
     }
   }
 
+  function basename(path: string): string {
+    const slash = path.lastIndexOf("/");
+    return slash >= 0 ? path.slice(slash + 1) : path;
+  }
+
   function formatRuleExpiry(expiresAt: string, _tick: number): string {
     const diff = new Date(expiresAt).getTime() - Date.now();
     if (diff <= 0) return "expired";
@@ -386,10 +393,23 @@
           </ul>
         {/if}
       </div>
-      {#if autoApproveRules.length > 0}
+      {#if autoApproveRules.length > 0 || trustedSigners.length > 0}
         <div class="sidebar-rules">
           <h3>Auto-Approve Rules</h3>
           <ul class="rules-list">
+            {#each trustedSigners as signer, i (signer.exe_path + (signer.repo_path ?? '') + (signer.file_prefix ?? ''))}
+              <li class="rule-entry">
+                <div class="rule-header">
+                  <span class="history-type history-type--gpg_sign">GPG Sign</span>
+                  <span class="rule-permanent">permanent</span>
+                </div>
+                <PropsTable process={basename(signer.exe_path)} attributes={Object.assign(
+                  {},
+                  signer.repo_path ? { repo: signer.repo_path } : {},
+                  signer.file_prefix ? { file_prefix: signer.file_prefix } : {}
+                )} />
+              </li>
+            {/each}
             {#each autoApproveRules as rule (rule.id)}
               <li class="rule-entry">
                 <div class="rule-header">
@@ -1110,6 +1130,12 @@
   .rule-expiry {
     font-size: 11px;
     color: var(--color-warning);
+  }
+
+  .rule-permanent {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    opacity: 0.7;
   }
 
   /* Desktop: show sidebar by default, hide toggle */

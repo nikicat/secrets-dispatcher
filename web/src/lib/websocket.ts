@@ -4,10 +4,11 @@ import type {
   ClientInfo,
   HistoryEntry,
   AutoApproveRule,
+  TrustedSigner,
 } from "./types";
 
 export interface ApprovalWebSocketCallbacks {
-  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[], version: string, autoApproveRules: AutoApproveRule[]) => void;
+  onSnapshot?: (requests: PendingRequest[], clients: ClientInfo[], history: HistoryEntry[], version: string, autoApproveRules: AutoApproveRule[], trustedSigners: TrustedSigner[]) => void;
   onRequestCreated?: (request: PendingRequest) => void;
   onRequestResolved?: (id: string, result: "approved" | "denied") => void;
   onRequestExpired?: (id: string) => void;
@@ -137,7 +138,7 @@ export class ApprovalWebSocket {
           this.callbacks.onVersionMismatch?.();
           return;
         }
-        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? [], msg.version ?? "", msg.auto_approve_rules ?? []);
+        this.callbacks.onSnapshot?.(msg.requests ?? [], msg.clients ?? [], msg.history ?? [], msg.version ?? "", msg.auto_approve_rules ?? [], msg.trusted_signers ?? []);
         break;
       case "request_created":
         this.callbacks.onRequestCreated?.(msg.request);

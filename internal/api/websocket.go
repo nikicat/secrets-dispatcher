@@ -34,10 +34,11 @@ type WSMessage struct {
 	Version string `json:"version,omitempty"`
 
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
-	Requests         []PendingRequest          `json:"requests"`
-	Clients          []proxy.ClientInfo        `json:"clients"`
-	History          []HistoryEntry            `json:"history"`
+	Requests         []PendingRequest           `json:"requests"`
+	Clients          []proxy.ClientInfo         `json:"clients"`
+	History          []HistoryEntry             `json:"history"`
 	AutoApproveRules []approval.AutoApproveRule `json:"auto_approve_rules"`
+	TrustedSigners   []approval.TrustedSigner   `json:"trusted_signers"`
 
 	// For request_created
 	Request *PendingRequest `json:"request,omitempty"`
@@ -320,6 +321,12 @@ func (wsc *wsConnection) sendSnapshot() error {
 		autoApproveRules = []approval.AutoApproveRule{}
 	}
 
+	// Get trusted signers
+	trustedSigners := h.manager.ListTrustedSigners()
+	if trustedSigners == nil {
+		trustedSigners = []approval.TrustedSigner{}
+	}
+
 	msg := WSMessage{
 		Type:             "snapshot",
 		Version:          BuildVersion,
@@ -327,6 +334,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		Clients:          clients,
 		History:          history,
 		AutoApproveRules: autoApproveRules,
+		TrustedSigners:   trustedSigners,
 	}
 
 	data, err := json.Marshal(msg)

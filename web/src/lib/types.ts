@@ -87,6 +87,12 @@ export interface AutoApproveRule {
   expires_at: string;
 }
 
+export interface TrustedSigner {
+  exe_path: string;
+  repo_path?: string;
+  file_prefix?: string;
+}
+
 // WebSocket message types
 export type WSMessage =
   | WSSnapshotMessage
@@ -108,6 +114,7 @@ export interface WSSnapshotMessage {
   clients: ClientInfo[];
   history: HistoryEntry[];
   auto_approve_rules: AutoApproveRule[];
+  trusted_signers: TrustedSigner[];
 }
 
 export interface WSRequestCreatedMessage {

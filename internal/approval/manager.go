@@ -34,6 +34,7 @@ const (
 	EventRequestExpired
 	EventRequestCancelled
 	EventRequestAutoApproved
+	EventRequestIgnored
 	EventAutoApproveRuleAdded
 	EventAutoApproveRuleRemoved
 )
@@ -113,6 +114,7 @@ const (
 	ResolutionExpired      Resolution = "expired"
 	ResolutionCancelled    Resolution = "cancelled"
 	ResolutionAutoApproved Resolution = "auto_approved"
+	ResolutionIgnored      Resolution = "ignored"
 )
 
 // HistoryEntry represents a resolved approval request.
@@ -162,6 +164,7 @@ type Manager struct {
 	autoApproveRules     []AutoApproveRule
 	autoApproveDuration  time.Duration
 	trustedSigners       []TrustedSigner // exe+repo combos auto-approved for gpg_sign
+	ignoreChromeDummy    bool
 }
 
 // ManagerConfig holds configuration for the approval Manager.
@@ -178,6 +181,8 @@ type ManagerConfig struct {
 	AutoApproveDuration time.Duration
 	// TrustedSigners is a list of executable paths auto-approved for gpg_sign requests.
 	TrustedSigners []TrustedSigner
+	// IgnoreChromeDummy silently ignores Chrome's dummy secret writes.
+	IgnoreChromeDummy bool
 }
 
 // NewManager creates a new approval manager.
@@ -191,6 +196,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		cache:               make(map[string]time.Time),
 		autoApproveDuration: cfg.AutoApproveDuration,
 		trustedSigners:      cfg.TrustedSigners,
+		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
 	}
 }
 
@@ -248,6 +254,8 @@ func (m *Manager) addHistory(event Event) {
 		resolution = ResolutionCancelled
 	case EventRequestAutoApproved:
 		resolution = ResolutionAutoApproved
+	case EventRequestIgnored:
+		resolution = ResolutionIgnored
 	default:
 		return
 	}
@@ -829,6 +837,39 @@ func readExePath(pid uint32) string {
 		return ""
 	}
 	return target
+}
+
+// chromeDummySchema is the xdg:schema Chrome uses for dummy keyring-unlock probes.
+const chromeDummySchema = "_chrome_dummy_schema_for_unlocking"
+
+// ShouldIgnore returns true when the request is a Chrome dummy secret write
+// that should be silently dropped.
+func (m *Manager) ShouldIgnore(items []ItemInfo, reqType RequestType) bool {
+	if !m.ignoreChromeDummy || reqType != RequestTypeWrite {
+		return false
+	}
+	for _, item := range items {
+		if item.Attributes["xdg:schema"] == chromeDummySchema {
+			return true
+		}
+	}
+	return false
+}
+
+// RecordIgnored creates a history entry for an ignored request without blocking.
+func (m *Manager) RecordIgnored(client string, items []ItemInfo, session string, senderInfo SenderInfo) {
+	now := time.Now()
+	req := &Request{
+		ID:         uuid.New().String(),
+		Client:     client,
+		Items:      items,
+		Session:    session,
+		CreatedAt:  now,
+		ExpiresAt:  now,
+		Type:       RequestTypeWrite,
+		SenderInfo: senderInfo,
+	}
+	m.notify(Event{Type: EventRequestIgnored, Request: req})
 }
 
 // cacheApproval records approved (sender, item) pairs in the cache.

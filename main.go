@@ -360,6 +360,7 @@ func runServe(args []string) {
 		ApprovalWindow:      time.Duration(cfg.Serve.ApprovalWindow),
 		AutoApproveDuration: time.Duration(cfg.Serve.AutoApproveDuration),
 		TrustedSigners:      trustedSigners,
+		IgnoreChromeDummy:   *cfg.Serve.IgnoreChromeDummySecret,
 	})
 
 	// Set up desktop notifications

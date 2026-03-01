@@ -267,6 +267,13 @@ func (m *MockSecretService) AddItem(label string, attributes map[string]string, 
 	return path
 }
 
+// ItemCount returns the number of items in the mock store.
+func (m *MockSecretService) ItemCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.items)
+}
+
 // mockCollection implements Collection interface.
 type mockCollection struct {
 	service *MockSecretService

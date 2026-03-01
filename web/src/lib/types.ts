@@ -70,7 +70,7 @@ export interface ErrorResponse {
 
 export type AuthState = "checking" | "authenticated" | "unauthenticated";
 
-export type Resolution = "approved" | "denied" | "expired" | "cancelled" | "auto_approved";
+export type Resolution = "approved" | "denied" | "expired" | "cancelled" | "auto_approved" | "ignored";
 
 export interface HistoryEntry {
   request: PendingRequest;

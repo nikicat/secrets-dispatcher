@@ -1216,6 +1216,104 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	}
 }
 
+// TestProxyCreateItemIgnoresChromeDummy tests that CreateItem with Chrome's dummy
+// secret schema is silently ignored (not forwarded to backend, no pending request).
+func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	initialItemCount := mock.ItemCount()
+
+	approvalMgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:          30 * time.Second,
+		HistoryMax:       100,
+		IgnoreChromeDummy: true,
+	})
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	// Open session
+	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	if call.Err != nil {
+		t.Fatalf("OpenSession: %v", call.Err)
+	}
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// CreateItem with Chrome's dummy schema — should return immediately without blocking
+	collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+	properties := map[string]dbus.Variant{
+		"org.freedesktop.Secret.Item.Label": dbus.MakeVariant("Chrome Safe Storage"),
+		"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{
+			"xdg:schema": "_chrome_dummy_schema_for_unlocking",
+		}),
+	}
+	secret := dbustypes.Secret{
+		Session:     sessionPath,
+		Parameters:  nil,
+		Value:       []byte("dummy"),
+		ContentType: "text/plain",
+	}
+
+	call = collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+	if call.Err != nil {
+		t.Fatalf("CreateItem returned error: %v", call.Err)
+	}
+
+	var itemPath, promptPath dbus.ObjectPath
+	if err := call.Store(&itemPath, &promptPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+
+	// Ignored CreateItem returns ("/", "/")
+	if itemPath != "/" {
+		t.Errorf("expected item path '/', got %q", itemPath)
+	}
+
+	// No pending requests should have been created
+	if count := approvalMgr.PendingCount(); count != 0 {
+		t.Errorf("expected 0 pending requests, got %d", count)
+	}
+
+	// History should have one entry with "ignored" resolution
+	history := approvalMgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != approval.ResolutionIgnored {
+		t.Errorf("expected resolution %q, got %q", approval.ResolutionIgnored, history[0].Resolution)
+	}
+
+	// Backend should NOT have received the CreateItem (item count unchanged)
+	if count := mock.ItemCount(); count != initialItemCount {
+		t.Errorf("expected backend item count %d (unchanged), got %d", initialItemCount, count)
+	}
+}
+
 // TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects non-plain algorithms.
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)

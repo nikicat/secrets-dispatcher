@@ -180,8 +180,17 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	// Resolve sender information
 	senderInfo := c.resolver.Resolve(sender)
 
-	// Require approval before creating item
+	// Short-circuit Chrome dummy secret writes
 	items := []approval.ItemInfo{itemInfo}
+	if c.approval.ShouldIgnore(items, approval.RequestTypeWrite) {
+		c.approval.RecordIgnored(c.clientName, items, string(secret.Session), senderInfo)
+		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
+			"collection": string(path), "ignored": true,
+		}, "ignored", nil)
+		return "/", "/", nil
+	}
+
+	// Require approval before creating item
 	if err := c.approval.RequireApproval(ctx, c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "denied", err)
 		return "/", "/", dbustypes.ErrAccessDenied(err.Error())

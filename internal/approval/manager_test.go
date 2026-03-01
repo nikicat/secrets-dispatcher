@@ -1224,6 +1224,86 @@ func TestManager_EventOrder_CancelledContext(t *testing.T) {
 	}
 }
 
+func TestShouldIgnore_ChromeDummy(t *testing.T) {
+	chromeItems := []ItemInfo{{
+		Path:       "/org/freedesktop/secrets/collection/default/123",
+		Label:      "Chrome Safe Storage",
+		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
+	}}
+	normalItems := []ItemInfo{{
+		Path:       "/org/freedesktop/secrets/collection/default/456",
+		Label:      "My Secret",
+		Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
+	}}
+
+	t.Run("enabled + write + matching schema", func(t *testing.T) {
+		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
+		if !mgr.ShouldIgnore(chromeItems, RequestTypeWrite) {
+			t.Error("expected true")
+		}
+	})
+	t.Run("enabled + read + matching schema", func(t *testing.T) {
+		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
+		if mgr.ShouldIgnore(chromeItems, RequestTypeGetSecret) {
+			t.Error("expected false for non-write")
+		}
+	})
+	t.Run("enabled + write + different schema", func(t *testing.T) {
+		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
+		if mgr.ShouldIgnore(normalItems, RequestTypeWrite) {
+			t.Error("expected false for non-chrome schema")
+		}
+	})
+	t.Run("disabled + write + matching schema", func(t *testing.T) {
+		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: false})
+		if mgr.ShouldIgnore(chromeItems, RequestTypeWrite) {
+			t.Error("expected false when disabled")
+		}
+	})
+}
+
+func TestRecordIgnored(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	items := []ItemInfo{{
+		Path:       "/org/freedesktop/secrets/collection/default/123",
+		Label:      "Chrome Safe Storage",
+		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
+	}}
+
+	mgr.RecordIgnored("test-client", items, "/session/1", SenderInfo{})
+
+	// Check event fired
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != EventRequestIgnored {
+		t.Errorf("expected EventRequestIgnored, got %v", events[0].Type)
+	}
+
+	// Check history entry
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionIgnored {
+		t.Errorf("expected resolution 'ignored', got '%s'", history[0].Resolution)
+	}
+	if history[0].Request.Client != "test-client" {
+		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.Client)
+	}
+
+	// No pending requests
+	if mgr.PendingCount() != 0 {
+		t.Error("ignored request should not be pending")
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
 func TestCheckTrustedSigner_WalksProcessChain(t *testing.T) {
 	// Use the current test process as the "trusted" exe.
 	selfExe, err := os.Readlink("/proc/self/exe")

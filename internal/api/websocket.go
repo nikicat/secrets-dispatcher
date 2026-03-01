@@ -230,6 +230,12 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Type:         "history_entry",
 			HistoryEntry: &entry,
 		})
+	case approval.EventRequestIgnored:
+		entry := makeHistoryEntry(event.Request, "ignored")
+		msgs = append(msgs, WSMessage{
+			Type:         "history_entry",
+			HistoryEntry: &entry,
+		})
 	case approval.EventAutoApproveRuleAdded:
 		msgs = append(msgs, WSMessage{
 			Type:            "auto_approve_rule_added",

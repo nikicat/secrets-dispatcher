@@ -229,6 +229,8 @@
         return "resolution-denied";
       case "auto_approved":
         return "resolution-auto-approved";
+      case "ignored":
+        return "resolution-ignored";
       default:
         return "resolution-other";
     }
@@ -1022,6 +1024,11 @@
   .resolution-auto-approved {
     color: var(--color-primary);
     background-color: rgba(59, 130, 246, 0.1);
+  }
+
+  .resolution-ignored {
+    color: var(--color-text-muted);
+    background-color: var(--color-bg);
   }
 
   .resolution-other {

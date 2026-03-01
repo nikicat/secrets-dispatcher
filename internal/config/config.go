@@ -23,6 +23,7 @@ const (
 var defaultNotifications = true
 var defaultShowPIDs = false
 var defaultTrimProcessChain = true
+var defaultIgnoreChromeDummySecret = true
 
 // BusConfig describes a D-Bus endpoint (upstream backend or downstream front).
 type BusConfig struct {
@@ -57,6 +58,9 @@ func (cfg *Config) WithDefaults() *Config {
 	}
 	if s.TrimProcessChain == nil {
 		s.TrimProcessChain = &defaultTrimProcessChain
+	}
+	if s.IgnoreChromeDummySecret == nil {
+		s.IgnoreChromeDummySecret = &defaultIgnoreChromeDummySecret
 	}
 	if s.ApprovalWindow == 0 {
 		s.ApprovalWindow = Duration(DefaultApprovalWindow)
@@ -152,7 +156,8 @@ type ServeConfig struct {
 	TrimProcessChain    *bool       `yaml:"trim_process_chain"`
 	ApprovalWindow      Duration    `yaml:"approval_window"`
 	AutoApproveDuration Duration         `yaml:"auto_approve_duration"`
-	TrustedSigners      []TrustedSigner  `yaml:"trusted_signers,omitempty"`
+	TrustedSigners           []TrustedSigner  `yaml:"trusted_signers,omitempty"`
+	IgnoreChromeDummySecret  *bool            `yaml:"ignore_chrome_dummy_secret"`
 }
 
 // TrustedSigner defines a process that is auto-approved for GPG signing.

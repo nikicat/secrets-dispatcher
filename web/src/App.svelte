@@ -495,7 +495,6 @@
                   <li class="history-entry">
                     <div class="history-entry-header">
                       <div class="history-entry-badges">
-                        <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
                         <span class="history-type history-type--{entry.request.type}">
                           {#if entry.request.type === "gpg_sign"}
                             GPG Sign
@@ -509,6 +508,7 @@
                             Secret
                           {/if}
                         </span>
+                        <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
                       </div>
                       <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
                     </div>
@@ -547,7 +547,6 @@
                   <li class="history-entry">
                     <div class="history-entry-header">
                       <div class="history-entry-badges">
-                        <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
                         <span class="history-type history-type--{entry.request.type}">
                           {#if entry.request.type === "gpg_sign"}
                             GPG Sign
@@ -561,6 +560,7 @@
                             Secret
                           {/if}
                         </span>
+                        <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
                       </div>
                       <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
                     </div>

@@ -303,10 +303,10 @@
   function formatRuleExpiry(expiresAt: string, _tick: number): string {
     const diff = new Date(expiresAt).getTime() - Date.now();
     if (diff <= 0) return "expired";
-    const min = Math.floor(diff / 60000);
-    const sec = Math.floor((diff % 60000) / 1000);
-    if (min > 0) return `${min}m ${sec}s`;
-    return `${sec}s`;
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
 
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)

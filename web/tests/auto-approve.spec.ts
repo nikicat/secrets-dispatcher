@@ -223,9 +223,9 @@ test.describe("Auto-Approve Rule Reset", () => {
 
     await expect(page.getByText("reset-invoker")).toBeVisible({ timeout: 10000 });
 
-    // Should show ~30s remaining
+    // Should show 00:00:XX remaining
     const timerEl = page.locator(".rule-expiry");
-    await expect(timerEl).toHaveText(/^\d+s$/);
+    await expect(timerEl).toHaveText(/^00:00:\d{2}$/);
 
     // Simulate timer reset: backend sends rule_added with same ID, new expiry
     sendToPage!(JSON.stringify({
@@ -239,8 +239,8 @@ test.describe("Auto-Approve Rule Reset", () => {
       },
     }));
 
-    // Should show ~2m remaining now (not ~30s)
-    await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
+    // Should show 00:01:XX or 00:02:XX remaining now (not 00:00:XX)
+    await expect(timerEl).toHaveText(/^00:0[12]:\d{2}$/, { timeout: 3000 });
 
     // Should still be exactly one rule, not two
     const ruleEntries = page.locator(".rule-entry");
@@ -297,7 +297,7 @@ test.describe("Auto-Approve Rule Reset", () => {
     }));
 
     const timerEl = page.locator(".rule-expiry");
-    await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
+    await expect(timerEl).toHaveText(/^\d{2}:\d{2}:\d{2}$/, { timeout: 3000 });
 
     const textBefore = await timerEl.textContent();
 
@@ -305,7 +305,7 @@ test.describe("Auto-Approve Rule Reset", () => {
     await page.waitForTimeout(3000);
 
     const textAfter = await timerEl.textContent();
-    expect(textAfter).toMatch(/^\d+m \d+s$/);
+    expect(textAfter).toMatch(/^\d{2}:\d{2}:\d{2}$/);
     expect(textAfter).not.toBe(textBefore);
   });
 });
@@ -346,13 +346,13 @@ test.describe("Auto-Approve Rule Timer", () => {
 
     const timerEl = page.locator(".rule-expiry");
     const initialText = await timerEl.textContent();
-    expect(initialText).toMatch(/^\d+m \d+s$/);
+    expect(initialText).toMatch(/^\d{2}:\d{2}:\d{2}$/);
 
     // Wait 3 seconds for the timer to tick
     await page.waitForTimeout(3000);
 
     const updatedText = await timerEl.textContent();
-    expect(updatedText).toMatch(/^\d+m \d+s$/);
+    expect(updatedText).toMatch(/^\d{2}:\d{2}:\d{2}$/);
     expect(updatedText).not.toBe(initialText);
   });
 

@@ -163,11 +163,18 @@ type TrustedSigner struct {
 	FilePrefix string `yaml:"file_prefix,omitempty"` // Optional: all changed files must have this prefix
 }
 
+// SSHConfig configures the SSH agent proxy. Nil means disabled.
+type SSHConfig struct {
+	Upstream string `yaml:"upstream"` // path to real agent socket; empty = $SSH_AUTH_SOCK at startup
+	Listen   string `yaml:"listen"`   // proxy socket path; empty = $XDG_RUNTIME_DIR/secrets-dispatcher/ssh-agent.sock
+}
+
 // Config is the top-level configuration file structure.
 type Config struct {
 	StateDir string      `yaml:"state_dir"`
 	Listen   string      `yaml:"listen"`
 	Serve    ServeConfig `yaml:"serve"`
+	SSH      *SSHConfig  `yaml:"ssh,omitempty"`
 }
 
 // DefaultPath returns the default config file path using XDG_CONFIG_HOME.

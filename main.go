@@ -26,6 +26,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/service"
+	"github.com/nikicat/secrets-dispatcher/internal/sshagent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -516,6 +517,34 @@ func runServe(args []string) {
 				defer p.Close()
 				return p.Run(ctx)
 			})
+		}
+	}
+
+	// Set up SSH agent proxy if configured
+	if cfg.SSH != nil {
+		sshUpstream := cfg.SSH.Upstream
+		if sshUpstream == "" {
+			sshUpstream = os.Getenv("SSH_AUTH_SOCK")
+		}
+		if sshUpstream == "" {
+			slog.Error("SSH agent proxy enabled but no upstream socket (set ssh.upstream in config or SSH_AUTH_SOCK)")
+		} else {
+			sshListen := cfg.SSH.Listen
+			if sshListen == "" {
+				runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+				if runtimeDir != "" {
+					sshListen = filepath.Join(runtimeDir, "secrets-dispatcher", "ssh-agent.sock")
+				}
+			}
+			if sshListen == "" {
+				slog.Error("SSH agent proxy: cannot determine listen path (set ssh.listen in config or XDG_RUNTIME_DIR)")
+			} else {
+				sshServer := sshagent.NewServer(sshListen, sshUpstream, approvalMgr, *cfg.Serve.TrimProcessChain, slog.Default())
+				runners = append(runners, func(ctx context.Context) error {
+					return sshServer.Run(ctx)
+				})
+				slog.Info("SSH agent proxy configured", "listen", sshListen, "upstream", sshUpstream)
+			}
 		}
 	}
 

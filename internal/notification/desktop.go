@@ -355,6 +355,8 @@ func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string)
 		return "Deletion requested", "dialog-warning"
 	case approval.RequestTypeWrite:
 		return "Secret write requested", "dialog-warning"
+	case approval.RequestTypeSSHSign:
+		return "SSH key requested", "dialog-password"
 	default:
 		return "Secret requested", "dialog-password"
 	}
@@ -502,6 +504,27 @@ func (h *Handler) formatBody(req *approval.Request) string {
 					if h.showPIDs {
 						fmt.Fprintf(&b, "[%d]", p.PID)
 					}
+				}
+			}
+		}
+	case approval.RequestTypeSSHSign:
+		// Show key label and destination
+		if len(req.Items) > 0 {
+			fmt.Fprintf(&b, "<b>%s</b>", req.Items[0].Label)
+			if dest, ok := req.Items[0].Attributes["destination"]; ok && dest != "" {
+				fmt.Fprintf(&b, " → %s", dest)
+			}
+		}
+		if len(req.SenderInfo.ProcessChain) > 0 {
+			for i, p := range req.SenderInfo.ProcessChain {
+				if i == 0 {
+					b.WriteString("\n")
+				} else {
+					b.WriteString(" ← ")
+				}
+				b.WriteString(p.Name)
+				if h.showPIDs {
+					fmt.Fprintf(&b, "[%d]", p.PID)
 				}
 			}
 		}

@@ -135,7 +135,7 @@ test.describe("GPG Sign Card Rendering", () => {
     await expect(card.locator(".changed-files")).toContainText("parser.go");
 
     // Approve and Deny buttons present.
-    await expect(card.getByRole("button", { name: "Approve" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
     await expect(card.getByRole("button", { name: "Deny" })).toBeVisible();
 
     // Cleanup.
@@ -604,7 +604,7 @@ test.describe("GPG Sign Approval Flow", () => {
 
     // Click Approve — this will attempt real gpg and likely fail (no key),
     // but the request should still be resolved and removed from pending.
-    await card.getByRole("button", { name: "Approve" }).click();
+    await card.getByRole("button", { name: "Approve", exact: true }).click();
 
     // Card should disappear (either approved or gpg-failed, both resolve).
     await expect(card).not.toBeVisible({ timeout: 10000 });

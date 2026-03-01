@@ -95,6 +95,117 @@ func ReadProcessChain(pid int32, trimAtSessionLeader bool) []ProcEntry {
 	return chain
 }
 
+// ReadCmdline reads /proc/<pid>/cmdline and returns the argv slice.
+// Returns nil on error.
+func ReadCmdline(pid int32) []string {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	// cmdline is NUL-separated; trim trailing NUL
+	s := strings.TrimRight(string(data), "\x00")
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, "\x00")
+}
+
+// ReadChildren returns PIDs of child processes of the given PID.
+// Reads /proc/<pid>/task/<pid>/children (Linux 3.5+).
+func ReadChildren(pid int32) []int32 {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	fields := strings.Fields(string(data))
+	children := make([]int32, 0, len(fields))
+	for _, f := range fields {
+		var child int32
+		if _, err := fmt.Sscanf(f, "%d", &child); err == nil {
+			children = append(children, child)
+		}
+	}
+	return children
+}
+
+// ResolveSSHDestination tries to extract the SSH destination host from
+// the process identified by pid. It checks:
+//  1. If pid itself is an ssh process, parse its cmdline for the hostname.
+//  2. Otherwise, look for an ssh child process (covers git → ssh).
+//
+// Returns empty string if no destination can be determined.
+func ResolveSSHDestination(pid int32) string {
+	// Check if the process itself is ssh
+	comm := ReadComm(pid)
+	if comm == "ssh" || comm == "ssh.exe" {
+		if host := parseSSHHost(ReadCmdline(pid)); host != "" {
+			return host
+		}
+	}
+
+	// Walk children looking for ssh (covers git → ssh, scp → ssh, etc.)
+	for _, child := range ReadChildren(pid) {
+		childComm := ReadComm(child)
+		if childComm == "ssh" || childComm == "ssh.exe" {
+			if host := parseSSHHost(ReadCmdline(child)); host != "" {
+				return host
+			}
+		}
+	}
+
+	return ""
+}
+
+// parseSSHHost extracts the destination from an ssh command line.
+// Handles "ssh [options] [user@]hostname [command...]".
+// Returns empty string if parsing fails.
+func parseSSHHost(argv []string) string {
+	if len(argv) < 2 {
+		return ""
+	}
+
+	// Skip argv[0] (the ssh binary path)
+	// Walk arguments, skipping flags that take a value
+	flagsWithArg := map[string]bool{
+		"-b": true, "-c": true, "-D": true, "-E": true, "-e": true,
+		"-F": true, "-I": true, "-i": true, "-J": true, "-L": true,
+		"-l": true, "-m": true, "-O": true, "-o": true, "-p": true,
+		"-Q": true, "-R": true, "-S": true, "-W": true, "-w": true,
+	}
+
+	i := 1
+	for i < len(argv) {
+		arg := argv[i]
+		if arg == "--" {
+			// Next arg after -- is the hostname
+			if i+1 < len(argv) {
+				return stripUser(argv[i+1])
+			}
+			return ""
+		}
+		if len(arg) > 1 && arg[0] == '-' {
+			if flagsWithArg[arg] {
+				i += 2 // skip flag and its argument
+				continue
+			}
+			// Flags without arguments (might be combined like -vvv)
+			i++
+			continue
+		}
+		// First non-flag argument is the hostname
+		return stripUser(arg)
+	}
+	return ""
+}
+
+// stripUser removes the "user@" prefix from a hostname string.
+func stripUser(s string) string {
+	if i := strings.LastIndexByte(s, '@'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
 // ResolveInvoker walks from pid up to init, skipping shell processes,
 // to find the user-facing invoker. Returns the invoker's comm name and PID.
 // Returns ("", 0) if /proc is unreadable.

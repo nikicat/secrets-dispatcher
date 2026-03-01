@@ -173,7 +173,7 @@ test.describe("Focus Mode — Auto-close on Resolve", () => {
     await expect(page.locator(".card")).toBeVisible();
     await spyWindowClose(page);
 
-    await page.getByRole("button", { name: "Approve" }).click();
+    await page.getByRole("button", { name: "Approve", exact: true }).click();
 
     await expect
       .poll(() => wasWindowCloseCalled(page), { timeout: 10000 })

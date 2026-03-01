@@ -65,6 +65,7 @@ const (
 	RequestTypeSearch    RequestType = "search"
 	RequestTypeDelete    RequestType = "delete"
 	RequestTypeWrite     RequestType = "write"
+	RequestTypeSSHSign   RequestType = "ssh_sign"
 )
 
 // Request represents a secret access request awaiting approval.

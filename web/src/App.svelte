@@ -295,14 +295,25 @@
     return { process, collection, attributes };
   }
 
+  function attributesEqual(a: Record<string, string> | undefined, b: Record<string, string> | undefined): boolean {
+    const aa = a ?? {};
+    const bb = b ?? {};
+    const keysA = Object.keys(aa);
+    const keysB = Object.keys(bb);
+    if (keysA.length !== keysB.length) return false;
+    return keysA.every(k => aa[k] === bb[k]);
+  }
+
   function hasMatchingRule(entry: HistoryEntry): boolean {
     const req = entry.request;
     const invoker = req.sender_info?.unit_name ?? "";
     const collection = req.items.length > 0 ? extractCollection(req.items[0].path) : "";
+    const attrs = req.items.length > 0 ? req.items[0].attributes : undefined;
     return autoApproveRules.some(r =>
       r.invoker_name === invoker &&
       r.request_type === req.type &&
-      r.collection === collection
+      r.collection === collection &&
+      attributesEqual(r.attributes, attrs)
     );
   }
 

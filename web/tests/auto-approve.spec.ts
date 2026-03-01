@@ -161,6 +161,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
                   expires_at: expiresAt,
                 },
               ];
+              parsed.trusted_signers = [];
               ws.send(JSON.stringify(parsed));
               return;
             }
@@ -209,6 +210,7 @@ test.describe("Auto-Approve Rule Reset", () => {
                   expires_at: initialExpiry,
                 },
               ];
+              parsed.trusted_signers = [];
               ws.send(JSON.stringify(parsed));
               return;
             }

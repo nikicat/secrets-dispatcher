@@ -603,7 +603,8 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 		existing := &m.autoApproveRules[i]
 		if existing.InvokerName == rule.InvokerName &&
 			existing.RequestType == rule.RequestType &&
-			existing.Collection == rule.Collection {
+			existing.Collection == rule.Collection &&
+			attributesEqual(existing.Attributes, rule.Attributes) {
 			existing.ExpiresAt = rule.ExpiresAt
 			m.autoApproveMu.Unlock()
 			m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: existing})
@@ -679,6 +680,19 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 
 	m.autoApproveRules = active
 	return match
+}
+
+// attributesEqual returns true if both maps have the same keys and values.
+func attributesEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // attributesMatch returns true if all entries in ruleAttrs are present in reqAttrs.

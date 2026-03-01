@@ -215,6 +215,41 @@ func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
 	}
 }
 
+func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+
+	req1 := &Request{
+		ID:   "req-1",
+		Type: RequestTypeWrite,
+		Items: []ItemInfo{{
+			Path:       "/org/freedesktop/secrets/collection/default/i1",
+			Attributes: map[string]string{"service": "gh:github.com", "username": "nikicat"},
+		}},
+		SenderInfo: SenderInfo{UnitName: "gh"},
+	}
+	req2 := &Request{
+		ID:   "req-2",
+		Type: RequestTypeWrite,
+		Items: []ItemInfo{{
+			Path:       "/org/freedesktop/secrets/collection/default/i2",
+			Attributes: map[string]string{"service": "gh:github.com", "username": ""},
+		}},
+		SenderInfo: SenderInfo{UnitName: "gh"},
+	}
+
+	id1 := mgr.AddAutoApproveRule(req1)
+	id2 := mgr.AddAutoApproveRule(req2)
+
+	if id1 == id2 {
+		t.Error("expected different rule IDs for different attributes")
+	}
+
+	rules := mgr.ListAutoApproveRules()
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(rules))
+	}
+}
+
 func TestExtractCollection(t *testing.T) {
 	tests := []struct {
 		path string

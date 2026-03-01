@@ -95,7 +95,8 @@ test.describe("Auto-Approve Rules WebSocket", () => {
 
     await expect(page.getByText("Auto-Approve Rules")).toBeVisible({ timeout: 10000 });
     await expect(page.getByText("test-invoker")).toBeVisible();
-    await expect(page.getByText("get_secret / default")).toBeVisible();
+    await expect(page.getByText("Secret", { exact: true })).toBeVisible();
+    await expect(page.getByText("default")).toBeVisible();
   });
 
   test("rule_added message via WS adds rule to sidebar", async ({ page }) => {
@@ -134,7 +135,8 @@ test.describe("Auto-Approve Rules WebSocket", () => {
 
     await expect(page.getByText("Auto-Approve Rules")).toBeVisible({ timeout: 10000 });
     await expect(page.getByText("ws-invoker")).toBeVisible();
-    await expect(page.getByText("search / login")).toBeVisible();
+    await expect(page.getByText("Search")).toBeVisible();
+    await expect(page.getByText("login")).toBeVisible();
   });
 
   test("rule_removed message via WS removes rule from sidebar", async ({ page }) => {

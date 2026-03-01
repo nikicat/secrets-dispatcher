@@ -365,13 +365,25 @@
             {#each autoApproveRules as rule (rule.id)}
               <li class="rule-entry">
                 <div class="rule-header">
-                  <span class="rule-invoker">{rule.invoker_name}</span>
-                  <button class="rule-delete" onclick={() => handleDeleteRule(rule.id)} title="Remove rule">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-                  </button>
+                  <span class="history-type history-type--{rule.request_type}">
+                    {#if rule.request_type === "gpg_sign"}GPG Sign{:else if rule.request_type === "search"}Search{:else if rule.request_type === "delete"}Delete{:else if rule.request_type === "write"}Write{:else}Secret{/if}
+                  </span>
+                  <div class="rule-header-right">
+                    <span class="rule-expiry">{formatRuleExpiry(rule.expires_at, tick)}</span>
+                    <button class="rule-delete" onclick={() => handleDeleteRule(rule.id)} title="Remove rule">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                  </div>
                 </div>
-                <span class="rule-detail">{rule.request_type}{rule.collection ? ` / ${rule.collection}` : ""}</span>
-                <span class="rule-expiry">{formatRuleExpiry(rule.expires_at, tick)}</span>
+                <table class="rule-props"><tbody>
+                  <tr><td class="rule-prop-key">process</td><td>{rule.invoker_name}</td></tr>
+                  {#if rule.collection}<tr><td class="rule-prop-key">collection</td><td>{rule.collection}</td></tr>{/if}
+                  {#if rule.attributes}
+                    {#each Object.entries(rule.attributes) as [key, value]}
+                      <tr><td class="rule-prop-key">{key}</td><td>{value}</td></tr>
+                    {/each}
+                  {/if}
+                </tbody></table>
               </li>
             {/each}
           </ul>
@@ -1054,10 +1066,10 @@
     align-items: center;
   }
 
-  .rule-invoker {
-    font-weight: 500;
-    font-size: 13px;
-    color: var(--color-text);
+  .rule-header-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
   .rule-delete {
@@ -1073,9 +1085,24 @@
     color: var(--color-danger);
   }
 
-  .rule-detail {
+  .rule-props {
+    width: 100%;
     font-size: 12px;
+    border-collapse: collapse;
+  }
+
+  .rule-props td {
+    padding: 1px 0;
+    vertical-align: top;
+    color: var(--color-text);
+    word-break: break-all;
+  }
+
+  .rule-prop-key {
     color: var(--color-text-muted);
+    white-space: nowrap;
+    padding-right: 8px !important;
+    width: 1%;
   }
 
   .rule-expiry {

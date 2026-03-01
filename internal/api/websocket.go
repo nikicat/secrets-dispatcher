@@ -209,6 +209,20 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			HistoryEntry: &entry,
 		})
 	case approval.EventRequestAutoApproved:
+		// GPG sign auto-approvals carry signature data that the thin client needs.
+		if event.Request.Type == approval.RequestTypeGPGSign {
+			msg := WSMessage{
+				Type:   "request_resolved",
+				ID:     event.Request.ID,
+				Result: "auto_approved",
+			}
+			msg.Signature = base64.StdEncoding.EncodeToString(event.Request.Signature)
+			msg.GPGStatus = string(event.Request.GPGStatus)
+			if event.Request.GPGExitCode != 0 {
+				msg.ExitCode = event.Request.GPGExitCode
+			}
+			msgs = append(msgs, msg)
+		}
 		entry := makeHistoryEntry(event.Request, "auto_approved")
 		msgs = append(msgs, WSMessage{
 			Type:         "history_entry",

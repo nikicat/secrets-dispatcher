@@ -300,3 +300,43 @@ func TestCreateGPGSignRequest_Concurrent(t *testing.T) {
 		t.Errorf("expected %d pending requests, got %d", n, mgr.PendingCount())
 	}
 }
+
+// TestRecordAutoApprovedGPGSign_Resolution verifies that RecordAutoApprovedGPGSign
+// fires EventRequestAutoApproved (not EventRequestApproved) so history shows "auto_approved".
+func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	id, err := mgr.RecordAutoApprovedGPGSign("test-client", sampleGPGSignInfo(), SenderInfo{}, []byte("sig"), []byte("status"))
+	if err != nil {
+		t.Fatalf("RecordAutoApprovedGPGSign returned unexpected error: %v", err)
+	}
+	if id == "" {
+		t.Fatal("expected non-empty request ID")
+	}
+
+	events := obs.WaitForEvents(1, time.Second)
+	ev := findEvent(events, EventRequestAutoApproved)
+	if ev == nil {
+		t.Fatalf("expected EventRequestAutoApproved, got events: %v", events)
+	}
+	if ev.Request.ID != id {
+		t.Errorf("event request ID %q != returned ID %q", ev.Request.ID, id)
+	}
+
+	// Must NOT appear in pending.
+	if mgr.PendingCount() != 0 {
+		t.Errorf("expected 0 pending requests, got %d", mgr.PendingCount())
+	}
+
+	// History should record auto_approved resolution.
+	time.Sleep(50 * time.Millisecond)
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionAutoApproved {
+		t.Errorf("expected resolution %q, got %q", ResolutionAutoApproved, history[0].Resolution)
+	}
+}

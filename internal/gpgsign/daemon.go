@@ -157,7 +157,7 @@ func (c *DaemonClient) WaitForResolution(ctx context.Context, conn *websocket.Co
 			if msg.Result == "denied" {
 				return nil, nil, 0, true, nil
 			}
-			if msg.Result == "approved" {
+			if msg.Result == "approved" || msg.Result == "auto_approved" {
 				if msg.ExitCode != 0 {
 					// gpg ran but failed — propagate its exit code.
 					return nil, []byte(msg.GPGStatus), msg.ExitCode, false, nil

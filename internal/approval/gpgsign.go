@@ -28,7 +28,8 @@ type GPGSignInfo struct {
 
 // RecordAutoApprovedGPGSign creates a resolved gpg_sign request for history and
 // WebSocket delivery WITHOUT firing EventRequestCreated (so no desktop notification
-// appears). The request is never added to pending and no timeout goroutine is started.
+// appears). Fires EventRequestAutoApproved so the history entry shows "auto_approved".
+// The request is never added to pending and no timeout goroutine is started.
 // sig and status are the gpg output to deliver to the thin client via WebSocket.
 func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, senderInfo SenderInfo, sig, status []byte) (string, error) {
 	if info == nil {
@@ -49,7 +50,7 @@ func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, se
 		done:        make(chan struct{}),
 	}
 	close(req.done)
-	m.notify(Event{Type: EventRequestApproved, Request: req})
+	m.notify(Event{Type: EventRequestAutoApproved, Request: req})
 	return req.ID, nil
 }
 

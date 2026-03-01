@@ -254,8 +254,9 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		// Non-blocking send - drop message if client is slow
 		select {
 		case wsc.send <- data:
+			slog.Debug("ws send", "type", msg.Type, "id", msg.ID)
 		default:
-			slog.Warn("WebSocket send buffer full, dropping message")
+			slog.Warn("WebSocket send buffer full, dropping message", "type", msg.Type, "id", msg.ID)
 		}
 	}
 }
@@ -347,6 +348,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 	// Send directly (not through channel) for initial snapshot
 	ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
 	defer cancel()
+	slog.Debug("ws send snapshot", "requests", len(requests), "clients", len(clients), "history", len(history))
 	return wsc.conn.Write(ctx, websocket.MessageText, data)
 }
 

@@ -1194,6 +1194,36 @@ func TestApprovalCache_DifferentItem(t *testing.T) {
 	}
 }
 
+func TestManager_EventOrder_CancelledContext(t *testing.T) {
+	// Regression test: with async notify (go o.OnEvent), EventRequestCancelled
+	// can arrive before EventRequestCreated when the context is already cancelled.
+	// The client processes request_cancelled first (no-op, request not in list),
+	// then request_created (adds it), leaving a stale request in the UI forever.
+	for i := 0; i < 100; i++ {
+		mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+		obs := &testObserver{}
+		mgr.Subscribe(obs)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // pre-cancel so select fires ctx.Done() immediately
+
+		mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: "/test/item"}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{})
+
+		events := obs.WaitForEvents(2, time.Second)
+		if len(events) < 2 {
+			t.Fatalf("iteration %d: expected 2 events, got %d", i, len(events))
+		}
+		if events[0].Type != EventRequestCreated {
+			t.Fatalf("iteration %d: expected EventRequestCreated first, got %v then %v", i, events[0].Type, events[1].Type)
+		}
+		if events[1].Type != EventRequestCancelled {
+			t.Fatalf("iteration %d: expected EventRequestCancelled second, got %v then %v", i, events[0].Type, events[1].Type)
+		}
+
+		mgr.Unsubscribe(obs)
+	}
+}
+
 func TestCheckTrustedSigner_WalksProcessChain(t *testing.T) {
 	// Use the current test process as the "trusted" exe.
 	selfExe, err := os.Readlink("/proc/self/exe")

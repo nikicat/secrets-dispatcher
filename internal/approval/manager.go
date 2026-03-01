@@ -222,7 +222,7 @@ func (m *Manager) notify(event Event) {
 	m.observersMu.RLock()
 	defer m.observersMu.RUnlock()
 	for o := range m.observers {
-		go o.OnEvent(event)
+		o.OnEvent(event)
 	}
 
 	// Record history for terminal request events (not rule-management events)

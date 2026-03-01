@@ -84,7 +84,13 @@
         history = [entry, ...history];
       },
       onAutoApproveRuleAdded: (rule) => {
-        autoApproveRules = [...autoApproveRules, rule];
+        const idx = autoApproveRules.findIndex(r => r.id === rule.id);
+        if (idx >= 0) {
+          autoApproveRules[idx] = rule;
+          autoApproveRules = autoApproveRules;
+        } else {
+          autoApproveRules = [...autoApproveRules, rule];
+        }
       },
       onAutoApproveRuleRemoved: (id) => {
         autoApproveRules = autoApproveRules.filter(r => r.id !== id);

@@ -185,6 +185,131 @@ test.describe("Auto-Approve Rules WebSocket", () => {
   });
 });
 
+test.describe("Auto-Approve Rule Reset", () => {
+  test("rule_added with same ID updates expiry instead of duplicating", async ({ page }) => {
+    const initialExpiry = new Date(Date.now() + 30_000).toISOString();
+    const resetExpiry = new Date(Date.now() + 120_000).toISOString();
+
+    let sendToPage: ((msg: string) => void) | null = null;
+
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      sendToPage = (msg) => ws.send(msg);
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              parsed.auto_approve_rules = [
+                {
+                  id: "reset-rule",
+                  invoker_name: "reset-invoker",
+                  request_type: "get_secret",
+                  collection: "default",
+                  expires_at: initialExpiry,
+                },
+              ];
+              ws.send(JSON.stringify(parsed));
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    await expect(page.getByText("reset-invoker")).toBeVisible({ timeout: 10000 });
+
+    // Should show ~30s remaining
+    const timerEl = page.locator(".rule-expiry");
+    await expect(timerEl).toHaveText(/^\d+s$/);
+
+    // Simulate timer reset: backend sends rule_added with same ID, new expiry
+    sendToPage!(JSON.stringify({
+      type: "auto_approve_rule_added",
+      auto_approve_rule: {
+        id: "reset-rule",
+        invoker_name: "reset-invoker",
+        request_type: "get_secret",
+        collection: "default",
+        expires_at: resetExpiry,
+      },
+    }));
+
+    // Should show ~2m remaining now (not ~30s)
+    await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
+
+    // Should still be exactly one rule, not two
+    const ruleEntries = page.locator(".rule-entry");
+    await expect(ruleEntries).toHaveCount(1);
+  });
+
+  test("timer continues ticking after reset", async ({ page }) => {
+    const initialExpiry = new Date(Date.now() + 10_000).toISOString();
+    const resetExpiry = new Date(Date.now() + 65_000).toISOString();
+
+    let sendToPage: ((msg: string) => void) | null = null;
+
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      sendToPage = (msg) => ws.send(msg);
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              parsed.auto_approve_rules = [
+                {
+                  id: "tick-rule",
+                  invoker_name: "tick-invoker",
+                  request_type: "search",
+                  collection: "",
+                  expires_at: initialExpiry,
+                },
+              ];
+              ws.send(JSON.stringify(parsed));
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    await expect(page.getByText("tick-invoker")).toBeVisible({ timeout: 10000 });
+
+    // Reset the timer with a longer expiry
+    sendToPage!(JSON.stringify({
+      type: "auto_approve_rule_added",
+      auto_approve_rule: {
+        id: "tick-rule",
+        invoker_name: "tick-invoker",
+        request_type: "search",
+        collection: "",
+        expires_at: resetExpiry,
+      },
+    }));
+
+    const timerEl = page.locator(".rule-expiry");
+    await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
+
+    const textBefore = await timerEl.textContent();
+
+    // Wait for timer to tick
+    await page.waitForTimeout(3000);
+
+    const textAfter = await timerEl.textContent();
+    expect(textAfter).toMatch(/^\d+m \d+s$/);
+    expect(textAfter).not.toBe(textBefore);
+  });
+});
+
 test.describe("Auto-Approve Rule Timer", () => {
   test("rule expiry timer ticks down", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 65_000).toISOString();

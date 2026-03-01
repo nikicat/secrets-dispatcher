@@ -1109,9 +1109,11 @@
 
   .rule-prop-key {
     color: var(--color-text-muted);
+    opacity: 0.7;
     white-space: nowrap;
     padding-right: 8px !important;
     width: 1%;
+    text-align: right;
   }
 
   .rule-expiry {

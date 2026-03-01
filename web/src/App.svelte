@@ -257,6 +257,25 @@
     return request.items.map(i => i.label || i.path).join(", ");
   }
 
+  function extractCollection(itemPath: string): string {
+    const prefix = "/org/freedesktop/secrets/collection/";
+    if (!itemPath.startsWith(prefix)) return "";
+    const rest = itemPath.slice(prefix.length);
+    const slash = rest.indexOf("/");
+    return slash >= 0 ? rest.slice(0, slash) : rest;
+  }
+
+  function hasMatchingRule(entry: HistoryEntry): boolean {
+    const req = entry.request;
+    const invoker = req.sender_info?.unit_name ?? "";
+    const collection = req.items.length > 0 ? extractCollection(req.items[0].path) : "";
+    return autoApproveRules.some(r =>
+      r.invoker_name === invoker &&
+      r.request_type === req.type &&
+      r.collection === collection
+    );
+  }
+
   async function handleAutoApprove(requestId: string) {
     try {
       await createAutoApprove(requestId);
@@ -479,7 +498,7 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
-                    {#if entry.resolution === "cancelled"}
+                    {#if entry.resolution === "cancelled" && !hasMatchingRule(entry)}
                       <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>Auto-approve similar</button>
                     {/if}
                   </li>
@@ -531,7 +550,7 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
-                    {#if entry.resolution === "cancelled"}
+                    {#if entry.resolution === "cancelled" && !hasMatchingRule(entry)}
                       <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>Auto-approve similar</button>
                     {/if}
                   </li>

@@ -609,6 +609,22 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 	}
 
 	m.autoApproveMu.Lock()
+	// Dedup: if a matching rule already exists, refresh its expiry
+	for i := range m.autoApproveRules {
+		existing := &m.autoApproveRules[i]
+		if existing.InvokerName == rule.InvokerName &&
+			existing.RequestType == rule.RequestType &&
+			existing.Collection == rule.Collection {
+			existing.ExpiresAt = rule.ExpiresAt
+			m.autoApproveMu.Unlock()
+			m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: existing})
+			slog.Info("auto-approve rule refreshed",
+				"rule_id", existing.ID,
+				"invoker", existing.InvokerName,
+				"expires_at", existing.ExpiresAt)
+			return existing.ID
+		}
+	}
 	m.autoApproveRules = append(m.autoApproveRules, rule)
 	m.autoApproveMu.Unlock()
 

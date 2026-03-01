@@ -180,6 +180,41 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 	}
 }
 
+func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+
+	req := &Request{
+		ID:         "req-1",
+		Type:       RequestTypeGetSecret,
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		SenderInfo: SenderInfo{UnitName: "gh"},
+	}
+
+	id1 := mgr.AddAutoApproveRule(req)
+
+	rules := mgr.ListAutoApproveRules()
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(rules))
+	}
+	expiry1 := rules[0].ExpiresAt
+
+	// Adding the same rule again should dedup
+	time.Sleep(10 * time.Millisecond)
+	id2 := mgr.AddAutoApproveRule(req)
+
+	if id1 != id2 {
+		t.Errorf("expected same rule ID %s, got %s", id1, id2)
+	}
+
+	rules = mgr.ListAutoApproveRules()
+	if len(rules) != 1 {
+		t.Fatalf("expected still 1 rule after dedup, got %d", len(rules))
+	}
+	if !rules[0].ExpiresAt.After(expiry1) {
+		t.Error("expected expiry to be refreshed")
+	}
+}
+
 func TestExtractCollection(t *testing.T) {
 	tests := []struct {
 		path string

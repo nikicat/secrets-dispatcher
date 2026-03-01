@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 )
 
 // ErrDenied is returned when a request is denied by the user.
@@ -568,19 +569,7 @@ func (m *Manager) CacheItemForSender(sender, itemPath string) {
 }
 
 // extractCollection extracts the collection name from a Secret Service item path.
-// E.g., "/org/freedesktop/secrets/collection/default/123" → "default".
-// Returns "" if the path doesn't match the expected format.
-func extractCollection(itemPath string) string {
-	const prefix = "/org/freedesktop/secrets/collection/"
-	if !strings.HasPrefix(itemPath, prefix) {
-		return ""
-	}
-	rest := itemPath[len(prefix):]
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return rest[:i]
-	}
-	return rest
-}
+var extractCollection = dbustypes.ExtractCollection
 
 // AddAutoApproveRule creates a temporary auto-approve rule from a cancelled request.
 // Returns the rule ID.

@@ -1,7 +1,11 @@
 // Package dbus provides D-Bus type definitions for the Secret Service API.
 package dbus
 
-import "github.com/godbus/dbus/v5"
+import (
+	"strings"
+
+	"github.com/godbus/dbus/v5"
+)
 
 // D-Bus interface and path constants for Secret Service.
 const (
@@ -69,4 +73,23 @@ func ErrUnsupportedAlgorithm(algo string) *dbus.Error {
 // ErrAccessDenied returns an error when access to a secret is denied.
 func ErrAccessDenied(message string) *dbus.Error {
 	return NewDBusError("org.freedesktop.DBus.Error.AccessDenied", message)
+}
+
+// ExtractCollection extracts the collection name from a Secret Service item path.
+// Handles both /org/freedesktop/secrets/collection/X/... and /org/freedesktop/secrets/aliases/X/...
+// Returns "" if the path doesn't match either format.
+func ExtractCollection(itemPath string) string {
+	for _, prefix := range []string{
+		"/org/freedesktop/secrets/collection/",
+		"/org/freedesktop/secrets/aliases/",
+	} {
+		if strings.HasPrefix(itemPath, prefix) {
+			rest := itemPath[len(prefix):]
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return rest[:i]
+			}
+			return rest
+		}
+	}
+	return ""
 }

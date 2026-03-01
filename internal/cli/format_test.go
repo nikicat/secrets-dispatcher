@@ -166,8 +166,27 @@ func TestFormatRequest_GetSecret_Unchanged(t *testing.T) {
 
 	out := buf.String()
 	mustContain(t, out, "Secret:  DatabasePassword")
+	mustNotContain(t, out, "Coll:")
 	mustNotContain(t, out, "Repo:")
 	mustNotContain(t, out, "Author:")
+}
+
+func TestFormatRequest_ShowsCollection(t *testing.T) {
+	req := &PendingRequest{
+		ID:        "xyz-456",
+		Client:    "myapp",
+		Type:      "get_secret",
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+		Items:     []ItemInfo{{Label: "pw", Path: "/org/freedesktop/secrets/collection/work/99"}},
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatRequest(req); err != nil {
+		t.Fatalf("FormatRequest failed: %v", err)
+	}
+
+	mustContain(t, buf.String(), "Coll:    work")
 }
 
 func TestFormatRequests_SummaryColumnHeader(t *testing.T) {
@@ -187,7 +206,26 @@ func TestFormatRequests_SummaryColumnHeader(t *testing.T) {
 
 	out := buf.String()
 	mustContain(t, out, "SUMMARY")
+	mustContain(t, out, "COLLECTION")
 	mustNotContain(t, out, "SECRET")
+}
+
+func TestFormatRequests_CollectionColumn(t *testing.T) {
+	reqs := []PendingRequest{
+		{
+			ID:        "abc",
+			ExpiresAt: time.Now().Add(time.Minute),
+			Items:     []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/mykeys/1"}},
+		},
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatRequests(reqs); err != nil {
+		t.Fatalf("FormatRequests failed: %v", err)
+	}
+
+	mustContain(t, buf.String(), "mykeys")
 }
 
 func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
@@ -207,7 +245,26 @@ func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
 
 	out := buf.String()
 	mustContain(t, out, "SUMMARY")
+	mustContain(t, out, "COLLECTION")
 	mustNotContain(t, out, "SECRET")
+}
+
+func TestFormatHistory_CollectionColumn(t *testing.T) {
+	entries := []HistoryEntry{
+		{
+			Request:    PendingRequest{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/login/42"}}},
+			Resolution: "approved",
+			ResolvedAt: time.Now(),
+		},
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatHistory(entries); err != nil {
+		t.Fatalf("FormatHistory failed: %v", err)
+	}
+
+	mustContain(t, buf.String(), "login")
 }
 
 func TestCommitSubject(t *testing.T) {

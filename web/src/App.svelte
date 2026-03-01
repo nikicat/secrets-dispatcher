@@ -4,6 +4,7 @@
   import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
+  import PropsTable from "./lib/PropsTable.svelte";
   import { requestPermission, showRequestNotification } from "./lib/notifications";
 
   let authState = $state<AuthState>("checking");
@@ -267,11 +268,29 @@
   }
 
   function extractCollection(itemPath: string): string {
-    const prefix = "/org/freedesktop/secrets/collection/";
-    if (!itemPath.startsWith(prefix)) return "";
-    const rest = itemPath.slice(prefix.length);
-    const slash = rest.indexOf("/");
-    return slash >= 0 ? rest.slice(0, slash) : rest;
+    for (const prefix of [
+      "/org/freedesktop/secrets/collection/",
+      "/org/freedesktop/secrets/aliases/",
+    ]) {
+      if (itemPath.startsWith(prefix)) {
+        const rest = itemPath.slice(prefix.length);
+        const slash = rest.indexOf("/");
+        return slash >= 0 ? rest.slice(0, slash) : rest;
+      }
+    }
+    return "";
+  }
+
+  function historyEntryProps(req: PendingRequest): { process?: string; collection?: string; attributes?: Record<string, string> } {
+    const process = req.sender_info?.unit_name || undefined;
+    const collection = req.items.length > 0 ? extractCollection(req.items[0].path) || undefined : undefined;
+    let attributes: Record<string, string> | undefined;
+    if (req.type === "search" && req.search_attributes && Object.keys(req.search_attributes).length > 0) {
+      attributes = req.search_attributes;
+    } else if (req.type !== "gpg_sign" && req.items.length > 0 && req.items[0].attributes && Object.keys(req.items[0].attributes).length > 0) {
+      attributes = req.items[0].attributes;
+    }
+    return { process, collection, attributes };
   }
 
   function hasMatchingRule(entry: HistoryEntry): boolean {
@@ -384,15 +403,7 @@
                     </button>
                   </div>
                 </div>
-                <table class="rule-props"><tbody>
-                  <tr><td class="rule-prop-key">process</td><td>{rule.invoker_name}</td></tr>
-                  {#if rule.collection}<tr><td class="rule-prop-key">collection</td><td>{rule.collection}</td></tr>{/if}
-                  {#if rule.attributes}
-                    {#each Object.entries(rule.attributes) as [key, value]}
-                      <tr><td class="rule-prop-key">{key}</td><td>{value}</td></tr>
-                    {/each}
-                  {/if}
-                </tbody></table>
+                <PropsTable process={rule.invoker_name} collection={rule.collection} attributes={rule.attributes} />
               </li>
             {/each}
           </ul>
@@ -519,6 +530,7 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
+                    <PropsTable {...historyEntryProps(entry.request)} />
                     {#if entry.resolution === "cancelled"}
                       <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>{hasMatchingRule(entry) ? "Reset auto-approve timer" : "Auto-approve similar"}</button>
                     {/if}
@@ -571,6 +583,7 @@
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
                       <span class="history-sender">{formatSenderInfo(entry)}</span>
                     </div>
+                    <PropsTable {...historyEntryProps(entry.request)} />
                     {#if entry.resolution === "cancelled"}
                       <button class="btn-auto-approve" onclick={() => handleAutoApprove(entry.request.id)}>{hasMatchingRule(entry) ? "Reset auto-approve timer" : "Auto-approve similar"}</button>
                     {/if}
@@ -1092,28 +1105,6 @@
 
   .rule-delete:hover {
     color: var(--color-danger);
-  }
-
-  .rule-props {
-    width: 100%;
-    font-size: 12px;
-    border-collapse: collapse;
-  }
-
-  .rule-props td {
-    padding: 1px 0;
-    vertical-align: top;
-    color: var(--color-text);
-    word-break: break-all;
-  }
-
-  .rule-prop-key {
-    color: var(--color-text-muted);
-    opacity: 0.7;
-    white-space: nowrap;
-    padding-right: 8px !important;
-    width: 1%;
-    text-align: right;
   }
 
   .rule-expiry {

@@ -223,7 +223,7 @@ func TestExtractCollection(t *testing.T) {
 		{"/org/freedesktop/secrets/collection/default/i123", "default"},
 		{"/org/freedesktop/secrets/collection/login/abc", "login"},
 		{"/org/freedesktop/secrets/collection/mykeys", "mykeys"},
-		{"/org/freedesktop/secrets/aliases/default", ""},
+		{"/org/freedesktop/secrets/aliases/default", "default"},
 		{"", ""},
 	}
 	for _, tt := range tests {

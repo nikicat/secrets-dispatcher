@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 )
 
 // Formatter outputs data in various formats.
@@ -31,8 +33,8 @@ func (f *Formatter) FormatRequests(requests []PendingRequest) error {
 	}
 
 	// Print header
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "SUMMARY", "EXPIRES")
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "-------------------------", "-------")
+	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-25s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "COLLECTION", "SUMMARY", "EXPIRES")
+	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-25s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "---------------", "-------------------------", "-------")
 
 	for _, req := range requests {
 		id := truncate(req.ID, 8)
@@ -40,10 +42,14 @@ func (f *Formatter) FormatRequests(requests []PendingRequest) error {
 		pid := formatPID(req.SenderInfo.PID)
 		uid := formatUID(req.SenderInfo.UID)
 		reqType := truncate(req.Type, 12)
+		coll := truncate(extractCollection(req), 15)
+		if coll == "" {
+			coll = "-"
+		}
 		secret := truncate(requestSummary(req), 25)
 		remaining := formatRemaining(req.ExpiresAt)
 
-		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-25s  %s\n", id, client, pid, uid, reqType, secret, remaining)
+		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-25s  %s\n", id, client, pid, uid, reqType, coll, secret, remaining)
 	}
 	return nil
 }
@@ -109,6 +115,10 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 	fmt.Fprintf(f.w, "ID:      %s\n", req.ID)
 	fmt.Fprintf(f.w, "Client:  %s\n", req.Client)
 	fmt.Fprintf(f.w, "Type:    %s\n", req.Type)
+
+	if coll := extractCollection(*req); coll != "" {
+		fmt.Fprintf(f.w, "Coll:    %s\n", coll)
+	}
 
 	if req.SenderInfo.UnitName != "" {
 		fmt.Fprintf(f.w, "Process: %s (PID %d)\n", req.SenderInfo.UnitName, req.SenderInfo.PID)
@@ -185,8 +195,8 @@ func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 	}
 
 	// Print header
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "RESULT", "SUMMARY", "RESOLVED")
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "----------", "--------------------", "--------")
+	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-10s  %-20s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "COLLECTION", "RESULT", "SUMMARY", "RESOLVED")
+	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-10s  %-20s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "---------------", "----------", "--------------------", "--------")
 
 	for _, entry := range entries {
 		id := truncate(entry.Request.ID, 8)
@@ -194,11 +204,15 @@ func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 		pid := formatPID(entry.Request.SenderInfo.PID)
 		uid := formatUID(entry.Request.SenderInfo.UID)
 		reqType := truncate(entry.Request.Type, 12)
+		coll := truncate(extractCollection(entry.Request), 15)
+		if coll == "" {
+			coll = "-"
+		}
 		resolution := truncate(entry.Resolution, 10)
 		secret := truncate(requestSummary(entry.Request), 20)
 		ago := formatAgo(entry.ResolvedAt)
 
-		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-10s  %-20s  %s\n", id, client, pid, uid, reqType, resolution, secret, ago)
+		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-10s  %-20s  %s\n", id, client, pid, uid, reqType, coll, resolution, secret, ago)
 	}
 	return nil
 }
@@ -221,6 +235,13 @@ func (f *Formatter) FormatAction(action, id string) error {
 	}
 	fmt.Fprintf(f.w, "Request %s: %s\n", id, action)
 	return nil
+}
+
+func extractCollection(req PendingRequest) string {
+	if len(req.Items) == 0 {
+		return ""
+	}
+	return dbustypes.ExtractCollection(req.Items[0].Path)
 }
 
 func formatAttrs(attrs map[string]string) string {

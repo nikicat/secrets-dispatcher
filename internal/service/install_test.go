@@ -72,8 +72,8 @@ func TestInstallRemoteWritesProxyUnit(t *testing.T) {
 	if !strings.Contains(s, "ExecStart=") || !strings.Contains(s, "serve --config") {
 		t.Error("proxy unit missing ExecStart with serve --config")
 	}
-	if !strings.Contains(s, "WantedBy=default.target") {
-		t.Error("proxy unit missing WantedBy=default.target")
+	if !strings.Contains(s, "WantedBy=graphical-session.target") {
+		t.Error("proxy unit missing WantedBy=graphical-session.target")
 	}
 	// Remote mode: no Requires on backend.
 	if strings.Contains(s, "Requires=") {

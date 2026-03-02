@@ -33,7 +33,7 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 `
 
 const busSocketTemplate = `[Unit]
@@ -79,7 +79,7 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 `
 
 const (

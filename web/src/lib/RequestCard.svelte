@@ -161,6 +161,7 @@
         <span class="type-badge type-badge--{request.type}">
           {typeBadgeLabel(request.type)}
         </span>
+        <span class="request-id" title={request.id}>{request.id.slice(0, 8)}</span>
         <span class="session-id">
           {#if request.type === "gpg_sign" && request.gpg_sign_info}
             PID {request.sender_info.pid} · {request.gpg_sign_info.repo_name}
@@ -430,6 +431,13 @@
     color: var(--color-danger);
     background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
     border-color: var(--color-danger);
+  }
+
+  .request-id {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-family: ui-monospace, "SF Mono", Monaco, monospace;
+    opacity: 0.6;
   }
 
   .session-id {

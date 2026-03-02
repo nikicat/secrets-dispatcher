@@ -1,5 +1,6 @@
 # Binaries
 secrets-dispatcher
+.build/
 mock-secret-service
 *.exe
 

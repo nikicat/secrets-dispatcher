@@ -18,7 +18,7 @@ import type { Socket } from "node:net";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..", "..", "..");
-const BINARY_PATH = join(PROJECT_ROOT, "secrets-dispatcher");
+const BINARY_PATH = join(PROJECT_ROOT, ".build", "secrets-dispatcher");
 const FRONTEND_DIR = join(PROJECT_ROOT, "web", "dist");
 
 export interface TestBackend {

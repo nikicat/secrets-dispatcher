@@ -22,8 +22,10 @@ backend: embed-frontend
 	go build -ldflags "-X main.version=$(VERSION)" -o secrets-dispatcher .
 
 # Build Go binary without embedded frontend (for dev/testing)
+# Outputs to .build/ to avoid overwriting ./secrets-dispatcher used by local service
 backend-dev: frontend
-	go build -tags dev -ldflags "-X main.version=$(VERSION)" -o secrets-dispatcher .
+	@mkdir -p .build
+	go build -tags dev -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher .
 
 # Full build
 build: backend
@@ -53,7 +55,7 @@ version:
 
 # Clean build artifacts
 clean:
-	rm -rf web/dist internal/api/web secrets-dispatcher
+	rm -rf web/dist internal/api/web secrets-dispatcher .build
 
 # --- Checks (linters, formatters, static analysis) ---
 

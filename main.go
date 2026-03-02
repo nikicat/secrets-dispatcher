@@ -354,6 +354,30 @@ func runServe(args []string) {
 			FilePrefix: ts.FilePrefix,
 		})
 	}
+	var trustRules []approval.TrustRule
+	for _, r := range cfg.Serve.Rules {
+		tr := approval.TrustRule{
+			Name:             r.Name,
+			Action:           r.Action,
+			RequestTypes:     r.RequestTypes,
+			SearchAttributes: r.SearchAttributes,
+		}
+		if r.Process != nil {
+			tr.Process = &approval.ProcessMatcher{
+				Exe:  r.Process.Exe,
+				Name: r.Process.Name,
+				Unit: r.Process.Unit,
+			}
+		}
+		if r.Secret != nil {
+			tr.Secret = &approval.SecretMatcher{
+				Collection: r.Secret.Collection,
+				Label:      r.Secret.Label,
+				Attributes: r.Secret.Attributes,
+			}
+		}
+		trustRules = append(trustRules, tr)
+	}
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
 		Timeout:             *timeout,
 		HistoryMax:          *historyLimit,
@@ -361,6 +385,7 @@ func runServe(args []string) {
 		AutoApproveDuration: time.Duration(cfg.Serve.AutoApproveDuration),
 		TrustedSigners:      trustedSigners,
 		IgnoreChromeDummy:   *cfg.Serve.IgnoreChromeDummySecret,
+		TrustRules:          trustRules,
 	})
 
 	// Set up desktop notifications

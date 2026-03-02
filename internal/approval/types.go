@@ -10,6 +10,30 @@ type ProcessInfo struct {
 	CWD  string   `json:"cwd,omitempty"`
 }
 
+// TrustRule defines a persistent declarative rule from config for auto-approving or ignoring requests.
+type TrustRule struct {
+	Name             string            `json:"name,omitempty"`
+	Action           string            `json:"action,omitempty"`
+	RequestTypes     []string          `json:"request_types,omitempty"`
+	Process          *ProcessMatcher   `json:"process,omitempty"`
+	Secret           *SecretMatcher    `json:"secret,omitempty"`
+	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
+}
+
+// ProcessMatcher matches against sender process attributes.
+type ProcessMatcher struct {
+	Exe  string `json:"exe,omitempty"`
+	Name string `json:"name,omitempty"`
+	Unit string `json:"unit,omitempty"`
+}
+
+// SecretMatcher matches against secret/item attributes.
+type SecretMatcher struct {
+	Collection string            `json:"collection,omitempty"`
+	Label      string            `json:"label,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
 // SenderInfo contains information about the D-Bus sender process.
 type SenderInfo struct {
 	Sender       string        `json:"sender"`                  // D-Bus unique name (":1.123")

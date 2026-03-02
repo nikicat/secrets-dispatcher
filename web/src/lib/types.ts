@@ -96,6 +96,27 @@ export interface TrustedSigner {
   file_prefix?: string;
 }
 
+export interface ProcessMatcher {
+  exe?: string;
+  name?: string;
+  unit?: string;
+}
+
+export interface SecretMatcher {
+  collection?: string;
+  label?: string;
+  attributes?: Record<string, string>;
+}
+
+export interface TrustRule {
+  name?: string;
+  action?: string;
+  request_types?: string[];
+  process?: ProcessMatcher;
+  secret?: SecretMatcher;
+  search_attributes?: Record<string, string>;
+}
+
 // WebSocket message types
 export type WSMessage =
   | WSSnapshotMessage
@@ -118,6 +139,7 @@ export interface WSSnapshotMessage {
   history: HistoryEntry[];
   auto_approve_rules: AutoApproveRule[];
   trusted_signers: TrustedSigner[];
+  trust_rules: TrustRule[];
   auto_approve_duration_seconds?: number;
 }
 

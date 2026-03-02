@@ -39,6 +39,7 @@ type WSMessage struct {
 	History                    []HistoryEntry             `json:"history"`
 	AutoApproveRules           []approval.AutoApproveRule `json:"auto_approve_rules"`
 	TrustedSigners             []approval.TrustedSigner   `json:"trusted_signers"`
+	TrustRules                 []approval.TrustRule       `json:"trust_rules"`
 	AutoApproveDurationSeconds int                        `json:"auto_approve_duration_seconds,omitempty"`
 
 	// For request_created
@@ -335,6 +336,12 @@ func (wsc *wsConnection) sendSnapshot() error {
 		trustedSigners = []approval.TrustedSigner{}
 	}
 
+	// Get trust rules
+	trustRules := h.manager.ListTrustRules()
+	if trustRules == nil {
+		trustRules = []approval.TrustRule{}
+	}
+
 	msg := WSMessage{
 		Type:                       "snapshot",
 		Version:                    BuildVersion,
@@ -343,6 +350,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		History:                    history,
 		AutoApproveRules:           autoApproveRules,
 		TrustedSigners:             trustedSigners,
+		TrustRules:                 trustRules,
 		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
 	}
 

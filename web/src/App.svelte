@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule, TrustedSigner } from "./lib/types";
+  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule, TrustedSigner, TrustRule } from "./lib/types";
   import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
@@ -14,6 +14,7 @@
   let history = $state<HistoryEntry[]>([]);
   let autoApproveRules = $state<AutoApproveRule[]>([]);
   let trustedSigners = $state<TrustedSigner[]>([]);
+  let trustRules = $state<TrustRule[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
@@ -50,13 +51,14 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver, rules, signers, aaDuration) => {
+      onSnapshot: (reqs, cls, hist, ver, rules, signers, tRules, aaDuration) => {
         requests = reqs;
         clients = cls;
         history = hist;
         version = ver;
         autoApproveRules = rules;
         trustedSigners = signers;
+        trustRules = tRules;
         autoApproveDurationSeconds = aaDuration;
         loading = false;
         error = null;
@@ -411,6 +413,32 @@
           </ul>
         {/if}
       </div>
+      {#if trustRules.length > 0}
+        <div class="sidebar-rules">
+          <h3>Trust Rules</h3>
+          <ul class="rules-list">
+            {#each trustRules as rule, i (rule.name ?? i)}
+              <li class="rule-entry">
+                <div class="rule-header">
+                  <span class="history-type history-type--{(rule.request_types ?? [])[0] ?? 'get_secret'}">
+                    {#if (rule.action ?? 'approve') === 'ignore'}Ignore{:else}Approve{/if}
+                    {#if rule.request_types?.length}{rule.request_types.map(t => t === 'get_secret' ? 'Secret' : t === 'ssh_sign' ? 'SSH Sign' : t.charAt(0).toUpperCase() + t.slice(1)).join(', ')}{:else}All{/if}
+                  </span>
+                  <span class="rule-permanent">config</span>
+                </div>
+                <PropsTable
+                  process={rule.process?.name ?? rule.process?.exe ?? rule.process?.unit ?? undefined}
+                  collection={rule.secret?.collection ?? undefined}
+                  attributes={rule.secret?.attributes ?? rule.search_attributes ?? undefined}
+                />
+                {#if rule.name}
+                  <div class="rule-name">{rule.name}</div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
       {#if autoApproveRules.length > 0 || trustedSigners.length > 0}
         <div class="sidebar-rules">
           <h3>Auto-Approve Rules</h3>
@@ -1159,6 +1187,13 @@
     font-size: 11px;
     color: var(--color-text-muted);
     opacity: 0.7;
+  }
+
+  .rule-name {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-style: italic;
+    margin-top: 2px;
   }
 
   /* Desktop: show sidebar by default, hide toggle */

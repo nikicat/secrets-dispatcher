@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -192,6 +193,12 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 
 	// Require approval before creating item
 	if err := c.approval.RequireApproval(ctx, c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		if errors.Is(err, approval.ErrIgnored) {
+			c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
+				"collection": string(path), "ignored": true,
+			}, "ignored", nil)
+			return "/", "/", nil
+		}
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "denied", err)
 		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
 	}

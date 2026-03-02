@@ -3,6 +3,7 @@ package approval
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1391,4 +1392,343 @@ func TestCheckTrustedSigner_WalksProcessChain(t *testing.T) {
 			t.Error("expected no match when a file is outside prefix")
 		}
 	})
+}
+
+func TestCheckTrustRules(t *testing.T) {
+	// Override extractCollection for tests
+	origExtract := extractCollection
+	extractCollection = func(path string) string {
+		// Simple parser: /org/freedesktop/secrets/collection/<name>/... → <name>
+		parts := strings.Split(path, "/")
+		if len(parts) >= 6 {
+			return parts[5]
+		}
+		return ""
+	}
+	defer func() { extractCollection = origExtract }()
+
+	rules := []TrustRule{
+		{
+			Name:         "approve-gh-search",
+			Action:       "approve",
+			RequestTypes: []string{"search"},
+			Process:      &ProcessMatcher{Name: "gh"},
+		},
+		{
+			Name:         "ignore-chrome-write",
+			Action:       "ignore",
+			RequestTypes: []string{"write"},
+			Process:      &ProcessMatcher{Exe: "/opt/google/chrome/chrome"},
+			Secret:       &SecretMatcher{Collection: "default"},
+		},
+		{
+			Name:   "approve-all-from-unit",
+			Action: "approve",
+			Process: &ProcessMatcher{Unit: "gopass-*"},
+		},
+		{
+			Name:   "approve-by-label",
+			Action: "approve",
+			Secret: &SecretMatcher{Label: "GitHub*"},
+		},
+		{
+			Name:             "approve-search-attrs",
+			Action:           "approve",
+			RequestTypes:     []string{"search"},
+			SearchAttributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
+		},
+		{
+			Name:   "approve-by-attributes",
+			Action: "approve",
+			Secret: &SecretMatcher{
+				Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.NetworkPassword"},
+			},
+		},
+	}
+
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: rules,
+	})
+
+	ghChain := []ProcessInfo{{Name: "gh", PID: 100, Exe: "/usr/bin/gh"}}
+	chromeChain := []ProcessInfo{{Name: "chrome", PID: 200, Exe: "/opt/google/chrome/chrome"}}
+	gopassSender := SenderInfo{UnitName: "gopass-secret-service.service", ProcessChain: []ProcessInfo{{Name: "gopass", PID: 300}}}
+
+	t.Run("match process name + request type", func(t *testing.T) {
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: ghChain},
+			nil,
+			RequestTypeSearch,
+			nil,
+		)
+		if rule == nil || rule.Name != "approve-gh-search" {
+			t.Errorf("expected approve-gh-search, got %v", rule)
+		}
+	})
+
+	t.Run("no match wrong request type", func(t *testing.T) {
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: ghChain},
+			nil,
+			RequestTypeGetSecret,
+			nil,
+		)
+		// gh doing get_secret: doesn't match rule 0 (search only), no other process match
+		// Could match rule 3 (label) or rule 5 (attributes) depending on items
+		// With nil items, no label or attributes to match, so no match
+		if rule != nil {
+			t.Errorf("expected no match, got %v", rule.Name)
+		}
+	})
+
+	t.Run("match exe + collection for ignore", func(t *testing.T) {
+		items := []ItemInfo{{
+			Path:  "/org/freedesktop/secrets/collection/default/123",
+			Label: "Chrome Safe Storage",
+		}}
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: chromeChain},
+			items,
+			RequestTypeWrite,
+			nil,
+		)
+		if rule == nil || rule.Name != "ignore-chrome-write" {
+			t.Errorf("expected ignore-chrome-write, got %v", rule)
+		}
+	})
+
+	t.Run("no match wrong collection", func(t *testing.T) {
+		items := []ItemInfo{{
+			Path:  "/org/freedesktop/secrets/collection/login/123",
+			Label: "Chrome Safe Storage",
+		}}
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: chromeChain},
+			items,
+			RequestTypeWrite,
+			nil,
+		)
+		// Chrome write to "login" collection: rule 1 requires "default", so no match
+		if rule != nil {
+			t.Errorf("expected no match, got %v", rule.Name)
+		}
+	})
+
+	t.Run("match unit glob", func(t *testing.T) {
+		rule := mgr.CheckTrustRules(
+			gopassSender,
+			[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}},
+			RequestTypeGetSecret,
+			nil,
+		)
+		if rule == nil || rule.Name != "approve-all-from-unit" {
+			t.Errorf("expected approve-all-from-unit, got %v", rule)
+		}
+	})
+
+	t.Run("match label glob", func(t *testing.T) {
+		items := []ItemInfo{{
+			Path:  "/org/freedesktop/secrets/collection/default/1",
+			Label: "GitHub Token",
+		}}
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: []ProcessInfo{{Name: "random-app", PID: 999}}},
+			items,
+			RequestTypeGetSecret,
+			nil,
+		)
+		if rule == nil || rule.Name != "approve-by-label" {
+			t.Errorf("expected approve-by-label, got %v", rule)
+		}
+	})
+
+	t.Run("match search attributes", func(t *testing.T) {
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: []ProcessInfo{{Name: "app", PID: 1}}},
+			nil,
+			RequestTypeSearch,
+			map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
+		)
+		if rule == nil || rule.Name != "approve-search-attrs" {
+			t.Errorf("expected approve-search-attrs, got %v", rule)
+		}
+	})
+
+	t.Run("match item attributes", func(t *testing.T) {
+		items := []ItemInfo{{
+			Path:       "/org/freedesktop/secrets/collection/default/1",
+			Label:      "WiFi Password",
+			Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.NetworkPassword", "ssid": "home"},
+		}}
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: []ProcessInfo{{Name: "nm-applet", PID: 500}}},
+			items,
+			RequestTypeGetSecret,
+			nil,
+		)
+		if rule == nil || rule.Name != "approve-by-attributes" {
+			t.Errorf("expected approve-by-attributes, got %v", rule)
+		}
+	})
+
+	t.Run("first match wins", func(t *testing.T) {
+		// gh doing search matches rule 0 (approve-gh-search), not rule 4 (approve-search-attrs)
+		rule := mgr.CheckTrustRules(
+			SenderInfo{ProcessChain: ghChain},
+			nil,
+			RequestTypeSearch,
+			map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
+		)
+		if rule == nil || rule.Name != "approve-gh-search" {
+			t.Errorf("expected first match approve-gh-search, got %v", rule)
+		}
+	})
+
+	t.Run("empty rules", func(t *testing.T) {
+		m := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10})
+		rule := m.CheckTrustRules(SenderInfo{}, nil, RequestTypeGetSecret, nil)
+		if rule != nil {
+			t.Errorf("expected nil from empty rules, got %v", rule)
+		}
+	})
+}
+
+func TestTrustRules_RequireApproval_Approve(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{
+				Name:         "approve-gh",
+				Action:       "approve",
+				RequestTypes: []string{"search"},
+				Process:      &ProcessMatcher{Name: "gh"},
+			},
+		},
+	})
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	err := mgr.RequireApproval(
+		context.Background(), "client",
+		nil, "/s/1",
+		RequestTypeSearch, nil,
+		SenderInfo{ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
+	)
+	if err != nil {
+		t.Fatalf("expected nil (auto-approved), got %v", err)
+	}
+	if mgr.PendingCount() != 0 {
+		t.Error("trust rule approve should not create pending request")
+	}
+
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) < 1 || events[0].Type != EventRequestAutoApproved {
+		t.Errorf("expected EventRequestAutoApproved, got %v", events)
+	}
+
+	// Check history
+	history := mgr.History()
+	if len(history) != 1 || history[0].Resolution != ResolutionAutoApproved {
+		t.Errorf("expected auto_approved in history, got %v", history)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{
+				Name:         "ignore-chrome",
+				Action:       "ignore",
+				RequestTypes: []string{"write"},
+				Secret:       &SecretMatcher{Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"}},
+			},
+		},
+	})
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	items := []ItemInfo{{
+		Path:       "/org/freedesktop/secrets/collection/default/1",
+		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
+	}}
+	err := mgr.RequireApproval(
+		context.Background(), "client",
+		items, "/s/1",
+		RequestTypeWrite, nil,
+		SenderInfo{},
+	)
+	if err != ErrIgnored {
+		t.Fatalf("expected ErrIgnored, got %v", err)
+	}
+	if mgr.PendingCount() != 0 {
+		t.Error("trust rule ignore should not create pending request")
+	}
+
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) < 1 || events[0].Type != EventRequestIgnored {
+		t.Errorf("expected EventRequestIgnored, got %v", events)
+	}
+
+	history := mgr.History()
+	if len(history) != 1 || history[0].Resolution != ResolutionIgnored {
+		t.Errorf("expected ignored in history, got %v", history)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
+func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    100 * time.Millisecond,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{
+				Name:         "approve-gh",
+				RequestTypes: []string{"search"},
+				Process:      &ProcessMatcher{Name: "gh"},
+			},
+		},
+	})
+
+	// Non-matching request should go to pending and eventually timeout
+	err := mgr.RequireApproval(
+		context.Background(), "client",
+		[]ItemInfo{{Path: "/test/item"}}, "/s/1",
+		RequestTypeGetSecret, nil,
+		SenderInfo{ProcessChain: []ProcessInfo{{Name: "curl", PID: 1}}},
+	)
+	if err != ErrTimeout {
+		t.Fatalf("expected ErrTimeout (no trust rule match), got %v", err)
+	}
+}
+
+func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{
+				Name:    "default-action-rule",
+				Process: &ProcessMatcher{Name: "test"},
+				// Action is empty — should default to "approve"
+			},
+		},
+	})
+
+	err := mgr.RequireApproval(
+		context.Background(), "client",
+		nil, "/s/1",
+		RequestTypeGetSecret, nil,
+		SenderInfo{ProcessChain: []ProcessInfo{{Name: "test", PID: 1}}},
+	)
+	if err != nil {
+		t.Fatalf("expected nil (default action approve), got %v", err)
+	}
 }

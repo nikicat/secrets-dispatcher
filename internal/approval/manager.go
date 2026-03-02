@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,9 @@ var ErrTimeout = errors.New("approval request timed out")
 
 // ErrNotFound is returned when a request ID doesn't exist.
 var ErrNotFound = errors.New("request not found")
+
+// ErrIgnored is returned when a request is silently dropped by a trust rule with action "ignore".
+var ErrIgnored = errors.New("request ignored by trust rule")
 
 // EventType represents the type of approval event.
 type EventType int
@@ -165,6 +169,7 @@ type Manager struct {
 	autoApproveDuration  time.Duration
 	trustedSigners       []TrustedSigner // exe+repo combos auto-approved for gpg_sign
 	ignoreChromeDummy    bool
+	trustRules           []TrustRule // persistent config-defined trust rules
 }
 
 // ManagerConfig holds configuration for the approval Manager.
@@ -183,6 +188,8 @@ type ManagerConfig struct {
 	TrustedSigners []TrustedSigner
 	// IgnoreChromeDummy silently ignores Chrome's dummy secret writes.
 	IgnoreChromeDummy bool
+	// TrustRules are persistent config-defined rules for auto-approve/ignore.
+	TrustRules []TrustRule
 }
 
 // NewManager creates a new approval manager.
@@ -197,6 +204,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		autoApproveDuration: cfg.AutoApproveDuration,
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
+		trustRules:          cfg.TrustRules,
 	}
 }
 
@@ -344,6 +352,35 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 			Type:             reqType,
 			SearchAttributes: searchAttrs,
 			SenderInfo:       senderInfo,
+		}
+		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+		return nil
+	}
+
+	// Check persistent trust rules from config.
+	if rule := m.CheckTrustRules(senderInfo, items, reqType, searchAttrs); rule != nil {
+		action := rule.Action
+		if action == "" {
+			action = "approve"
+		}
+		slog.Info("trust rule matched",
+			"rule_name", rule.Name,
+			"action", action)
+		now := time.Now()
+		req := &Request{
+			ID:               uuid.New().String(),
+			Client:           client,
+			Items:            items,
+			Session:          session,
+			CreatedAt:        now,
+			ExpiresAt:        now,
+			Type:             reqType,
+			SearchAttributes: searchAttrs,
+			SenderInfo:       senderInfo,
+		}
+		if action == "ignore" {
+			m.notify(Event{Type: EventRequestIgnored, Request: req})
+			return ErrIgnored
 		}
 		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
 		return nil
@@ -837,6 +874,138 @@ func readExePath(pid uint32) string {
 		return ""
 	}
 	return target
+}
+
+// CheckTrustRules checks if the request matches any configured trust rule.
+// Returns the first matching rule, or nil if no rules match.
+func (m *Manager) CheckTrustRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) *TrustRule {
+	for i := range m.trustRules {
+		rule := &m.trustRules[i]
+		if !matchTrustRule(rule, senderInfo, items, reqType, searchAttrs) {
+			continue
+		}
+		return rule
+	}
+	return nil
+}
+
+// matchTrustRule returns true if the request matches a single trust rule.
+func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) bool {
+	// Check request_types filter
+	if len(rule.RequestTypes) > 0 {
+		found := false
+		for _, rt := range rule.RequestTypes {
+			if rt == string(reqType) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	// Check process matcher
+	if rule.Process != nil {
+		if !matchProcess(rule.Process, senderInfo) {
+			return false
+		}
+	}
+
+	// Check secret matcher
+	if rule.Secret != nil {
+		if !matchSecret(rule.Secret, items) {
+			return false
+		}
+	}
+
+	// Check search_attributes
+	if len(rule.SearchAttributes) > 0 {
+		if !attributesMatch(rule.SearchAttributes, searchAttrs) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// matchProcess checks if the sender matches the process matcher.
+// At least one non-empty field must be set, and all non-empty fields must match.
+func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
+	if pm.Exe != "" {
+		matched := false
+		for _, proc := range senderInfo.ProcessChain {
+			if ok, _ := path.Match(pm.Exe, proc.Exe); ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	if pm.Name != "" {
+		matched := false
+		for _, proc := range senderInfo.ProcessChain {
+			if ok, _ := path.Match(pm.Name, proc.Name); ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	if pm.Unit != "" {
+		if ok, _ := path.Match(pm.Unit, senderInfo.UnitName); !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+// matchSecret checks if the items match the secret matcher.
+// Uses the first item for collection/label/attributes matching.
+func matchSecret(sm *SecretMatcher, items []ItemInfo) bool {
+	if sm.Collection != "" {
+		col := ""
+		if len(items) > 0 {
+			col = extractCollection(items[0].Path)
+		}
+		if ok, _ := path.Match(sm.Collection, col); !ok {
+			return false
+		}
+	}
+
+	if sm.Label != "" {
+		label := ""
+		if len(items) > 0 {
+			label = items[0].Label
+		}
+		if ok, _ := path.Match(sm.Label, label); !ok {
+			return false
+		}
+	}
+
+	if len(sm.Attributes) > 0 {
+		attrs := map[string]string{}
+		if len(items) > 0 && items[0].Attributes != nil {
+			attrs = items[0].Attributes
+		}
+		if !attributesMatch(sm.Attributes, attrs) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// ListTrustRules returns the configured trust rules.
+func (m *Manager) ListTrustRules() []TrustRule {
+	return m.trustRules
 }
 
 // chromeDummySchema is the xdg:schema Chrome uses for dummy keyring-unlock probes.

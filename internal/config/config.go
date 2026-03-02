@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"time"
 
@@ -111,7 +112,78 @@ func (cfg *Config) Validate() error {
 		return fmt.Errorf("upstream and downstream cannot both be session_bus (same bus)")
 	}
 
+	// Validate trust rules
+	validRequestTypes := map[string]bool{
+		"get_secret": true, "search": true, "delete": true, "write": true,
+	}
+	for i, rule := range s.Rules {
+		action := rule.Action
+		if action == "" {
+			action = "approve"
+		}
+		if action != "approve" && action != "ignore" {
+			return fmt.Errorf("rules[%d]: action must be \"approve\" or \"ignore\", got %q", i, rule.Action)
+		}
+		if action == "ignore" {
+			if len(rule.RequestTypes) == 0 {
+				return fmt.Errorf("rules[%d]: action \"ignore\" requires non-empty request_types", i)
+			}
+			for _, rt := range rule.RequestTypes {
+				if rt != "write" {
+					return fmt.Errorf("rules[%d]: action \"ignore\" only supports request_types [\"write\"], got %q", i, rt)
+				}
+			}
+		}
+		for _, rt := range rule.RequestTypes {
+			if !validRequestTypes[rt] {
+				return fmt.Errorf("rules[%d]: invalid request_type %q", i, rt)
+			}
+		}
+		// Validate glob patterns
+		for _, pat := range []struct{ name, val string }{
+			{"process.exe", strFromProcessMatcher(rule.Process, "exe")},
+			{"process.name", strFromProcessMatcher(rule.Process, "name")},
+			{"process.unit", strFromProcessMatcher(rule.Process, "unit")},
+			{"secret.collection", strFromSecretMatcher(rule.Secret, "collection")},
+			{"secret.label", strFromSecretMatcher(rule.Secret, "label")},
+		} {
+			if pat.val != "" {
+				if _, err := path.Match(pat.val, "test"); err != nil {
+					return fmt.Errorf("rules[%d]: invalid glob in %s: %w", i, pat.name, err)
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+func strFromProcessMatcher(p *ProcessMatcher, field string) string {
+	if p == nil {
+		return ""
+	}
+	switch field {
+	case "exe":
+		return p.Exe
+	case "name":
+		return p.Name
+	case "unit":
+		return p.Unit
+	}
+	return ""
+}
+
+func strFromSecretMatcher(s *SecretMatcher, field string) string {
+	if s == nil {
+		return ""
+	}
+	switch field {
+	case "collection":
+		return s.Collection
+	case "label":
+		return s.Label
+	}
+	return ""
 }
 
 // defaultSocketsDir returns $XDG_RUNTIME_DIR/secrets-dispatcher/sockets.
@@ -158,6 +230,7 @@ type ServeConfig struct {
 	AutoApproveDuration Duration         `yaml:"auto_approve_duration"`
 	TrustedSigners           []TrustedSigner  `yaml:"trusted_signers,omitempty"`
 	IgnoreChromeDummySecret  *bool            `yaml:"ignore_chrome_dummy_secret"`
+	Rules                    []TrustRule      `yaml:"rules,omitempty"`
 }
 
 // TrustedSigner defines a process that is auto-approved for GPG signing.
@@ -166,6 +239,30 @@ type TrustedSigner struct {
 	ExePath    string `yaml:"exe_path"`              // Required: absolute path to the executable
 	RepoPath   string `yaml:"repo_path,omitempty"`   // Optional: repo basename (from git rev-parse --show-toplevel)
 	FilePrefix string `yaml:"file_prefix,omitempty"` // Optional: all changed files must have this prefix
+}
+
+// TrustRule defines a declarative rule for auto-approving or ignoring requests.
+type TrustRule struct {
+	Name             string            `yaml:"name,omitempty"`
+	Action           string            `yaml:"action,omitempty"`       // "approve" (default) or "ignore"
+	RequestTypes     []string          `yaml:"request_types,omitempty"`
+	Process          *ProcessMatcher   `yaml:"process,omitempty"`
+	Secret           *SecretMatcher    `yaml:"secret,omitempty"`
+	SearchAttributes map[string]string `yaml:"search_attributes,omitempty"`
+}
+
+// ProcessMatcher matches against sender process attributes.
+type ProcessMatcher struct {
+	Exe  string `yaml:"exe,omitempty"`  // glob, match any process in chain
+	Name string `yaml:"name,omitempty"` // glob, match any process in chain
+	Unit string `yaml:"unit,omitempty"` // glob, match senderInfo.UnitName
+}
+
+// SecretMatcher matches against secret/item attributes.
+type SecretMatcher struct {
+	Collection string            `yaml:"collection,omitempty"` // glob
+	Label      string            `yaml:"label,omitempty"`      // glob
+	Attributes map[string]string `yaml:"attributes,omitempty"` // exact subset match
 }
 
 // SSHConfig configures the SSH agent proxy. Nil means disabled.

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -168,6 +169,12 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	// Require approval before writing secret
 	items := []approval.ItemInfo{itemInfo}
 	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		if errors.Is(err, approval.ErrIgnored) {
+			i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{
+				"item": string(path), "ignored": true,
+			}, "ignored", nil)
+			return nil
+		}
 		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "denied", err)
 		return dbustypes.ErrAccessDenied(err.Error())
 	}

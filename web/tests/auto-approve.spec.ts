@@ -106,11 +106,11 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((message) => {
-        ws.send(message);
         if (typeof message === "string") {
           try {
             const parsed = JSON.parse(message);
             if (parsed.type === "snapshot") {
+              ws.send(message);
               // Send rule_added synchronously after snapshot
               ws.send(
                 JSON.stringify({
@@ -124,9 +124,11 @@ test.describe("Auto-Approve Rules WebSocket", () => {
                   },
                 }),
               );
+              return;
             }
           } catch { /* not JSON */ }
         }
+        ws.send(message);
       });
     });
 
@@ -161,7 +163,6 @@ test.describe("Auto-Approve Rules WebSocket", () => {
                   expires_at: expiresAt,
                 },
               ];
-              parsed.trusted_signers = [];
               ws.send(JSON.stringify(parsed));
               return;
             }
@@ -210,7 +211,6 @@ test.describe("Auto-Approve Rule Reset", () => {
                   expires_at: initialExpiry,
                 },
               ];
-              parsed.trusted_signers = [];
               ws.send(JSON.stringify(parsed));
               return;
             }

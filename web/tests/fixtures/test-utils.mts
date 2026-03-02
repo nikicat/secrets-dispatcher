@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFile, rm, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, createHmac } from "node:crypto";
@@ -56,6 +56,20 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
   const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
   await mkdir(stateDir, { recursive: true });
 
+  // Write minimal config to isolate tests from user's real config.
+  // The session_bus downstream creates a staticProvider so the WS snapshot
+  // includes a "client connected" entry that many tests expect.
+  const configPath = join(stateDir, "config.yaml");
+  await writeFile(configPath, [
+    "serve:",
+    "    upstream:",
+    "        type: socket",
+    "        path: /dev/null",
+    "    downstream:",
+    "        - type: session_bus",
+    "",
+  ].join("\n"));
+
   // Build environment with optional version override
   const env: Record<string, string> = { ...process.env };
   if (options?.version) {
@@ -71,6 +85,8 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
         "serve",
         "--api-only",
         "--notifications=false",
+        "--config",
+        configPath,
         "--state-dir",
         stateDir,
         "--listen",

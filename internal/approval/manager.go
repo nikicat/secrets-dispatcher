@@ -774,7 +774,7 @@ func attributesEqual(a, b map[string]string) bool {
 // attributesMatch returns true if all entries in ruleAttrs are present in reqAttrs.
 func attributesMatch(ruleAttrs, reqAttrs map[string]string) bool {
 	for k, v := range ruleAttrs {
-		if reqAttrs[k] != v {
+		if ok, _ := path.Match(v, reqAttrs[k]); !ok {
 			return false
 		}
 	}

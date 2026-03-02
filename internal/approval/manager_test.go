@@ -1573,6 +1573,45 @@ func TestCheckTrustRules(t *testing.T) {
 		}
 	})
 
+	t.Run("match item attributes with glob", func(t *testing.T) {
+		m := NewManager(ManagerConfig{
+			Timeout:    time.Second,
+			HistoryMax: 10,
+			TrustRules: []TrustRule{{
+				Name:   "approve-glob-attrs",
+				Action: "approve",
+				Secret: &SecretMatcher{
+					Attributes: map[string]string{"username": "kubelogin/tokencache/*"},
+				},
+			}},
+		})
+		items := []ItemInfo{{
+			Path:       "/org/freedesktop/secrets/collection/default/1",
+			Label:      "token",
+			Attributes: map[string]string{"username": "kubelogin/tokencache/e91d908"},
+		}}
+		rule := m.CheckTrustRules(
+			SenderInfo{ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
+			items,
+			RequestTypeGetSecret,
+			nil,
+		)
+		if rule == nil || rule.Name != "approve-glob-attrs" {
+			t.Errorf("expected approve-glob-attrs, got %v", rule)
+		}
+		// Non-matching value
+		items[0].Attributes["username"] = "other/path"
+		rule = m.CheckTrustRules(
+			SenderInfo{ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
+			items,
+			RequestTypeGetSecret,
+			nil,
+		)
+		if rule != nil {
+			t.Errorf("expected nil for non-matching glob, got %v", rule)
+		}
+	})
+
 	t.Run("first match wins", func(t *testing.T) {
 		// gh doing search matches rule 0 (approve-gh-search), not rule 4 (approve-search-attrs)
 		rule := mgr.CheckTrustRules(

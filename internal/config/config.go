@@ -153,6 +153,18 @@ func (cfg *Config) Validate() error {
 				}
 			}
 		}
+		if rule.Secret != nil {
+			for k, v := range rule.Secret.Attributes {
+				if _, err := path.Match(v, "test"); err != nil {
+					return fmt.Errorf("rules[%d]: invalid glob in secret.attributes[%s]: %w", i, k, err)
+				}
+			}
+		}
+		for k, v := range rule.SearchAttributes {
+			if _, err := path.Match(v, "test"); err != nil {
+				return fmt.Errorf("rules[%d]: invalid glob in search_attributes[%s]: %w", i, k, err)
+			}
+		}
 	}
 
 	return nil

@@ -39,7 +39,7 @@ test: test-go test-e2e
 
 # Go tests only
 test-go:
-	go test -race ./...
+	go test -tags dev -race ./...
 
 # E2E tests (no embed needed — proxy serves frontend from web/dist)
 test-e2e: backend-dev

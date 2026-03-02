@@ -118,6 +118,21 @@ func ReadProcessChain(pid int32, trimAtSessionLeader bool) []ProcEntry {
 			CWD:  ReadCWD(p),
 		})
 		if trimAtSessionLeader && IsSessionLeader(p) {
+			// Include the parent of the session leader to show
+			// what started this session (e.g., Claude Code, IDE).
+			parent := ReadPPID(p)
+			if parent > 1 {
+				pcomm := ReadComm(parent)
+				if pcomm != "" {
+					chain = append(chain, ProcEntry{
+						Comm: pcomm,
+						PID:  parent,
+						Exe:  ReadExe(parent),
+						Args: ReadCmdline(parent),
+						CWD:  ReadCWD(parent),
+					})
+				}
+			}
 			break
 		}
 	}

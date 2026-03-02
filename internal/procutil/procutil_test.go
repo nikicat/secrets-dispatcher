@@ -77,17 +77,36 @@ func TestReadProcessChain_TrimIncludesSessionLeader(t *testing.T) {
 		t.Skip("no session leader ancestor found")
 	}
 
-	// With trim=true, chain should include processes up to and including the leader.
+	// With trim=true, chain should include processes up to the leader
+	// plus one more entry (the parent of the session leader).
 	chain := ReadProcessChain(pid, true)
 	if len(chain) == 0 {
 		t.Fatal("ReadProcessChain(trim=true) returned empty chain")
 	}
-	last := chain[len(chain)-1]
-	if last.PID != leaderPID {
-		t.Errorf("last entry PID = %d, want session leader %d", last.PID, leaderPID)
+
+	// Session leader should be second-to-last (last is its parent).
+	leaderParent := ReadPPID(leaderPID)
+	if leaderParent > 1 {
+		if len(chain) < 2 {
+			t.Fatal("expected at least 2 entries (session leader + parent)")
+		}
+		secondToLast := chain[len(chain)-2]
+		if secondToLast.PID != leaderPID {
+			t.Errorf("second-to-last PID = %d, want session leader %d", secondToLast.PID, leaderPID)
+		}
+		last := chain[len(chain)-1]
+		if last.PID != leaderParent {
+			t.Errorf("last PID = %d, want session leader parent %d", last.PID, leaderParent)
+		}
+	} else {
+		// Session leader's parent is PID 1, so leader is last.
+		last := chain[len(chain)-1]
+		if last.PID != leaderPID {
+			t.Errorf("last entry PID = %d, want session leader %d", last.PID, leaderPID)
+		}
 	}
 
-	// Also verify: starting directly at the session leader should return it.
+	// Also verify: starting directly at the session leader should return it plus parent.
 	leaderChain := ReadProcessChain(leaderPID, true)
 	if len(leaderChain) == 0 {
 		t.Fatal("ReadProcessChain starting at session leader returned empty chain")

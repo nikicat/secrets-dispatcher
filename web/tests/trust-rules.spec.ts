@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify trust rules (config-defined persistent rules) display in the WebUI.
@@ -89,7 +89,9 @@ test.describe("Trust Rules WebSocket", () => {
                   action: "ignore",
                   request_types: ["write"],
                   secret: {
-                    attributes: { "xdg:schema": "_chrome_dummy_schema_for_unlocking" },
+                    attributes: {
+                      "xdg:schema": "_chrome_dummy_schema_for_unlocking",
+                    },
                   },
                 },
               ];

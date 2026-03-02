@@ -165,11 +165,11 @@ type Manager struct {
 	cache          map[string]time.Time // key = sender + "\x00" + itemPath
 
 	autoApproveMu       sync.Mutex
-	autoApproveRules     []AutoApproveRule
-	autoApproveDuration  time.Duration
-	trustedSigners       []TrustedSigner // exe+repo combos auto-approved for gpg_sign
-	ignoreChromeDummy    bool
-	trustRules           []TrustRule // persistent config-defined trust rules
+	autoApproveRules    []AutoApproveRule
+	autoApproveDuration time.Duration
+	trustedSigners      []TrustedSigner // exe+repo combos auto-approved for gpg_sign
+	ignoreChromeDummy   bool
+	trustRules          []TrustRule // persistent config-defined trust rules
 }
 
 // ManagerConfig holds configuration for the approval Manager.

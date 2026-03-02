@@ -1,9 +1,9 @@
 import type {
-  StatusResponse,
-  PendingListResponse,
   ActionResponse,
-  ErrorResponse,
   AutoApproveRule,
+  ErrorResponse,
+  PendingListResponse,
+  StatusResponse,
 } from "./types";
 
 const API_BASE = "/api/v1";
@@ -100,10 +100,15 @@ export async function approve(id: string): Promise<ActionResponse> {
 /**
  * Approve a pending request and create an auto-approve rule for similar future requests.
  */
-export async function approveAndAutoApprove(id: string): Promise<ActionResponse> {
-  const result = await request<ActionResponse>(`/pending/${id}/approve-and-auto-approve`, {
-    method: "POST",
-  });
+export async function approveAndAutoApprove(
+  id: string,
+): Promise<ActionResponse> {
+  const result = await request<ActionResponse>(
+    `/pending/${id}/approve-and-auto-approve`,
+    {
+      method: "POST",
+    },
+  );
   if (result === null) {
     throw new ApiError(401, "Unauthenticated");
   }
@@ -126,7 +131,9 @@ export async function deny(id: string): Promise<ActionResponse> {
 /**
  * Create an auto-approve rule from a cancelled request.
  */
-export async function createAutoApprove(requestId: string): Promise<ActionResponse> {
+export async function createAutoApprove(
+  requestId: string,
+): Promise<ActionResponse> {
   const result = await request<ActionResponse>("/auto-approve", {
     method: "POST",
     body: JSON.stringify({ request_id: requestId }),
@@ -151,7 +158,9 @@ export async function listAutoApproveRules(): Promise<AutoApproveRule[]> {
 /**
  * Delete an auto-approve rule by ID.
  */
-export async function deleteAutoApproveRule(id: string): Promise<ActionResponse> {
+export async function deleteAutoApproveRule(
+  id: string,
+): Promise<ActionResponse> {
   const result = await request<ActionResponse>(`/auto-approve/${id}`, {
     method: "DELETE",
   });

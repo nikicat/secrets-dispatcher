@@ -93,7 +93,7 @@ function formatBody(request: PendingRequest): string {
 
   if (request.type === "gpg_sign" && request.gpg_sign_info) {
     parts.push(`Repo: ${request.gpg_sign_info.repo_name}`);
-    parts.push(request.gpg_sign_info.commit_msg.split('\n')[0]);
+    parts.push(request.gpg_sign_info.commit_msg.split("\n")[0]);
     return parts.join("\n");
   }
 

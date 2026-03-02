@@ -1,13 +1,11 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify the version mismatch auto-reload functionality.
 // Each test uses its own backend instance to allow version changes.
 
 test.describe("Version Mismatch Auto-Reload", () => {
-  test("auto-reloads on version mismatch after server restart", async ({
-    page,
-  }) => {
+  test("auto-reloads on version mismatch after server restart", async ({ page }) => {
     // Start backend with a specific version
     const backend = await startTestBackend({ version: "version_aaa1" });
 
@@ -35,9 +33,7 @@ test.describe("Version Mismatch Auto-Reload", () => {
     }
   });
 
-  test("no reload when version matches after server restart", async ({
-    page,
-  }) => {
+  test("no reload when version matches after server restart", async ({ page }) => {
     // Start backend with a specific version
     const backend = await startTestBackend({ version: "version_same" });
 
@@ -60,7 +56,9 @@ test.describe("Version Mismatch Auto-Reload", () => {
       // Wait for WebSocket to reconnect.
       // Don't assert transient "Reconnecting..." state — it may resolve
       // faster than Playwright can observe. Instead, wait for the end state.
-      await expect(page.getByText("No pending requests")).toBeVisible({ timeout: 15000 });
+      await expect(page.getByText("No pending requests")).toBeVisible({
+        timeout: 15000,
+      });
 
       // Give extra time to ensure no delayed reload happens
       await page.waitForTimeout(2000);
@@ -70,9 +68,7 @@ test.describe("Version Mismatch Auto-Reload", () => {
     }
   });
 
-  test("reloads when version changes from empty to non-empty", async ({
-    page,
-  }) => {
+  test("reloads when version changes from empty to non-empty", async ({ page }) => {
     // Start backend without a version (empty string)
     const backend = await startTestBackend();
 
@@ -141,7 +137,7 @@ test.describe("Version Mismatch Auto-Reload", () => {
           typeof msg === "object" &&
           msg !== null &&
           "type" in msg &&
-          (msg as { type: string }).type === "snapshot"
+          (msg as { type: string }).type === "snapshot",
       ) as { type: string; version?: string } | undefined;
 
       expect(snapshotMsg).toBeDefined();

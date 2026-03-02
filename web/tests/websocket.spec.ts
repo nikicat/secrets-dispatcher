@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify the WebSocket functionality of the WebUI.
@@ -45,9 +45,7 @@ test.describe("WebSocket Connection", () => {
     await expect(page.getByText("Authentication Required")).toBeVisible();
   });
 
-  test("status indicator reflects WebSocket connection state", async ({
-    page,
-  }) => {
+  test("status indicator reflects WebSocket connection state", async ({ page }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
@@ -81,9 +79,7 @@ test.describe("WebSocket Real-time Updates", () => {
     await expect(page.getByText("local")).toBeVisible();
   });
 
-  test("persists connection across page visibility changes", async ({
-    page,
-  }) => {
+  test("persists connection across page visibility changes", async ({ page }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
@@ -130,10 +126,7 @@ test.describe("WebSocket Error Handling", () => {
 });
 
 test.describe("WebSocket API Integration", () => {
-  test("WebSocket and REST API return consistent data", async ({
-    page,
-    request,
-  }) => {
+  test("WebSocket and REST API return consistent data", async ({ page, request }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
@@ -153,15 +146,16 @@ test.describe("WebSocket API Integration", () => {
 
     // Default config has a "local" client
     expect(status.running).toBe(true);
-    expect(status.clients).toEqual([{ name: "local", socket_path: "session_bus" }]);
+    expect(status.clients).toEqual([{
+      name: "local",
+      socket_path: "session_bus",
+    }]);
 
     // UI shows the client
     await expect(page.getByText("local")).toBeVisible();
   });
 
-  test("pending requests from REST API matches WebSocket snapshot", async ({
-    request,
-  }) => {
+  test("pending requests from REST API matches WebSocket snapshot", async ({ request }) => {
     // In API-only mode, there should be no pending requests
     const token = await backend.getAuthToken();
     const response = await request.get(`${backend.url}/api/v1/pending`, {

@@ -40,7 +40,7 @@ const busSocketTemplate = `[Unit]
 Description=Secrets Dispatcher - Private D-Bus for backend
 
 [Socket]
-ListenStream=%%t/secrets-dispatcher/backend-bus.sock
+ListenStream=%t/secrets-dispatcher/backend-bus.sock
 DirectoryMode=0700
 
 [Install]
@@ -206,7 +206,7 @@ func Install(opts Options) error {
 				return fmt.Errorf("find gopass-secret-service: %w", lpErr)
 			}
 		}
-		needed["secrets-dispatcher-bus.socket"] = fmt.Sprintf(busSocketTemplate)
+		needed["secrets-dispatcher-bus.socket"] = busSocketTemplate
 		needed["secrets-dispatcher-bus.service"] = fmt.Sprintf(busServiceTemplate, dbusDaemon)
 		needed["secrets-dispatcher-backend.service"] = fmt.Sprintf(backendServiceTemplate, backendPath)
 		needed[unitFileName] = fmt.Sprintf(localProxyTemplate, execStart)

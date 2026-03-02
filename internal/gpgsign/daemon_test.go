@@ -97,7 +97,7 @@ func newTestClient(srv *httptest.Server, token string) *DaemonClient {
 func TestPostSigningRequest_Success(t *testing.T) {
 	var gotPath, gotMethod, gotContentType, gotAuth string
 	var gotBody struct {
-		Client      string               `json:"client"`
+		Client      string                `json:"client"`
 		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
 	}
 

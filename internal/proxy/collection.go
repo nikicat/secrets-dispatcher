@@ -291,4 +291,3 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 
 	return nil
 }
-

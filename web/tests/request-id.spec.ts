@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify that request IDs are displayed on pending and history cards.
@@ -124,7 +124,9 @@ test.describe("Request ID on History Cards", () => {
     await page.goto(loginURL);
 
     // Wait for history to appear
-    await expect(page.getByText("Recent Activity")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Recent Activity")).toBeVisible({
+      timeout: 10000,
+    });
 
     // History entry should show truncated request ID
     const idEl = page.locator(".history-request-id");
@@ -153,7 +155,9 @@ test.describe("Request ID on History Cards", () => {
     await expect(card).not.toBeVisible();
 
     // History should now contain the entry with its request ID
-    const historyEntry = page.locator(".history-entry", { hasText: "feat: history id test" });
+    const historyEntry = page.locator(".history-entry", {
+      hasText: "feat: history id test",
+    });
     await expect(historyEntry).toBeVisible();
 
     const idEl = historyEntry.locator(".history-request-id");

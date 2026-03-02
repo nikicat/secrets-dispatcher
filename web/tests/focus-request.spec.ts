@@ -1,5 +1,11 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+
+declare global {
+  interface Window {
+    __closeCalled: boolean;
+  }
+}
 
 // These tests verify the single-request focus mode, where clicking a desktop
 // notification opens the web UI showing only the targeted request.
@@ -74,16 +80,16 @@ async function openFocused(page: Page, requestId: string): Promise<void> {
 /** Spy on window.close() to capture calls without actually closing. */
 async function spyWindowClose(page: Page): Promise<void> {
   await page.evaluate(() => {
-    (window as any).__closeCalled = false;
+    window.__closeCalled = false;
     window.close = () => {
-      (window as any).__closeCalled = true;
+      window.__closeCalled = true;
     };
   });
 }
 
 /** Check whether window.close() was called. */
-async function wasWindowCloseCalled(page: Page): Promise<boolean> {
-  return page.evaluate(() => (window as any).__closeCalled);
+function wasWindowCloseCalled(page: Page): Promise<boolean> {
+  return page.evaluate(() => window.__closeCalled);
 }
 
 test.describe("Focus Mode — Basic Display", () => {
@@ -310,9 +316,9 @@ test.describe("Focus Mode — Request Expiration", () => {
 
     // Install spy after page loads
     await page.evaluate(() => {
-      (window as any).__closeCalled = false;
+      window.__closeCalled = false;
       window.close = () => {
-        (window as any).__closeCalled = true;
+        window.__closeCalled = true;
       };
     });
 
@@ -323,7 +329,7 @@ test.describe("Focus Mode — Request Expiration", () => {
 
     // Should NOT auto-close on expiration
     expect(
-      await page.evaluate(() => (window as any).__closeCalled),
+      await page.evaluate(() => window.__closeCalled),
     ).toBe(false);
   });
 });

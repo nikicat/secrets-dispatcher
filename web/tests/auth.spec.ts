@@ -1,5 +1,6 @@
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
 
 // These tests verify the authentication flow of the WebUI.
@@ -27,9 +28,7 @@ test.describe("Authentication", () => {
     await expect(page.getByText("secrets-dispatcher login")).toBeVisible();
   });
 
-  test("login with valid JWT sets cookie and shows connected status", async ({
-    page,
-  }) => {
+  test("login with valid JWT sets cookie and shows connected status", async ({ page }) => {
     // Generate a valid login URL
     const loginURL = await backend.generateLoginURL();
 
@@ -55,9 +54,7 @@ test.describe("Authentication", () => {
     await expect(page.getByText("Invalid or expired login link")).toBeVisible();
   });
 
-  test("session persists after page reload when authenticated", async ({
-    page,
-  }) => {
+  test("session persists after page reload when authenticated", async ({ page }) => {
     // First, authenticate
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
@@ -95,9 +92,7 @@ test.describe("Authentication", () => {
     expect(response.status()).toBe(400);
   });
 
-  test("auth endpoint accepts valid JWT and sets cookie", async ({
-    request,
-  }) => {
+  test("auth endpoint accepts valid JWT and sets cookie", async ({ request }) => {
     // Generate a valid JWT
     const token = await backend.getAuthToken();
 

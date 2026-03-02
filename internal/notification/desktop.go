@@ -226,12 +226,12 @@ func (n *DBusNotifier) doClose(id uint32) error {
 // Handler receives approval events and shows desktop notifications.
 // It also processes notification action button clicks (Approve/Deny).
 type Handler struct {
-	notifier             Notifier
-	approver             Approver
-	baseURL              string
-	showPIDs             bool
-	autoApproveDuration  time.Duration
-	openURL              func(string) // injectable for testing; defaults to xdg-open
+	notifier            Notifier
+	approver            Approver
+	baseURL             string
+	showPIDs            bool
+	autoApproveDuration time.Duration
+	openURL             func(string) // injectable for testing; defaults to xdg-open
 
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID

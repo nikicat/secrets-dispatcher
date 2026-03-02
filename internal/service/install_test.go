@@ -808,7 +808,7 @@ func TestInstallLocalMaskIdempotent(t *testing.T) {
 	}
 
 	// Backup should NOT have been overwritten with the mask content.
-	backup, _ := os.ReadFile(filepath.Join(dbusDir, dbusServiceFile + dbusBackupSuffix))
+	backup, _ := os.ReadFile(filepath.Join(dbusDir, dbusServiceFile+dbusBackupSuffix))
 	if string(backup) != origContent {
 		t.Errorf("backup should be preserved, got %q", string(backup))
 	}
@@ -851,7 +851,7 @@ func TestInstallRemoteUnmasks(t *testing.T) {
 	}
 
 	// Backup should be gone.
-	if _, err := os.Stat(filepath.Join(dbusDir, dbusServiceFile + dbusBackupSuffix)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dbusDir, dbusServiceFile+dbusBackupSuffix)); !os.IsNotExist(err) {
 		t.Error("backup should have been removed after restore")
 	}
 
@@ -889,7 +889,7 @@ func TestUninstallUnmasks(t *testing.T) {
 	}
 
 	// Backup should be gone.
-	if _, err := os.Stat(filepath.Join(dbusDir, dbusServiceFile + dbusBackupSuffix)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dbusDir, dbusServiceFile+dbusBackupSuffix)); !os.IsNotExist(err) {
 		t.Error("backup should have been removed after restore")
 	}
 }

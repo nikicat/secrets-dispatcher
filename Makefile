@@ -1,4 +1,6 @@
-.PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all dev version
+.PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all dev version \
+	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
+	fmt fmt-go fmt-frontend
 
 all: build
 
@@ -53,6 +55,57 @@ version:
 clean:
 	rm -rf web/dist internal/api/web secrets-dispatcher
 
-# Type check the frontend
-check-frontend:
+# --- Checks (linters, formatters, static analysis) ---
+
+# Run all checks
+check: check-go check-frontend
+
+# All Go checks
+check-go: check-go-fmt check-go-vet check-go-staticcheck
+
+# Go formatting check (fails if any files need formatting)
+check-go-fmt:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Go files need formatting:"; \
+		echo "$$unformatted"; \
+		echo "Run 'make fmt-go' to fix."; \
+		exit 1; \
+	fi
+
+# Go vet
+check-go-vet:
+	go vet ./...
+
+# Go staticcheck (filter stdlib vendor noise — go1.25 ships a go1.26 file)
+check-go-staticcheck:
+	@out=$$(staticcheck ./... 2>&1 | grep -v '^-:'); \
+	if [ -n "$$out" ]; then \
+		echo "$$out"; \
+		exit 1; \
+	fi
+
+# All frontend checks (types + formatting + lint)
+check-frontend: check-frontend-fmt check-frontend-lint
 	cd web && deno task check
+
+# Frontend formatting check
+check-frontend-fmt:
+	cd web && deno fmt --check
+
+# Frontend linting
+check-frontend-lint:
+	cd web && deno lint
+
+# --- Auto-formatters ---
+
+# Format all code
+fmt: fmt-go fmt-frontend
+
+# Format Go code
+fmt-go:
+	gofmt -w .
+
+# Format frontend code
+fmt-frontend:
+	cd web && deno fmt

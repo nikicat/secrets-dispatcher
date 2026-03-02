@@ -35,7 +35,7 @@ type proxyInstance struct {
 // Manager watches a directory for socket files and manages proxy connections.
 type Manager struct {
 	socketsDir       string
-	upstreamAddr     string // D-Bus address for upstream (empty = session bus)
+	upstreamAddr     string                    // D-Bus address for upstream (empty = session bus)
 	proxies          map[string]*proxyInstance // socketPath -> proxyInstance
 	mu               sync.RWMutex
 	watcher          *fsnotify.Watcher

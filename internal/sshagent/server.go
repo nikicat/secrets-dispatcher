@@ -17,11 +17,11 @@ import (
 // Server listens on a Unix socket and proxies SSH agent connections,
 // gating sign requests through the approval manager.
 type Server struct {
-	listenPath        string
-	upstreamPath      string
-	approval          *approval.Manager
-	trimProcessChain  bool
-	logger            *slog.Logger
+	listenPath       string
+	upstreamPath     string
+	approval         *approval.Manager
+	trimProcessChain bool
+	logger           *slog.Logger
 }
 
 // NewServer creates a new SSH agent proxy server.

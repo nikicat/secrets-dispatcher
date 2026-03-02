@@ -1,5 +1,13 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+
+declare global {
+  interface Window {
+    __notificationCalls: Array<
+      { title: string; options?: NotificationOptions }
+    >;
+  }
+}
 
 // These tests verify the browser notification functionality.
 // Due to Playwright limitations (headless mode doesn't support real notifications,
@@ -43,7 +51,8 @@ test.describe("Browser Notifications", () => {
         writable: false,
         configurable: true,
       });
-      Notification.requestPermission = () => Promise.resolve("denied" as NotificationPermission);
+      Notification.requestPermission = () =>
+        Promise.resolve("denied" as NotificationPermission);
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -65,10 +74,14 @@ test.describe("Browser Notifications", () => {
 
     // Set up spy with page hidden
     await page.addInitScript(() => {
-      (window as any).__notificationCalls = [];
+      window.__notificationCalls = [];
 
-      const SpyNotification = function(this: Notification, title: string, options?: NotificationOptions) {
-        (window as any).__notificationCalls.push({ title, options });
+      const SpyNotification = function (
+        this: Notification,
+        title: string,
+        options?: NotificationOptions,
+      ) {
+        window.__notificationCalls.push({ title, options });
         return { onclick: null, close: () => {} } as unknown as Notification;
       } as unknown as typeof Notification;
 
@@ -76,7 +89,8 @@ test.describe("Browser Notifications", () => {
         get: () => "granted",
         configurable: true,
       });
-      SpyNotification.requestPermission = () => Promise.resolve("granted" as NotificationPermission);
+      SpyNotification.requestPermission = () =>
+        Promise.resolve("granted" as NotificationPermission);
 
       Object.defineProperty(window, "Notification", {
         value: SpyNotification,
@@ -122,11 +136,13 @@ test.describe("Browser Notifications", () => {
         parts.push(`Process: ${request.sender_info.unit_name}`);
       }
       if (request.items.length === 1) {
-        parts.push(`Secret: ${request.items[0].label || request.items[0].path}`);
+        parts.push(
+          `Secret: ${request.items[0].label || request.items[0].path}`,
+        );
       }
 
       // Create notification
-      new (window as any).Notification("Secret Access Request", {
+      new Notification("Secret Access Request", {
         body: parts.join("\n"),
         icon: "/favicon.ico",
         tag: request.id,
@@ -134,7 +150,7 @@ test.describe("Browser Notifications", () => {
       });
     });
 
-    const calls = await page.evaluate(() => (window as any).__notificationCalls);
+    const calls = await page.evaluate(() => window.__notificationCalls);
     expect(calls.length).toBe(1);
     expect(calls[0].title).toBe("Secret Access Request");
     expect(calls[0].options.body).toContain("Client: my-app");
@@ -154,10 +170,14 @@ test.describe("Browser Notifications", () => {
 
     // Set up spy but leave document.hidden as false (page visible)
     await page.addInitScript(() => {
-      (window as any).__notificationCalls = [];
+      window.__notificationCalls = [];
 
-      const SpyNotification = function(this: Notification, title: string, options?: NotificationOptions) {
-        (window as any).__notificationCalls.push({ title, options });
+      const SpyNotification = function (
+        this: Notification,
+        title: string,
+        options?: NotificationOptions,
+      ) {
+        window.__notificationCalls.push({ title, options });
         return { onclick: null, close: () => {} } as unknown as Notification;
       } as unknown as typeof Notification;
 
@@ -165,7 +185,8 @@ test.describe("Browser Notifications", () => {
         get: () => "granted",
         configurable: true,
       });
-      SpyNotification.requestPermission = () => Promise.resolve("granted" as NotificationPermission);
+      SpyNotification.requestPermission = () =>
+        Promise.resolve("granted" as NotificationPermission);
 
       Object.defineProperty(window, "Notification", {
         value: SpyNotification,
@@ -188,14 +209,14 @@ test.describe("Browser Notifications", () => {
       if (!document.hidden) {
         return false; // Would return early, no notification
       }
-      new (window as any).Notification("Should not appear", {});
+      new Notification("Should not appear", {});
       return true;
     });
 
     expect(notificationCreated).toBe(false);
 
     // Verify no notifications were created
-    const calls = await page.evaluate(() => (window as any).__notificationCalls);
+    const calls = await page.evaluate(() => window.__notificationCalls);
     expect(calls.length).toBe(0);
 
     await context.close();
@@ -207,10 +228,14 @@ test.describe("Browser Notifications", () => {
 
     // Set up spy with denied permission
     await page.addInitScript(() => {
-      (window as any).__notificationCalls = [];
+      window.__notificationCalls = [];
 
-      const SpyNotification = function(this: Notification, title: string, options?: NotificationOptions) {
-        (window as any).__notificationCalls.push({ title, options });
+      const SpyNotification = function (
+        this: Notification,
+        title: string,
+        options?: NotificationOptions,
+      ) {
+        window.__notificationCalls.push({ title, options });
         return { onclick: null, close: () => {} } as unknown as Notification;
       } as unknown as typeof Notification;
 
@@ -218,7 +243,8 @@ test.describe("Browser Notifications", () => {
         get: () => "denied",
         configurable: true,
       });
-      SpyNotification.requestPermission = () => Promise.resolve("denied" as NotificationPermission);
+      SpyNotification.requestPermission = () =>
+        Promise.resolve("denied" as NotificationPermission);
 
       Object.defineProperty(window, "Notification", {
         value: SpyNotification,
@@ -245,14 +271,14 @@ test.describe("Browser Notifications", () => {
       if (Notification.permission !== "granted") {
         return false; // Would return early due to permission
       }
-      new (window as any).Notification("Should not appear", {});
+      new Notification("Should not appear", {});
       return true;
     });
 
     expect(notificationCreated).toBe(false);
 
     // Verify no notifications were created
-    const calls = await page.evaluate(() => (window as any).__notificationCalls);
+    const calls = await page.evaluate(() => window.__notificationCalls);
     expect(calls.length).toBe(0);
 
     await context.close();
@@ -265,10 +291,14 @@ test.describe("Browser Notifications", () => {
     const page = await context.newPage();
 
     await page.addInitScript(() => {
-      (window as any).__notificationCalls = [];
+      window.__notificationCalls = [];
 
-      const SpyNotification = function(this: Notification, title: string, options?: NotificationOptions) {
-        (window as any).__notificationCalls.push({ title, options });
+      const SpyNotification = function (
+        this: Notification,
+        title: string,
+        options?: NotificationOptions,
+      ) {
+        window.__notificationCalls.push({ title, options });
         return { onclick: null, close: () => {} } as unknown as Notification;
       } as unknown as typeof Notification;
 
@@ -276,7 +306,8 @@ test.describe("Browser Notifications", () => {
         get: () => "granted",
         configurable: true,
       });
-      SpyNotification.requestPermission = () => Promise.resolve("granted" as NotificationPermission);
+      SpyNotification.requestPermission = () =>
+        Promise.resolve("granted" as NotificationPermission);
 
       Object.defineProperty(window, "Notification", {
         value: SpyNotification,
@@ -317,18 +348,20 @@ test.describe("Browser Notifications", () => {
         parts.push(`PID: ${request.sender_info.pid}`);
       }
       if (request.items.length === 1) {
-        parts.push(`Secret: ${request.items[0].label || request.items[0].path}`);
+        parts.push(
+          `Secret: ${request.items[0].label || request.items[0].path}`,
+        );
       } else {
         parts.push(`Secrets: ${request.items.length} items`);
       }
 
-      new (window as any).Notification("Secret Access Request", {
+      new Notification("Secret Access Request", {
         body: parts.join("\n"),
         tag: request.id,
       });
     });
 
-    const calls = await page.evaluate(() => (window as any).__notificationCalls);
+    const calls = await page.evaluate(() => window.__notificationCalls);
     expect(calls.length).toBe(1);
     expect(calls[0].options.body).toContain("Client: batch-app");
     expect(calls[0].options.body).toContain("PID: 5678");
@@ -344,10 +377,14 @@ test.describe("Browser Notifications", () => {
     const page = await context.newPage();
 
     await page.addInitScript(() => {
-      (window as any).__notificationCalls = [];
+      window.__notificationCalls = [];
 
-      const SpyNotification = function(this: Notification, title: string, options?: NotificationOptions) {
-        (window as any).__notificationCalls.push({ title, options });
+      const SpyNotification = function (
+        this: Notification,
+        title: string,
+        options?: NotificationOptions,
+      ) {
+        window.__notificationCalls.push({ title, options });
         return { onclick: null, close: () => {} } as unknown as Notification;
       } as unknown as typeof Notification;
 
@@ -355,7 +392,8 @@ test.describe("Browser Notifications", () => {
         get: () => "granted",
         configurable: true,
       });
-      SpyNotification.requestPermission = () => Promise.resolve("granted" as NotificationPermission);
+      SpyNotification.requestPermission = () =>
+        Promise.resolve("granted" as NotificationPermission);
 
       Object.defineProperty(window, "Notification", {
         value: SpyNotification,
@@ -390,13 +428,13 @@ test.describe("Browser Notifications", () => {
         parts.push("Type: search");
       }
 
-      new (window as any).Notification("Secret Access Request", {
+      new Notification("Secret Access Request", {
         body: parts.join("\n"),
         tag: request.id,
       });
     });
 
-    const calls = await page.evaluate(() => (window as any).__notificationCalls);
+    const calls = await page.evaluate(() => window.__notificationCalls);
     expect(calls.length).toBe(1);
     expect(calls[0].options.body).toContain("Client: search-app");
     expect(calls[0].options.body).toContain("Type: search");

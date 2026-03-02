@@ -39,7 +39,7 @@ export interface PendingRequest {
   session: string;
   created_at: string;
   expires_at: string;
-  type: "get_secret" | "search" | "gpg_sign";
+  type: "get_secret" | "search" | "gpg_sign" | "delete" | "write";
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
   gpg_sign_info?: GPGSignInfo;
@@ -73,7 +73,13 @@ export interface ErrorResponse {
 
 export type AuthState = "checking" | "authenticated" | "unauthenticated";
 
-export type Resolution = "approved" | "denied" | "expired" | "cancelled" | "auto_approved" | "ignored";
+export type Resolution =
+  | "approved"
+  | "denied"
+  | "expired"
+  | "cancelled"
+  | "auto_approved"
+  | "ignored";
 
 export interface HistoryEntry {
   request: PendingRequest;

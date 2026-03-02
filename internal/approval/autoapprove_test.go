@@ -41,9 +41,9 @@ func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
 
 	req := &Request{
-		ID:     "req-1",
-		Type:   RequestTypeGetSecret,
-		Items:  []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		ID:         "req-1",
+		Type:       RequestTypeGetSecret,
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		SenderInfo: SenderInfo{UnitName: "gh"},
 	}
 	mgr.AddAutoApproveRule(req)
@@ -62,9 +62,9 @@ func TestAutoApproveRule_Expiry(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 50 * time.Millisecond})
 
 	req := &Request{
-		ID:     "req-1",
-		Type:   RequestTypeGetSecret,
-		Items:  []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		ID:         "req-1",
+		Type:       RequestTypeGetSecret,
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		SenderInfo: SenderInfo{UnitName: "gh"},
 	}
 	mgr.AddAutoApproveRule(req)
@@ -91,9 +91,9 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 
 	// Add a rule
 	req := &Request{
-		ID:     "req-1",
-		Type:   RequestTypeGetSecret,
-		Items:  []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
+		ID:         "req-1",
+		Type:       RequestTypeGetSecret,
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
 		SenderInfo: SenderInfo{UnitName: "gh"},
 	}
 	mgr.AddAutoApproveRule(req)

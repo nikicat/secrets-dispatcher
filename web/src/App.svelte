@@ -341,17 +341,17 @@
         <div class="sidebar-rules">
           <h3>Auto-Approve Rules</h3>
           <ul class="rules-list">
-            {#each trustedSigners as signer, i (signer.exe_path + (signer.repo_path ?? '') + (signer.file_prefix ?? ''))}
+            {#each trustedSigners as signer (signer.exe_path + (signer.repo_path ?? '') + (signer.file_prefix ?? ''))}
+              {@const attrs = {
+                ...(signer.repo_path ? { repo: signer.repo_path } : {}),
+                ...(signer.file_prefix ? { file_prefix: signer.file_prefix } : {}),
+              } satisfies Record<string, string>}
               <li class="rule-entry">
                 <div class="rule-header">
                   <span class="history-type history-type--gpg_sign">GPG Sign</span>
                   <span class="rule-permanent">permanent</span>
                 </div>
-                <PropsTable process={basename(signer.exe_path)} attributes={Object.assign(
-                  {},
-                  signer.repo_path ? { repo: signer.repo_path } : {},
-                  signer.file_prefix ? { file_prefix: signer.file_prefix } : {}
-                )} />
+                <PropsTable process={basename(signer.exe_path)} attributes={attrs} />
               </li>
             {/each}
             {#each autoApproveRules as rule (rule.id)}

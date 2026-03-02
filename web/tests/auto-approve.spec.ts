@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify auto-approve rule WebSocket notifications and timer display.
@@ -14,9 +14,7 @@ test.afterAll(async () => {
 });
 
 test.describe("Auto-Approve Rules API", () => {
-  test("auto-approve list returns empty array initially", async ({
-    request,
-  }) => {
+  test("auto-approve list returns empty array initially", async ({ request }) => {
     const token = await backend.getAuthToken();
     const response = await request.get(`${backend.url}/api/v1/auto-approve`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -93,7 +91,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({
+      timeout: 10000,
+    });
     await expect(page.getByText("test-invoker")).toBeVisible();
     await expect(page.getByText("Secret", { exact: true })).toBeVisible();
     await expect(page.getByText("default")).toBeVisible();
@@ -135,7 +135,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({
+      timeout: 10000,
+    });
     await expect(page.getByText("ws-invoker")).toBeVisible();
     await expect(page.getByText("Search")).toBeVisible();
     await expect(page.getByText("login")).toBeVisible();
@@ -179,7 +181,12 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     await expect(page.getByText("remove-me")).toBeVisible({ timeout: 10000 });
 
     // Send rule_removed
-    sendToPage!(JSON.stringify({ type: "auto_approve_rule_removed", id: "rule-to-remove" }));
+    sendToPage!(
+      JSON.stringify({
+        type: "auto_approve_rule_removed",
+        id: "rule-to-remove",
+      }),
+    );
 
     // Rule should disappear
     await expect(page.getByText("remove-me")).not.toBeVisible();
@@ -223,7 +230,9 @@ test.describe("Auto-Approve Rule Reset", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("reset-invoker")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("reset-invoker")).toBeVisible({
+      timeout: 10000,
+    });
 
     // Should show ~30s remaining
     const timerEl = page.locator(".rule-expiry");
@@ -284,7 +293,9 @@ test.describe("Auto-Approve Rule Reset", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("tick-invoker")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("tick-invoker")).toBeVisible({
+      timeout: 10000,
+    });
 
     // Reset the timer with a longer expiry
     sendToPage!(JSON.stringify({
@@ -389,9 +400,13 @@ test.describe("Auto-Approve Rule Timer", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("expiring-test")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("expiring-test")).toBeVisible({
+      timeout: 10000,
+    });
 
     // Wait for expiry cleanup (rule expires in ~2s, cleanup runs every 1s)
-    await expect(page.getByText("expiring-test")).not.toBeVisible({ timeout: 5000 });
+    await expect(page.getByText("expiring-test")).not.toBeVisible({
+      timeout: 5000,
+    });
   });
 });

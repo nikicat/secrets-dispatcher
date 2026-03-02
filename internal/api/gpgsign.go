@@ -62,7 +62,7 @@ func (h *Handlers) runGPG(info *approval.GPGSignInfo) (sig, status []byte, exitC
 
 // GPGSignRequest is the POST body for /api/v1/gpg-sign/request.
 type GPGSignRequest struct {
-	Client      string               `json:"client"`
+	Client      string                `json:"client"`
 	GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
 }
 

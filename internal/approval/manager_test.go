@@ -1355,8 +1355,8 @@ func TestCheckTrustedSigner_WalksProcessChain(t *testing.T) {
 
 	t.Run("empty repo matches any", func(t *testing.T) {
 		m := NewManager(ManagerConfig{
-			Timeout:    5 * time.Second,
-			HistoryMax: 100,
+			Timeout:        5 * time.Second,
+			HistoryMax:     100,
 			TrustedSigners: []TrustedSigner{{ExePath: selfExe}},
 		})
 		info := SenderInfo{ProcessChain: selfChain}
@@ -1422,8 +1422,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Secret:       &SecretMatcher{Collection: "default"},
 		},
 		{
-			Name:   "approve-all-from-unit",
-			Action: "approve",
+			Name:    "approve-all-from-unit",
+			Action:  "approve",
 			Process: &ProcessMatcher{Unit: "gopass-*"},
 		},
 		{

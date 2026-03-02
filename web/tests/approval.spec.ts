@@ -1,5 +1,6 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
 
 // These tests verify the approval flow of the WebUI.
@@ -66,21 +67,22 @@ test.describe("Approval Flow", () => {
     // Now make authenticated requests using the cookie
     const statusResponse = await request.get(`${backend.url}/api/v1/status`, {
       headers: {
-        Cookie:
-          authResponse.headers()["set-cookie"]?.split(";")[0] || `session=${token}`,
+        Cookie: authResponse.headers()["set-cookie"]?.split(";")[0] ||
+          `session=${token}`,
       },
     });
 
     expect(statusResponse.status()).toBe(200);
     const status = await statusResponse.json();
     expect(status.running).toBe(true);
-    expect(status.clients).toEqual([{ name: "local", socket_path: "session_bus" }]);
+    expect(status.clients).toEqual([{
+      name: "local",
+      socket_path: "session_bus",
+    }]);
     expect(status.pending_count).toBe(0);
   });
 
-  test("pending list returns empty array in API-only mode", async ({
-    request,
-  }) => {
+  test("pending list returns empty array in API-only mode", async ({ request }) => {
     // Get auth cookie
     const token = await backend.getAuthToken();
 
@@ -96,9 +98,7 @@ test.describe("Approval Flow", () => {
     expect(data.requests).toEqual([]);
   });
 
-  test("approve endpoint returns 404 for nonexistent request", async ({
-    request,
-  }) => {
+  test("approve endpoint returns 404 for nonexistent request", async ({ request }) => {
     const token = await backend.getAuthToken();
 
     const response = await request.post(
@@ -113,9 +113,7 @@ test.describe("Approval Flow", () => {
     expect(response.status()).toBe(404);
   });
 
-  test("deny endpoint returns 404 for nonexistent request", async ({
-    request,
-  }) => {
+  test("deny endpoint returns 404 for nonexistent request", async ({ request }) => {
     const token = await backend.getAuthToken();
 
     const response = await request.post(
@@ -130,9 +128,7 @@ test.describe("Approval Flow", () => {
     expect(response.status()).toBe(404);
   });
 
-  test("pending list response has correct ItemInfo structure", async ({
-    request,
-  }) => {
+  test("pending list response has correct ItemInfo structure", async ({ request }) => {
     // Verify the API response structure matches expected ItemInfo format
     const token = await backend.getAuthToken();
 

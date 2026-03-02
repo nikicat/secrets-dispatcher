@@ -45,16 +45,6 @@ func mockUserNotFound() {
 	}
 }
 
-// mockUserFound makes userLookupFunc return a fake user with given uid/gid.
-func mockUserFound(username, uid, gid string) {
-	userLookupFunc = func(name string) (*user.User, error) {
-		if name == username {
-			return &user.User{Username: username, Uid: uid, Gid: gid}, nil
-		}
-		return nil, user.UnknownUserError(name)
-	}
-}
-
 // noopFuncs stubs out all filesystem/exec calls to be no-ops.
 func noopFuncs() {
 	userAddFunc = func(username, homeDir, shell string) error { return nil }
@@ -176,9 +166,9 @@ func TestProvision_CreatesDirectories(t *testing.T) {
 
 	homeDir := "/var/lib/secret-companion/nb"
 	wantDirs := []string{
-		homeDir,                                          // home dir
-		filepath.Join(homeDir, ".config", "gopass"),     // gopass config
-		filepath.Join(homeDir, ".gnupg"),                // gnupg
+		homeDir, // home dir
+		filepath.Join(homeDir, ".config", "gopass"),          // gopass config
+		filepath.Join(homeDir, ".gnupg"),                     // gnupg
 		filepath.Join(homeDir, ".config", "systemd", "user"), // systemd unit dir
 	}
 

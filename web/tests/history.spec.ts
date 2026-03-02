@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify the history feature of the WebUI.
@@ -36,9 +36,7 @@ test.describe("Request History API", () => {
     expect(response.status()).toBe(401);
   });
 
-  test("history entry has correct structure in API response", async ({
-    request,
-  }) => {
+  test("history entry has correct structure in API response", async ({ request }) => {
     const token = await backend.getAuthToken();
 
     const response = await request.get(`${backend.url}/api/v1/log`, {
@@ -65,7 +63,14 @@ test.describe("Request History API", () => {
       expect(entry.request).toHaveProperty("items");
       expect(entry.request).toHaveProperty("session");
 
-      expect(["approved", "denied", "expired", "cancelled", "auto_approved", "ignored"]).toContain(
+      expect([
+        "approved",
+        "denied",
+        "expired",
+        "cancelled",
+        "auto_approved",
+        "ignored",
+      ]).toContain(
         entry.resolution,
       );
     }
@@ -96,9 +101,7 @@ test.describe("Request History UI", () => {
     await expect(page.getByText("No pending requests")).toBeVisible();
   });
 
-  test("history entry with ignored resolution shows correct badge", async ({
-    page,
-  }) => {
+  test("history entry with ignored resolution shows correct badge", async ({ page }) => {
     const resolvedAt = new Date().toISOString();
 
     // Intercept WebSocket and inject a history_entry after snapshot
@@ -123,8 +126,7 @@ test.describe("Request History UI", () => {
                           path: "/org/freedesktop/secrets/collection/default/1",
                           label: "Chrome Safe Storage",
                           attributes: {
-                            "xdg:schema":
-                              "_chrome_dummy_schema_for_unlocking",
+                            "xdg:schema": "_chrome_dummy_schema_for_unlocking",
                           },
                         },
                       ],
@@ -167,9 +169,7 @@ test.describe("Request History UI", () => {
     await expect(badge).toHaveText("ignored");
   });
 
-  test("history entry with ignored resolution appears in snapshot", async ({
-    page,
-  }) => {
+  test("history entry with ignored resolution appears in snapshot", async ({ page }) => {
     const resolvedAt = new Date().toISOString();
 
     // Intercept WebSocket and inject history into the snapshot itself
@@ -190,8 +190,7 @@ test.describe("Request History UI", () => {
                         path: "/org/freedesktop/secrets/collection/default/2",
                         label: "Chrome Dummy",
                         attributes: {
-                          "xdg:schema":
-                            "_chrome_dummy_schema_for_unlocking",
+                          "xdg:schema": "_chrome_dummy_schema_for_unlocking",
                         },
                       },
                     ],

@@ -1,10 +1,18 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
+import { Buffer } from "node:buffer";
+import { type ChildProcess, spawn } from "node:child_process";
+import process from "node:process";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
-import { createServer, request as httpRequest, type Server, type IncomingMessage, type ServerResponse } from "node:http";
-import { join, dirname, extname } from "node:path";
+import {
+  createServer,
+  type IncomingMessage,
+  request as httpRequest,
+  type Server,
+  type ServerResponse,
+} from "node:http";
+import { dirname, extname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomBytes, createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
 
@@ -67,7 +75,9 @@ const MIME_TYPES: Record<string, string> = {
  * Create a reverse proxy that serves the frontend from web/dist/ and proxies
  * /api/ requests (including WebSocket) to the Go backend.
  */
-function createTestProxy(backendPort: number): Promise<{ server: Server; port: number }> {
+function createTestProxy(
+  backendPort: number,
+): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       if (req.url?.startsWith("/api/")) {
@@ -90,7 +100,11 @@ function createTestProxy(backendPort: number): Promise<{ server: Server; port: n
   });
 }
 
-function proxyRequest(req: IncomingMessage, res: ServerResponse, backendPort: number): void {
+function proxyRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  backendPort: number,
+): void {
   const proxyReq = httpRequest(
     {
       hostname: "127.0.0.1",
@@ -111,7 +125,12 @@ function proxyRequest(req: IncomingMessage, res: ServerResponse, backendPort: nu
   req.pipe(proxyReq);
 }
 
-function proxyWebSocket(req: IncomingMessage, socket: Socket, head: Buffer, backendPort: number): void {
+function proxyWebSocket(
+  req: IncomingMessage,
+  socket: Socket,
+  head: Buffer,
+  backendPort: number,
+): void {
   const proxyReq = httpRequest({
     hostname: "127.0.0.1",
     port: backendPort,
@@ -130,7 +149,9 @@ function proxyWebSocket(req: IncomingMessage, socket: Socket, head: Buffer, back
 
     let response = `HTTP/1.1 101 Switching Protocols\r\n`;
     for (let i = 0; i < _proxyRes.rawHeaders.length; i += 2) {
-      response += `${_proxyRes.rawHeaders[i]}: ${_proxyRes.rawHeaders[i + 1]}\r\n`;
+      response += `${_proxyRes.rawHeaders[i]}: ${
+        _proxyRes.rawHeaders[i + 1]
+      }\r\n`;
     }
     response += "\r\n";
     socket.write(response);
@@ -180,7 +201,9 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
  * A lightweight reverse proxy serves the frontend from web/dist/ and proxies
  * API/WebSocket traffic to the Go backend (no embed or copy needed).
  */
-export async function startTestBackend(options?: { version?: string; extraArgs?: string[] }): Promise<TestBackend> {
+export async function startTestBackend(
+  options?: { version?: string; extraArgs?: string[] },
+): Promise<TestBackend> {
   // Create temp directory for test
   const testId = randomBytes(8).toString("hex");
   const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
@@ -190,15 +213,18 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
   // The session_bus downstream creates a staticProvider so the WS snapshot
   // includes a "client connected" entry that many tests expect.
   const configPath = join(stateDir, "config.yaml");
-  await writeFile(configPath, [
-    "serve:",
-    "    upstream:",
-    "        type: socket",
-    "        path: /dev/null",
-    "    downstream:",
-    "        - type: session_bus",
-    "",
-  ].join("\n"));
+  await writeFile(
+    configPath,
+    [
+      "serve:",
+      "    upstream:",
+      "        type: socket",
+      "        path: /dev/null",
+      "    downstream:",
+      "        - type: session_bus",
+      "",
+    ].join("\n"),
+  );
 
   // Build environment with optional version override
   const env: Record<string, string> = { ...process.env };
@@ -208,7 +234,10 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
 
   const extraArgs = options?.extraArgs ?? [];
 
-  const spawnBackend = (listenAddr: string, spawnEnv: Record<string, string>): ChildProcess => {
+  const spawnBackend = (
+    listenAddr: string,
+    spawnEnv: Record<string, string>,
+  ): ChildProcess => {
     return spawn(
       BINARY_PATH,
       [
@@ -232,7 +261,7 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
   };
 
   // Wait for the server to start and parse its actual listen port from log output.
-  const waitForServer = async (p: ChildProcess): Promise<number> => {
+  const waitForServer = (p: ChildProcess): Promise<number> => {
     return new Promise<number>((resolve, reject) => {
       const timeout = setTimeout(() => {
         reject(new Error("Timeout waiting for backend to start"));
@@ -264,8 +293,8 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
     });
   };
 
-  const stopProcess = async (p: ChildProcess): Promise<void> => {
-    if (!p.pid || p.exitCode !== null) return;
+  const stopProcess = (p: ChildProcess): Promise<void> => {
+    if (!p.pid || p.exitCode !== null) return Promise.resolve();
 
     return new Promise<void>((resolve) => {
       let killTimer: ReturnType<typeof setTimeout> | null = null;
@@ -278,7 +307,9 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
       p.kill("SIGTERM");
 
       killTimer = setTimeout(() => {
-        try { p.kill("SIGKILL"); } catch { /* already dead */ }
+        try {
+          p.kill("SIGKILL");
+        } catch { /* already dead */ }
       }, 2000);
     });
   };
@@ -305,7 +336,9 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
     return `${url}/?token=${jwt}`;
   };
 
-  const restart = async (restartOptions?: { version?: string }): Promise<void> => {
+  const restart = async (
+    restartOptions?: { version?: string },
+  ): Promise<void> => {
     await stopProcess(proc);
 
     const restartEnv: Record<string, string> = { ...process.env };

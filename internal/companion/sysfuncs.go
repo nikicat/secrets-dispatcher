@@ -14,14 +14,14 @@ import (
 // as internal/service/install.go (systemctlFunc).
 
 var (
-	userAddFunc     = defaultUserAdd
-	loginctlFunc    = defaultLoginctl
-	userLookupFunc  = defaultUserLookup
-	mkdirAllFunc    = os.MkdirAll
-	chownFunc       = os.Lchown
-	chmodFunc       = os.Chmod
-	writeFileFunc   = os.WriteFile
-	geteuidFunc     = os.Geteuid
+	userAddFunc    = defaultUserAdd
+	loginctlFunc   = defaultLoginctl
+	userLookupFunc = defaultUserLookup
+	mkdirAllFunc   = os.MkdirAll
+	chownFunc      = os.Lchown
+	chmodFunc      = os.Chmod
+	writeFileFunc  = os.WriteFile
+	geteuidFunc    = os.Geteuid
 )
 
 // defaultUserAdd runs: useradd --home-dir <homeDir> --no-create-home --shell <shell> <username>

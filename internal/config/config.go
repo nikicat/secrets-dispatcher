@@ -229,20 +229,20 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 // ServeConfig holds serve-subcommand settings.
 type ServeConfig struct {
-	Upstream       BusConfig   `yaml:"upstream"`
-	Downstream     []BusConfig `yaml:"downstream"`
-	LogLevel       string      `yaml:"log_level"`
-	LogFormat      string      `yaml:"log_format"`
-	Timeout        Duration    `yaml:"timeout"`
-	HistoryLimit   int         `yaml:"history_limit"`
-	Notifications  *bool       `yaml:"notifications"`
-	ShowPIDs          *bool       `yaml:"show_pids"`
-	TrimProcessChain    *bool       `yaml:"trim_process_chain"`
-	ApprovalWindow      Duration    `yaml:"approval_window"`
-	AutoApproveDuration Duration         `yaml:"auto_approve_duration"`
-	TrustedSigners           []TrustedSigner  `yaml:"trusted_signers,omitempty"`
-	IgnoreChromeDummySecret  *bool            `yaml:"ignore_chrome_dummy_secret"`
-	Rules                    []TrustRule      `yaml:"rules,omitempty"`
+	Upstream                BusConfig       `yaml:"upstream"`
+	Downstream              []BusConfig     `yaml:"downstream"`
+	LogLevel                string          `yaml:"log_level"`
+	LogFormat               string          `yaml:"log_format"`
+	Timeout                 Duration        `yaml:"timeout"`
+	HistoryLimit            int             `yaml:"history_limit"`
+	Notifications           *bool           `yaml:"notifications"`
+	ShowPIDs                *bool           `yaml:"show_pids"`
+	TrimProcessChain        *bool           `yaml:"trim_process_chain"`
+	ApprovalWindow          Duration        `yaml:"approval_window"`
+	AutoApproveDuration     Duration        `yaml:"auto_approve_duration"`
+	TrustedSigners          []TrustedSigner `yaml:"trusted_signers,omitempty"`
+	IgnoreChromeDummySecret *bool           `yaml:"ignore_chrome_dummy_secret"`
+	Rules                   []TrustRule     `yaml:"rules,omitempty"`
 }
 
 // TrustedSigner defines a process that is auto-approved for GPG signing.
@@ -256,7 +256,7 @@ type TrustedSigner struct {
 // TrustRule defines a declarative rule for auto-approving or ignoring requests.
 type TrustRule struct {
 	Name             string            `yaml:"name,omitempty"`
-	Action           string            `yaml:"action,omitempty"`       // "approve" (default) or "ignore"
+	Action           string            `yaml:"action,omitempty"` // "approve" (default) or "ignore"
 	RequestTypes     []string          `yaml:"request_types,omitempty"`
 	Process          *ProcessMatcher   `yaml:"process,omitempty"`
 	Secret           *SecretMatcher    `yaml:"secret,omitempty"`

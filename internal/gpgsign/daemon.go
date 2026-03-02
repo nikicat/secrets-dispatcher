@@ -59,7 +59,7 @@ func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, erro
 // to receive the resolution event.
 func (c *DaemonClient) PostSigningRequest(ctx context.Context, client string, info *approval.GPGSignInfo) (string, error) {
 	body := struct {
-		Client      string               `json:"client"`
+		Client      string                `json:"client"`
 		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
 	}{Client: client, GPGSignInfo: info}
 

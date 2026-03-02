@@ -140,8 +140,8 @@ func TestProxyBasicOperations(t *testing.T) {
 
 	// Start the proxy
 	p := proxy.New(proxy.Config{
-		ClientName:       "test-client",
-		LogLevel:         slog.LevelDebug,
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
 	})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
@@ -294,8 +294,8 @@ func TestProxyItemOperations(t *testing.T) {
 	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test-app"}, []byte("secret-value"))
 
 	p := proxy.New(proxy.Config{
-		ClientName:       "test-client",
-		LogLevel:         slog.LevelDebug,
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
 	})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
@@ -372,8 +372,8 @@ func TestProxyCollectionOperations(t *testing.T) {
 	}
 
 	p := proxy.New(proxy.Config{
-		ClientName:       "test-client",
-		LogLevel:         slog.LevelDebug,
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
 	})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
@@ -618,9 +618,9 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
 	p := proxy.New(proxy.Config{
-		ClientName:       "test-client",
-		LogLevel:         slog.LevelDebug,
-		Approval:         approvalMgr,
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
 	})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
@@ -1233,8 +1233,8 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	initialItemCount := mock.ItemCount()
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:          30 * time.Second,
-		HistoryMax:       100,
+		Timeout:           30 * time.Second,
+		HistoryMax:        100,
 		IgnoreChromeDummy: true,
 	})
 
@@ -1328,8 +1328,8 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	}
 
 	p := proxy.New(proxy.Config{
-		ClientName:       "test-client",
-		LogLevel:         slog.LevelDebug,
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
 	})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
@@ -1368,8 +1368,8 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 	defer cancel()
 
 	p := proxy.New(proxy.Config{
-		ClientName:       "test-client",
-		LogLevel:         slog.LevelDebug,
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
 	})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {

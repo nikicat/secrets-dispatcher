@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify the timestamp display toggle feature in the WebUI.
@@ -23,7 +23,9 @@ test.describe("Timestamp Display Toggle", () => {
 
     // Inject test history entry via API with unique ID
     const token = await backend.getAuthToken();
-    const uniqueId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const uniqueId = `test-${Date.now()}-${
+      Math.random().toString(36).slice(2)
+    }`;
     await page.request.post(`${backend.url}/api/v1/test/history`, {
       headers: { Authorization: `Bearer ${token}` },
       data: {
@@ -35,7 +37,13 @@ test.describe("Timestamp Display Toggle", () => {
           created_at: new Date().toISOString(),
           expires_at: new Date(Date.now() + 300000).toISOString(),
           type: "get_secret",
-          sender_info: { sender: "", pid: 0, uid: 0, user_name: "", unit_name: "" },
+          sender_info: {
+            sender: "",
+            pid: 0,
+            uid: 0,
+            user_name: "",
+            unit_name: "",
+          },
         },
         resolution: "approved",
         resolved_at: new Date().toISOString(),
@@ -45,7 +53,9 @@ test.describe("Timestamp Display Toggle", () => {
     // Login and wait for history to appear
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
-    await expect(page.locator(".history-entry").first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".history-entry").first()).toBeVisible({
+      timeout: 10000,
+    });
   });
 
   test("shows relative time by default", async ({ page }) => {
@@ -87,7 +97,9 @@ test.describe("Timestamp Display Toggle", () => {
 
     // Reload page
     await page.reload();
-    await expect(page.locator(".history-entry").first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".history-entry").first()).toBeVisible({
+      timeout: 10000,
+    });
 
     // Should still show absolute time
     const reloadedTimestamp = page.locator(".history-time").first();

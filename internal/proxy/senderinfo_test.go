@@ -176,7 +176,7 @@ func TestNewSenderInfoResolver(t *testing.T) {
 	// Test that NewSenderInfoResolver creates a valid resolver
 	resolver := NewSenderInfoResolver(nil, false)
 	if resolver == nil {
-		t.Error("NewSenderInfoResolver returned nil")
+		t.Fatal("NewSenderInfoResolver returned nil")
 	}
 	if resolver.client == nil {
 		t.Error("expected non-nil client")

@@ -17,8 +17,8 @@ type dbusClient interface {
 
 // SenderInfoResolver resolves D-Bus sender information (PID, UID, systemd unit).
 type SenderInfoResolver struct {
-	client            dbusClient
-	trimProcessChain  bool
+	client           dbusClient
+	trimProcessChain bool
 }
 
 // NewSenderInfoResolver creates a new resolver using the given D-Bus connection.

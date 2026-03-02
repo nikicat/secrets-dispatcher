@@ -35,8 +35,8 @@ func Check(cfg Config) []CheckResult {
 	// 1. Companion user exists.
 	u, userErr := userLookupFunc(companionUser)
 	results = append(results, CheckResult{
-		Name:    "companion user exists",
-		Pass:    userErr == nil,
+		Name: "companion user exists",
+		Pass: userErr == nil,
 		Message: passOrFix(userErr == nil,
 			fmt.Sprintf("user %q found (uid=%s)", companionUser, safeUID(u)),
 			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),

@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import process from "node:process";
 
 const allBrowsers = process.env.ALL_BROWSERS === "1";
 
@@ -10,7 +11,6 @@ export default defineConfig({
       ? [{ name: "firefox", use: { browserName: "firefox" as const } }]
       : []),
   ],
-  use: {
-  },
+  use: {},
   // Don't start web server - tests start the Go binary directly
 });

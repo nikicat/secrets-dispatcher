@@ -97,6 +97,63 @@ func TestReadProcessChain_TrimIncludesSessionLeader(t *testing.T) {
 	}
 }
 
+func TestReadExe_Self(t *testing.T) {
+	exe := ReadExe(int32(os.Getpid()))
+	if exe == "" {
+		t.Fatal("ReadExe on self returned empty string")
+	}
+	t.Logf("self exe = %q", exe)
+}
+
+func TestReadExe_InvalidPID(t *testing.T) {
+	exe := ReadExe(-1)
+	if exe != "" {
+		t.Errorf("expected empty string for invalid PID, got %q", exe)
+	}
+}
+
+func TestReadCWD_Self(t *testing.T) {
+	cwd := ReadCWD(int32(os.Getpid()))
+	if cwd == "" {
+		t.Fatal("ReadCWD on self returned empty string")
+	}
+	expected, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd != expected {
+		t.Errorf("expected cwd %q, got %q", expected, cwd)
+	}
+}
+
+func TestReadCWD_InvalidPID(t *testing.T) {
+	cwd := ReadCWD(-1)
+	if cwd != "" {
+		t.Errorf("expected empty string for invalid PID, got %q", cwd)
+	}
+}
+
+func TestReadProcessChain_PopulatesAllFields(t *testing.T) {
+	chain := ReadProcessChain(int32(os.Getpid()), false)
+	if len(chain) == 0 {
+		t.Fatal("ReadProcessChain returned empty chain")
+	}
+	entry := chain[0] // our own process
+	if entry.Comm == "" {
+		t.Error("expected non-empty Comm")
+	}
+	if entry.Exe == "" {
+		t.Error("expected non-empty Exe")
+	}
+	if entry.CWD == "" {
+		t.Error("expected non-empty CWD")
+	}
+	if len(entry.Args) == 0 {
+		t.Error("expected non-empty Args")
+	}
+	t.Logf("self: comm=%q exe=%q cwd=%q args=%v", entry.Comm, entry.Exe, entry.CWD, entry.Args)
+}
+
 func TestResolveInvoker_InvalidPID(t *testing.T) {
 	comm, pid := ResolveInvoker(0)
 	if comm != "" {

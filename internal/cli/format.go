@@ -125,8 +125,9 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 
 	// Sender process info
 	if req.SenderInfo.UnitName != "" {
-		fmt.Fprintf(f.w, "Process: %s (PID %d)\n", req.SenderInfo.UnitName, req.SenderInfo.PID)
-	} else if req.SenderInfo.PID != 0 {
+		fmt.Fprintf(f.w, "Process: %s\n", req.SenderInfo.UnitName)
+	}
+	if req.SenderInfo.PID != 0 {
 		fmt.Fprintf(f.w, "PID:     %d\n", req.SenderInfo.PID)
 	}
 	if req.SenderInfo.UserName != "" {
@@ -134,6 +135,23 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 	}
 	if req.SenderInfo.Sender != "" {
 		fmt.Fprintf(f.w, "Sender:  %s\n", req.SenderInfo.Sender)
+	}
+	if len(req.SenderInfo.ProcessChain) > 0 {
+		fmt.Fprintln(f.w, "Chain:")
+		for _, p := range req.SenderInfo.ProcessChain {
+			exe := p.Exe
+			if exe == "" {
+				exe = p.Name
+			}
+			fmt.Fprintf(f.w, "  %s[%d]", exe, p.PID)
+			if p.CWD != "" {
+				fmt.Fprintf(f.w, " cwd=%s", p.CWD)
+			}
+			fmt.Fprintln(f.w)
+			if len(p.Args) > 1 {
+				fmt.Fprintf(f.w, "    args: %s\n", strings.Join(p.Args[1:], " "))
+			}
+		}
 	}
 
 	if req.GPGSignInfo != nil {

@@ -28,13 +28,23 @@ func NewClient(serverAddr, token string) *Client {
 	}
 }
 
+// ProcessInfo represents a single process in the process chain.
+type ProcessInfo struct {
+	Name string   `json:"name"`
+	PID  uint32   `json:"pid"`
+	Exe  string   `json:"exe,omitempty"`
+	Args []string `json:"args,omitempty"`
+	CWD  string   `json:"cwd,omitempty"`
+}
+
 // SenderInfo contains information about the D-Bus sender process.
 type SenderInfo struct {
-	Sender   string `json:"sender"`
-	PID      uint32 `json:"pid"`
-	UID      uint32 `json:"uid"`
-	UserName string `json:"user_name"`
-	UnitName string `json:"unit_name"`
+	Sender       string        `json:"sender"`
+	PID          uint32        `json:"pid"`
+	UID          uint32        `json:"uid"`
+	UserName     string        `json:"user_name"`
+	UnitName     string        `json:"unit_name"`
+	ProcessChain []ProcessInfo `json:"process_chain,omitempty"`
 }
 
 // ItemInfo contains metadata about a secret item.

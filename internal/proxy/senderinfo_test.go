@@ -207,6 +207,21 @@ func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
 	if info.UnitName == "should-not-be-used.service" {
 		t.Error("systemd fallback was used despite procutil succeeding")
 	}
+
+	// Verify process chain entries have Exe/Args/CWD populated.
+	if len(info.ProcessChain) == 0 {
+		t.Fatal("expected non-empty ProcessChain")
+	}
+	self := info.ProcessChain[0]
+	if self.Exe == "" {
+		t.Error("expected non-empty Exe in first ProcessChain entry")
+	}
+	if len(self.Args) == 0 {
+		t.Error("expected non-empty Args in first ProcessChain entry")
+	}
+	if self.CWD == "" {
+		t.Error("expected non-empty CWD in first ProcessChain entry")
+	}
 }
 
 func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {

@@ -22,15 +22,6 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 	return context.WithValue(ctx, connContextKey{}, c)
 }
 
-type procInfo struct {
-	pid  int32
-	comm string
-}
-
-func (p procInfo) String() string {
-	return fmt.Sprintf("%s[%d]", p.comm, p.pid)
-}
-
 // resolvePeerInfo extracts peer credentials from a Unix socket connection
 // in the request context and resolves the user-facing process that invoked
 // git commit.
@@ -64,18 +55,12 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 	}
 
 	// Build the process chain from peer up to init.
-	var chain []procInfo
-	for pid := cred.Pid; pid > 1; pid = procutil.ReadPPID(pid) {
-		chain = append(chain, procInfo{pid: pid, comm: procutil.ReadComm(pid)})
-		if trimAtSessionLeader && procutil.IsSessionLeader(pid) {
-			break
-		}
-	}
+	chain := procutil.ReadProcessChain(cred.Pid, trimAtSessionLeader)
 
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		labels := make([]string, len(chain))
 		for i, p := range chain {
-			labels[i] = p.String()
+			labels[i] = fmt.Sprintf("%s[%d]", p.Comm, p.PID)
 		}
 		slog.Debug("process chain", "chain", strings.Join(labels, " → "))
 	}
@@ -85,7 +70,7 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 	invoker := chain[0] // fallback to peer
 	for i := 2; i < len(chain); i++ {
 		invoker = chain[i]
-		if !procutil.IsShell(chain[i].comm) {
+		if !procutil.IsShell(chain[i].Comm) {
 			break
 		}
 	}
@@ -94,15 +79,18 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 	processChain := make([]approval.ProcessInfo, len(chain))
 	for i, p := range chain {
 		processChain[i] = approval.ProcessInfo{
-			Name: p.comm,
-			PID:  uint32(p.pid),
+			Name: p.Comm,
+			PID:  uint32(p.PID),
+			Exe:  p.Exe,
+			Args: p.Args,
+			CWD:  p.CWD,
 		}
 	}
 
 	return approval.SenderInfo{
-		PID:          uint32(invoker.pid),
+		PID:          uint32(invoker.PID),
 		UID:          uint32(cred.Uid),
-		UnitName:     invoker.comm,
+		UnitName:     invoker.Comm,
 		ProcessChain: processChain,
 	}
 }

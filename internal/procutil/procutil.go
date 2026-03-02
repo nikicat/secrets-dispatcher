@@ -74,6 +74,29 @@ func IsSessionLeader(pid int32) bool {
 type ProcEntry struct {
 	Comm string
 	PID  int32
+	Exe  string   // readlink /proc/PID/exe
+	Args []string // /proc/PID/cmdline
+	CWD  string   // readlink /proc/PID/cwd
+}
+
+// ReadExe reads the executable path from /proc/<pid>/exe.
+// Returns empty string on error (e.g., permission denied, process gone).
+func ReadExe(pid int32) string {
+	target, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil {
+		return ""
+	}
+	return target
+}
+
+// ReadCWD reads the current working directory from /proc/<pid>/cwd.
+// Returns empty string on error.
+func ReadCWD(pid int32) string {
+	target, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
+		return ""
+	}
+	return target
 }
 
 // ReadProcessChain walks from pid up to (but not including) PID 1,
@@ -87,7 +110,13 @@ func ReadProcessChain(pid int32, trimAtSessionLeader bool) []ProcEntry {
 		if comm == "" {
 			break
 		}
-		chain = append(chain, ProcEntry{Comm: comm, PID: p})
+		chain = append(chain, ProcEntry{
+			Comm: comm,
+			PID:  p,
+			Exe:  ReadExe(p),
+			Args: ReadCmdline(p),
+			CWD:  ReadCWD(p),
+		})
 		if trimAtSessionLeader && IsSessionLeader(p) {
 			break
 		}

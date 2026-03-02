@@ -4,6 +4,7 @@
   import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
+  import ProcessChain from "./lib/ProcessChain.svelte";
   import PropsTable from "./lib/PropsTable.svelte";
   import { requestPermission, showRequestNotification } from "./lib/notifications";
 
@@ -565,7 +566,7 @@
                     </div>
                     <div class="history-entry-details">
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
-                      <span class="history-sender">{formatSenderInfo(entry)}</span>
+                      <ProcessChain chain={entry.request.sender_info?.process_chain ?? []} fallbackText={formatSenderInfo(entry)} />
                     </div>
                     <PropsTable {...historyEntryProps(entry.request)} />
                     {#if entry.resolution === "cancelled"}
@@ -618,7 +619,7 @@
                     </div>
                     <div class="history-entry-details">
                       <span class="history-items">{historyItemsSummary(entry.request)}</span>
-                      <span class="history-sender">{formatSenderInfo(entry)}</span>
+                      <ProcessChain chain={entry.request.sender_info?.process_chain ?? []} fallbackText={formatSenderInfo(entry)} />
                     </div>
                     <PropsTable {...historyEntryProps(entry.request)} />
                     {#if entry.resolution === "cancelled"}

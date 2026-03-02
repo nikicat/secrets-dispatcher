@@ -7,6 +7,9 @@ export interface ItemInfo {
 export interface ProcessInfo {
   name: string;
   pid: number;
+  exe?: string;
+  args?: string[];
+  cwd?: string;
 }
 
 export interface SenderInfo {

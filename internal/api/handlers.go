@@ -315,7 +315,13 @@ func convertSenderInfo(s approval.SenderInfo) SenderInfo {
 	if len(s.ProcessChain) > 0 {
 		info.ProcessChain = make([]ProcessInfo, len(s.ProcessChain))
 		for i, p := range s.ProcessChain {
-			info.ProcessChain[i] = ProcessInfo{Name: p.Name, PID: p.PID}
+			info.ProcessChain[i] = ProcessInfo{
+				Name: p.Name,
+				PID:  p.PID,
+				Exe:  p.Exe,
+				Args: p.Args,
+				CWD:  p.CWD,
+			}
 		}
 	}
 	return info
@@ -445,7 +451,13 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 	if len(entry.Request.SenderInfo.ProcessChain) > 0 {
 		approvalSender.ProcessChain = make([]approval.ProcessInfo, len(entry.Request.SenderInfo.ProcessChain))
 		for i, p := range entry.Request.SenderInfo.ProcessChain {
-			approvalSender.ProcessChain[i] = approval.ProcessInfo{Name: p.Name, PID: p.PID}
+			approvalSender.ProcessChain[i] = approval.ProcessInfo{
+				Name: p.Name,
+				PID:  p.PID,
+				Exe:  p.Exe,
+				Args: p.Args,
+				CWD:  p.CWD,
+			}
 		}
 	}
 

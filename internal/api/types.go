@@ -32,8 +32,11 @@ type ItemInfo struct {
 
 // ProcessInfo represents a single process in the process chain.
 type ProcessInfo struct {
-	Name string `json:"name"`
-	PID  uint32 `json:"pid"`
+	Name string   `json:"name"`
+	PID  uint32   `json:"pid"`
+	Exe  string   `json:"exe,omitempty"`
+	Args []string `json:"args,omitempty"`
+	CWD  string   `json:"cwd,omitempty"`
 }
 
 // SenderInfo contains information about the D-Bus sender process.

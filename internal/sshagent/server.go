@@ -132,6 +132,9 @@ func (s *Server) extractSenderInfo(conn net.Conn) approval.SenderInfo {
 		processChain[i] = approval.ProcessInfo{
 			Name: entry.Comm,
 			PID:  uint32(entry.PID),
+			Exe:  entry.Exe,
+			Args: entry.Args,
+			CWD:  entry.CWD,
 		}
 	}
 

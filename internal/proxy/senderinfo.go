@@ -67,6 +67,9 @@ func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
 				info.ProcessChain[i] = approval.ProcessInfo{
 					Name: entry.Comm,
 					PID:  uint32(entry.PID),
+					Exe:  entry.Exe,
+					Args: entry.Args,
+					CWD:  entry.CWD,
 				}
 			}
 			// Resolve invoker (skip shells) for backward-compat UnitName.

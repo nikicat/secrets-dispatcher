@@ -1,4 +1,4 @@
-.PHONY: all build frontend backend clean test test-go test-e2e test-e2e-all dev version
+.PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all dev version
 
 all: build
 
@@ -19,6 +19,10 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.
 backend: embed-frontend
 	go build -ldflags "-X main.version=$(VERSION)" -o secrets-dispatcher .
 
+# Build Go binary without embedded frontend (for dev/testing)
+backend-dev: frontend
+	go build -tags dev -ldflags "-X main.version=$(VERSION)" -o secrets-dispatcher .
+
 # Full build
 build: backend
 
@@ -33,12 +37,12 @@ test: test-go test-e2e
 test-go:
 	go test -race ./...
 
-# E2E tests (requires built binary, chromium only)
-test-e2e: build
+# E2E tests (no embed needed — proxy serves frontend from web/dist)
+test-e2e: backend-dev
 	cd web && deno task test:e2e
 
 # E2E tests in all browsers (chromium + firefox)
-test-e2e-all: build
+test-e2e-all: backend-dev
 	cd web && ALL_BROWSERS=1 deno task test:e2e
 
 # Show the version that will be embedded

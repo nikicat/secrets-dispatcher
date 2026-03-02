@@ -1,13 +1,17 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { createReadStream, existsSync } from "node:fs";
+import { createServer, request as httpRequest, type Server, type IncomingMessage, type ServerResponse } from "node:http";
+import { join, dirname, extname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes, createHmac } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { Socket } from "node:net";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..", "..", "..");
 const BINARY_PATH = join(PROJECT_ROOT, "secrets-dispatcher");
+const FRONTEND_DIR = join(PROJECT_ROOT, "web", "dist");
 
 export interface TestBackend {
   url: string;
@@ -46,9 +50,135 @@ function generateJWT(secret: string): string {
   return `${signingInput}.${signature}`;
 }
 
+// MIME types for static file serving
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+/**
+ * Create a reverse proxy that serves the frontend from web/dist/ and proxies
+ * /api/ requests (including WebSocket) to the Go backend.
+ */
+function createTestProxy(backendPort: number): Promise<{ server: Server; port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith("/api/")) {
+        proxyRequest(req, res, backendPort);
+      } else {
+        serveStatic(req, res);
+      }
+    });
+
+    server.on("upgrade", (req, socket, head) => {
+      proxyWebSocket(req, socket as Socket, head, backendPort);
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as { port: number };
+      resolve({ server, port: addr.port });
+    });
+
+    server.on("error", reject);
+  });
+}
+
+function proxyRequest(req: IncomingMessage, res: ServerResponse, backendPort: number): void {
+  const proxyReq = httpRequest(
+    {
+      hostname: "127.0.0.1",
+      port: backendPort,
+      path: req.url,
+      method: req.method,
+      headers: req.headers,
+    },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode!, proxyRes.headers);
+      proxyRes.pipe(res);
+    },
+  );
+  proxyReq.on("error", () => {
+    res.writeHead(502);
+    res.end("Backend unavailable");
+  });
+  req.pipe(proxyReq);
+}
+
+function proxyWebSocket(req: IncomingMessage, socket: Socket, head: Buffer, backendPort: number): void {
+  const proxyReq = httpRequest({
+    hostname: "127.0.0.1",
+    port: backendPort,
+    path: req.url,
+    method: "GET",
+    headers: req.headers,
+  });
+
+  proxyReq.on("upgrade", (_proxyRes, proxySocket, proxyHead) => {
+    // Forward the raw HTTP upgrade response from the backend to the client.
+    // We need to reconstruct the response line + headers from what the backend sent.
+    // The simplest way: just pipe everything. The backend already sent the 101 response
+    // on proxySocket's internal buffer before the 'upgrade' event fires.
+    // Actually, Node.js strips the response and gives us the socket post-handshake.
+    // We need to write the 101 ourselves based on _proxyRes.
+
+    let response = `HTTP/1.1 101 Switching Protocols\r\n`;
+    for (let i = 0; i < _proxyRes.rawHeaders.length; i += 2) {
+      response += `${_proxyRes.rawHeaders[i]}: ${_proxyRes.rawHeaders[i + 1]}\r\n`;
+    }
+    response += "\r\n";
+    socket.write(response);
+    if (proxyHead.length) socket.write(proxyHead);
+    if (head.length) proxySocket.write(head);
+
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+
+    proxySocket.on("error", () => socket.destroy());
+    socket.on("error", () => proxySocket.destroy());
+  });
+
+  proxyReq.on("error", () => socket.destroy());
+  proxyReq.end();
+}
+
+function serveStatic(req: IncomingMessage, res: ServerResponse): void {
+  let urlPath = (req.url?.split("?")[0]) || "/";
+  if (urlPath === "/") urlPath = "/index.html";
+
+  const filePath = join(FRONTEND_DIR, urlPath);
+
+  // Prevent directory traversal
+  if (!filePath.startsWith(FRONTEND_DIR)) {
+    res.writeHead(403);
+    res.end();
+    return;
+  }
+
+  if (existsSync(filePath)) {
+    const ext = extname(filePath);
+    const contentType = MIME_TYPES[ext] || "application/octet-stream";
+    res.writeHead(200, { "Content-Type": contentType });
+    createReadStream(filePath).pipe(res);
+  } else {
+    // SPA fallback — serve index.html for client-side routes
+    const indexPath = join(FRONTEND_DIR, "index.html");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    createReadStream(indexPath).pipe(res);
+  }
+}
+
 /**
  * Start a test instance of the secrets-dispatcher backend.
  * Creates an isolated config directory and starts the server in API-only mode.
+ * A lightweight reverse proxy serves the frontend from web/dist/ and proxies
+ * API/WebSocket traffic to the Go backend (no embed or copy needed).
  */
 export async function startTestBackend(options?: { version?: string; extraArgs?: string[] }): Promise<TestBackend> {
   // Create temp directory for test
@@ -155,10 +285,14 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
 
   // Start with port 0 — let the OS assign an available port
   let proc = spawnBackend("127.0.0.1:0", env);
-  const actualPort = await waitForServer(proc);
+  const backendPort = await waitForServer(proc);
 
-  const url = `http://localhost:${actualPort}`;
-  const wsUrl = `ws://localhost:${actualPort}/api/v1/ws`;
+  // Start reverse proxy (serves frontend from disk, proxies API to backend)
+  const proxy = await createTestProxy(backendPort);
+  const proxyPort = proxy.port;
+
+  const url = `http://localhost:${proxyPort}`;
+  const wsUrl = `ws://localhost:${proxyPort}/api/v1/ws`;
 
   const getAuthToken = async (): Promise<string> => {
     const cookiePath = join(stateDir, ".cookie");
@@ -179,12 +313,13 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
       restartEnv.TEST_BUILD_VERSION = restartOptions.version;
     }
 
-    // Reuse the same port so the browser page can reconnect
-    proc = spawnBackend(`127.0.0.1:${actualPort}`, restartEnv);
+    // Reuse the same backend port so the proxy can reconnect
+    proc = spawnBackend(`127.0.0.1:${backendPort}`, restartEnv);
     await waitForServer(proc);
   };
 
   const cleanup = async (): Promise<void> => {
+    proxy.server.close();
     await stopProcess(proc);
     await rm(stateDir, { recursive: true, force: true });
   };
@@ -192,7 +327,7 @@ export async function startTestBackend(options?: { version?: string; extraArgs?:
   return {
     url,
     wsUrl,
-    port: actualPort,
+    port: proxyPort,
     stateDir,
     process: proc,
     cleanup,

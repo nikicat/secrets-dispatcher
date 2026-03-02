@@ -73,13 +73,13 @@ check-go-fmt:
 		exit 1; \
 	fi
 
-# Go vet
+# Go vet (dev tag skips embed of frontend dist)
 check-go-vet:
-	go vet ./...
+	go vet -tags dev ./...
 
-# Go staticcheck (filter stdlib vendor noise — go1.25 ships a go1.26 file)
+# Go staticcheck (dev tag + filter stdlib vendor noise)
 check-go-staticcheck:
-	@out=$$(staticcheck ./... 2>&1 | grep -v '^-:'); \
+	@out=$$(staticcheck -tags dev ./... 2>&1 | grep -v '^-:'); \
 	if [ -n "$$out" ]; then \
 		echo "$$out"; \
 		exit 1; \

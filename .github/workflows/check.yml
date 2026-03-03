@@ -37,6 +37,9 @@ jobs:
 
   test-e2e:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        browser: [chromium, firefox]
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +51,6 @@ jobs:
         with:
           deno-version: v2.x
 
-      - run: cd web && deno run -A npm:@playwright/test@latest/cli install --with-deps chromium
+      - run: make playwright-install BROWSER=${{ matrix.browser }}
 
-      - run: make test-e2e
+      - run: make test-e2e-browser BROWSER=${{ matrix.browser }}

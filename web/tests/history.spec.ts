@@ -238,3 +238,227 @@ test.describe("Request History UI", () => {
     await expect(page.getByText("Chrome Dummy")).toBeVisible();
   });
 });
+
+test.describe("Auto-Approved History Collapsing", () => {
+  test.beforeEach(async ({ page }) => {
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+    await expect(page.getByText("No pending requests")).toBeVisible({
+      timeout: 10000,
+    });
+  });
+
+  function makeHistoryEntry(
+    id: string,
+    resolution: string,
+    unitName: string,
+    itemPath: string,
+    type = "get_secret",
+  ) {
+    const resolvedAt = new Date().toISOString();
+    return {
+      request: {
+        id,
+        client: "test-client",
+        items: [{ path: itemPath, label: `item-${id}`, attributes: {} }],
+        session: "/org/freedesktop/secrets/session/1",
+        created_at: resolvedAt,
+        expires_at: resolvedAt,
+        type,
+        sender_info: {
+          sender: ":1.100",
+          pid: 1000,
+          uid: 1000,
+          user_name: "testuser",
+          unit_name: unitName,
+        },
+      },
+      resolution,
+      resolved_at: resolvedAt,
+    };
+  }
+
+  test("consecutive auto-approved entries are collapsed with count", async ({ page }) => {
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              parsed.history = [
+                makeHistoryEntry(
+                  "aa-1",
+                  "auto_approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+                makeHistoryEntry(
+                  "aa-2",
+                  "auto_approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+                makeHistoryEntry(
+                  "aa-3",
+                  "auto_approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+              ];
+              ws.send(JSON.stringify(parsed));
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    await expect(page.getByText("Recent Activity (3)")).toBeVisible({
+      timeout: 10000,
+    });
+    // Only 1 card rendered
+    await expect(page.locator(".history-entry")).toHaveCount(1);
+    // Count badge shows x3
+    await expect(page.locator(".history-count")).toHaveText("×3");
+  });
+
+  test("different invokers are not collapsed", async ({ page }) => {
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              parsed.history = [
+                makeHistoryEntry(
+                  "aa-1",
+                  "auto_approved",
+                  "app-a.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+                makeHistoryEntry(
+                  "aa-2",
+                  "auto_approved",
+                  "app-b.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+              ];
+              ws.send(JSON.stringify(parsed));
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    await expect(page.getByText("Recent Activity (2)")).toBeVisible({
+      timeout: 10000,
+    });
+    await expect(page.locator(".history-entry")).toHaveCount(2);
+    await expect(page.locator(".history-count")).toHaveCount(0);
+  });
+
+  test("non-consecutive auto-approved entries are still collapsed", async ({ page }) => {
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              parsed.history = [
+                makeHistoryEntry(
+                  "aa-1",
+                  "auto_approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+                makeHistoryEntry(
+                  "manual-1",
+                  "approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+                makeHistoryEntry(
+                  "aa-2",
+                  "auto_approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+              ];
+              ws.send(JSON.stringify(parsed));
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    await expect(page.getByText("Recent Activity (3)")).toBeVisible({
+      timeout: 10000,
+    });
+    // 2 cards: collapsed auto-approved (x2) + manual approved
+    await expect(page.locator(".history-entry")).toHaveCount(2);
+    await expect(page.locator(".history-count")).toHaveText("×2");
+  });
+
+  test("new auto-approved entry via WebSocket increments existing group", async ({ page }) => {
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              parsed.history = [
+                makeHistoryEntry(
+                  "aa-1",
+                  "auto_approved",
+                  "app.service",
+                  "/org/freedesktop/secrets/collection/default/x",
+                ),
+              ];
+              ws.send(JSON.stringify(parsed));
+              // Send another matching entry after snapshot
+              setTimeout(() => {
+                ws.send(JSON.stringify({
+                  type: "history_entry",
+                  history_entry: makeHistoryEntry(
+                    "aa-2",
+                    "auto_approved",
+                    "app.service",
+                    "/org/freedesktop/secrets/collection/default/x",
+                  ),
+                }));
+              }, 100);
+              return;
+            }
+          } catch { /* not JSON */ }
+        }
+        ws.send(message);
+      });
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    // Wait for the second entry to arrive and group
+    await expect(page.locator(".history-count")).toBeVisible({ timeout: 5000 });
+    await expect(page.locator(".history-entry")).toHaveCount(1);
+    await expect(page.locator(".history-count")).toHaveText("×2");
+  });
+});

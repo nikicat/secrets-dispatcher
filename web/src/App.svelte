@@ -256,6 +256,37 @@
     return `${sec}s`;
   }
 
+  // Group all auto-approved history entries with matching type + invoker + items
+  interface HistoryGroup {
+    entry: HistoryEntry;
+    count: number;
+  }
+
+  function autoApproveKey(e: HistoryEntry): string {
+    const type = e.request.type;
+    const invoker = e.request.sender_info?.unit_name ?? "";
+    const items = e.request.items.map(i => i.path).join("\0");
+    return `${type}\0${invoker}\0${items}`;
+  }
+
+  let groupedHistory = $derived.by(() => {
+    const groups: HistoryGroup[] = [];
+    const keyIndex = new Map<string, number>();
+    for (const entry of history) {
+      if (entry.resolution === "auto_approved") {
+        const key = autoApproveKey(entry);
+        const idx = keyIndex.get(key);
+        if (idx !== undefined) {
+          groups[idx].count++;
+          continue;
+        }
+        keyIndex.set(key, groups.length);
+      }
+      groups.push({ entry, count: 1 });
+    }
+    return groups;
+  });
+
   // Called after approve/deny action to refresh (WebSocket will push update, but this ensures UI sync)
   function handleAction() {
     // No-op: WebSocket will push the update
@@ -469,8 +500,8 @@
             </button>
             {#if historyOpen}
               <ul class="history-list">
-                {#each history as entry (entry.request.id + entry.resolved_at)}
-                  <HistoryEntryCard {entry} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
+                  <HistoryEntryCard entry={group.entry} count={group.count} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
                 {/each}
               </ul>
             {/if}
@@ -494,8 +525,8 @@
             </button>
             {#if historyOpen}
               <ul class="history-list">
-                {#each history as entry (entry.request.id + entry.resolved_at)}
-                  <HistoryEntryCard {entry} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
+                  <HistoryEntryCard entry={group.entry} count={group.count} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
                 {/each}
               </ul>
             {/if}

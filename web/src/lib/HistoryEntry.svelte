@@ -5,13 +5,14 @@
 
   interface Props {
     entry: HistoryEntryType;
+    count?: number;
     autoApproveRules: AutoApproveRule[];
     formatTime: (dateString: string) => string;
     toggleTimeFormat: () => void;
     onAutoApprove: (requestId: string) => void;
   }
 
-  let { entry, autoApproveRules, formatTime, toggleTimeFormat, onAutoApprove }: Props = $props();
+  let { entry, count = 1, autoApproveRules, formatTime, toggleTimeFormat, onAutoApprove }: Props = $props();
 
   function resolutionClass(resolution: string): string {
     switch (resolution) {
@@ -133,6 +134,9 @@
         {/if}
       </span>
       <span class="history-resolution {resolutionClass(entry.resolution)}">{entry.resolution}</span>
+      {#if count > 1}
+        <span class="history-count">&times;{count}</span>
+      {/if}
       <span class="history-request-id" title={entry.request.id}>{entry.request.id.slice(0, 8)}</span>
     </div>
     <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
@@ -230,6 +234,15 @@
   .resolution-other {
     color: var(--color-text-muted);
     background-color: var(--color-bg);
+  }
+
+  .history-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-primary);
+    background-color: rgba(59, 130, 246, 0.1);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
   }
 
   .history-request-id {

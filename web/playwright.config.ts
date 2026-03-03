@@ -11,6 +11,7 @@ export default defineConfig({
       ? [{ name: "firefox", use: { browserName: "firefox" as const } }]
       : []),
   ],
+  fullyParallel: true,
   use: {},
   // Don't start web server - tests start the Go binary directly
 });

@@ -1,5 +1,7 @@
+MAKEFLAGS += -j
+
 .PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
-	playwright-install dev version \
+	playwright-install dev version pre-commit \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
@@ -66,6 +68,9 @@ version:
 # Clean build artifacts
 clean:
 	rm -rf web/dist internal/api/web secrets-dispatcher .build
+
+# Run checks and tests in parallel
+pre-commit: check test
 
 # --- Checks (linters, formatters, static analysis) ---
 

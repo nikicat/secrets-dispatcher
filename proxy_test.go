@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -110,7 +109,7 @@ func startDBusDaemon(t *testing.T, socketPath string) (*exec.Cmd, string) {
 	}
 
 	// Wait for socket to be created
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if _, err := os.Stat(socketPath); err == nil {
 			return cmd, addr
 		}
@@ -656,7 +655,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 
 	// Wait for the pending request to appear
 	var pendingCount int
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		pendingCount = approvalMgr.PendingCount()
 		if pendingCount > 0 {
 			break
@@ -675,7 +674,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 
 	// Wait for the pending request to be removed
 	var finalCount int
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		finalCount = approvalMgr.PendingCount()
 		if finalCount == 0 {
 			break
@@ -740,7 +739,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 
 	// Wait for pending request
 	var reqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -815,7 +814,7 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 
 	// Wait for pending request
 	var reqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -887,7 +886,7 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 
 	// Wait for pending request
 	var reqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -983,7 +982,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 
 	// Approve GetSecret
 	var reqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1007,7 +1006,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 
 	// Should see a new pending request
 	var deleteReqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			deleteReqID = reqs[0].ID
@@ -1095,7 +1094,7 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 
 	// Wait for pending request
 	var reqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1184,7 +1183,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 
 	// Wait for pending request
 	var reqID string
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		reqs := approvalMgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1364,8 +1363,7 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	p := proxy.New(proxy.Config{
 		ClientName: "test-client",

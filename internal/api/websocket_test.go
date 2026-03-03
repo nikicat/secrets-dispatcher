@@ -145,13 +145,11 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 
 	// Create a request in background
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		reqCtx, reqCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer reqCancel()
 		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	}()
+	})
 
 	// Read request_created message
 	_, data, err := conn.Read(ctx)
@@ -210,11 +208,9 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 
 	// Create a request
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	}()
+	})
 
 	// Read request_created
 	_, _, _ = conn.Read(ctx)
@@ -283,11 +279,9 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 
 	// Create a request that will timeout
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	}()
+	})
 
 	// Read request_created
 	_, _, _ = conn.Read(ctx)
@@ -344,11 +338,9 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 	// Create a request with a cancellable context
 	reqCtx, reqCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	}()
+	})
 
 	// Read request_created
 	_, _, _ = conn.Read(ctx)
@@ -638,7 +630,7 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 
 	// Connect multiple clients
 	var conns []*websocket.Conn
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 			HTTPHeader: http.Header{
 				"Cookie": []string{"session=" + auth.Token()},

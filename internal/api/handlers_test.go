@@ -114,7 +114,7 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 	}()
 
 	// Wait for request to appear
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if mgr.PendingCount() > 0 {
 			break
 		}
@@ -163,7 +163,7 @@ func TestHandleApprove_Success(t *testing.T) {
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -254,7 +254,7 @@ func TestHandleDeny_Success(t *testing.T) {
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -308,7 +308,7 @@ func TestHandleCancel_Success(t *testing.T) {
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -404,7 +404,7 @@ func TestHandleLog_WithHistory(t *testing.T) {
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID

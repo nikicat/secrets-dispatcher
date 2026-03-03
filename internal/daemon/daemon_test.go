@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -106,10 +107,8 @@ func waitForName(t *testing.T, addr, name string) {
 			continue
 		}
 		conn.Close()
-		for _, n := range owners {
-			if n == name {
-				return
-			}
+		if slices.Contains(owners, name) {
+			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

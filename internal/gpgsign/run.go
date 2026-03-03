@@ -169,7 +169,7 @@ func collectChangedFiles(debug bool) []string {
 		return nil
 	}
 	var files []string
-	for _, f := range strings.Split(out, "\n") {
+	for f := range strings.SplitSeq(out, "\n") {
 		if f != "" {
 			files = append(files, f)
 		}

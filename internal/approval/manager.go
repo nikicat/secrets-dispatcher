@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -893,13 +894,7 @@ func (m *Manager) CheckTrustRules(senderInfo SenderInfo, items []ItemInfo, reqTy
 func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) bool {
 	// Check request_types filter
 	if len(rule.RequestTypes) > 0 {
-		found := false
-		for _, rt := range rule.RequestTypes {
-			if rt == string(reqType) {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(rule.RequestTypes, string(reqType))
 		if !found {
 			return false
 		}

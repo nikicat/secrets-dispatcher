@@ -94,13 +94,9 @@ check-go-fmt:
 check-go-vet:
 	go vet -tags dev ./...
 
-# Go staticcheck (dev tag + filter stdlib vendor noise)
+# Go staticcheck
 check-go-staticcheck:
-	@out=$$(staticcheck -tags dev ./... 2>&1 | grep -v '^-:'); \
-	if [ -n "$$out" ]; then \
-		echo "$$out"; \
-		exit 1; \
-	fi
+	go tool staticcheck -tags dev ./...
 
 # All frontend checks (types + formatting + lint)
 check-frontend: check-frontend-fmt check-frontend-lint

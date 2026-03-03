@@ -46,7 +46,7 @@ const (
 func NewDBusError(name, message string) *dbus.Error {
 	return &dbus.Error{
 		Name: name,
-		Body: []interface{}{message},
+		Body: []any{message},
 	}
 }
 
@@ -85,8 +85,8 @@ func ExtractCollection(itemPath string) string {
 	} {
 		if strings.HasPrefix(itemPath, prefix) {
 			rest := itemPath[len(prefix):]
-			if i := strings.IndexByte(rest, '/'); i >= 0 {
-				return rest[:i]
+			if before, _, ok := strings.Cut(rest, "/"); ok {
+				return before
 			}
 			return rest
 		}

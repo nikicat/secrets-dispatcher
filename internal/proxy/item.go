@@ -79,12 +79,12 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	obj := i.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call(dbustypes.ItemInterface+".Delete", 0)
 	if call.Err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{call.Err.Error()}}
+		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
 
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
+		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
 	i.logger.LogMethod(context.Background(), "Item.Delete", map[string]any{
@@ -131,13 +131,13 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	call := obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession)
 	if call.Err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", call.Err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{call.Err.Error()}}
+		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
 
 	var secret dbustypes.Secret
 	if err := call.Store(&secret); err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
+		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
 	// Rewrite session path to use remote session
@@ -196,7 +196,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	obj := i.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret)
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{call.Err.Error()}}
+		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
 
 	i.logger.LogMethod(context.Background(), "Item.SetSecret", map[string]any{
@@ -216,7 +216,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 	obj := i.localConn.Object(dbustypes.BusName, path)
 	variant, err := obj.GetProperty(iface + "." + property)
 	if err != nil {
-		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
+		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
 	return variant, nil
@@ -232,12 +232,12 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 	obj := i.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface)
 	if call.Err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{call.Err.Error()}}
+		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
 
 	var props map[string]dbus.Variant
 	if err := call.Store(&props); err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{err.Error()}}
+		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
 	return props, nil
@@ -253,7 +253,7 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 	obj := i.localConn.Object(dbustypes.BusName, path)
 	call := obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []interface{}{call.Err.Error()}}
+		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
 
 	return nil

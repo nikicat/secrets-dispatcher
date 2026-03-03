@@ -210,7 +210,7 @@ func defaultSocketsDir() string {
 // Duration wraps time.Duration with YAML unmarshalling for human-readable strings.
 type Duration time.Duration
 
-func (d Duration) MarshalYAML() (interface{}, error) {
+func (d Duration) MarshalYAML() (any, error) {
 	return time.Duration(d).String(), nil
 }
 

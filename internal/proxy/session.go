@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 
@@ -86,9 +87,7 @@ func (m *SessionManager) CloseSession(localConn *dbus.Conn, remotePath dbus.Obje
 func (m *SessionManager) CloseAll(localConn *dbus.Conn) {
 	m.mu.Lock()
 	sessions := make(map[dbus.ObjectPath]dbus.ObjectPath, len(m.sessions))
-	for k, v := range m.sessions {
-		sessions[k] = v
-	}
+	maps.Copy(sessions, m.sessions)
 	m.sessions = make(map[dbus.ObjectPath]dbus.ObjectPath)
 	m.mu.Unlock()
 

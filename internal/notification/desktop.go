@@ -480,8 +480,8 @@ func (h *Handler) handleResolved(requestID string) {
 
 // commitSubject returns the first line of a commit message.
 func commitSubject(msg string) string {
-	if i := strings.IndexByte(msg, '\n'); i >= 0 {
-		return msg[:i]
+	if before, _, ok := strings.Cut(msg, "\n"); ok {
+		return before
 	}
 	return msg
 }

@@ -161,7 +161,7 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 		fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
 		fmt.Fprintf(f.w, "\n    %s\n", commitSubject(info.CommitMsg))
 		if body := commitBody(info.CommitMsg); body != "" {
-			for _, line := range strings.Split(body, "\n") {
+			for line := range strings.SplitSeq(body, "\n") {
 				fmt.Fprintf(f.w, "    %s\n", line)
 			}
 		}
@@ -210,8 +210,8 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 }
 
 func commitSubject(msg string) string {
-	if i := strings.IndexByte(msg, '\n'); i >= 0 {
-		return msg[:i]
+	if before, _, ok := strings.Cut(msg, "\n"); ok {
+		return before
 	}
 	return msg
 }

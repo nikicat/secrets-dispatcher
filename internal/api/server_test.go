@@ -94,7 +94,7 @@ func TestServer_Integration(t *testing.T) {
 
 		// Wait for request to appear
 		var reqID string
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			reqs := mgr.List()
 			if len(reqs) > 0 {
 				reqID = reqs[0].ID

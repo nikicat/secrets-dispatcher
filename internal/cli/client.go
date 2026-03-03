@@ -93,7 +93,7 @@ type HistoryEntry struct {
 type ShowResult struct {
 	Request    PendingRequest `json:"request"`
 	Resolution string         `json:"resolution,omitempty"`
-	ResolvedAt time.Time      `json:"resolved_at,omitempty"`
+	ResolvedAt time.Time      `json:"resolved_at"`
 }
 
 // PendingResponse is the response from the pending endpoint.

@@ -359,8 +359,8 @@ func TestProvision_DetectsSUDO_USER(t *testing.T) {
 	var detectedUser string
 	userLookupFunc = func(username string) (*user.User, error) {
 		// Capture what companion username was derived.
-		if strings.HasPrefix(username, "secrets-") {
-			detectedUser = strings.TrimPrefix(username, "secrets-")
+		if after, ok := strings.CutPrefix(username, "secrets-"); ok {
+			detectedUser = after
 		}
 		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
 	}

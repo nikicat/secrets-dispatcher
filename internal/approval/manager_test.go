@@ -16,15 +16,13 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 	var wg sync.WaitGroup
 	var approvalErr error
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -55,15 +53,13 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 	var wg sync.WaitGroup
 	var approvalErr error
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -106,14 +102,12 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 	var wg sync.WaitGroup
 	var approvalErr error
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		approvalErr = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if mgr.PendingCount() > 0 {
 			break
 		}
@@ -135,7 +129,7 @@ func TestManager_List(t *testing.T) {
 
 	// Start multiple approval requests
 	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -146,7 +140,7 @@ func TestManager_List(t *testing.T) {
 	}
 
 	// Wait for requests to appear
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if mgr.PendingCount() >= 3 {
 			break
 		}
@@ -167,15 +161,13 @@ func TestManager_Cancel_Success(t *testing.T) {
 	var wg sync.WaitGroup
 	var approvalErr error
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -244,7 +236,7 @@ func TestManager_Concurrent(t *testing.T) {
 	results := make([]error, numRequests)
 
 	// Start approval requests
-	for i := 0; i < numRequests; i++ {
+	for i := range numRequests {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -253,7 +245,7 @@ func TestManager_Concurrent(t *testing.T) {
 	}
 
 	// Wait for requests to appear
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if mgr.PendingCount() >= numRequests {
 			break
 		}
@@ -308,16 +300,14 @@ func TestManager_RequestFields(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if mgr.PendingCount() > 0 {
 			break
 		}
@@ -359,15 +349,13 @@ func TestManager_CleanupAfterApproval(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -427,13 +415,11 @@ func TestManager_Observer_Created(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for created event
 	events := obs.WaitForEvents(1, time.Second)
@@ -457,15 +443,13 @@ func TestManager_Observer_Approved(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -504,15 +488,13 @@ func TestManager_Observer_Denied(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -568,15 +550,13 @@ func TestManager_Observer_CancelMethod(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -617,14 +597,12 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		err := mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		if err != context.Canceled {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
-	}()
+	})
 
 	// Wait for created event
 	events := obs.WaitForEvents(1, time.Second)
@@ -659,13 +637,11 @@ func TestManager_Observer_Unsubscribe(t *testing.T) {
 	mgr.Unsubscribe(obs)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
 		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	wg.Wait()
 
@@ -684,13 +660,11 @@ func TestManager_Observer_MultipleObservers(t *testing.T) {
 	mgr.Subscribe(obs2)
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for created event on both observers
 	events1 := obs1.WaitForEvents(1, time.Second)
@@ -715,14 +689,12 @@ func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
 	var subscribed atomic.Int32
 
 	// Subscribe concurrently
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			obs := &testObserver{}
 			mgr.Subscribe(obs)
 			subscribed.Add(1)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -736,15 +708,13 @@ func TestHistory_RecordsApproved(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -781,15 +751,13 @@ func TestHistory_RecordsDenied(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -840,14 +808,12 @@ func TestHistory_RecordsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-	}()
+	})
 
 	// Wait for request to appear
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if mgr.PendingCount() > 0 {
 			break
 		}
@@ -891,17 +857,15 @@ func TestHistory_NewestFirst(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	// Create and resolve 3 requests in sequence
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
-		}()
+		})
 
 		// Wait for request to appear
 		var reqID string
-		for j := 0; j < 100; j++ {
+		for range 100 {
 			reqs := mgr.List()
 			if len(reqs) > 0 {
 				reqID = reqs[0].ID
@@ -941,14 +905,12 @@ func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
 
 	// First request: must be manually approved
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
-	}()
+	})
 
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -980,14 +942,12 @@ func TestApprovalCache_Expired(t *testing.T) {
 
 	// Approve first request
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
-	}()
+	})
 
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1017,14 +977,12 @@ func TestApprovalCache_DifferentSender(t *testing.T) {
 
 	// Approve for sender1
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.100"})
-	}()
+	})
 
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1052,14 +1010,12 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 
 	// Approve a GetSecret request first — populates cache
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
-	}()
+	})
 
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1096,14 +1052,12 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 
 	// Approve a GetSecret request first — populates cache
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
-	}()
+	})
 
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1168,14 +1122,12 @@ func TestApprovalCache_DifferentItem(t *testing.T) {
 
 	// Approve for item1
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		mgr.RequireApproval(context.Background(), "client", []ItemInfo{{Path: "/test/item1"}}, "/s/1", RequestTypeGetSecret, nil, sender)
-	}()
+	})
 
 	var reqID string
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		reqs := mgr.List()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
@@ -1200,7 +1152,7 @@ func TestManager_EventOrder_CancelledContext(t *testing.T) {
 	// can arrive before EventRequestCreated when the context is already cancelled.
 	// The client processes request_cancelled first (no-op, request not in list),
 	// then request_created (adds it), leaving a stale request in the UI forever.
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 		obs := &testObserver{}
 		mgr.Subscribe(obs)

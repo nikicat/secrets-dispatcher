@@ -87,7 +87,7 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 
 	// Wait for the pending request to appear
 	var pending []*approval.Request
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		time.Sleep(10 * time.Millisecond)
 		pending = mgr.List()
 		if len(pending) > 0 {
@@ -164,7 +164,7 @@ func TestProxyAgent_SignDenied(t *testing.T) {
 
 	// Wait for the pending request
 	var pending []*approval.Request
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		time.Sleep(10 * time.Millisecond)
 		pending = mgr.List()
 		if len(pending) > 0 {

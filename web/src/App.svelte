@@ -20,6 +20,7 @@
   let connected = $state(false);
   let sidebarOpen = $state(false);
   let historyOpen = $state(true);
+  let trustRulesOpen = $state(localStorage.getItem('trustRulesOpen') === 'true');
   let version = $state("");
   let useAbsoluteTime = $state(localStorage.getItem('timeFormat') === 'absolute');
 
@@ -186,6 +187,11 @@
     historyOpen = !historyOpen;
   }
 
+  function toggleTrustRules() {
+    trustRulesOpen = !trustRulesOpen;
+    localStorage.setItem('trustRulesOpen', trustRulesOpen ? 'true' : 'false');
+  }
+
   function formatRelativeTime(dateString: string): string {
     const date = new Date(dateString);
     const now = new Date();
@@ -342,32 +348,6 @@
           </ul>
         {/if}
       </div>
-      {#if trustRules.length > 0}
-        <div class="sidebar-rules">
-          <h3>Trust Rules</h3>
-          <ul class="rules-list">
-            {#each trustRules as rule, i (rule.name ?? i)}
-              <li class="rule-entry">
-                <div class="rule-header">
-                  <span class="history-type history-type--{(rule.request_types ?? [])[0] ?? 'get_secret'}">
-                    {#if (rule.action ?? 'approve') === 'ignore'}Ignore{:else}Approve{/if}
-                    {#if rule.request_types?.length}{rule.request_types.map(t => t === 'get_secret' ? 'Secret' : t === 'ssh_sign' ? 'SSH Sign' : t.charAt(0).toUpperCase() + t.slice(1)).join(', ')}{:else}All{/if}
-                  </span>
-                  <span class="rule-permanent">config</span>
-                </div>
-                <PropsTable
-                  process={rule.process?.name ?? rule.process?.exe ?? rule.process?.unit ?? undefined}
-                  collection={rule.secret?.collection ?? undefined}
-                  attributes={rule.secret?.attributes ?? rule.search_attributes ?? undefined}
-                />
-                {#if rule.name}
-                  <div class="rule-name">{rule.name}</div>
-                {/if}
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/if}
       {#if autoApproveRules.length > 0 || trustedSigners.length > 0}
         <div class="sidebar-rules">
           <h3>Auto-Approve Rules</h3>
@@ -532,6 +512,40 @@
             {/if}
           </section>
         {/if}
+      {/if}
+
+      {#if authState === "authenticated" && !loading && !focusRequestId && trustRules.length > 0}
+        <section class="trust-rules-section">
+          <button class="history-toggle" onclick={toggleTrustRules}>
+            <h2>Trust Rules ({trustRules.length})</h2>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:rotated={!trustRulesOpen}>
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+          {#if trustRulesOpen}
+            <ul class="rules-list">
+              {#each trustRules as rule, i (rule.name ?? i)}
+                <li class="rule-entry">
+                  <div class="rule-header">
+                    <span class="history-type history-type--{(rule.request_types ?? [])[0] ?? 'get_secret'}">
+                      {#if (rule.action ?? 'approve') === 'ignore'}Ignore{:else}Approve{/if}
+                      {#if rule.request_types?.length}{rule.request_types.map(t => t === 'get_secret' ? 'Secret' : t === 'ssh_sign' ? 'SSH Sign' : t.charAt(0).toUpperCase() + t.slice(1)).join(', ')}{:else}All{/if}
+                    </span>
+                    <span class="rule-permanent">config</span>
+                  </div>
+                  <PropsTable
+                    process={rule.process?.name ?? rule.process?.exe ?? rule.process?.unit ?? undefined}
+                    collection={rule.secret?.collection ?? undefined}
+                    attributes={rule.secret?.attributes ?? rule.search_attributes ?? undefined}
+                  />
+                  {#if rule.name}
+                    <div class="rule-name">{rule.name}</div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
       {/if}
     </main>
   </div>
@@ -876,6 +890,14 @@
     color: var(--color-danger);
     border-color: var(--color-danger);
     background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  }
+
+  .trust-rules-section {
+    margin-top: 32px;
+  }
+
+  .trust-rules-section .rules-list {
+    margin-top: 16px;
   }
 
   /* Sidebar auto-approve rules */

@@ -41,7 +41,7 @@ test.describe("Trust Rules WebSocket", () => {
     expect(Array.isArray(snapshotMsg!.trust_rules)).toBe(true);
   });
 
-  test("trust rules from snapshot appear in sidebar", async ({ page }) => {
+  test("trust rules from snapshot appear in main content", async ({ page }) => {
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((message) => {
@@ -70,7 +70,11 @@ test.describe("Trust Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Trust Rules")).toBeVisible({ timeout: 10000 });
+    // Section heading visible but collapsed by default
+    const toggle = page.getByText("Trust Rules");
+    await expect(toggle).toBeVisible({ timeout: 10000 });
+    await toggle.click();
+
     await expect(page.getByText("Allow GitHub CLI")).toBeVisible();
     await expect(page.getByText("config")).toBeVisible();
   });
@@ -107,7 +111,10 @@ test.describe("Trust Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Trust Rules")).toBeVisible({ timeout: 10000 });
+    const toggle = page.getByText("Trust Rules");
+    await expect(toggle).toBeVisible({ timeout: 10000 });
+    await toggle.click();
+
     await expect(page.getByText("Ignore Chrome dummy")).toBeVisible();
     // Should show "Ignore Write" for ignore action with write request type
     await expect(page.getByText("Ignore Write")).toBeVisible();
@@ -147,7 +154,10 @@ test.describe("Trust Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Trust Rules")).toBeVisible({ timeout: 10000 });
+    const toggle = page.getByText("Trust Rules");
+    await expect(toggle).toBeVisible({ timeout: 10000 });
+    await toggle.click();
+
     await expect(page.getByText("Rule One")).toBeVisible();
     await expect(page.getByText("Rule Two")).toBeVisible();
   });
@@ -179,7 +189,7 @@ test.describe("Trust Rules WebSocket", () => {
     await expect(page.getByText("Trust Rules")).not.toBeVisible();
   });
 
-  test("trust rules coexist with auto-approve rules in sidebar", async ({ page }) => {
+  test("trust rules in main content coexist with auto-approve rules in sidebar", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
@@ -219,12 +229,14 @@ test.describe("Trust Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    // Both sections should be visible
-    await expect(page.getByText("Trust Rules")).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible();
-
-    // Both rule contents visible
+    // Trust rules section in main content (collapsed by default)
+    const toggle = page.getByText("Trust Rules");
+    await expect(toggle).toBeVisible({ timeout: 10000 });
+    await toggle.click();
     await expect(page.getByText("Config rule")).toBeVisible();
+
+    // Auto-approve rules in sidebar
+    await expect(page.getByText("Auto-Approve Rules")).toBeVisible();
     await expect(page.getByText("temp-invoker")).toBeVisible();
   });
 });

@@ -223,6 +223,53 @@ func (n *DBusNotifier) doClose(id uint32) error {
 	return nil
 }
 
+// delayGroup schedules callbacks by key with a grace period.
+// If Cancel is called before the timer fires, the callback is suppressed.
+type delayGroup struct {
+	mu     sync.Mutex
+	timers map[string]*time.Timer
+}
+
+func newDelayGroup() *delayGroup {
+	return &delayGroup{timers: make(map[string]*time.Timer)}
+}
+
+// Schedule registers a callback to fire after delay. If a timer already exists
+// for the key it is replaced. The callback is only invoked if the timer is
+// still pending (not cancelled) when it fires.
+func (g *delayGroup) Schedule(key string, delay time.Duration, fn func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if old, ok := g.timers[key]; ok {
+		old.Stop()
+	}
+	g.timers[key] = time.AfterFunc(delay, func() {
+		g.mu.Lock()
+		_, stillPending := g.timers[key]
+		if stillPending {
+			delete(g.timers, key)
+		}
+		g.mu.Unlock()
+		if stillPending {
+			fn()
+		}
+	})
+}
+
+// Cancel stops a pending timer and returns true if one was pending.
+func (g *delayGroup) Cancel(key string) bool {
+	g.mu.Lock()
+	timer, ok := g.timers[key]
+	if ok {
+		delete(g.timers, key)
+	}
+	g.mu.Unlock()
+	if ok {
+		timer.Stop()
+	}
+	return ok
+}
+
 // Handler receives approval events and shows desktop notifications.
 // It also processes notification action button clicks (Approve/Deny).
 type Handler struct {
@@ -231,11 +278,13 @@ type Handler struct {
 	baseURL             string
 	showPIDs            bool
 	autoApproveDuration time.Duration
+	notificationDelay   time.Duration
 	openURL             func(string) // injectable for testing; defaults to xdg-open
 
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
 	requests      map[uint32]string // notification ID -> request ID (reverse)
+	pending       *delayGroup       // notifications waiting for the grace period
 
 	// cancelledRequests stores recently cancelled requests for auto-approve lookup.
 	// Keys are request IDs, values expire after 5 minutes.
@@ -251,16 +300,20 @@ type cancelledEntry struct {
 // baseURL is the web UI URL opened when the user clicks the notification body.
 // autoApproveDuration controls the label shown on the "Approve Nm" button and
 // the body text of the post-timeout auto-approve notification.
-func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool, autoApproveDuration time.Duration) *Handler {
+// notificationDelay is the grace period before showing a desktop notification;
+// requests cancelled within this window produce no notification at all.
+func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool, autoApproveDuration, notificationDelay time.Duration) *Handler {
 	return &Handler{
 		notifier:            notifier,
 		approver:            approver,
 		baseURL:             baseURL,
 		showPIDs:            showPIDs,
 		autoApproveDuration: autoApproveDuration,
+		notificationDelay:   notificationDelay,
 		openURL:             func(u string) { exec.Command("xdg-open", u).Start() },
 		notifications:       make(map[string]uint32),
 		requests:            make(map[uint32]string),
+		pending:             newDelayGroup(),
 		cancelledRequests:   make(map[string]cancelledEntry),
 	}
 }
@@ -379,6 +432,16 @@ func formatDurationShort(d time.Duration) string {
 }
 
 func (h *Handler) handleCreated(req *approval.Request) {
+	if h.notificationDelay <= 0 {
+		h.sendNotification(req)
+		return
+	}
+	h.pending.Schedule(req.ID, h.notificationDelay, func() {
+		h.sendNotification(req)
+	})
+}
+
+func (h *Handler) sendNotification(req *approval.Request) {
 	summary, icon := h.notificationMeta(req)
 	body := h.formatBody(req)
 	durLabel := formatDurationShort(h.autoApproveDuration)
@@ -404,6 +467,11 @@ func (h *Handler) handleCreated(req *approval.Request) {
 }
 
 func (h *Handler) handleCancelled(req *approval.Request) {
+	if h.pending.Cancel(req.ID) {
+		slog.Debug("suppressed notification for quickly-cancelled request", "request_id", req.ID)
+		return // no notification was shown, skip the follow-up too
+	}
+
 	// Close the original approval notification
 	h.mu.Lock()
 	notifID, ok := h.notifications[req.ID]
@@ -458,6 +526,10 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 }
 
 func (h *Handler) handleResolved(requestID string) {
+	if h.pending.Cancel(requestID) {
+		return
+	}
+
 	h.mu.Lock()
 	notifID, ok := h.notifications[requestID]
 	if ok {

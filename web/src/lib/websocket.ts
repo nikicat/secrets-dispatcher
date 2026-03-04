@@ -18,6 +18,7 @@ export interface ApprovalWebSocketCallbacks {
     trustedSigners: TrustedSigner[],
     trustRules: TrustRule[],
     autoApproveDurationSeconds: number,
+    notificationDelayMS: number,
   ) => void;
   onRequestCreated?: (request: PendingRequest) => void;
   onRequestResolved?: (id: string, result: "approved" | "denied") => void;
@@ -157,6 +158,7 @@ export class ApprovalWebSocket {
           msg.trusted_signers ?? [],
           msg.trust_rules ?? [],
           msg.auto_approve_duration_seconds ?? 120,
+          msg.notification_delay_ms ?? 0,
         );
         break;
       case "request_created":

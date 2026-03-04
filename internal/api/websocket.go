@@ -41,6 +41,7 @@ type WSMessage struct {
 	TrustedSigners             []approval.TrustedSigner   `json:"trusted_signers"`
 	TrustRules                 []approval.TrustRule       `json:"trust_rules"`
 	AutoApproveDurationSeconds int                        `json:"auto_approve_duration_seconds,omitempty"`
+	NotificationDelayMS        int                        `json:"notification_delay_ms,omitempty"`
 
 	// For request_created
 	Request *PendingRequest `json:"request,omitempty"`
@@ -70,11 +71,12 @@ type WSMessage struct {
 
 // WSHandler handles WebSocket connections for real-time updates.
 type WSHandler struct {
-	manager        *approval.Manager
-	clientProvider ClientProvider
-	auth           *Auth
-	remoteSocket   string
-	clientName     string
+	manager             *approval.Manager
+	clientProvider      ClientProvider
+	auth                *Auth
+	remoteSocket        string
+	clientName          string
+	notificationDelayMS int
 
 	// Active connections
 	connsMu sync.RWMutex
@@ -352,6 +354,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		TrustedSigners:             trustedSigners,
 		TrustRules:                 trustRules,
 		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
+		NotificationDelayMS:        h.notificationDelayMS,
 	}
 
 	data, err := json.Marshal(msg)
@@ -477,6 +480,11 @@ func isConnClosedErr(err error) bool {
 		return true
 	}
 	return false
+}
+
+// SetNotificationDelay sets the notification delay (in ms) sent to browser clients.
+func (h *WSHandler) SetNotificationDelay(ms int) {
+	h.notificationDelayMS = ms
 }
 
 // BroadcastClientConnected sends a client_connected message to all connections.

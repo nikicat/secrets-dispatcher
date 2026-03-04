@@ -19,6 +19,7 @@ const (
 	DefaultLogFormat           = "text"
 	DefaultApprovalWindow      = 5 * time.Second
 	DefaultAutoApproveDuration = 2 * time.Minute
+	DefaultNotificationDelay   = 500 * time.Millisecond
 )
 
 var defaultNotifications = true
@@ -68,6 +69,9 @@ func (cfg *Config) WithDefaults() *Config {
 	}
 	if s.AutoApproveDuration == 0 {
 		s.AutoApproveDuration = Duration(DefaultAutoApproveDuration)
+	}
+	if s.NotificationDelay == 0 {
+		s.NotificationDelay = Duration(DefaultNotificationDelay)
 	}
 	if s.Upstream.Type == "" {
 		s.Upstream = BusConfig{Type: "session_bus"}
@@ -240,6 +244,7 @@ type ServeConfig struct {
 	TrimProcessChain        *bool           `yaml:"trim_process_chain"`
 	ApprovalWindow          Duration        `yaml:"approval_window"`
 	AutoApproveDuration     Duration        `yaml:"auto_approve_duration"`
+	NotificationDelay       Duration        `yaml:"notification_delay"`
 	TrustedSigners          []TrustedSigner `yaml:"trusted_signers,omitempty"`
 	IgnoreChromeDummySecret *bool           `yaml:"ignore_chrome_dummy_secret"`
 	Rules                   []TrustRule     `yaml:"rules,omitempty"`

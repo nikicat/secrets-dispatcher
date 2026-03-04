@@ -397,7 +397,7 @@ func runServe(args []string) {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
 		} else {
 			desktopNotifier = notifier
-			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration())
+			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), time.Duration(cfg.Serve.NotificationDelay))
 			approvalMgr.Subscribe(notifHandler)
 			slog.Debug("desktop notifications enabled")
 		}
@@ -603,6 +603,7 @@ func runServe(args []string) {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
 	}
+	apiServer.WSHandler().SetNotificationDelay(int(time.Duration(cfg.Serve.NotificationDelay).Milliseconds()))
 
 	// Enable test mode for API-only mode
 	if *apiOnly {

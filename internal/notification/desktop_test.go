@@ -135,7 +135,8 @@ func (a *mockApprover) ApproveAndAutoApprove(id string) error {
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
-	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false, 2*time.Minute)
+	// Zero delay for existing tests — notifications fire immediately.
+	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false, 2*time.Minute, 0)
 	return h, mock, approver
 }
 
@@ -753,6 +754,118 @@ func stringContains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func newTestHandlerWithDelay(delay time.Duration) (*Handler, *mockNotifier, *mockApprover) {
+	mock := &mockNotifier{}
+	approver := &mockApprover{}
+	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false, 2*time.Minute, delay)
+	return h, mock, approver
+}
+
+func TestHandler_DelayedNotification_SuppressesQuickCancel(t *testing.T) {
+	h, mock, _ := newTestHandlerWithDelay(200 * time.Millisecond)
+
+	req := &approval.Request{
+		ID:     "quick-cancel-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	// No notification should be sent yet (still in delay window).
+	if mock.notifyCount() != 0 {
+		t.Fatalf("expected 0 notifications during delay, got %d", mock.notifyCount())
+	}
+
+	// Cancel before delay expires.
+	h.OnEvent(approval.Event{Type: approval.EventRequestCancelled, Request: req})
+
+	// Wait past the delay to verify no notification fires.
+	time.Sleep(300 * time.Millisecond)
+
+	if mock.notifyCount() != 0 {
+		t.Errorf("expected 0 notifications after quick cancel, got %d", mock.notifyCount())
+	}
+	if mock.closeCount() != 0 {
+		t.Errorf("expected 0 close calls (nothing to close), got %d", mock.closeCount())
+	}
+}
+
+func TestHandler_DelayedNotification_FiresAfterDelay(t *testing.T) {
+	h, mock, _ := newTestHandlerWithDelay(50 * time.Millisecond)
+
+	req := &approval.Request{
+		ID:     "delayed-fire-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	// Wait for delay to expire.
+	time.Sleep(100 * time.Millisecond)
+
+	if mock.notifyCount() != 1 {
+		t.Errorf("expected 1 notification after delay, got %d", mock.notifyCount())
+	}
+}
+
+func TestHandler_DelayedNotification_ResolvedDuringDelay(t *testing.T) {
+	h, mock, _ := newTestHandlerWithDelay(200 * time.Millisecond)
+
+	req := &approval.Request{
+		ID:     "resolve-during-delay-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
+
+	// Wait past delay to verify nothing fires.
+	time.Sleep(300 * time.Millisecond)
+
+	if mock.notifyCount() != 0 {
+		t.Errorf("expected 0 notifications when resolved during delay, got %d", mock.notifyCount())
+	}
+}
+
+func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
+	h, mock, _ := newTestHandlerWithDelay(20 * time.Millisecond)
+
+	req := &approval.Request{
+		ID:     "cancel-after-shown-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+		SenderInfo: approval.SenderInfo{
+			UnitName: "test-unit",
+		},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+	// Wait for notification to actually appear.
+	time.Sleep(50 * time.Millisecond)
+	if mock.notifyCount() != 1 {
+		t.Fatalf("expected 1 notification after delay, got %d", mock.notifyCount())
+	}
+
+	// Cancel after notification was shown — should close + show follow-up.
+	h.OnEvent(approval.Event{Type: approval.EventRequestCancelled, Request: req})
+
+	// Original closed (1 close) + follow-up sent (2 notifies total).
+	if mock.notifyCount() != 2 {
+		t.Errorf("expected 2 notifications (original + follow-up), got %d", mock.notifyCount())
+	}
+	if mock.closeCount() != 1 {
+		t.Errorf("expected 1 close call for original notification, got %d", mock.closeCount())
+	}
 }
 
 // startTestDBus launches a private dbus-daemon for integration tests.

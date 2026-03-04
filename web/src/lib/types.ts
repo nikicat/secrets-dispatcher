@@ -147,6 +147,7 @@ export interface WSSnapshotMessage {
   trusted_signers: TrustedSigner[];
   trust_rules: TrustRule[];
   auto_approve_duration_seconds?: number;
+  notification_delay_ms?: number;
 }
 
 export interface WSRequestCreatedMessage {

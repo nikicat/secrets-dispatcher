@@ -31,8 +31,20 @@
   // Auto-approve duration from server config (seconds)
   let autoApproveDurationSeconds = $state(120);
 
+  // Notification delay from server config
+  let notificationDelayMS = $state(0);
+  let pendingNotifications = new Map<string, ReturnType<typeof setTimeout>>();
+
   // Tick counter for auto-approve rule timer display (increments every second)
   let tick = $state(0);
+
+  function cancelPendingNotification(id: string) {
+    const timer = pendingNotifications.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      pendingNotifications.delete(id);
+    }
+  }
 
   function toggleTimeFormat() {
     useAbsoluteTime = !useAbsoluteTime;
@@ -52,7 +64,7 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver, rules, signers, tRules, aaDuration) => {
+      onSnapshot: (reqs, cls, hist, ver, rules, signers, tRules, aaDuration, notifDelay) => {
         requests = reqs;
         clients = cls;
         history = hist;
@@ -61,23 +73,34 @@
         trustedSigners = signers;
         trustRules = tRules;
         autoApproveDurationSeconds = aaDuration;
+        notificationDelayMS = notifDelay;
         loading = false;
         error = null;
         requestPermission();
       },
       onRequestCreated: (req) => {
         requests = [...requests, req];
-        showRequestNotification(req);
+        if (notificationDelayMS > 0) {
+          pendingNotifications.set(req.id, setTimeout(() => {
+            pendingNotifications.delete(req.id);
+            showRequestNotification(req);
+          }, notificationDelayMS));
+        } else {
+          showRequestNotification(req);
+        }
       },
       onRequestResolved: (id) => {
+        cancelPendingNotification(id);
         if (focusRequestId === id) window.close();
         requests = requests.filter((r) => r.id !== id);
       },
       onRequestExpired: (id) => {
+        cancelPendingNotification(id);
         if (focusRequestId === id) focusRequestGone = true;
         requests = requests.filter((r) => r.id !== id);
       },
       onRequestCancelled: (id) => {
+        cancelPendingNotification(id);
         if (focusRequestId === id) focusRequestGone = true;
         requests = requests.filter((r) => r.id !== id);
       },

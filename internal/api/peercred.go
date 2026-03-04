@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -75,16 +76,21 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 		}
 	}
 
-	// Convert the full chain to ProcessChain for the API.
-	processChain := make([]approval.ProcessInfo, len(chain))
-	for i, p := range chain {
-		processChain[i] = approval.ProcessInfo{
+	// Convert the full chain to ProcessChain for the API,
+	// filtering out our own binary (the thin client).
+	selfExe, _ := os.Executable()
+	processChain := make([]approval.ProcessInfo, 0, len(chain))
+	for _, p := range chain {
+		if selfExe != "" && p.Exe == selfExe {
+			continue
+		}
+		processChain = append(processChain, approval.ProcessInfo{
 			Name: p.Comm,
 			PID:  uint32(p.PID),
 			Exe:  p.Exe,
 			Args: p.Args,
 			CWD:  p.CWD,
-		}
+		})
 	}
 
 	return approval.SenderInfo{

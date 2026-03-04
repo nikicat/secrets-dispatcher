@@ -224,6 +224,39 @@ func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
 	}
 }
 
+func TestSenderInfoResolver_Resolve_FiltersSelfExe(t *testing.T) {
+	selfPID := uint32(os.Getpid())
+	selfExe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := &mockDBusClient{pid: selfPID, uid: 1000}
+	resolver := newSenderInfoResolverWithClient(client)
+
+	// Without selfExe set, the test binary should appear in the chain.
+	info := resolver.Resolve(":1.99")
+	var foundSelf bool
+	for _, p := range info.ProcessChain {
+		if p.Exe == selfExe {
+			foundSelf = true
+			break
+		}
+	}
+	if !foundSelf {
+		t.Fatal("expected test binary in unfiltered chain")
+	}
+
+	// With selfExe set, our binary should be filtered out.
+	resolver.selfExe = selfExe
+	info = resolver.Resolve(":1.99")
+	for _, p := range info.ProcessChain {
+		if p.Exe == selfExe {
+			t.Errorf("self exe %q should have been filtered from chain", selfExe)
+		}
+	}
+}
+
 func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
 	// PID 12345 likely doesn't exist in /proc, so procutil returns empty
 	// and we fall back to systemd GetUnitByPID.

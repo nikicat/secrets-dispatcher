@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"log/slog"
+	"os"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -19,11 +20,13 @@ type dbusClient interface {
 type SenderInfoResolver struct {
 	client           dbusClient
 	trimProcessChain bool
+	selfExe          string // our own binary path, filtered from process chains
 }
 
 // NewSenderInfoResolver creates a new resolver using the given D-Bus connection.
 func NewSenderInfoResolver(conn *dbus.Conn, trimProcessChain bool) *SenderInfoResolver {
-	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, trimProcessChain: trimProcessChain}
+	selfExe, _ := os.Executable()
+	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, trimProcessChain: trimProcessChain, selfExe: selfExe}
 }
 
 // newSenderInfoResolverWithClient creates a resolver with a custom client (for testing).
@@ -61,16 +64,19 @@ func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
 	if info.PID != 0 {
 		chain := procutil.ReadProcessChain(int32(info.PID), r.trimProcessChain)
 		if len(chain) > 0 {
-			// Populate the full process chain.
-			info.ProcessChain = make([]approval.ProcessInfo, len(chain))
-			for i, entry := range chain {
-				info.ProcessChain[i] = approval.ProcessInfo{
+			// Populate the full process chain, filtering out our own binary.
+			info.ProcessChain = make([]approval.ProcessInfo, 0, len(chain))
+			for _, entry := range chain {
+				if r.selfExe != "" && entry.Exe == r.selfExe {
+					continue
+				}
+				info.ProcessChain = append(info.ProcessChain, approval.ProcessInfo{
 					Name: entry.Comm,
 					PID:  uint32(entry.PID),
 					Exe:  entry.Exe,
 					Args: entry.Args,
 					CWD:  entry.CWD,
-				}
+				})
 			}
 			// Resolve invoker (skip shells) for backward-compat UnitName.
 			comm, invokerPID := procutil.ResolveInvoker(info.PID)

@@ -370,6 +370,70 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
+  test("notification toggle button is visible and defaults to enabled", async ({ browser }) => {
+    const context = await browser.newContext({
+      permissions: ["notifications"],
+    });
+    const page = await context.newPage();
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+    await expect(page.getByText("No pending requests")).toBeVisible();
+
+    const toggle = page.getByRole("button", { name: "Toggle notifications" });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("title", "Notifications enabled");
+
+    await context.close();
+  });
+
+  test("notification toggle disables and persists in localStorage", async ({ browser }) => {
+    const context = await browser.newContext({
+      permissions: ["notifications"],
+    });
+    const page = await context.newPage();
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+    await expect(page.getByText("No pending requests")).toBeVisible();
+
+    const toggle = page.getByRole("button", { name: "Toggle notifications" });
+
+    // Click to disable
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("title", "Notifications disabled");
+
+    // Verify localStorage was set
+    const stored = await page.evaluate(() =>
+      localStorage.getItem("notificationsEnabled")
+    );
+    expect(stored).toBe("false");
+
+    // Reload and verify it persists
+    await page.reload();
+    await expect(page.getByText("No pending requests")).toBeVisible();
+    const toggleAfterReload = page.getByRole("button", {
+      name: "Toggle notifications",
+    });
+    await expect(toggleAfterReload).toHaveAttribute(
+      "title",
+      "Notifications disabled",
+    );
+
+    // Click to re-enable
+    await toggleAfterReload.click();
+    await expect(toggleAfterReload).toHaveAttribute(
+      "title",
+      "Notifications enabled",
+    );
+    const storedAfter = await page.evaluate(() =>
+      localStorage.getItem("notificationsEnabled")
+    );
+    expect(storedAfter).toBe("true");
+
+    await context.close();
+  });
+
   test("notification body formats correctly for search requests", async ({ browser }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],

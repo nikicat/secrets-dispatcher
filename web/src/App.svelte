@@ -23,6 +23,7 @@
   let trustRulesOpen = $state(localStorage.getItem('trustRulesOpen') === 'true');
   let version = $state("");
   let useAbsoluteTime = $state(localStorage.getItem('timeFormat') === 'absolute');
+  let notificationsEnabled = $state(localStorage.getItem('notificationsEnabled') !== 'false');
 
   // Single-request mode: when opened from a desktop notification
   let focusRequestId = $state<string | null>(null);
@@ -51,6 +52,14 @@
     localStorage.setItem('timeFormat', useAbsoluteTime ? 'absolute' : 'relative');
   }
 
+  function toggleNotifications() {
+    notificationsEnabled = !notificationsEnabled;
+    localStorage.setItem('notificationsEnabled', notificationsEnabled ? 'true' : 'false');
+    if (notificationsEnabled) {
+      requestPermission();
+    }
+  }
+
   let ws: ApprovalWebSocket | null = null;
 
   async function checkAuth(): Promise<boolean> {
@@ -76,17 +85,19 @@
         notificationDelayMS = notifDelay;
         loading = false;
         error = null;
-        requestPermission();
+        if (notificationsEnabled) requestPermission();
       },
       onRequestCreated: (req) => {
         requests = [...requests, req];
-        if (notificationDelayMS > 0) {
-          pendingNotifications.set(req.id, setTimeout(() => {
-            pendingNotifications.delete(req.id);
+        if (notificationsEnabled) {
+          if (notificationDelayMS > 0) {
+            pendingNotifications.set(req.id, setTimeout(() => {
+              pendingNotifications.delete(req.id);
+              showRequestNotification(req);
+            }, notificationDelayMS));
+          } else {
             showRequestNotification(req);
-          }, notificationDelayMS));
-        } else {
-          showRequestNotification(req);
+          }
         }
       },
       onRequestResolved: (id) => {
@@ -438,6 +449,22 @@
               {/if}
             </span>
           </div>
+          <button class="notification-toggle" class:off={!notificationsEnabled} onclick={toggleNotifications} aria-label="Toggle notifications" title={notificationsEnabled ? 'Notifications enabled' : 'Notifications disabled'}>
+            {#if notificationsEnabled}
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+              </svg>
+            {:else}
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                <path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path>
+                <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path>
+                <path d="M18 8a6 6 0 0 0-9.33-5"></path>
+                <line x1="1" y1="1" x2="23" y2="23"></line>
+              </svg>
+            {/if}
+          </button>
           <button class="sidebar-toggle" onclick={toggleSidebar} aria-label="Toggle client list">
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
@@ -765,6 +792,30 @@
 
   .status-text {
     display: none;
+  }
+
+  .notification-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .notification-toggle:hover {
+    background-color: var(--color-surface);
+    color: var(--color-text);
+  }
+
+  .notification-toggle.off {
+    color: var(--color-text-muted);
+    opacity: 0.5;
   }
 
   .sidebar-toggle {

@@ -272,6 +272,7 @@ type TrustRule struct {
 type ProcessMatcher struct {
 	Exe  string `yaml:"exe,omitempty"`  // glob, match any process in chain
 	Name string `yaml:"name,omitempty"` // glob, match any process in chain
+	CWD  string `yaml:"cwd,omitempty"`  // glob, match any process in chain
 	Unit string `yaml:"unit,omitempty"` // glob, match senderInfo.UnitName
 }
 

@@ -1723,3 +1723,51 @@ func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
 		t.Fatalf("expected nil (default action approve), got %v", err)
 	}
 }
+
+func TestTrustRules_CWDMatch(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{
+				Name:         "vscode-cwd",
+				RequestTypes: []string{"get_secret"},
+				Process: &ProcessMatcher{
+					CWD: "/usr/lib/visual-studio-code-electron",
+				},
+			},
+		},
+	})
+
+	// Matching CWD in process chain → auto-approve
+	err := mgr.RequireApproval(
+		context.Background(), "client",
+		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}}, "/s/1",
+		RequestTypeGetSecret, nil,
+		SenderInfo{ProcessChain: []ProcessInfo{
+			{Name: "electron", PID: 100, Exe: "/usr/lib/electron39/electron", CWD: "/usr/lib/visual-studio-code-electron"},
+			{Name: "systemd", PID: 1},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("expected nil (CWD match), got %v", err)
+	}
+
+	// Non-matching CWD → timeout
+	mgr2 := NewManager(ManagerConfig{
+		Timeout:    100 * time.Millisecond,
+		HistoryMax: 100,
+		TrustRules: mgr.trustRules,
+	})
+	err = mgr2.RequireApproval(
+		context.Background(), "client",
+		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}}, "/s/1",
+		RequestTypeGetSecret, nil,
+		SenderInfo{ProcessChain: []ProcessInfo{
+			{Name: "electron", PID: 100, Exe: "/usr/lib/electron39/electron", CWD: "/opt/something-else"},
+		}},
+	)
+	if err != ErrTimeout {
+		t.Fatalf("expected ErrTimeout (CWD mismatch), got %v", err)
+	}
+}

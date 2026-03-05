@@ -953,6 +953,19 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 		}
 	}
 
+	if pm.CWD != "" {
+		matched := false
+		for _, proc := range senderInfo.ProcessChain {
+			if ok, _ := path.Match(pm.CWD, proc.CWD); ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
 	if pm.Unit != "" {
 		if ok, _ := path.Match(pm.Unit, senderInfo.UnitName); !ok {
 			return false

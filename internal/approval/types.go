@@ -24,6 +24,7 @@ type TrustRule struct {
 type ProcessMatcher struct {
 	Exe  string `json:"exe,omitempty"`
 	Name string `json:"name,omitempty"`
+	CWD  string `json:"cwd,omitempty"`
 	Unit string `json:"unit,omitempty"`
 }
 

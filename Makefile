@@ -1,7 +1,7 @@
 MAKEFLAGS += -j
 
 .PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
-	playwright-install dev version pre-commit \
+	playwright-install dev version pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
@@ -60,6 +60,11 @@ test-e2e-browser: backend-dev
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
 playwright-install:
 	cd web && deno run -A npm:@playwright/test@latest/cli install --with-deps $(BROWSER)
+
+# Generate screenshots for docs (output: docs/screenshots/)
+screenshots: backend-dev
+	cd web && deno cache --node-modules-dir playwright.config.ts tests/screenshots.spec.ts && \
+		deno run -A npm:@playwright/test@latest/cli test --project=chromium tests/screenshots.spec.ts
 
 # Show the version that will be embedded
 version:

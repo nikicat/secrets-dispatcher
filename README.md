@@ -86,6 +86,10 @@ git commit -S -m "my signed commit"
 # → approve or deny before GPG signs
 ```
 
+## Web UI
+
+![Web UI showing pending secret access and GPG signing requests](docs/screenshots/webui-overview.png)
+
 ## Approval Interfaces
 
 Approve or deny requests through any of:

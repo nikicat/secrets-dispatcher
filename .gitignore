@@ -9,7 +9,10 @@ web/dist/
 web/node_modules/
 
 # Embedded frontend (copied from web/dist)
-internal/api/web/
+internal/api/web/*
+!internal/api/web/dist/
+internal/api/web/dist/*
+!internal/api/web/dist/PLACEHOLDER
 
 # Test artifacts
 web/test-results/

@@ -1,0 +1,6 @@
+This file exists so that go:embed web/dist/* compiles even without
+a frontend build. The web UI is optional — all functionality is
+available via API and CLI.
+
+When built properly (make build), this directory contains the compiled
+Svelte frontend assets which replace this placeholder.

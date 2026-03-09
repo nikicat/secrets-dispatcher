@@ -1,33 +1,157 @@
 # secrets-dispatcher
 
-A secure approval gateway for secret operations. Proxies [Secret Service](https://specifications.freedesktop.org/secret-service/latest/) requests from remote servers and intercepts git GPG commit signing — both with per-operation approval prompts showing full context.
+[![CI](https://github.com/nikicat/secrets-dispatcher/actions/workflows/check.yml/badge.svg)](https://github.com/nikicat/secrets-dispatcher/actions/workflows/check.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Problem
+Per-operation approval and audit logging for secret access and git commit signing on Linux.
 
-**Remote secrets:** Forwarding `gpg-agent` to untrusted servers exposes ALL secrets (authorizes by key, not by secret). A compromised server can silently bulk-decrypt everything with no visibility into what's being accessed.
+Any process running as your user can silently read your keyring, and `git commit -S` signs whatever GPG is given with no human review. secrets-dispatcher sits between requestors and your secrets/keys, showing you exactly what's being accessed and by whom — and letting you approve, deny, or auto-authorize.
 
-**Git commit signing:** GPG signing happens silently — `git commit -S` invokes gpg with no human-visible context about what's being signed. Automated or compromised environments can sign arbitrary commits.
+```
+┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+│  Browser    │ │  AI Agent   │ │  CLI tool   │ │  git sign   │
+│  (Firefox)  │ │(Claude Code)│ │(secret-tool)│ │ (git -S)    │
+└──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
+       │               │               │               │
+       └───────────────┴───────┬───────┴───────────────┘
+                               │
+                ┌──────────────┴───────────────┐
+                │     secrets-dispatcher       │
+                │                              │
+                │  • per-request approval      │
+                │  • process chain detection   │
+                │  • trust rules engine        │
+                │  • audit logging             │
+                └──────┬───────────────┬───────┘
+                       │               │
+              ┌────────┴────┐   ┌──────┴──────┐
+              │Secret Service│   │    GPG      │
+              │(gopass, GNOME│   │  (signing)  │
+              │ keyring, etc)│   │             │
+              └─────────────┘   └─────────────┘
+```
 
-## Solution
+## Why
 
-`secrets-dispatcher` acts as a controlled gateway for both:
+**Local apps access secrets silently.** Any process running as your user can call the Secret Service D-Bus API and read any unlocked secret — browsers, Electron apps, CLI tools, and AI coding agents (Claude Code, Codex, Cursor). There's no audit trail and no per-access approval.
 
-**Secret Service proxy:**
-- Connects to remote server's D-Bus via SSH tunnel
-- Registers as `org.freedesktop.secrets` on that bus
-- Proxies requests to local Secret Service (gopass, gnome-keyring, etc.)
+**Git signing is blind.** `git commit -S` invokes GPG with no human-visible context. When AI agents or CI pipelines make commits, arbitrary content gets signed without review.
 
-**Git GPG signing proxy:**
-- Replaces `gpg` as git's `gpg.program`
-- Intercepts signing requests and shows commit context (repo, author, message, changed files)
-- Delegates to real `gpg` only after explicit approval
+**gpg-agent forwarding is all-or-nothing.** Forwarding a GPG agent over SSH gives the remote machine blanket access to decrypt *any* secret. No per-secret control.
 
-Both modes share:
-- Web UI, CLI, and desktop notification approval
-- Audit logging
-- Configurable timeout (default 5 minutes)
+secrets-dispatcher adds a controlled gateway with:
+- **Full process chain visibility** — not just "dbus-daemon asked" but `claude-code → node → secret-tool`
+- **Per-operation approval** via web UI, desktop notifications, or CLI
+- **Trust rules** — auto-approve known-safe patterns, prompt for everything else
+- **Audit logging** — JSON log of every access attempt with process info and decision
 
-## Architecture
+## Quick Start
+
+**Prerequisites:** A Secret Service provider (gnome-keyring, [gopass-secret-service](https://github.com/nikicat/gopass-secret-service), KeePassXC) and/or GPG configured.
+
+### Build & Install
+
+```bash
+git clone https://github.com/nikicat/secrets-dispatcher.git
+cd secrets-dispatcher
+make build && make install   # installs to ~/.local/bin
+```
+
+### Secret Access Control (local)
+
+```bash
+# Start the daemon
+secrets-dispatcher serve &
+
+# Or install as a systemd user service (auto-start on login)
+secrets-dispatcher service install --start
+
+# Open the web UI
+secrets-dispatcher login
+
+# Now any secret access triggers an approval prompt
+secret-tool lookup service smtp   # → you'll see a notification
+```
+
+### Git Commit Signing
+
+```bash
+# One-time setup
+secrets-dispatcher gpg-sign setup
+git config --global commit.gpgsign true
+
+# Now every signed commit requires approval
+git commit -S -m "my signed commit"
+# → desktop notification with repo, message, changed files
+# → approve or deny before GPG signs
+```
+
+## Approval Interfaces
+
+Approve or deny requests through any of:
+
+- **Web UI** — real-time dashboard at `http://127.0.0.1:8484` (open with `secrets-dispatcher login`)
+- **Desktop notifications** — inline Approve/Deny action buttons
+- **CLI** — `secrets-dispatcher list`, `secrets-dispatcher approve <id>`, `secrets-dispatcher deny <id>`
+
+All three update in real-time — approve via notification and the web UI reflects it instantly.
+
+## Trust Rules
+
+Auto-approve known-safe patterns instead of prompting for every request. Add to `~/.config/secrets-dispatcher/config.yaml`:
+
+```yaml
+serve:
+  rules:
+    # Auto-approve Firefox accessing any secret
+    - name: firefox
+      action: approve
+      process:
+        exe: "/usr/lib/firefox/firefox"
+
+    # Auto-approve tools running from your project directory
+    - name: my-project
+      action: approve
+      process:
+        cwd: "/home/me/src/my-project/*"
+
+    # Ignore Chrome's dummy secret probe
+    - name: chrome-probe
+      action: ignore
+      request_types: [write]
+      process:
+        exe: "*chrome*"
+
+    # Auto-approve deploy script accessing deploy secrets
+    - name: deploy
+      action: approve
+      process:
+        exe: "/usr/bin/ansible-playbook"
+      secret:
+        collection: "deploy"
+
+  # Auto-approve GPG signing from specific editors
+  trusted_signers:
+    - exe_path: /usr/bin/nvim
+```
+
+Rules match on process attributes (exe, name, CWD, systemd unit) and secret attributes (collection, label, custom attributes). All patterns support globs. Process matching checks the full process chain, not just the immediate caller.
+
+## Process Chain Detection
+
+When a request comes in, secrets-dispatcher resolves the full process ancestry:
+
+```
+Request: GetSecrets → collection/login/github-token
+Process chain: claude-code → node → dbus-send
+Unit: user@1000.service
+```
+
+This means you can write rules that match on the actual originating process, not just the D-Bus sender. Useful for distinguishing "Firefox wants my GitHub token" from "unknown-script → curl → dbus-send wants my GitHub token."
+
+## Secret Service Proxy (Remote Servers)
+
+For accessing secrets on remote servers without forwarding your GPG agent:
 
 ```
 SERVER (untrusted)                         LAPTOP (trusted)
@@ -36,294 +160,93 @@ SERVER (untrusted)                         LAPTOP (trusted)
 │  App ──► local D-Bus ───┼── SSH ───────►│ secrets-dispatcher              │
 │          (libsecret)    │   tunnel      │        │                        │
 │                         │               │        ▼                        │
-│  No secrets stored here │               │  Local D-Bus                    │
-│                         │               │        │                        │
-└─────────────────────────┘               │        ▼                        │
-                                          │  Secret Service                 │
-                                          │  (gopass/gnome-keyring/etc)     │
-                                          └─────────────────────────────────┘
+│  No secrets stored here │               │  Local Secret Service           │
+│                         │               │  (gopass/gnome-keyring/etc)     │
+└─────────────────────────┘               └─────────────────────────────────┘
 ```
-
-## Features
-
-**Secret Service proxy:**
-- [ ] Per-secret authorization (not per-key like gpg-agent)
-- [ ] Full context display (secret path, client identity)
-- [ ] Access control rules (allow/deny/prompt per client per path)
-- [ ] Client pairing with visual verification (like Enpass)
-- [x] Audit logging
-- [x] Standard libsecret compatibility (no client-side changes)
-- [ ] Secret Service DH encryption for secrets in transit
-
-**Git GPG commit signing:**
-- [x] Per-commit approval with full context (repo, author, message, changed files)
-- [x] Web UI with approve/deny buttons
-- [x] Desktop notifications with inline approve/deny actions
-- [x] CLI approve/deny (`secrets-dispatcher approve <id>`)
-- [x] One-command git setup (`secrets-dispatcher gpg-sign setup`)
-- [x] Graceful cancellation (Ctrl+C cancels the pending request)
-- [ ] Auto-accept/reject rules
-
-## Git GPG Commit Signing
-
-### Prerequisites
-
-- GPG key pair configured (`gpg --list-secret-keys`)
-- `secrets-dispatcher serve` running (or installed as a systemd service)
-
-### Setup
-
-**1. Configure git to use secrets-dispatcher as the GPG program:**
 
 ```bash
-secrets-dispatcher gpg-sign setup
+# SSH with tunnel (laptop)
+ssh -L /run/user/1000/secrets-dispatcher/myserver.sock:/run/user/1001/bus user@server
+
+# Start secrets-dispatcher (laptop)
+secrets-dispatcher serve --downstream socket:/run/user/1000/secrets-dispatcher/myserver.sock
+
+# Use secrets on server — no changes needed, apps use standard D-Bus
+secret-tool lookup service myapp
 ```
 
-This creates a wrapper script at `~/.local/bin/secrets-dispatcher-gpg` and sets `gpg.program` in your global git config. Use `--local` for per-repo configuration instead.
+See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for SSH config examples, automation scripts, and server-side setup.
 
-**2. Enable commit signing in git** (if not already):
+## Audit Logging
 
-```bash
-git config --global commit.gpgsign true
-```
-
-### Usage
-
-Sign commits as usual — secrets-dispatcher intercepts transparently:
-
-```bash
-git commit -S -m "my signed commit"
-```
-
-When git invokes the signing program, secrets-dispatcher:
-
-1. Parses the commit object to extract context (repo name, author, commit message, changed files)
-2. Sends a signing request to the daemon via Unix socket
-3. Blocks until you approve or deny
-
-Approve via any of:
-- **Web UI** — open with `secrets-dispatcher login`
-- **Desktop notification** — click Approve/Deny
-- **CLI** — `secrets-dispatcher list` then `secrets-dispatcher approve <id>`
-
-If you interrupt (`Ctrl+C`), the pending request is automatically cancelled.
-
-### How It Works
-
-```
-git commit -S
-    │
-    ▼
-git calls: secrets-dispatcher-gpg --status-fd=2 -bsau <keyID>
-    │                                      stdin: raw commit object
-    ▼
-secrets-dispatcher gpg-sign (thin client)
-    │  Parses commit: repo, author, message, changed files
-    │  Connects to daemon via Unix socket
-    ▼
-secrets-dispatcher serve (daemon)
-    │  Creates approval request
-    │  Notifies: web UI, desktop notification
-    │  Waits for user decision
-    ▼
-User approves ──► daemon runs real gpg ──► signature returned to git
-User denies   ──► git commit fails (exit 1)
-```
-
-### Debugging
-
-Set `SECRETS_DISPATCHER_DEBUG=1` to see verbose output from the thin client:
-
-```bash
-SECRETS_DISPATCHER_DEBUG=1 git commit -S -m "test"
-```
-
-## Secret Service Proxy
-
-### Prerequisites
-
-- A local Secret Service running on your laptop (e.g., gnome-keyring, KeePassXC, or gopass-secret-service)
-- SSH access to the remote server
-- `dbus-daemon` installed on the server
-
-### Quick Start
-
-**1. Build secrets-dispatcher on your laptop:**
-
-```bash
-go build -o secrets-dispatcher .
-```
-
-**2. Start a D-Bus daemon on the server (if not already running):**
-
-```bash
-# On the server - start D-Bus at the standard session bus location
-# Skip this if the server already has a session bus running
-dbus-daemon --session --nofork --address="unix:path=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus" &
-```
-
-**3. SSH to server with local forward (on laptop):**
-
-```bash
-# Create runtime directory for secrets-dispatcher sockets
-mkdir -p "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/secrets-dispatcher"
-
-# Forward the server's D-Bus session bus to laptop (adjust remote UID as needed)
-ssh -L "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/secrets-dispatcher/myserver.sock:/run/user/1001/bus" user@server
-```
-
-**4. Start secrets-dispatcher (on laptop, in another terminal):**
-
-```bash
-./secrets-dispatcher \
-    --remote-socket "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/secrets-dispatcher/myserver.sock" \
-    --client myserver
-```
-
-**5. Use secrets on the server:**
-
-```bash
-# On the remote server - no special configuration needed!
-# Apps use the standard D-Bus session bus at /run/user/<UID>/bus
-secret-tool lookup service myapp username myuser
-```
-
-### How It Works (Secret Service)
-
-```
-LAPTOP                                  SERVER
-┌────────────────────────────────┐     ┌──────────────────────────┐
-│                                │     │                          │
-│  secrets-dispatcher            │     │   dbus-daemon            │
-│        │                       │     │   (session bus)          │
-│        │                       │     │        ▲                 │
-│        ▼                       │     │        │                 │
-│  $XDG_RUNTIME_DIR/             │     │  $XDG_RUNTIME_DIR/bus    │
-│   secrets-dispatcher/ ─────────┼─────┼───► (standard location)  │
-│     myserver.sock        SSH -L│     │        ▲                 │
-│        │                       │     │        │                 │
-│        ▼                       │     │   secret-tool / apps     │
-│  Local Session D-Bus           │     │   (use D-Bus normally)   │
-│        │                       │     │                          │
-│        ▼                       │     │                          │
-│  Secret Service                │     │                          │
-│  (gnome-keyring/gopass/etc)    │     │                          │
-└────────────────────────────────┘     └──────────────────────────┘
-```
-
-1. A dedicated D-Bus daemon runs on the server for secrets communication
-2. SSH local forward (`-L`) tunnels that socket to your laptop
-3. secrets-dispatcher connects to the tunneled socket and registers as `org.freedesktop.secrets`
-4. Apps on the server connect to the same D-Bus and find secrets-dispatcher
-5. secrets-dispatcher proxies requests to your local Secret Service
-6. All access is logged for audit
-
-### SSH Config Setup
-
-Add to `~/.ssh/config`:
-
-```
-Host myserver
-    HostName server.example.com
-    User myuser
-
-    # Forward remote D-Bus socket to local secrets-dispatcher directory
-    # Note: SSH config doesn't expand variables, use absolute paths
-    # Local UID 1000, remote UID 1001 - adjust as needed
-    LocalForward /run/user/1000/secrets-dispatcher/myserver.sock /run/user/1001/bus
-
-    # Remove existing socket before binding (handles reconnects)
-    StreamLocalBindUnlink yes
-
-    # Keep connection alive for long sessions
-    ServerAliveInterval 60
-    ServerAliveCountMax 3
-```
-
-### Automation Script
-
-Create `~/bin/secrets-connect` on your laptop:
-
-```bash
-#!/bin/bash
-set -e
-
-SERVER="$1"
-RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-SOCK_DIR="$RUNTIME_DIR/secrets-dispatcher"
-LOCAL_SOCK="$SOCK_DIR/$SERVER.sock"
-
-# Create socket directory
-mkdir -p "$SOCK_DIR"
-
-# Start SSH with tunnel in background
-# StreamLocalBindUnlink removes existing socket on reconnect
-# Get remote user's UID via ssh (or hardcode if known)
-REMOTE_UID=$(ssh "$SERVER" 'id -u')
-ssh -f -N -o StreamLocalBindUnlink=yes \
-    -L "$LOCAL_SOCK:/run/user/$REMOTE_UID/bus" "$SERVER"
-
-# Wait for socket to be created
-for i in {1..10}; do
-    [ -S "$LOCAL_SOCK" ] && break
-    sleep 0.5
-done
-
-# Start secrets-dispatcher
-exec secrets-dispatcher --remote-socket "$LOCAL_SOCK" --client "$SERVER"
-```
-
-Usage: `secrets-connect myserver`
-
-### Server-Side Setup
-
-Add to your server's `~/.bashrc` or `~/.zshrc`:
-
-```bash
-# Start D-Bus session daemon if not running (for headless servers)
-if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
-    _bus_path="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/bus"
-    if [ ! -S "$_bus_path" ]; then
-        dbus-daemon --session --fork --address="unix:path=$_bus_path"
-    fi
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=$_bus_path"
-    unset _bus_path
-fi
-```
-
-No special configuration needed for apps - they use the standard D-Bus session bus automatically.
-
-### Audit Logging
-
-All secret access is logged to stderr in JSON format:
+All secret access is logged to stderr in structured JSON:
 
 ```json
-{"time":"...","level":"INFO","msg":"dbus_call","client":"myserver","method":"GetSecrets","items":["/org/freedesktop/secrets/collection/login/1"],"result":"ok"}
+{"time":"2025-03-09T14:22:01Z","level":"INFO","msg":"dbus_call","method":"GetSecrets","items":["collection/login/github-token"],"process_chain":["claude-code","node","dbus-send"],"result":"approved"}
 ```
 
-Redirect to a file for persistent logging:
+## Configuration
 
-```bash
-./secrets-dispatcher --remote-socket /path/to/sock --client myserver 2>> ~/.local/log/secrets-dispatcher.log
+Config file: `~/.config/secrets-dispatcher/config.yaml`
+
+```yaml
+listen: "127.0.0.1:8484"          # Web UI address
+state_dir: "~/.local/state/secrets-dispatcher"
+
+serve:
+  log_level: info                  # debug, info, warn, error
+  timeout: 5m                      # approval request timeout
+  approval_window: 2s              # batch concurrent requests
+  notification_delay: 1s           # suppress short-lived requests
+  notifications: true              # desktop notifications
+  ignore_chrome_dummy_secret: true # suppress Chrome's probe
+  rules: []                        # trust rules (see above)
+  trusted_signers: []              # GPG signing auto-approve
 ```
 
-### Troubleshooting
+## Compatibility
 
-**"Connection refused" on server:**
-- Check that the SSH tunnel is active: `ls -la /run/user/$(id -u)/secrets.sock`
-- Ensure secrets-dispatcher is running on the laptop
+**Works with** any Secret Service backend:
+- [gopass-secret-service](https://github.com/nikicat/gopass-secret-service)
+- GNOME Keyring
+- KDE Wallet
+- KeePassXC
 
-**"No such object" errors:**
-- Verify your local Secret Service is running: `secret-tool search --all`
-- Check secrets-dispatcher logs for errors
-
-**Socket permission denied:**
-- Ensure the remote socket path is in your user's runtime dir (`/run/user/$(id -u)/`)
+**Works with** any Secret Service client:
+- Firefox, Chromium/Chrome, Electron apps
+- `secret-tool`, Python `secretstorage`
+- AI coding agents (Claude Code, Codex, etc.)
+- Any application using libsecret
 
 ## Status
 
-- **Secret Service proxy:** Basic proxy with audit logging is complete.
-- **Git GPG commit signing:** Fully functional — setup, signing flow, web UI, desktop notifications, CLI, and cancellation all implemented.
-- **Approval UI:** Web UI with real-time updates, desktop notifications with inline actions, and CLI are all working.
+| Feature | Status |
+|---------|--------|
+| Secret Service proxy (local & remote) | Working — proxy, audit logging, trust rules |
+| Git GPG commit signing | Working — setup, signing flow, approval UI, auto-approve |
+| Web UI | Working — real-time updates, approve/deny, history, trust rules |
+| Desktop notifications | Working — inline approve/deny actions |
+| CLI | Working — list, approve, deny, history |
+| Process chain detection | Working — full ancestry with exe, CWD, systemd unit |
+| Trust rules engine | Working — process + secret matching with globs |
+| Client pairing (remote) | Planned |
+| DH encryption for secrets in transit | Planned |
 
-See `docs/REQUIREMENTS.md` for the full roadmap.
+## Development
+
+```bash
+make build          # Build with embedded frontend
+make test-go        # Run Go tests
+make test-e2e       # Run Playwright E2E tests
+make pre-commit     # Lint + format + staticcheck
+```
+
+## Documentation
+
+- [Requirements & Roadmap](docs/REQUIREMENTS.md)
+- [Target Audience & User Personas](docs/TARGET-AUDIENCE.md)
+
+## License
+
+MIT License

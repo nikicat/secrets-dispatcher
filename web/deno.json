@@ -12,7 +12,7 @@
     "svelte": "npm:svelte@^5.0.0",
     "@sveltejs/vite-plugin-svelte": "npm:@sveltejs/vite-plugin-svelte@^5.0.0",
     "vite": "npm:vite@^6.0.0",
-    "@playwright/test": "npm:@playwright/test@1.58.2",
+    "@playwright/test": "npm:@playwright/test@latest",
     "svelte-check": "npm:svelte-check@^4.0.0"
   },
   "nodeModulesDir": "auto",

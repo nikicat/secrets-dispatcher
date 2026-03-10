@@ -2,7 +2,6 @@
   "version": "5",
   "specifiers": {
     "npm:@playwright/test@1.52.0": "1.52.0",
-    "npm:@playwright/test@1.58.2": "1.58.2",
     "npm:@playwright/test@latest": "1.58.2",
     "npm:@sveltejs/vite-plugin-svelte@5": "5.1.1_svelte@5.50.0__acorn@8.15.0_vite@6.4.1__picomatch@4.0.3",
     "npm:svelte-check@*": "4.3.6_svelte@5.50.0__acorn@8.15.0_typescript@5.9.3",
@@ -622,7 +621,7 @@
   },
   "workspace": {
     "dependencies": [
-      "npm:@playwright/test@1.58.2",
+      "npm:@playwright/test@latest",
       "npm:@sveltejs/vite-plugin-svelte@5",
       "npm:svelte-check@4",
       "npm:svelte@5",

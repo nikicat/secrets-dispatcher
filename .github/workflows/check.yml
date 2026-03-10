@@ -18,7 +18,7 @@ jobs:
 
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.5.x  # Deno 2.6+ breaks Playwright's transform (Hash.update gets undefined)
+          deno-version: v2.x
 
       - run: make check
 
@@ -47,7 +47,7 @@ jobs:
 
       - uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.5.x  # Deno 2.6+ breaks Playwright's transform
+          deno-version: v2.x
 
       - run: make playwright-install BROWSER=${{ matrix.browser }}
 

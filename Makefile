@@ -20,9 +20,12 @@ embed-frontend: frontend
 # Version from git (fallback for untagged repos)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-g$$(git rev-parse --short HEAD)")
 
+# Extra flags passed to the Go linker (e.g. "-linkmode=external -s -w")
+GO_LDFLAGS ?=
+
 # Build the Go binary (includes embedded frontend)
 backend: embed-frontend
-	go build -ldflags "-X main.version=$(VERSION)" -o secrets-dispatcher .
+	go build -ldflags "-X main.version=$(VERSION) $(GO_LDFLAGS)" -o secrets-dispatcher .
 
 # Build Go binary without embedded frontend (for dev/testing)
 # Outputs to .build/ to avoid overwriting ./secrets-dispatcher used by local service

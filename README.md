@@ -225,6 +225,15 @@ serve:
 - AI coding agents (Claude Code, Codex, etc.)
 - Any application using libsecret
 
+### Works great with [gopass-secret-service](https://github.com/nikicat/gopass-secret-service)
+
+Together they form a complete stack: gopass-secret-service provides the Secret Service backend (storing secrets in GPG-encrypted, git-synced GoPass), and secrets-dispatcher adds per-operation approval and audit logging on top.
+
+```
+App → secrets-dispatcher → gopass-secret-service → GoPass → GPG
+       (access control)     (Secret Service API)    (store)  (encryption)
+```
+
 ## Status
 
 | Feature | Status |

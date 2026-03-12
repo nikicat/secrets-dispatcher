@@ -1,0 +1,42 @@
+# secrets-dispatcher configuration
+# Copy to ~/.config/secrets-dispatcher/config.yaml
+
+listen: "127.0.0.1:8484"          # Web UI address
+state_dir: "~/.local/state/secrets-dispatcher"
+
+serve:
+  log_level: info                  # debug, info, warn, error
+  timeout: 5m                      # approval request timeout
+  approval_window: 2s              # batch concurrent requests
+  notification_delay: 1s           # suppress short-lived requests
+  notifications: true              # desktop notifications
+  ignore_chrome_dummy_secret: true # suppress Chrome's dummy secret probe
+
+  # Trust rules — auto-approve known-safe patterns instead of prompting.
+  # Rules match on process attributes (exe, name, cwd, unit) and secret
+  # attributes (collection, label, custom attributes). All patterns support globs.
+  # Process matching checks the full process chain, not just the immediate caller.
+  rules: []
+    # Example: auto-approve Firefox accessing any secret
+    # - name: firefox
+    #   action: approve
+    #   process:
+    #     exe: "/usr/lib/firefox/firefox"
+
+    # Example: auto-approve tools running from your project directory
+    # - name: my-project
+    #   action: approve
+    #   process:
+    #     cwd: "/home/me/src/my-project/*"
+
+    # Example: ignore Chrome's dummy secret probe
+    # - name: chrome-probe
+    #   action: ignore
+    #   request_types: [write]
+    #   process:
+    #     exe: "*chrome*"
+
+  # Auto-approve GPG signing from specific editors
+  trusted_signers: []
+    # - exe_path: /usr/bin/nvim
+    # - exe_path: /usr/bin/code

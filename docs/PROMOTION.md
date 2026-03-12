@@ -62,11 +62,10 @@ Checklist for increasing project visibility and adoption.
 
 ### Packaging
 
-- [ ] **AUR** — Create package (Arch Linux users are a core audience)
+- [x] **AUR** — Create package (Arch Linux users are a core audience)
 - [ ] **Nixpkgs** — High priority. Nix users care deeply about reproducibility and security.
-- [ ] **Homebrew (linuxbrew)** — Easy entry point for developers
 - [ ] **Fedora COPR** — Covers Fedora users
-- [ ] **Pre-built binaries** — GitHub Releases with Linux amd64/arm64 binaries (release workflow may need setup)
+- [x] **Pre-built binaries** — GitHub Releases with Linux amd64/arm64 binaries
 
 ### Project Credibility Signals
 
@@ -77,7 +76,7 @@ Checklist for increasing project visibility and adoption.
 - [ ] **Additional badges in README**:
   - [ ] Code coverage
   - [x] Go Report Card
-  - [ ] Latest release version
+  - [x] Latest release version
 
 - [ ] **CHANGELOG.md** — Running changelog ([keepachangelog.com](https://keepachangelog.com/) format).
 
@@ -115,7 +114,6 @@ Checklist for increasing project visibility and adoption.
 
 - [ ] **Man page** — `secrets-dispatcher(1)`. Expected by distro packagers.
 
-- [ ] **Grafana dashboard template** — For users who ship logs to Loki/Elasticsearch. Pre-built dashboard showing secret access patterns.
 
 ## Cross-Promotion with gopass-secret-service
 

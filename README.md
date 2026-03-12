@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/nikicat/secrets-dispatcher/actions/workflows/check.yml/badge.svg)](https://github.com/nikicat/secrets-dispatcher/actions/workflows/check.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/nikicat/secrets-dispatcher)](https://goreportcard.com/report/github.com/nikicat/secrets-dispatcher)
+[![Release](https://img.shields.io/github/v/release/nikicat/secrets-dispatcher)](https://github.com/nikicat/secrets-dispatcher/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Per-operation approval and audit logging for secret access and git commit signing on Linux.

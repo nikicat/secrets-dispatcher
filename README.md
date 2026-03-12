@@ -6,7 +6,7 @@
 
 Per-operation approval and audit logging for secret access and git commit signing on Linux.
 
-Any process running as your user can silently read your keyring, and `git commit -S` signs whatever GPG is given with no human review. secrets-dispatcher sits between requestors and your secrets/keys, showing you exactly what's being accessed and by whom — and letting you approve, deny, or auto-authorize.
+A D-Bus Secret Service proxy that adds per-app permissions and an audit log to your Linux keyring. Any process running as your user — including AI agents — can silently read your secrets, and `git commit -S` signs whatever GPG is given with no human review. secrets-dispatcher sits between requestors and your secrets/keys, showing you exactly what's being accessed and by whom — and letting you approve, deny, or auto-authorize.
 
 ```
 ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
@@ -34,9 +34,9 @@ Any process running as your user can silently read your keyring, and `git commit
 
 ## Why
 
-**Local apps access secrets silently.** Any process running as your user can call the Secret Service D-Bus API and read any unlocked secret — browsers, Electron apps, CLI tools, and AI coding agents (Claude Code, Codex, Cursor). There's no audit trail and no per-access approval.
+**No keyring access control.** Any process running as your user can call the Secret Service D-Bus API and read any unlocked secret — browsers, Electron apps, CLI tools, and AI coding agents (Claude Code, Codex, Cursor). There's no audit trail, no per-app permissions, and no way to know which process accessed what.
 
-**Git signing is blind.** `git commit -S` invokes GPG with no human-visible context. When AI agents or CI pipelines make commits, arbitrary content gets signed without review.
+**Git signing is blind.** `git commit -S` invokes GPG with no human-visible context. When AI agents or CI pipelines make commits, arbitrary content gets signed without review. There's no GPG signing approval step.
 
 **gpg-agent forwarding is all-or-nothing.** Forwarding a GPG agent over SSH gives the remote machine blanket access to decrypt *any* secret. No per-secret control.
 
@@ -212,7 +212,7 @@ serve:
 
 ## Compatibility
 
-**Works with** any Secret Service backend:
+**Works with** any Secret Service backend — adds audit logging and access control regardless of which keyring you use:
 - [gopass-secret-service](https://github.com/nikicat/gopass-secret-service)
 - GNOME Keyring
 - KDE Wallet

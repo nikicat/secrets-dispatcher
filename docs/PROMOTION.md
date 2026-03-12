@@ -91,7 +91,7 @@ Checklist for increasing project visibility and adoption.
 
 - [x] **GitHub repo description** — "Per-operation approval and audit logging for secret access and git commit signing on Linux"
 
-- [ ] **Search-relevant phrases** — Ensure README covers the terms people Google:
+- [x] **Search-relevant phrases** — Ensure README covers the terms people Google:
   - "linux keyring access control"
   - "secret service per-app permissions"
   - "gpg signing approval"

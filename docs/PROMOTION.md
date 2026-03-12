@@ -70,26 +70,26 @@ Checklist for increasing project visibility and adoption.
 
 ### Project Credibility Signals
 
-- [ ] **CONTRIBUTING.md** — Short guide: how to build, test, submit PRs. Signals openness.
+- [x] **CONTRIBUTING.md** — Short guide: how to build, test, submit PRs. Signals openness.
 
-- [ ] **Issue templates** — Bug report + feature request in `.github/ISSUE_TEMPLATE/`.
+- [x] **Issue templates** — Bug report + feature request in `.github/ISSUE_TEMPLATE/`.
 
 - [ ] **Additional badges in README**:
   - [ ] Code coverage
-  - [ ] Go Report Card
+  - [x] Go Report Card
   - [ ] Latest release version
 
 - [ ] **CHANGELOG.md** — Running changelog ([keepachangelog.com](https://keepachangelog.com/) format).
 
-- [ ] **SECURITY.md** — Especially important for a security tool. Vulnerability reporting instructions.
+- [x] **SECURITY.md** — Especially important for a security tool. Vulnerability reporting instructions.
 
-- [ ] **Screenshots / GIFs** — Web UI screenshot and desktop notification screenshot in README. Visual proof that it works is powerful for a UI-heavy tool.
+- [x] **Screenshots / GIFs** — Web UI screenshot in README. Visual proof that it works is powerful for a UI-heavy tool.
 
 ### Discoverability
 
-- [ ] **GitHub topics** — Add: `secret-service`, `dbus`, `gpg`, `commit-signing`, `access-control`, `audit-logging`, `linux`, `security`, `ai-safety`, `keyring`.
+- [x] **GitHub topics** — Add: `secret-service`, `dbus`, `gpg`, `commit-signing`, `access-control`, `audit-logging`, `linux`, `security`, `ai-safety`, `keyring`.
 
-- [ ] **GitHub repo description** — "Per-operation approval and audit logging for secret access and git commit signing on Linux"
+- [x] **GitHub repo description** — "Per-operation approval and audit logging for secret access and git commit signing on Linux"
 
 - [ ] **Search-relevant phrases** — Ensure README covers the terms people Google:
   - "linux keyring access control"

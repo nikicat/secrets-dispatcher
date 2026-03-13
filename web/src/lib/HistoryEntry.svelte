@@ -6,13 +6,14 @@
   interface Props {
     entry: HistoryEntryType;
     count?: number;
+    tick: number;
     autoApproveRules: AutoApproveRule[];
     formatTime: (dateString: string) => string;
     toggleTimeFormat: () => void;
     onAutoApprove: (requestId: string) => void;
   }
 
-  let { entry, count = 1, autoApproveRules, formatTime, toggleTimeFormat, onAutoApprove }: Props = $props();
+  let { entry, count = 1, tick, autoApproveRules, formatTime, toggleTimeFormat, onAutoApprove }: Props = $props();
 
   function resolutionClass(resolution: string): string {
     switch (resolution) {
@@ -139,7 +140,7 @@
       {/if}
       <span class="history-request-id" title={entry.request.id}>{entry.request.id.slice(0, 8)}</span>
     </div>
-    <button class="history-time clickable" onclick={toggleTimeFormat}>{formatTime(entry.resolved_at)}</button>
+    <button class="history-time clickable" onclick={toggleTimeFormat}>{void tick, formatTime(entry.resolved_at)}</button>
   </div>
   <div class="history-entry-details">
     <span class="history-items">{historyItemsSummary(entry.request)}</span>

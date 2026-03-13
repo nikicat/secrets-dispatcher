@@ -531,7 +531,7 @@
             {#if historyOpen}
               <ul class="history-list">
                 {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
-                  <HistoryEntryCard entry={group.entry} count={group.count} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
                 {/each}
               </ul>
             {/if}
@@ -556,7 +556,7 @@
             {#if historyOpen}
               <ul class="history-list">
                 {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
-                  <HistoryEntryCard entry={group.entry} count={group.count} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
                 {/each}
               </ul>
             {/if}

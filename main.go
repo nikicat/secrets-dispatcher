@@ -696,6 +696,8 @@ func runConfig(args []string) {
 	switch args[0] {
 	case "show":
 		runConfigShow(args[1:])
+	case "edit":
+		runConfigEdit(args[1:])
 	case "-h", "--help", "help":
 		printConfigUsage()
 	default:
@@ -737,14 +739,102 @@ func runConfigShow(args []string) {
 	os.Stdout.Write(out)
 }
 
+func runConfigEdit(args []string) {
+	fs := flag.NewFlagSet("config edit", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	fs.Parse(args)
+
+	path := *configPath
+	if path == "" {
+		path = config.DefaultPath()
+	}
+	if path == "" {
+		fmt.Fprintln(os.Stderr, "error: cannot determine config path (set XDG_CONFIG_HOME or use --config)")
+		os.Exit(1)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating config directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Read file content before editing (may not exist yet)
+	before, _ := os.ReadFile(path)
+
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		fmt.Fprintln(os.Stderr, "error: $EDITOR is not set")
+		os.Exit(1)
+	}
+
+	cmd := exec.Command(editor, path)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "editor exited with error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Validate the new config
+	after, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading config after edit: %v\n", err)
+		os.Exit(1)
+	}
+
+	if string(before) == string(after) {
+		fmt.Fprintln(os.Stderr, "config unchanged")
+		return
+	}
+
+	// Parse and validate
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: config has errors: %v\n", err)
+		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
+		return
+	}
+	cfg = cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: config validation error: %v\n", err)
+		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
+		return
+	}
+
+	fmt.Fprintln(os.Stderr, "config updated")
+
+	// Prompt for service restart
+	fmt.Fprint(os.Stderr, "restart secrets-dispatcher service? [y/N] ")
+	var answer string
+	fmt.Scanln(&answer)
+	if answer == "y" || answer == "Y" {
+		restart := exec.Command("systemctl", "--user", "restart", "secrets-dispatcher.service")
+		restart.Stdout = os.Stdout
+		restart.Stderr = os.Stderr
+		if err := restart.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "error restarting service: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "service restarted")
+	}
+}
+
 func printConfigUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: %s config <command> [options]
 
 Commands:
   show          Show the current configuration
+  edit          Edit config in $EDITOR and optionally restart service
 
-Show options:
+Options:
   --config      Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
+
+Show-only options:
   --defaults    Show all fields with program defaults filled in
 `, progName)
 }

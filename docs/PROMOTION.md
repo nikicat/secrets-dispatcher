@@ -124,7 +124,7 @@ secrets-dispatcher  →  gopass-secret-service  →  GoPass  →  GPG
   (access control)       (Secret Service API)     (store)    (encryption)
 ```
 
-- [ ] Add "Works great with" section to both READMEs linking to each other
+- [x] Add "Works great with" section to both READMEs linking to each other
 - [ ] Blog post: "The complete GoPass desktop stack" covering both projects
 - [ ] Joint announcement if both hit v1.0 around the same time
 

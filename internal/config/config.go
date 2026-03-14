@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path"
@@ -12,14 +13,15 @@ import (
 
 // Defaults for serve-subcommand settings.
 const (
-	DefaultListenAddr          = "127.0.0.1:8484"
-	DefaultTimeout             = 5 * time.Minute
-	DefaultHistoryLimit        = 100
-	DefaultLogLevel            = "info"
-	DefaultLogFormat           = "text"
-	DefaultApprovalWindow      = 5 * time.Second
-	DefaultAutoApproveDuration = 2 * time.Minute
-	DefaultNotificationDelay   = 500 * time.Millisecond
+	DefaultListenAddr            = "127.0.0.1:8484"
+	DefaultTimeout               = 5 * time.Minute
+	DefaultHistoryLimit          = 100
+	DefaultLogLevel              = "info"
+	DefaultLogFormat             = "text"
+	DefaultApprovalWindow        = 5 * time.Second
+	DefaultAutoApproveDuration   = 2 * time.Minute
+	DefaultNotificationDelay     = 500 * time.Millisecond
+	DefaultUpstreamSlowThreshold = 1500 * time.Millisecond
 )
 
 var defaultNotifications = true
@@ -72,6 +74,10 @@ func (cfg *Config) WithDefaults() *Config {
 	}
 	if s.NotificationDelay == 0 {
 		s.NotificationDelay = Duration(DefaultNotificationDelay)
+	}
+	if s.UpstreamSlowThreshold == nil {
+		d := Duration(DefaultUpstreamSlowThreshold)
+		s.UpstreamSlowThreshold = &d
 	}
 	if s.Upstream.Type == "" {
 		s.Upstream = BusConfig{Type: "session_bus"}
@@ -247,6 +253,8 @@ type ServeConfig struct {
 	NotificationDelay       Duration        `yaml:"notification_delay"`
 	TrustedSigners          []TrustedSigner `yaml:"trusted_signers,omitempty"`
 	IgnoreChromeDummySecret *bool           `yaml:"ignore_chrome_dummy_secret"`
+	UpstreamSlowThreshold   *Duration       `yaml:"upstream_slow_threshold"`        // 0 disables; default 1.5s
+	UpstreamSlowAlways      *bool           `yaml:"upstream_slow_always,omitempty"` // show for all requests, not just auto-approved
 	Rules                   []TrustRule     `yaml:"rules,omitempty"`
 }
 
@@ -311,7 +319,7 @@ func DefaultPath() string {
 }
 
 // Load reads and parses a YAML config file. If the file does not exist,
-// it returns an empty Config and a nil error.
+// it returns an empty Config and a nil error. Unknown keys are rejected.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -322,7 +330,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	return &cfg, nil

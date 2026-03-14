@@ -698,6 +698,8 @@ func runConfig(args []string) {
 		runConfigShow(args[1:])
 	case "edit":
 		runConfigEdit(args[1:])
+	case "validate":
+		runConfigValidate(args[1:])
 	case "-h", "--help", "help":
 		printConfigUsage()
 	default:
@@ -824,12 +826,31 @@ func runConfigEdit(args []string) {
 	}
 }
 
+func runConfigValidate(args []string) {
+	fs := flag.NewFlagSet("config validate", flag.ExitOnError)
+	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	fs.Parse(args)
+
+	cfg, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	cfg = cfg.WithDefaults()
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "config ok")
+}
+
 func printConfigUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: %s config <command> [options]
 
 Commands:
   show          Show the current configuration
   edit          Edit config in $EDITOR and optionally restart service
+  validate      Validate config syntax and values
 
 Options:
   --config      Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)

@@ -97,7 +97,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 			writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
 			return
 		}
-		res := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo)
+		res := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, senderInfo)
 		if res.err != nil {
 			writeError(w, fmt.Sprintf("gpg exec failed: %v", res.err), http.StatusInternalServerError)
 			return

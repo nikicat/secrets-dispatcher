@@ -41,18 +41,18 @@ func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.
 
 // upstream wraps a D-Bus Call through the slow-upstream notifier.
 func (s *Service) upstream(fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, "", nil, fn)
+	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, UpstreamCallContext{}, fn)
 }
 
-// upstreamWithItems wraps a D-Bus Call through the slow-upstream notifier,
-// passing item information to the notification.
-func (s *Service) upstreamWithItems(reqType approval.RequestType, items []approval.ItemInfo, fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, reqType, items, fn)
+// upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
+// passing caller and item context to the notification.
+func (s *Service) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, ctx, fn)
 }
 
 // upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
 func (s *Service) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
-	r := WithSlowNotify(s.slowThreshold, s.upstreamNotifier, "", nil, func() propResult {
+	r := WithSlowNotify(s.slowThreshold, s.upstreamNotifier, UpstreamCallContext{}, func() propResult {
 		v, err := obj.GetProperty(prop)
 		return propResult{v, err}
 	})
@@ -81,8 +81,12 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	infos := searchAttributesToItemInfo(attributes)
-	call := s.upstreamWithItems(approval.RequestTypeSearch, infos,
-		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	call := s.upstreamWithContext(UpstreamCallContext{
+		RequestType:   approval.RequestTypeSearch,
+		Items:         infos,
+		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", call.Err)
 		return nil, nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -131,8 +135,11 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := s.upstreamWithItems(approval.RequestTypeGetSecret, itemInfos,
-		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
+	call := s.upstreamWithContext(UpstreamCallContext{
+		RequestType: approval.RequestTypeGetSecret,
+		Items:       itemInfos,
+		SenderInfo:  senderInfo,
+	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
 	if call.Err != nil {
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", call.Err)
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -160,7 +167,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 func (s *Service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	infos := s.getUnlockInfo(objects)
-	call := s.upstreamWithItems("", infos,
+	call := s.upstreamWithContext(UpstreamCallContext{Items: infos},
 		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)

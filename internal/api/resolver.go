@@ -77,7 +77,7 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 			return r.Manager.ApproveGPGFailed(id, nil, 2)
 		}
 
-		res := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo)
+		res := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, req.SenderInfo)
 		if res.err != nil || res.exitCode != 0 {
 			slog.Error("gpg signing failed", "error", res.err, "exit_code", res.exitCode)
 			return r.Manager.ApproveGPGFailed(id, res.status, res.exitCode)
@@ -102,9 +102,13 @@ type gpgResult struct {
 }
 
 // runGPGWithNotify wraps RunGPG with slow upstream notification.
-func (r *Resolver) runGPGWithNotify(gpgPath, keyID string, commitObject []byte, info *approval.GPGSignInfo) gpgResult {
+func (r *Resolver) runGPGWithNotify(gpgPath, keyID string, commitObject []byte, info *approval.GPGSignInfo, senderInfo approval.SenderInfo) gpgResult {
 	items := gpgSignItems(info)
-	return proxy.WithSlowNotify(r.SlowThreshold, r.UpstreamNotifier, approval.RequestTypeGPGSign, items, func() gpgResult {
+	return proxy.WithSlowNotify(r.SlowThreshold, r.UpstreamNotifier, proxy.UpstreamCallContext{
+		RequestType: approval.RequestTypeGPGSign,
+		Items:       items,
+		SenderInfo:  senderInfo,
+	}, func() gpgResult {
 		sig, status, exitCode, err := r.GPGRunner.RunGPG(gpgPath, keyID, commitObject)
 		return gpgResult{sig, status, exitCode, err}
 	})
@@ -136,7 +140,7 @@ func (r *Resolver) approveGPGSign(id string, req *approval.Request) error {
 		return r.Manager.ApproveGPGFailed(id, nil, 2)
 	}
 
-	res := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo)
+	res := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, req.SenderInfo)
 	if res.err != nil || res.exitCode != 0 {
 		slog.Error("gpg signing failed", "error", res.err, "exit_code", res.exitCode)
 		return r.Manager.ApproveGPGFailed(id, res.status, res.exitCode)

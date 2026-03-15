@@ -41,20 +41,15 @@ func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logg
 	}
 }
 
-// upstream wraps a D-Bus Call through the slow-upstream notifier.
-func (i *ItemHandler) upstream(fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, "", nil, fn)
-}
-
-// upstreamWithItems wraps a D-Bus Call through the slow-upstream notifier,
-// passing item information to the notification.
-func (i *ItemHandler) upstreamWithItems(reqType approval.RequestType, items []approval.ItemInfo, fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, reqType, items, fn)
+// upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
+// passing caller and item context to the notification.
+func (i *ItemHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, ctx, fn)
 }
 
 // upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
 func (i *ItemHandler) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
-	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, "", nil, func() propResult {
+	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{}, func() propResult {
 		v, err := obj.GetProperty(prop)
 		return propResult{v, err}
 	})
@@ -102,8 +97,11 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := i.upstreamWithItems(approval.RequestTypeDelete, items,
-		func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".Delete", 0) })
+	call := i.upstreamWithContext(UpstreamCallContext{
+		RequestType: approval.RequestTypeDelete,
+		Items:       items,
+		SenderInfo:  senderInfo,
+	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".Delete", 0) })
 	if call.Err != nil {
 		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -155,8 +153,11 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := i.upstreamWithItems(approval.RequestTypeGetSecret, items,
-		func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession) })
+	call := i.upstreamWithContext(UpstreamCallContext{
+		RequestType: approval.RequestTypeGetSecret,
+		Items:       items,
+		SenderInfo:  senderInfo,
+	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession) })
 	if call.Err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", call.Err)
 		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -222,8 +223,11 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := i.upstreamWithItems(approval.RequestTypeWrite, items,
-		func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret) })
+	call := i.upstreamWithContext(UpstreamCallContext{
+		RequestType: approval.RequestTypeWrite,
+		Items:       items,
+		SenderInfo:  senderInfo,
+	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret) })
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -243,12 +247,18 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	variant, err := i.upstreamGetProperty(obj, iface+"."+property)
-	if err != nil {
-		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+	}, func() propResult {
+		v, err := obj.GetProperty(iface + "." + property)
+		return propResult{v, err}
+	})
+	if r.err != nil {
+		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{r.err.Error()}}
 	}
 
-	return variant, nil
+	return r.v, nil
 }
 
 // GetAll implements org.freedesktop.DBus.Properties.GetAll for items.
@@ -259,7 +269,10 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := i.upstream(func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	call := i.upstreamWithContext(UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -280,7 +293,10 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := i.upstream(func() *dbus.Call {
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	call := i.upstreamWithContext(UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+	}, func() *dbus.Call {
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})
 	if call.Err != nil {

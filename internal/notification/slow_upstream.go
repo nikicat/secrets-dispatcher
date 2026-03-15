@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 // persistentNotifier sends persistent notifications and can dismiss them.
@@ -31,11 +32,11 @@ func newSlowUpstreamNotifier(notifier persistentNotifier) *SlowUpstreamNotifier 
 	return &SlowUpstreamNotifier{notifier: notifier}
 }
 
-// NotifySlowUpstream shows a notification with the secret label(s) and returns
-// a function that dismisses it.
-func (s *SlowUpstreamNotifier) NotifySlowUpstream(reqType approval.RequestType, items []approval.ItemInfo) func() {
-	summary := slowUpstreamSummary(reqType)
-	body := formatSlowUpstreamBody(items)
+// NotifySlowUpstream shows a notification with the secret label(s) and
+// optional process chain, then returns a function that dismisses it.
+func (s *SlowUpstreamNotifier) NotifySlowUpstream(ctx proxy.UpstreamCallContext) func() {
+	summary := slowUpstreamSummary(ctx.RequestType)
+	body := formatSlowUpstreamBody(ctx)
 
 	id, err := s.notifier.NotifyPersistent(summary, body, "dialog-password")
 	if err != nil {
@@ -64,17 +65,37 @@ func slowUpstreamSummary(reqType approval.RequestType) string {
 	}
 }
 
-// formatSlowUpstreamBody builds the notification body from item labels.
-func formatSlowUpstreamBody(items []approval.ItemInfo) string {
-	if len(items) == 0 {
-		return ""
+// formatSlowUpstreamBody builds the notification body from item labels and
+// optional process chain.
+func formatSlowUpstreamBody(ctx proxy.UpstreamCallContext) string {
+	var b strings.Builder
+
+	// Item labels
+	switch len(ctx.Items) {
+	case 0:
+		// no items
+	case 1:
+		b.WriteString(ctx.Items[0].Label)
+	default:
+		labels := make([]string, len(ctx.Items))
+		for i, item := range ctx.Items {
+			labels[i] = item.Label
+		}
+		fmt.Fprintf(&b, "%s (%d items)", strings.Join(labels, ", "), len(ctx.Items))
 	}
-	if len(items) == 1 {
-		return items[0].Label
+
+	// Process chain (Name ← Name convention, matching desktop.go)
+	if len(ctx.SenderInfo.ProcessChain) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		for i, p := range ctx.SenderInfo.ProcessChain {
+			if i > 0 {
+				b.WriteString(" \u2190 ")
+			}
+			b.WriteString(p.Name)
+		}
 	}
-	labels := make([]string, len(items))
-	for i, item := range items {
-		labels[i] = item.Label
-	}
-	return fmt.Sprintf("%s (%d items)", strings.Join(labels, ", "), len(items))
+
+	return b.String()
 }

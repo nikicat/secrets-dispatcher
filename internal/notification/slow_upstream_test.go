@@ -4,14 +4,17 @@ import (
 	"testing"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 func TestSlowUpstreamNotifier_SingleItem(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	items := []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}
-	dismiss := n.NotifySlowUpstream("", items)
+	ctx := proxy.UpstreamCallContext{
+		Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
 
 	mock.mu.Lock()
 	if len(mock.notified) != 1 {
@@ -46,12 +49,14 @@ func TestSlowUpstreamNotifier_MultipleItems(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	items := []approval.ItemInfo{
-		{Label: "secret-a"},
-		{Label: "secret-b"},
-		{Label: "secret-c"},
+	ctx := proxy.UpstreamCallContext{
+		Items: []approval.ItemInfo{
+			{Label: "secret-a"},
+			{Label: "secret-b"},
+			{Label: "secret-c"},
+		},
 	}
-	dismiss := n.NotifySlowUpstream("", items)
+	dismiss := n.NotifySlowUpstream(ctx)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -68,7 +73,7 @@ func TestSlowUpstreamNotifier_EmptyItems(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	dismiss := n.NotifySlowUpstream("", nil)
+	dismiss := n.NotifySlowUpstream(proxy.UpstreamCallContext{})
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -85,7 +90,11 @@ func TestSlowUpstreamNotifier_GPGSignSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	dismiss := n.NotifySlowUpstream(approval.RequestTypeGPGSign, []approval.ItemInfo{{Label: "my-repo: fix bug"}})
+	ctx := proxy.UpstreamCallContext{
+		RequestType: approval.RequestTypeGPGSign,
+		Items:       []approval.ItemInfo{{Label: "my-repo: fix bug"}},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -99,7 +108,8 @@ func TestSlowUpstreamNotifier_SSHSignSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	dismiss := n.NotifySlowUpstream(approval.RequestTypeSSHSign, nil)
+	ctx := proxy.UpstreamCallContext{RequestType: approval.RequestTypeSSHSign}
+	dismiss := n.NotifySlowUpstream(ctx)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -113,12 +123,90 @@ func TestSlowUpstreamNotifier_SearchSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	dismiss := n.NotifySlowUpstream(approval.RequestTypeSearch, nil)
+	ctx := proxy.UpstreamCallContext{RequestType: approval.RequestTypeSearch}
+	dismiss := n.NotifySlowUpstream(ctx)
 	defer dismiss()
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	if mock.notified[0].summary != "Searching keyring" {
 		t.Errorf("expected summary 'Searching keyring', got %q", mock.notified[0].summary)
+	}
+}
+
+func TestSlowUpstreamNotifier_WithProcessChain(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	ctx := proxy.UpstreamCallContext{
+		Items: []approval.ItemInfo{{Label: "my-password"}},
+		SenderInfo: approval.SenderInfo{
+			PID: 1234,
+			ProcessChain: []approval.ProcessInfo{
+				{Name: "git", PID: 1234},
+				{Name: "zsh", PID: 1000},
+				{Name: "claude", PID: 500},
+			},
+		},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.notified) != 1 {
+		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
+	}
+	expected := "my-password\ngit \u2190 zsh \u2190 claude"
+	if mock.notified[0].body != expected {
+		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
+	}
+}
+
+func TestSlowUpstreamNotifier_GPGWithProcessChain(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	ctx := proxy.UpstreamCallContext{
+		RequestType: approval.RequestTypeGPGSign,
+		Items:       []approval.ItemInfo{{Label: "my-repo: fix bug"}},
+		SenderInfo: approval.SenderInfo{
+			PID: 2000,
+			ProcessChain: []approval.ProcessInfo{
+				{Name: "git", PID: 2000},
+				{Name: "zsh", PID: 1000},
+			},
+		},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	expected := "my-repo: fix bug\ngit \u2190 zsh"
+	if mock.notified[0].body != expected {
+		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
+	}
+}
+
+func TestSlowUpstreamNotifier_ProcessChainOnly(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	ctx := proxy.UpstreamCallContext{
+		SenderInfo: approval.SenderInfo{
+			PID: 1234,
+			ProcessChain: []approval.ProcessInfo{
+				{Name: "secret-tool", PID: 1234},
+			},
+		},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if mock.notified[0].body != "secret-tool" {
+		t.Errorf("unexpected body: %q", mock.notified[0].body)
 	}
 }

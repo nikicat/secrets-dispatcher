@@ -321,18 +321,20 @@ func (m *Manager) AddHistoryEntry(entry HistoryEntry) {
 }
 
 // RequireApproval creates a pending request and blocks until approved, denied, or timeout.
-// Returns nil if approved, ErrDenied if denied, ErrTimeout if timeout.
+// Returns (autoApproved, nil) if approved — autoApproved is true when the request was
+// resolved without showing a notification (cache hit, auto-approve rule, trust rule, or
+// disabled manager). Returns (false, err) on denial, timeout, or cancellation.
 func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo,
-	session string, reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) error {
+	session string, reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) (bool, error) {
 	if m.disabled {
-		return nil
+		return true, nil
 	}
 
 	// Check approval cache: if all items were recently approved for this sender, skip.
 	// Delete and write requests always require explicit approval — never use cached approvals.
 	if reqType != RequestTypeDelete && reqType != RequestTypeWrite && m.approvalWindow > 0 && len(items) > 0 {
 		if m.checkApprovalCache(senderInfo.Sender, items) {
-			return nil
+			return true, nil
 		}
 	}
 
@@ -355,7 +357,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 			SenderInfo:       senderInfo,
 		}
 		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
-		return nil
+		return true, nil
 	}
 
 	// Check persistent trust rules from config.
@@ -381,10 +383,10 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		}
 		if action == "ignore" {
 			m.notify(Event{Type: EventRequestIgnored, Request: req})
-			return ErrIgnored
+			return true, ErrIgnored
 		}
 		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
-		return nil
+		return true, nil
 	}
 
 	now := time.Now()
@@ -422,15 +424,15 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 	select {
 	case <-req.done:
 		if req.result {
-			return nil
+			return false, nil
 		}
-		return ErrDenied
+		return false, ErrDenied
 	case <-timer.C:
 		m.notify(Event{Type: EventRequestExpired, Request: req})
-		return ErrTimeout
+		return false, ErrTimeout
 	case <-ctx.Done():
 		m.notify(Event{Type: EventRequestCancelled, Request: req})
-		return ctx.Err()
+		return false, ctx.Err()
 	}
 }
 

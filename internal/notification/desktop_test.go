@@ -44,6 +44,10 @@ func (m *mockNotifier) Notify(summary, body, icon string, actions []string) (uin
 	return m.nextID, nil
 }
 
+func (m *mockNotifier) NotifyPersistent(summary, body, icon string) (uint32, error) {
+	return m.Notify(summary, body, icon, nil)
+}
+
 func (m *mockNotifier) Close(id uint32) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

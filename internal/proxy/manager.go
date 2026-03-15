@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/godbus/dbus/v5"
@@ -34,14 +35,16 @@ type proxyInstance struct {
 
 // Manager watches a directory for socket files and manages proxy connections.
 type Manager struct {
-	socketsDir       string
-	upstreamAddr     string                    // D-Bus address for upstream (empty = session bus)
-	proxies          map[string]*proxyInstance // socketPath -> proxyInstance
-	mu               sync.RWMutex
-	watcher          *fsnotify.Watcher
-	approval         *approval.Manager
-	logLevel         slog.Level
-	trimProcessChain bool
+	socketsDir            string
+	upstreamAddr          string                    // D-Bus address for upstream (empty = session bus)
+	proxies               map[string]*proxyInstance // socketPath -> proxyInstance
+	mu                    sync.RWMutex
+	watcher               *fsnotify.Watcher
+	approval              *approval.Manager
+	logLevel              slog.Level
+	trimProcessChain      bool
+	upstreamNotifier      UpstreamNotifier
+	upstreamSlowThreshold time.Duration
 
 	observersMu sync.RWMutex
 	observers   []ClientObserver
@@ -49,7 +52,7 @@ type Manager struct {
 
 // NewManager creates a new proxy manager.
 // upstreamAddr is the D-Bus address for the upstream backend; empty means session bus.
-func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, logLevel slog.Level, trimProcessChain bool) (*Manager, error) {
+func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, logLevel slog.Level, trimProcessChain bool, upstreamNotifier UpstreamNotifier, upstreamSlowThreshold time.Duration) (*Manager, error) {
 	// Create the sockets directory if it doesn't exist
 	if err := os.MkdirAll(socketsDir, 0755); err != nil {
 		return nil, fmt.Errorf("create sockets directory: %w", err)
@@ -61,13 +64,15 @@ func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, log
 	}
 
 	return &Manager{
-		socketsDir:       socketsDir,
-		upstreamAddr:     upstreamAddr,
-		proxies:          make(map[string]*proxyInstance),
-		watcher:          watcher,
-		approval:         approval,
-		logLevel:         logLevel,
-		trimProcessChain: trimProcessChain,
+		socketsDir:            socketsDir,
+		upstreamAddr:          upstreamAddr,
+		proxies:               make(map[string]*proxyInstance),
+		watcher:               watcher,
+		approval:              approval,
+		logLevel:              logLevel,
+		trimProcessChain:      trimProcessChain,
+		upstreamNotifier:      upstreamNotifier,
+		upstreamSlowThreshold: upstreamSlowThreshold,
 	}, nil
 }
 
@@ -224,10 +229,12 @@ func (m *Manager) startProxy(ctx context.Context, socketPath string) {
 	clientName := clientNameFromSocket(socketPath)
 
 	p := New(Config{
-		ClientName:       clientName,
-		LogLevel:         m.logLevel,
-		Approval:         m.approval,
-		TrimProcessChain: m.trimProcessChain,
+		ClientName:            clientName,
+		LogLevel:              m.logLevel,
+		Approval:              m.approval,
+		TrimProcessChain:      m.trimProcessChain,
+		UpstreamNotifier:      m.upstreamNotifier,
+		UpstreamSlowThreshold: m.upstreamSlowThreshold,
 	})
 
 	proxyCtx, cancel := context.WithCancel(ctx)

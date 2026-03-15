@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -14,26 +15,50 @@ import (
 // ItemHandler handles Item interface calls for item objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*/*.
 type ItemHandler struct {
-	localConn  *dbus.Conn
-	sessions   *SessionManager
-	logger     *logging.Logger
-	approval   *approval.Manager
-	clientName string
-	tracker    *clientTracker
-	resolver   *SenderInfoResolver
+	localConn        *dbus.Conn
+	sessions         *SessionManager
+	logger           *logging.Logger
+	approval         *approval.Manager
+	clientName       string
+	tracker          *clientTracker
+	resolver         *SenderInfoResolver
+	upstreamNotifier UpstreamNotifier
+	slowThreshold    time.Duration
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *ItemHandler {
 	return &ItemHandler{
-		localConn:  localConn,
-		sessions:   sessions,
-		logger:     logger,
-		approval:   approvalMgr,
-		clientName: clientName,
-		tracker:    tracker,
-		resolver:   resolver,
+		localConn:        localConn,
+		sessions:         sessions,
+		logger:           logger,
+		approval:         approvalMgr,
+		clientName:       clientName,
+		tracker:          tracker,
+		resolver:         resolver,
+		upstreamNotifier: upstreamNotifier,
+		slowThreshold:    slowThreshold,
 	}
+}
+
+// upstream wraps a D-Bus Call through the slow-upstream notifier.
+func (i *ItemHandler) upstream(fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, "", nil, fn)
+}
+
+// upstreamWithItems wraps a D-Bus Call through the slow-upstream notifier,
+// passing item information to the notification.
+func (i *ItemHandler) upstreamWithItems(reqType approval.RequestType, items []approval.ItemInfo, fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, reqType, items, fn)
+}
+
+// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
+func (i *ItemHandler) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
+	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, "", nil, func() propResult {
+		v, err := obj.GetProperty(prop)
+		return propResult{v, err}
+	})
+	return r.v, r.err
 }
 
 // isItemPath checks if the path is an item (not a collection).
@@ -71,13 +96,14 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 
 	// Require approval before deleting
 	items := []approval.ItemInfo{itemInfo}
-	if err := i.approval.RequireApproval(ctx, i.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+	if _, err := i.approval.RequireApproval(ctx, i.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
 		i.logger.LogMethod(ctx, "Item.Delete", map[string]any{"item": string(path)}, "denied", err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call(dbustypes.ItemInterface+".Delete", 0)
+	call := i.upstreamWithItems(approval.RequestTypeDelete, items,
+		func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".Delete", 0) })
 	if call.Err != nil {
 		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -115,7 +141,8 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 
 	// Require approval before accessing secret
 	items := []approval.ItemInfo{itemInfo}
-	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(session), approval.RequestTypeGetSecret, nil, senderInfo); err != nil {
+	_, err := i.approval.RequireApproval(ctx, i.clientName, items, string(session), approval.RequestTypeGetSecret, nil, senderInfo)
+	if err != nil {
 		i.logger.LogItemGetSecret(ctx, string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -128,7 +155,8 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession)
+	call := i.upstreamWithItems(approval.RequestTypeGetSecret, items,
+		func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession) })
 	if call.Err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", call.Err)
 		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -168,7 +196,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 
 	// Require approval before writing secret
 	items := []approval.ItemInfo{itemInfo}
-	if err := i.approval.RequireApproval(ctx, i.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+	if _, err := i.approval.RequireApproval(ctx, i.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
 		if errors.Is(err, approval.ErrIgnored) {
 			i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{
 				"item": string(path), "ignored": true,
@@ -194,7 +222,8 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret)
+	call := i.upstreamWithItems(approval.RequestTypeWrite, items,
+		func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret) })
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -214,7 +243,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	variant, err := obj.GetProperty(iface + "." + property)
+	variant, err := i.upstreamGetProperty(obj, iface+"."+property)
 	if err != nil {
 		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
@@ -230,7 +259,7 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface)
+	call := i.upstream(func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -251,7 +280,9 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	call := i.upstream(func() *dbus.Call {
+		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	})
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -266,14 +297,14 @@ func (i *ItemHandler) getItemInfo(path dbus.ObjectPath) approval.ItemInfo {
 	obj := i.localConn.Object(dbustypes.BusName, path)
 
 	// Get Label property
-	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Label"); err == nil {
+	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label"); err == nil {
 		if label, ok := v.Value().(string); ok {
 			info.Label = label
 		}
 	}
 
 	// Get Attributes property
-	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Attributes"); err == nil {
+	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Attributes"); err == nil {
 		if attrs, ok := v.Value().(map[string]string); ok {
 			info.Attributes = attrs
 		}

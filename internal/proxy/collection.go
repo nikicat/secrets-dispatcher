@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -14,26 +15,50 @@ import (
 // CollectionHandler handles Collection interface calls for collection objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*.
 type CollectionHandler struct {
-	localConn  *dbus.Conn
-	sessions   *SessionManager
-	logger     *logging.Logger
-	approval   *approval.Manager
-	clientName string
-	tracker    *clientTracker
-	resolver   *SenderInfoResolver
+	localConn        *dbus.Conn
+	sessions         *SessionManager
+	logger           *logging.Logger
+	approval         *approval.Manager
+	clientName       string
+	tracker          *clientTracker
+	resolver         *SenderInfoResolver
+	upstreamNotifier UpstreamNotifier
+	slowThreshold    time.Duration
 }
 
 // NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *CollectionHandler {
+func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *CollectionHandler {
 	return &CollectionHandler{
-		localConn:  localConn,
-		sessions:   sessions,
-		logger:     logger,
-		approval:   approvalMgr,
-		clientName: clientName,
-		tracker:    tracker,
-		resolver:   resolver,
+		localConn:        localConn,
+		sessions:         sessions,
+		logger:           logger,
+		approval:         approvalMgr,
+		clientName:       clientName,
+		tracker:          tracker,
+		resolver:         resolver,
+		upstreamNotifier: upstreamNotifier,
+		slowThreshold:    slowThreshold,
 	}
+}
+
+// upstream wraps a D-Bus Call through the slow-upstream notifier.
+func (c *CollectionHandler) upstream(fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(c.slowThreshold, c.upstreamNotifier, "", nil, fn)
+}
+
+// upstreamWithItems wraps a D-Bus Call through the slow-upstream notifier,
+// passing item information to the notification.
+func (c *CollectionHandler) upstreamWithItems(reqType approval.RequestType, items []approval.ItemInfo, fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(c.slowThreshold, c.upstreamNotifier, reqType, items, fn)
+}
+
+// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
+func (c *CollectionHandler) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
+	r := WithSlowNotify(c.slowThreshold, c.upstreamNotifier, "", nil, func() propResult {
+		v, err := obj.GetProperty(prop)
+		return propResult{v, err}
+	})
+	return r.v, r.err
 }
 
 // isCollectionPath checks if the path is a collection (not an item).
@@ -76,13 +101,14 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 
 	// Require approval before deleting
 	items := []approval.ItemInfo{collectionInfo}
-	if err := c.approval.RequireApproval(ctx, c.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+	if _, err := c.approval.RequireApproval(ctx, c.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
 		c.logger.LogMethod(ctx, "Collection.Delete", map[string]any{"collection": string(path)}, "denied", err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call(dbustypes.CollectionInterface+".Delete", 0)
+	call := c.upstreamWithItems(approval.RequestTypeDelete, items,
+		func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".Delete", 0) })
 	if call.Err != nil {
 		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -106,7 +132,7 @@ func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath) approval.Ite
 	obj := c.localConn.Object(dbustypes.BusName, path)
 
 	// Get Label property
-	if v, err := obj.GetProperty(dbustypes.CollectionInterface + ".Label"); err == nil {
+	if v, err := c.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label"); err == nil {
 		if label, ok := v.Value().(string); ok {
 			info.Label = label
 		}
@@ -141,9 +167,10 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	// Perform search on local service first
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes)
+	infos := searchAttributesToItemInfo(attributes)
+	call := c.upstreamWithItems(approval.RequestTypeSearch, infos,
+		func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -192,7 +219,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	// Require approval before creating item
-	if err := c.approval.RequireApproval(ctx, c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+	if _, err := c.approval.RequireApproval(ctx, c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
 		if errors.Is(err, approval.ErrIgnored) {
 			c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
 				"collection": string(path), "ignored": true,
@@ -218,7 +245,8 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace)
+	call := c.upstreamWithItems(approval.RequestTypeWrite, items,
+		func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace) })
 	if call.Err != nil {
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -247,7 +275,7 @@ func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	variant, err := obj.GetProperty(iface + "." + property)
+	variant, err := c.upstreamGetProperty(obj, iface+"."+property)
 	if err != nil {
 		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
@@ -263,7 +291,7 @@ func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]d
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface)
+	call := c.upstream(func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -284,7 +312,9 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	call := obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	call := c.upstream(func() *dbus.Call {
+		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	})
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}

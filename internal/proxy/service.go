@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"sort"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -11,26 +13,50 @@ import (
 
 // Service implements org.freedesktop.Secret.Service.
 type Service struct {
-	localConn  *dbus.Conn
-	sessions   *SessionManager
-	logger     *logging.Logger
-	approval   *approval.Manager
-	clientName string
-	tracker    *clientTracker
-	resolver   *SenderInfoResolver
+	localConn        *dbus.Conn
+	sessions         *SessionManager
+	logger           *logging.Logger
+	approval         *approval.Manager
+	clientName       string
+	tracker          *clientTracker
+	resolver         *SenderInfoResolver
+	upstreamNotifier UpstreamNotifier
+	slowThreshold    time.Duration
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *Service {
 	return &Service{
-		localConn:  localConn,
-		sessions:   sessions,
-		logger:     logger,
-		approval:   approvalMgr,
-		clientName: clientName,
-		tracker:    tracker,
-		resolver:   resolver,
+		localConn:        localConn,
+		sessions:         sessions,
+		logger:           logger,
+		approval:         approvalMgr,
+		clientName:       clientName,
+		tracker:          tracker,
+		resolver:         resolver,
+		upstreamNotifier: upstreamNotifier,
+		slowThreshold:    slowThreshold,
 	}
+}
+
+// upstream wraps a D-Bus Call through the slow-upstream notifier.
+func (s *Service) upstream(fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, "", nil, fn)
+}
+
+// upstreamWithItems wraps a D-Bus Call through the slow-upstream notifier,
+// passing item information to the notification.
+func (s *Service) upstreamWithItems(reqType approval.RequestType, items []approval.ItemInfo, fn func() *dbus.Call) *dbus.Call {
+	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, reqType, items, fn)
+}
+
+// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
+func (s *Service) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
+	r := WithSlowNotify(s.slowThreshold, s.upstreamNotifier, "", nil, func() propResult {
+		v, err := obj.GetProperty(prop)
+		return propResult{v, err}
+	})
+	return r.v, r.err
 }
 
 // OpenSession opens a session for secret transfer.
@@ -53,9 +79,10 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 // SearchItems searches for items matching the given attributes.
 // Signature: SearchItems(attributes Dict<String,String>) -> (unlocked Array<ObjectPath>, locked Array<ObjectPath>)
 func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
-	// Perform search on local service first
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes)
+	infos := searchAttributesToItemInfo(attributes)
+	call := s.upstreamWithItems(approval.RequestTypeSearch, infos,
+		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", call.Err)
 		return nil, nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -90,7 +117,8 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 
 	// Require approval before accessing secrets
 	itemStrs := objectPathsToStrings(items)
-	if err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session), approval.RequestTypeGetSecret, nil, senderInfo); err != nil {
+	_, err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session), approval.RequestTypeGetSecret, nil, senderInfo)
+	if err != nil {
 		s.logger.LogGetSecrets(ctx, itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -103,7 +131,8 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession)
+	call := s.upstreamWithItems(approval.RequestTypeGetSecret, itemInfos,
+		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
 	if call.Err != nil {
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", call.Err)
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -130,7 +159,9 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 // Signature: Unlock(objects Array<ObjectPath>) -> (unlocked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects)
+	infos := s.getUnlockInfo(objects)
+	call := s.upstreamWithItems("", infos,
+		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)
 		s.logger.LogUnlock(context.Background(), objStrs, 0, "error", call.Err)
@@ -154,7 +185,7 @@ func (s *Service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.Obj
 // Signature: Lock(objects Array<ObjectPath>) -> (locked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".Lock", 0, objects)
+	call := s.upstream(func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Lock", 0, objects) })
 	if call.Err != nil {
 		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -172,7 +203,7 @@ func (s *Service) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.Objec
 // Signature: ReadAlias(name String) -> (collection ObjectPath)
 func (s *Service) ReadAlias(name string) (dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".ReadAlias", 0, name)
+	call := s.upstream(func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".ReadAlias", 0, name) })
 	if call.Err != nil {
 		s.logger.LogReadAlias(context.Background(), name, "", "error", call.Err)
 		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -192,7 +223,7 @@ func (s *Service) ReadAlias(name string) (dbus.ObjectPath, *dbus.Error) {
 // Signature: SetAlias(name String, collection ObjectPath)
 func (s *Service) SetAlias(name string, collection dbus.ObjectPath) *dbus.Error {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection)
+	call := s.upstream(func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection) })
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -203,7 +234,9 @@ func (s *Service) SetAlias(name string, collection dbus.ObjectPath) *dbus.Error 
 // Signature: CreateCollection(properties Dict<String,Variant>, alias String) -> (collection ObjectPath, prompt ObjectPath)
 func (s *Service) CreateCollection(properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
+	call := s.upstream(func() *dbus.Call {
+		return obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
+	})
 	if call.Err != nil {
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -223,7 +256,7 @@ func (s *Service) Get(iface, property string) (dbus.Variant, *dbus.Error) {
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	variant, err := obj.GetProperty(iface + "." + property)
+	variant, err := s.upstreamGetProperty(obj, iface+"."+property)
 	if err != nil {
 		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
@@ -238,7 +271,7 @@ func (s *Service) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface)
+	call := s.upstream(func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -258,7 +291,9 @@ func (s *Service) Set(iface, property string, value dbus.Variant) *dbus.Error {
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	call := s.upstream(func() *dbus.Call {
+		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	})
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}
@@ -354,20 +389,54 @@ func (s *Service) getItemInfo(path dbus.ObjectPath) approval.ItemInfo {
 	obj := s.localConn.Object(dbustypes.BusName, path)
 
 	// Get Label property
-	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Label"); err == nil {
+	if v, err := s.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label"); err == nil {
 		if label, ok := v.Value().(string); ok {
 			info.Label = label
 		}
 	}
 
 	// Get Attributes property
-	if v, err := obj.GetProperty(dbustypes.ItemInterface + ".Attributes"); err == nil {
+	if v, err := s.upstreamGetProperty(obj, dbustypes.ItemInterface+".Attributes"); err == nil {
 		if attrs, ok := v.Value().(map[string]string); ok {
 			info.Attributes = attrs
 		}
 	}
 
 	return info
+}
+
+// searchAttributesToItemInfo builds an ItemInfo from search attributes for notification display.
+func searchAttributesToItemInfo(attributes map[string]string) []approval.ItemInfo {
+	// Sort keys for deterministic output.
+	keys := make([]string, 0, len(attributes))
+	for k := range attributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	label := ""
+	for _, k := range keys {
+		if label != "" {
+			label += ", "
+		}
+		label += k + "=" + attributes[k]
+	}
+	return []approval.ItemInfo{{Label: label}}
+}
+
+// getUnlockInfo builds ItemInfo entries for Unlock objects (typically collections).
+func (s *Service) getUnlockInfo(objects []dbus.ObjectPath) []approval.ItemInfo {
+	infos := make([]approval.ItemInfo, len(objects))
+	for i, path := range objects {
+		infos[i] = approval.ItemInfo{Path: string(path)}
+		obj := s.localConn.Object(dbustypes.BusName, path)
+		if v, err := s.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label"); err == nil {
+			if label, ok := v.Value().(string); ok {
+				infos[i].Label = label
+			}
+		}
+	}
+	return infos
 }
 
 func objectPathsToStrings(paths []dbus.ObjectPath) []string {

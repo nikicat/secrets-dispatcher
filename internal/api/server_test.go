@@ -21,7 +21,7 @@ func TestServer_Integration(t *testing.T) {
 	}
 
 	// Use port 0 to get a random available port
-	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth, "", false)
+	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth, "", false, nil, 0)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -89,7 +89,8 @@ func TestServer_Integration(t *testing.T) {
 		// Start a pending request
 		done := make(chan error, 1)
 		go func() {
-			done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+			_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+			done <- err
 		}()
 
 		// Wait for request to appear
@@ -159,7 +160,7 @@ func TestServer_CookieFilePath(t *testing.T) {
 		t.Fatalf("NewAuth failed: %v", err)
 	}
 
-	server, err := NewServer("127.0.0.1:0", mgr, "/socket", "test-client", auth, "", false)
+	server, err := NewServer("127.0.0.1:0", mgr, "/socket", "test-client", auth, "", false, nil, 0)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}

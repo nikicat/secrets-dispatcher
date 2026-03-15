@@ -51,15 +51,6 @@ func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) ([
 	return sigBuf.Bytes(), statusBuf.Bytes(), exitCode, nil
 }
 
-// runGPG finds the real gpg binary and signs the commit object.
-func (h *Handlers) runGPG(info *approval.GPGSignInfo) (sig, status []byte, exitCode int, err error) {
-	gpgPath, err := h.resolver.GPGRunner.FindGPG()
-	if err != nil {
-		return nil, nil, 0, err
-	}
-	return h.resolver.GPGRunner.RunGPG(gpgPath, info.KeyID, []byte(info.CommitObject))
-}
-
 // GPGSignRequest is the POST body for /api/v1/gpg-sign/request.
 type GPGSignRequest struct {
 	Client      string                `json:"client"`
@@ -101,11 +92,17 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	// Trusted signer: run gpg and record the result directly, bypassing the
 	// pending request flow so no desktop notification appears.
 	if h.manager.CheckTrustedSigner(senderInfo, req.GPGSignInfo.RepoName, req.GPGSignInfo.ChangedFiles) {
-		sig, status, exitCode, err := h.runGPG(req.GPGSignInfo)
-		if err != nil {
-			writeError(w, fmt.Sprintf("gpg exec failed: %v", err), http.StatusInternalServerError)
+		gpgPath, findErr := h.resolver.GPGRunner.FindGPG()
+		if findErr != nil {
+			writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
 			return
 		}
+		res := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo)
+		if res.err != nil {
+			writeError(w, fmt.Sprintf("gpg exec failed: %v", res.err), http.StatusInternalServerError)
+			return
+		}
+		sig, status, exitCode := res.sig, res.status, res.exitCode
 		if exitCode != 0 {
 			slog.Error("trusted signer gpg failed", "exit_code", exitCode)
 		}

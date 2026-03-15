@@ -148,7 +148,7 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 	wg.Go(func() {
 		reqCtx, reqCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer reqCancel()
-		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, _ = mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	})
 
 	// Read request_created message
@@ -209,7 +209,7 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 	// Create a request
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	})
 
 	// Read request_created
@@ -280,7 +280,7 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 	// Create a request that will timeout
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	})
 
 	// Read request_created
@@ -339,7 +339,7 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 	reqCtx, reqCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, _ = mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	})
 
 	// Read request_created

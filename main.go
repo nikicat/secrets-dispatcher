@@ -391,16 +391,21 @@ func runServe(args []string) {
 	// Set up desktop notifications
 	var desktopNotifier *notification.DBusNotifier
 	var notifHandler *notification.Handler
+	var slowUpstreamNotifier proxy.UpstreamNotifier
 	if *notifications {
 		notifier, err := notification.NewDBusNotifier()
 		if err != nil {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
 		} else {
 			desktopNotifier = notifier
-			notifHandler = notification.NewHandler(notifier, api.NewResolver(approvalMgr), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), time.Duration(cfg.Serve.NotificationDelay))
-			approvalMgr.Subscribe(notifHandler)
+			slowUpstreamNotifier = notification.NewSlowUpstreamNotifier(notifier)
 			slog.Debug("desktop notifications enabled")
 		}
+	}
+	upstreamSlowThreshold := time.Duration(*cfg.Serve.UpstreamSlowThreshold)
+	if desktopNotifier != nil {
+		notifHandler = notification.NewHandler(desktopNotifier, api.NewResolver(approvalMgr, slowUpstreamNotifier, upstreamSlowThreshold), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), time.Duration(cfg.Serve.NotificationDelay))
+		approvalMgr.Subscribe(notifHandler)
 	}
 
 	// Set up state directory for cookie
@@ -456,7 +461,7 @@ func runServe(args []string) {
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
 		case "sockets":
-			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, *cfg.Serve.TrimProcessChain)
+			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 			if mgrErr != nil {
 				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
 				os.Exit(1)
@@ -477,10 +482,12 @@ func runServe(args []string) {
 				backoff := time.Second
 				for {
 					p := proxy.New(proxy.Config{
-						ClientName:       "local",
-						LogLevel:         level,
-						Approval:         approvalMgr,
-						TrimProcessChain: *cfg.Serve.TrimProcessChain,
+						ClientName:            "local",
+						LogLevel:              level,
+						Approval:              approvalMgr,
+						TrimProcessChain:      *cfg.Serve.TrimProcessChain,
+						UpstreamNotifier:      slowUpstreamNotifier,
+						UpstreamSlowThreshold: upstreamSlowThreshold,
 					})
 					frontConn, err := dbus.ConnectSessionBus()
 					if err == nil {
@@ -514,10 +521,12 @@ func runServe(args []string) {
 		case "socket":
 			clientName := filepath.Base(ds.Path)
 			p := proxy.New(proxy.Config{
-				ClientName:       clientName,
-				LogLevel:         level,
-				Approval:         approvalMgr,
-				TrimProcessChain: *cfg.Serve.TrimProcessChain,
+				ClientName:            clientName,
+				LogLevel:              level,
+				Approval:              approvalMgr,
+				TrimProcessChain:      *cfg.Serve.TrimProcessChain,
+				UpstreamNotifier:      slowUpstreamNotifier,
+				UpstreamSlowThreshold: upstreamSlowThreshold,
 			})
 			sp := &staticProvider{info: proxy.ClientInfo{Name: clientName, SocketPath: ds.Path}}
 			providers = append(providers, sp)
@@ -598,7 +607,7 @@ func runServe(args []string) {
 	}
 
 	// Create API server
-	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket, *cfg.Serve.TrimProcessChain)
+	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)

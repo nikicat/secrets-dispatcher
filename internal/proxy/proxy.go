@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -16,8 +17,10 @@ import (
 // D-Bus (where the real Secret Service lives), registering as
 // org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
-	clientName       string
-	trimProcessChain bool
+	clientName            string
+	trimProcessChain      bool
+	upstreamNotifier      UpstreamNotifier
+	upstreamSlowThreshold time.Duration
 
 	frontConn   *dbus.Conn // clients connect here (session bus or remote socket)
 	backendConn *dbus.Conn // real Secret Service lives here (session bus or private bus)
@@ -37,10 +40,12 @@ type Proxy struct {
 
 // Config holds configuration for the proxy.
 type Config struct {
-	ClientName       string
-	LogLevel         slog.Level
-	Approval         *approval.Manager
-	TrimProcessChain bool
+	ClientName            string
+	LogLevel              slog.Level
+	Approval              *approval.Manager
+	TrimProcessChain      bool
+	UpstreamNotifier      UpstreamNotifier
+	UpstreamSlowThreshold time.Duration
 }
 
 // New creates a new Proxy with the given configuration.
@@ -57,11 +62,13 @@ func New(cfg Config) *Proxy {
 	}
 
 	return &Proxy{
-		clientName:       clientName,
-		trimProcessChain: cfg.TrimProcessChain,
-		sessions:         NewSessionManager(),
-		logger:           logging.New(cfg.LogLevel, clientName),
-		approval:         approvalMgr,
+		clientName:            clientName,
+		trimProcessChain:      cfg.TrimProcessChain,
+		sessions:              NewSessionManager(),
+		logger:                logging.New(cfg.LogLevel, clientName),
+		approval:              approvalMgr,
+		upstreamNotifier:      cfg.UpstreamNotifier,
+		upstreamSlowThreshold: cfg.UpstreamSlowThreshold,
 	}
 }
 
@@ -83,9 +90,9 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 	p.resolver = NewSenderInfoResolver(p.frontConn, p.trimProcessChain)
 
 	// Create handlers — they talk to the backend
-	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
-	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
-	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver)
+	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 
 	// Export interfaces on the front connection (where clients call us)

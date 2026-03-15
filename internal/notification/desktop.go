@@ -161,17 +161,21 @@ func (n *DBusNotifier) Notify(summary, body, icon string, actions []string) (uin
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	id, err := n.doNotify(summary, body, icon, actions)
+	id, err := n.doNotify(summary, body, icon, actions, 2) // urgency: critical
 	if err != nil && errors.Is(err, dbus.ErrClosed) {
 		if reconnErr := n.reconnect(); reconnErr != nil {
 			return 0, fmt.Errorf("notify call: %w (reconnect failed: %v)", err, reconnErr)
 		}
-		id, err = n.doNotify(summary, body, icon, actions)
+		id, err = n.doNotify(summary, body, icon, actions, 2)
 	}
 	return id, err
 }
 
-func (n *DBusNotifier) doNotify(summary, body, icon string, actions []string) (uint32, error) {
+func (n *DBusNotifier) doNotify(summary, body, icon string, actions []string, urgency byte) (uint32, error) {
+	return n.doNotifyFull(summary, body, icon, actions, urgency, -1)
+}
+
+func (n *DBusNotifier) doNotifyFull(summary, body, icon string, actions []string, urgency byte, expireTimeout int32) (uint32, error) {
 	obj := n.conn.Object(notifyDest, notifyPath)
 	call := obj.Call(
 		notifyInterface+".Notify",
@@ -183,9 +187,9 @@ func (n *DBusNotifier) doNotify(summary, body, icon string, actions []string) (u
 		body,                 // body
 		actions,              // actions (alternating id, label pairs)
 		map[string]dbus.Variant{
-			"urgency": dbus.MakeVariant(byte(2)), // critical
+			"urgency": dbus.MakeVariant(urgency),
 		},
-		int32(-1), // expire_timeout (-1 = server default)
+		expireTimeout,
 	)
 	if call.Err != nil {
 		return 0, fmt.Errorf("notify call: %w", call.Err)
@@ -196,6 +200,22 @@ func (n *DBusNotifier) doNotify(summary, body, icon string, actions []string) (u
 		return 0, fmt.Errorf("store notify result: %w", err)
 	}
 	return id, nil
+}
+
+// NotifyPersistent sends a critical notification that never auto-expires.
+// Dismiss it with Close (CloseNotification).
+func (n *DBusNotifier) NotifyPersistent(summary, body, icon string) (uint32, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	id, err := n.doNotifyFull(summary, body, icon, nil, 2, 0) // critical, never expire
+	if err != nil && errors.Is(err, dbus.ErrClosed) {
+		if reconnErr := n.reconnect(); reconnErr != nil {
+			return 0, fmt.Errorf("notify call: %w (reconnect failed: %v)", err, reconnErr)
+		}
+		id, err = n.doNotifyFull(summary, body, icon, nil, 2, 0)
+	}
+	return id, err
 }
 
 // Close closes a notification by ID.

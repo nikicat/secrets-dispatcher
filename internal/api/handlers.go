@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
@@ -28,10 +29,10 @@ type Handlers struct {
 }
 
 // NewHandlers creates new API handlers for single-socket mode.
-func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, auth *Auth, trimProcessChain bool) *Handlers {
+func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) *Handlers {
 	return &Handlers{
 		manager:          manager,
-		resolver:         NewResolver(manager),
+		resolver:         NewResolver(manager, upstreamNotifier, slowThreshold),
 		remoteSocket:     remoteSocket,
 		clientName:       clientName,
 		auth:             auth,
@@ -40,10 +41,10 @@ func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, aut
 }
 
 // NewHandlersWithProvider creates new API handlers for multi-socket mode.
-func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider, auth *Auth, trimProcessChain bool) *Handlers {
+func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) *Handlers {
 	return &Handlers{
 		manager:          manager,
-		resolver:         NewResolver(manager),
+		resolver:         NewResolver(manager, upstreamNotifier, slowThreshold),
 		clientProvider:   provider,
 		auth:             auth,
 		trimProcessChain: trimProcessChain,

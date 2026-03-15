@@ -19,7 +19,7 @@ func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 	if err != nil {
 		t.Fatalf("failed to create auth: %v", err)
 	}
-	return NewHandlers(mgr, "/path/to/socket", "test-client", auth, false)
+	return NewHandlers(mgr, "/path/to/socket", "test-client", auth, false, nil, 0)
 }
 
 func TestHandleStatus(t *testing.T) {
@@ -110,7 +110,7 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		mgr.RequireApproval(ctx, "test-client", []approval.ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, "test-client", []approval.ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 	}()
 
 	// Wait for request to appear
@@ -158,7 +158,8 @@ func TestHandleApprove_Success(t *testing.T) {
 	// Start a pending request
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		done <- err
 	}()
 
 	// Wait for request to appear
@@ -249,7 +250,8 @@ func TestHandleDeny_Success(t *testing.T) {
 	// Start a pending request
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		done <- err
 	}()
 
 	// Wait for request to appear
@@ -303,7 +305,8 @@ func TestHandleCancel_Success(t *testing.T) {
 	// Start a pending request
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		done <- err
 	}()
 
 	// Wait for request to appear
@@ -399,7 +402,8 @@ func TestHandleLog_WithHistory(t *testing.T) {
 	// Start and approve a request to create history
 	done := make(chan error, 1)
 	go func() {
-		done <- mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item", Label: "Test Item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item", Label: "Test Item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		done <- err
 	}()
 
 	// Wait for request to appear

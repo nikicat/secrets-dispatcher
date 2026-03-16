@@ -16,7 +16,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: denoland/setup-deno@v2
+      - uses: nikicat/setup-deno@node24
         with:
           deno-version: v2.x
 
@@ -45,7 +45,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: denoland/setup-deno@v2
+      - uses: nikicat/setup-deno@node24
         with:
           deno-version: v2.x
 

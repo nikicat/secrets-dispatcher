@@ -108,7 +108,10 @@ func TestSlowUpstreamNotifier_SSHSignSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{RequestType: approval.RequestTypeSSHSign}
+	ctx := proxy.UpstreamCallContext{
+		RequestType: approval.RequestTypeSSHSign,
+		Items:       []approval.ItemInfo{{Label: "ed25519-key"}},
+	}
 	dismiss := n.NotifySlowUpstream(ctx)
 	defer dismiss()
 
@@ -123,7 +126,10 @@ func TestSlowUpstreamNotifier_SearchSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{RequestType: approval.RequestTypeSearch}
+	ctx := proxy.UpstreamCallContext{
+		RequestType: approval.RequestTypeSearch,
+		Items:       []approval.ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}},
+	}
 	dismiss := n.NotifySlowUpstream(ctx)
 	defer dismiss()
 
@@ -131,6 +137,48 @@ func TestSlowUpstreamNotifier_SearchSummary(t *testing.T) {
 	defer mock.mu.Unlock()
 	if mock.notified[0].summary != "Searching keyring" {
 		t.Errorf("expected summary 'Searching keyring', got %q", mock.notified[0].summary)
+	}
+}
+
+func TestSlowUpstreamNotifier_PathFallback(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	// Items with Path but no Label (e.g. upstream locked, label fetch failed)
+	ctx := proxy.UpstreamCallContext{
+		Items: []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/Login"}},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.notified) != 1 {
+		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
+	}
+	if mock.notified[0].body != "/org/freedesktop/secrets/collection/Login" {
+		t.Errorf("expected Path fallback in body, got %q", mock.notified[0].body)
+	}
+}
+
+func TestSlowUpstreamNotifier_PathFallbackMultiple(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	ctx := proxy.UpstreamCallContext{
+		Items: []approval.ItemInfo{
+			{Label: "Login", Path: "/org/freedesktop/secrets/collection/Login"},
+			{Path: "/org/freedesktop/secrets/collection/Other"},
+		},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	expected := "Login, /org/freedesktop/secrets/collection/Other (2 items)"
+	if mock.notified[0].body != expected {
+		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
 	}
 }
 

@@ -65,21 +65,29 @@ func slowUpstreamSummary(reqType approval.RequestType) string {
 	}
 }
 
+// itemDisplayLabel returns the item's Label if non-empty, otherwise its Path.
+func itemDisplayLabel(item approval.ItemInfo) string {
+	if item.Label != "" {
+		return item.Label
+	}
+	return item.Path
+}
+
 // formatSlowUpstreamBody builds the notification body from item labels and
 // optional process chain.
 func formatSlowUpstreamBody(ctx proxy.UpstreamCallContext) string {
 	var b strings.Builder
 
-	// Item labels
+	// Item labels (fall back to Path when Label is empty)
 	switch len(ctx.Items) {
 	case 0:
 		// no items
 	case 1:
-		b.WriteString(ctx.Items[0].Label)
+		b.WriteString(itemDisplayLabel(ctx.Items[0]))
 	default:
 		labels := make([]string, len(ctx.Items))
 		for i, item := range ctx.Items {
-			labels[i] = item.Label
+			labels[i] = itemDisplayLabel(item)
 		}
 		fmt.Fprintf(&b, "%s (%d items)", strings.Join(labels, ", "), len(ctx.Items))
 	}

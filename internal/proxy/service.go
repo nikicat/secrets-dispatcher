@@ -164,11 +164,14 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 
 // Unlock unlocks the specified objects.
 // Signature: Unlock(objects Array<ObjectPath>) -> (unlocked Array<ObjectPath>, prompt ObjectPath)
-func (s *Service) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
+func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	infos := s.getUnlockInfo(objects)
-	call := s.upstreamWithContext(UpstreamCallContext{Items: infos},
-		func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	call := s.upstreamWithContext(UpstreamCallContext{
+		Items:         infos,
+		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)
 		s.logger.LogUnlock(context.Background(), objStrs, 0, "error", call.Err)

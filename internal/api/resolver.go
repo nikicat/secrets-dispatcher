@@ -12,10 +12,10 @@ import (
 // Resolver resolves approval requests, handling GPG signing when needed.
 // It implements the notification.Approver interface structurally.
 type Resolver struct {
-	Manager            *approval.Manager
-	GPGRunner          GPGRunner
-	UpstreamNotifier   proxy.UpstreamNotifier
-	SlowThreshold      time.Duration
+	Manager          *approval.Manager
+	GPGRunner        GPGRunner
+	UpstreamNotifier proxy.UpstreamNotifier
+	SlowThreshold    time.Duration
 }
 
 // NewResolver creates a Resolver with the default GPG runner.

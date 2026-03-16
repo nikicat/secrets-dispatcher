@@ -260,7 +260,9 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		RequestType: approval.RequestTypeWrite,
 		Items:       items,
 		SenderInfo:  senderInfo,
-	}, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace) })
+	}, func() *dbus.Call {
+		return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace)
+	})
 	if call.Err != nil {
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
 	}

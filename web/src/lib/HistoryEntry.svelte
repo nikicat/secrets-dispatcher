@@ -130,6 +130,10 @@
           Delete
         {:else if entry.request.type === "write"}
           Write
+        {:else if entry.request.type === "unlock"}
+          Unlock
+        {:else if entry.request.type === "ssh_sign"}
+          SSH Sign
         {:else}
           Secret
         {/if}

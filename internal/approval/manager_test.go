@@ -1881,6 +1881,76 @@ func TestRequireApproval_NotAutoApproved_ManualApproval(t *testing.T) {
 	}
 }
 
+func TestRecordPassthrough(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 100})
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	items := []ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}
+	searchAttrs := map[string]string{"xdg:schema": "org.gnome.keyring.Note"}
+	sender := SenderInfo{Sender: ":1.42", UnitName: "app.service", PID: 123}
+
+	mgr.RecordPassthrough("test-client", items, "", RequestTypeSearch, searchAttrs, sender)
+
+	// Check event fired
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != EventRequestAutoApproved {
+		t.Errorf("expected EventRequestAutoApproved, got %v", events[0].Type)
+	}
+	if events[0].Request.Type != RequestTypeSearch {
+		t.Errorf("expected request type search, got %s", events[0].Request.Type)
+	}
+
+	// Check history entry
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	if history[0].Resolution != ResolutionAutoApproved {
+		t.Errorf("expected resolution 'auto_approved', got '%s'", history[0].Resolution)
+	}
+	if history[0].Request.Client != "test-client" {
+		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.Client)
+	}
+	if history[0].Request.SenderInfo.Sender != ":1.42" {
+		t.Errorf("expected sender ':1.42', got '%s'", history[0].Request.SenderInfo.Sender)
+	}
+	if history[0].Request.SearchAttributes["xdg:schema"] != "org.gnome.keyring.Note" {
+		t.Errorf("expected search attributes preserved, got %v", history[0].Request.SearchAttributes)
+	}
+
+	// No pending requests
+	if mgr.PendingCount() != 0 {
+		t.Error("passthrough request should not be pending")
+	}
+
+	mgr.Unsubscribe(obs)
+
+	// Test with unlock type
+	mgr2 := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 100})
+	obs2 := &testObserver{}
+	mgr2.Subscribe(obs2)
+
+	unlockItems := []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login", Label: "Login"}}
+	mgr2.RecordPassthrough("test-client", unlockItems, "", RequestTypeUnlock, nil, sender)
+
+	history2 := mgr2.History()
+	if len(history2) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history2))
+	}
+	if history2[0].Request.Type != RequestTypeUnlock {
+		t.Errorf("expected request type unlock, got %s", history2[0].Request.Type)
+	}
+	if history2[0].Request.Items[0].Path != "/org/freedesktop/secrets/collection/login" {
+		t.Errorf("expected item path preserved, got %s", history2[0].Request.Items[0].Path)
+	}
+
+	mgr2.Unsubscribe(obs2)
+}
+
 func TestRequireApproval_NotAutoApproved_Denied(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 

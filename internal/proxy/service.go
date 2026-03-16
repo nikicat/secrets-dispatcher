@@ -82,6 +82,8 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	infos := searchAttributesToItemInfo(attributes)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderInfo := s.resolver.Resolve(sender)
+	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
 		Items:         infos,
@@ -168,6 +170,8 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	infos := s.getUnlockInfo(objects)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderInfo := s.resolver.Resolve(sender)
+	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		Items:         infos,
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },

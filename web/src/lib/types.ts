@@ -39,7 +39,7 @@ export interface PendingRequest {
   session: string;
   created_at: string;
   expires_at: string;
-  type: "get_secret" | "search" | "gpg_sign" | "delete" | "write";
+  type: "get_secret" | "search" | "gpg_sign" | "delete" | "write" | "unlock" | "ssh_sign";
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
   gpg_sign_info?: GPGSignInfo;

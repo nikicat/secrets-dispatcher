@@ -72,6 +72,7 @@ const (
 	RequestTypeDelete    RequestType = "delete"
 	RequestTypeWrite     RequestType = "write"
 	RequestTypeSSHSign   RequestType = "ssh_sign"
+	RequestTypeUnlock   RequestType = "unlock"
 )
 
 // Request represents a secret access request awaiting approval.
@@ -1033,6 +1034,25 @@ func (m *Manager) ShouldIgnore(items []ItemInfo, reqType RequestType) bool {
 		}
 	}
 	return false
+}
+
+// RecordPassthrough creates a history entry for a request that bypasses approval entirely.
+// Used for methods like SearchItems and Unlock that are proxied directly to the upstream.
+func (m *Manager) RecordPassthrough(client string, items []ItemInfo, session string,
+	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
+	now := time.Now()
+	req := &Request{
+		ID:               uuid.New().String(),
+		Client:           client,
+		Items:            items,
+		Session:          session,
+		CreatedAt:        now,
+		ExpiresAt:        now,
+		Type:             reqType,
+		SearchAttributes: searchAttrs,
+		SenderInfo:       senderInfo,
+	}
+	m.notify(Event{Type: EventRequestAutoApproved, Request: req})
 }
 
 // RecordIgnored creates a history entry for an ignored request without blocking.

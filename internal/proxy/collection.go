@@ -168,6 +168,8 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	obj := c.localConn.Object(dbustypes.BusName, path)
 	infos := searchAttributesToItemInfo(attributes)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderInfo := c.resolver.Resolve(sender)
+	c.approval.RecordPassthrough(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
 		Items:         infos,

@@ -36,6 +36,12 @@ serve:
     #   process:
     #     exe: "*chrome*"
 
+    # Example: deny all requests from a specific process
+    # - name: block-epiphany-search
+    #   action: deny
+    #   process:
+    #     name: epiphany-search
+
   # Auto-approve GPG signing from specific editors
   trusted_signers: []
     # - exe_path: /usr/bin/nvim

@@ -29,6 +29,9 @@ var ErrNotFound = errors.New("request not found")
 // ErrIgnored is returned when a request is silently dropped by a trust rule with action "ignore".
 var ErrIgnored = errors.New("request ignored by trust rule")
 
+// ErrDeniedByRule is returned when a request is denied by a trust rule with action "deny".
+var ErrDeniedByRule = errors.New("access denied by trust rule")
+
 // EventType represents the type of approval event.
 type EventType int
 
@@ -385,6 +388,10 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		if action == "ignore" {
 			m.notify(Event{Type: EventRequestIgnored, Request: req})
 			return true, ErrIgnored
+		}
+		if action == "deny" {
+			m.notify(Event{Type: EventRequestDenied, Request: req})
+			return true, ErrDeniedByRule
 		}
 		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
 		return true, nil
@@ -1069,6 +1076,24 @@ func (m *Manager) RecordIgnored(client string, items []ItemInfo, session string,
 		SenderInfo: senderInfo,
 	}
 	m.notify(Event{Type: EventRequestIgnored, Request: req})
+}
+
+// RecordDenied creates a history entry for a request denied by a trust rule.
+func (m *Manager) RecordDenied(client string, items []ItemInfo, session string,
+	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
+	now := time.Now()
+	req := &Request{
+		ID:               uuid.New().String(),
+		Client:           client,
+		Items:            items,
+		Session:          session,
+		CreatedAt:        now,
+		ExpiresAt:        now,
+		Type:             reqType,
+		SearchAttributes: searchAttrs,
+		SenderInfo:       senderInfo,
+	}
+	m.notify(Event{Type: EventRequestDenied, Request: req})
 }
 
 // cacheApproval records approved (sender, item) pairs in the cache.

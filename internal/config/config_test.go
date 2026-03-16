@@ -277,6 +277,30 @@ func TestValidate(t *testing.T) {
 			}},
 			wantErr: "at most one session_bus downstream",
 		},
+		{
+			name: "valid deny rule",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Rules: []TrustRule{{
+					Name:    "deny-epiphany",
+					Action:  "deny",
+					Process: &ProcessMatcher{Name: "epiphany-search"},
+				}},
+			}},
+		},
+		{
+			name: "invalid rule action",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Rules: []TrustRule{{
+					Name:   "bad-rule",
+					Action: "block",
+				}},
+			}},
+			wantErr: `action must be "approve", "ignore", or "deny"`,
+		},
 	}
 
 	for _, tc := range tests {

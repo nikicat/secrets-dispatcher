@@ -124,15 +124,15 @@ func (cfg *Config) Validate() error {
 
 	// Validate trust rules
 	validRequestTypes := map[string]bool{
-		"get_secret": true, "search": true, "delete": true, "write": true,
+		"get_secret": true, "search": true, "delete": true, "write": true, "unlock": true,
 	}
 	for i, rule := range s.Rules {
 		action := rule.Action
 		if action == "" {
 			action = "approve"
 		}
-		if action != "approve" && action != "ignore" {
-			return fmt.Errorf("rules[%d]: action must be \"approve\" or \"ignore\", got %q", i, rule.Action)
+		if action != "approve" && action != "ignore" && action != "deny" {
+			return fmt.Errorf("rules[%d]: action must be \"approve\", \"ignore\", or \"deny\", got %q", i, rule.Action)
 		}
 		if action == "ignore" {
 			if len(rule.RequestTypes) == 0 {
@@ -269,7 +269,7 @@ type TrustedSigner struct {
 // TrustRule defines a declarative rule for auto-approving or ignoring requests.
 type TrustRule struct {
 	Name             string            `yaml:"name,omitempty"`
-	Action           string            `yaml:"action,omitempty"` // "approve" (default) or "ignore"
+	Action           string            `yaml:"action,omitempty"` // "approve" (default), "ignore", or "deny"
 	RequestTypes     []string          `yaml:"request_types,omitempty"`
 	Process          *ProcessMatcher   `yaml:"process,omitempty"`
 	Secret           *SecretMatcher    `yaml:"secret,omitempty"`

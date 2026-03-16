@@ -83,6 +83,13 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	infos := searchAttributesToItemInfo(attributes)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	senderInfo := s.resolver.Resolve(sender)
+
+	// Check if request should be denied by a trust rule
+	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == "deny" {
+		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+		return nil, nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	}
+
 	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
@@ -171,6 +178,13 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	infos := s.getUnlockInfo(objects)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	senderInfo := s.resolver.Resolve(sender)
+
+	// Check if request should be denied by a trust rule
+	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeUnlock, nil); rule != nil && rule.Action == "deny" {
+		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
+		return nil, "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	}
+
 	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		Items:         infos,

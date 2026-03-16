@@ -1675,6 +1675,47 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 	mgr.Unsubscribe(obs)
 }
 
+func TestTrustRules_RequireApproval_Deny(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{
+				Name:    "deny-epiphany",
+				Action:  "deny",
+				Process: &ProcessMatcher{Name: "epiphany-search"},
+			},
+		},
+	})
+	obs := &testObserver{}
+	mgr.Subscribe(obs)
+
+	_, err := mgr.RequireApproval(
+		context.Background(), "client",
+		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}}, "/s/1",
+		RequestTypeGetSecret, nil,
+		SenderInfo{ProcessChain: []ProcessInfo{{Name: "epiphany-search", PID: 1}}},
+	)
+	if err != ErrDeniedByRule {
+		t.Fatalf("expected ErrDeniedByRule, got %v", err)
+	}
+	if mgr.PendingCount() != 0 {
+		t.Error("trust rule deny should not create pending request")
+	}
+
+	events := obs.WaitForEvents(1, time.Second)
+	if len(events) < 1 || events[0].Type != EventRequestDenied {
+		t.Errorf("expected EventRequestDenied, got %v", events)
+	}
+
+	history := mgr.History()
+	if len(history) != 1 || history[0].Resolution != ResolutionDenied {
+		t.Errorf("expected denied in history, got %v", history)
+	}
+
+	mgr.Unsubscribe(obs)
+}
+
 func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
 	mgr := NewManager(ManagerConfig{
 		Timeout:    100 * time.Millisecond,

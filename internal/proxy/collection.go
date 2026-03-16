@@ -169,6 +169,13 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	infos := searchAttributesToItemInfo(attributes)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	senderInfo := c.resolver.Resolve(sender)
+
+	// Check if request should be denied by a trust rule
+	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == "deny" {
+		c.approval.RecordDenied(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	}
+
 	c.approval.RecordPassthrough(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,

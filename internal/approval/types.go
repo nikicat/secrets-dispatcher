@@ -10,7 +10,7 @@ type ProcessInfo struct {
 	CWD  string   `json:"cwd,omitempty"`
 }
 
-// TrustRule defines a persistent declarative rule from config for auto-approving or ignoring requests.
+// TrustRule defines a persistent declarative rule from config for auto-approving, ignoring, or denying requests.
 type TrustRule struct {
 	Name             string            `json:"name,omitempty"`
 	Action           string            `json:"action,omitempty"`

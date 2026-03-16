@@ -1404,3 +1404,76 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 		t.Error("timeout waiting for proxy to detect disconnect")
 	}
 }
+
+func TestSearchItemsDenyRule(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	mock.AddItem("Form Password", map[string]string{"xdg:schema": "org.epiphany.FormPassword"}, []byte("secret"))
+
+	approvalMgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:    30 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []approval.TrustRule{{
+			Name:             "deny-epiphany-search",
+			Action:           "deny",
+			RequestTypes:     []string{"search"},
+			SearchAttributes: map[string]string{"xdg:schema": "org.epiphany.FormPassword"},
+		}},
+	})
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	// Service.SearchItems with denied attributes should fail
+	t.Run("ServiceSearchDenied", func(t *testing.T) {
+		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"xdg:schema": "org.epiphany.FormPassword"})
+		if call.Err == nil {
+			t.Fatal("expected access denied error, got nil")
+		}
+		if !strings.Contains(call.Err.Error(), "AccessDenied") && !strings.Contains(call.Err.Error(), "denied") {
+			t.Fatalf("expected access denied error, got: %v", call.Err)
+		}
+	})
+
+	// Service.SearchItems with non-denied attributes should succeed
+	t.Run("ServiceSearchAllowed", func(t *testing.T) {
+		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"xdg:schema": "org.gnome.keyring.Note"})
+		if call.Err != nil {
+			t.Fatalf("expected search to succeed, got: %v", call.Err)
+		}
+	})
+
+	// Collection.SearchItems with denied attributes should also fail
+	t.Run("CollectionSearchDenied", func(t *testing.T) {
+		obj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+		call := obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"xdg:schema": "org.epiphany.FormPassword"})
+		if call.Err == nil {
+			t.Fatal("expected access denied error, got nil")
+		}
+		if !strings.Contains(call.Err.Error(), "AccessDenied") && !strings.Contains(call.Err.Error(), "denied") {
+			t.Fatalf("expected access denied error, got: %v", call.Err)
+		}
+	})
+}

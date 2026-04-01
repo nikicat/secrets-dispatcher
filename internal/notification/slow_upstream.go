@@ -60,6 +60,8 @@ func slowUpstreamSummary(reqType approval.RequestType) string {
 		return "SSH key signing"
 	case approval.RequestTypeSearch:
 		return "Searching keyring"
+	case approval.RequestTypeUnlock:
+		return "Unlocking keyring"
 	default:
 		return "Waiting for keyring unlock"
 	}

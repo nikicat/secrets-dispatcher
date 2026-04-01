@@ -47,9 +47,11 @@ func (c *CollectionHandler) upstreamWithContext(ctx UpstreamCallContext, fn func
 	return WithSlowNotify(c.slowThreshold, c.upstreamNotifier, ctx, fn)
 }
 
-// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
-func (c *CollectionHandler) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
-	r := WithSlowNotify(c.slowThreshold, c.upstreamNotifier, UpstreamCallContext{}, func() propResult {
+// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier,
+// passing caller context to the notification so the user knows what triggered any
+// pinentry or keyring unlock prompt.
+func (c *CollectionHandler) upstreamGetProperty(obj dbus.BusObject, prop string, ctx UpstreamCallContext) (dbus.Variant, error) {
+	r := WithSlowNotify(c.slowThreshold, c.upstreamNotifier, ctx, func() propResult {
 		v, err := obj.GetProperty(prop)
 		return propResult{v, err}
 	})
@@ -84,10 +86,13 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 	}
 
 	// Fetch collection label for the approval prompt
-	collectionInfo := c.getCollectionInfo(path)
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderCtx := UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
+	}
+	collectionInfo := c.getCollectionInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	ctx := c.tracker.contextForSender(context.Background(), sender)
 	defer c.tracker.remove(sender)
 
@@ -124,13 +129,13 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 }
 
 // getCollectionInfo fetches label for a collection from D-Bus.
-func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath) approval.ItemInfo {
+func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
 	info := approval.ItemInfo{Path: string(path)}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
 
 	// Get Label property
-	if v, err := c.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label"); err == nil {
+	if v, err := c.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label", ctx); err == nil {
 		if label, ok := v.Value().(string); ok {
 			info.Label = label
 		}

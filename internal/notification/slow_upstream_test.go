@@ -237,6 +237,24 @@ func TestSlowUpstreamNotifier_GPGWithProcessChain(t *testing.T) {
 	}
 }
 
+func TestSlowUpstreamNotifier_UnlockSummary(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	ctx := proxy.UpstreamCallContext{
+		RequestType: approval.RequestTypeUnlock,
+		Items:       []approval.ItemInfo{{Label: "Login"}},
+	}
+	dismiss := n.NotifySlowUpstream(ctx)
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if mock.notified[0].summary != "Unlocking keyring" {
+		t.Errorf("expected summary 'Unlocking keyring', got %q", mock.notified[0].summary)
+	}
+}
+
 func TestSlowUpstreamNotifier_ProcessChainOnly(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)

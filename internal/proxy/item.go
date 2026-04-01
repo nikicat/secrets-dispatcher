@@ -47,9 +47,11 @@ func (i *ItemHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *db
 	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, ctx, fn)
 }
 
-// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier.
-func (i *ItemHandler) upstreamGetProperty(obj dbus.BusObject, prop string) (dbus.Variant, error) {
-	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{}, func() propResult {
+// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier,
+// passing caller context to the notification so the user knows what triggered any
+// pinentry or keyring unlock prompt.
+func (i *ItemHandler) upstreamGetProperty(obj dbus.BusObject, prop string, ctx UpstreamCallContext) (dbus.Variant, error) {
+	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, ctx, func() propResult {
 		v, err := obj.GetProperty(prop)
 		return propResult{v, err}
 	})
@@ -79,10 +81,13 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	}
 
 	// Fetch item info (label + attributes)
-	itemInfo := i.getItemInfo(path)
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderCtx := UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+	}
+	itemInfo := i.getItemInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	ctx := i.tracker.contextForSender(context.Background(), sender)
 	defer i.tracker.remove(sender)
 
@@ -127,10 +132,13 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	}
 
 	// Fetch item info (label + attributes)
-	itemInfo := i.getItemInfo(path)
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderCtx := UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+	}
+	itemInfo := i.getItemInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	ctx := i.tracker.contextForSender(context.Background(), sender)
 	defer i.tracker.remove(sender)
 
@@ -185,10 +193,13 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	}
 
 	// Fetch item info (label + attributes)
-	itemInfo := i.getItemInfo(path)
+	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	senderCtx := UpstreamCallContext{
+		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+	}
+	itemInfo := i.getItemInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
 	ctx := i.tracker.contextForSender(context.Background(), sender)
 	defer i.tracker.remove(sender)
 
@@ -307,20 +318,20 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 }
 
 // getItemInfo fetches label and attributes for a secret item from D-Bus.
-func (i *ItemHandler) getItemInfo(path dbus.ObjectPath) approval.ItemInfo {
+func (i *ItemHandler) getItemInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
 	info := approval.ItemInfo{Path: string(path)}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
 
 	// Get Label property
-	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label"); err == nil {
+	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label", ctx); err == nil {
 		if label, ok := v.Value().(string); ok {
 			info.Label = label
 		}
 	}
 
 	// Get Attributes property
-	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Attributes"); err == nil {
+	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Attributes", ctx); err == nil {
 		if attrs, ok := v.Value().(map[string]string); ok {
 			info.Attributes = attrs
 		}

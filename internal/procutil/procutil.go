@@ -81,12 +81,14 @@ type ProcEntry struct {
 
 // ReadExe reads the executable path from /proc/<pid>/exe.
 // Returns empty string on error (e.g., permission denied, process gone).
+// Strips the " (deleted)" suffix that Linux appends when the binary has
+// been replaced on disk (e.g., after a package upgrade).
 func ReadExe(pid int32) string {
 	target, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err != nil {
 		return ""
 	}
-	return target
+	return strings.TrimSuffix(target, " (deleted)")
 }
 
 // ReadCWD reads the current working directory from /proc/<pid>/cwd.

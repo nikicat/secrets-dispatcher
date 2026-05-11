@@ -716,6 +716,14 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 	return rule.ID
 }
 
+// CheckAutoApproveRules exposes checkAutoApproveRules for callers outside the
+// approval package (e.g. the gpg_sign HTTP handler) that drive their own request
+// flow and need to consult ephemeral auto-approve rules before opening a
+// notification. Same matching semantics as RequireApproval's auto-approve check.
+func (m *Manager) CheckAutoApproveRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType) *AutoApproveRule {
+	return m.checkAutoApproveRules(senderInfo, items, reqType)
+}
+
 // checkAutoApproveRules checks if the request matches any active auto-approve rule.
 // Returns the matching rule or nil.
 func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType) *AutoApproveRule {

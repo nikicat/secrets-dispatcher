@@ -184,6 +184,112 @@ func (o *wsEventObserver) WaitForMessages(count int, timeout time.Duration) []WS
 	return append([]WSMessage{}, o.msgs...)
 }
 
+// fakeGPGRunner is a stub GPGRunner for tests that need
+// HandleGPGSignRequest to take the auto-approved path without invoking real gpg.
+type fakeGPGRunner struct {
+	sig    []byte
+	status []byte
+}
+
+func (f *fakeGPGRunner) FindGPG() (string, error) { return "/fake/gpg", nil }
+func (f *fakeGPGRunner) RunGPG(_ /* path */, _ /* keyID */ string, _ /* commit */ []byte) ([]byte, []byte, int, error) {
+	return f.sig, f.status, 0, nil
+}
+
+// TestHandleGPGSignRequest_EphemeralAutoApproveRuleSkipsPending is the
+// regression test for the bug where ApproveAndAutoApprove on a gpg_sign
+// notification added an AutoApproveRule that was then ignored on subsequent
+// gpg_sign requests, because HandleGPGSignRequest only checked permanent
+// TrustedSigners and went straight to CreateGPGSignRequest. With the fix, an
+// ephemeral rule of type gpg_sign matching the sender skips the pending
+// notification and signs immediately.
+func TestHandleGPGSignRequest_EphemeralAutoApproveRuleSkipsPending(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:             5 * time.Second,
+		HistoryMax:          100,
+		AutoApproveDuration: time.Minute,
+	})
+	handlers := testHandlers(t, mgr)
+	// Inject a fake gpg runner so the auto-approved path does not need real gpg.
+	handlers.resolver.GPGRunner = &fakeGPGRunner{
+		sig:    []byte("FAKE_SIG"),
+		status: []byte("[GNUPG:] SIG_CREATED D"),
+	}
+
+	// Seed an auto-approve rule for gpg_sign that matches the test sender
+	// (httptest requests yield SenderInfo{} so UnitName is "").
+	mgr.AddAutoApproveRule(&approval.Request{
+		Type:       approval.RequestTypeGPGSign,
+		SenderInfo: approval.SenderInfo{},
+	})
+
+	// POST the request — should be auto-approved, not added to pending.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
+		strings.NewReader(validGPGSignBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handlers.HandleGPGSignRequest(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp GPGSignResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.RequestID == "" {
+		t.Fatal("expected non-empty request_id even on auto-approve")
+	}
+
+	// Critical: no pending request. The bug was the request hanging in pending
+	// waiting for a desktop notification despite a matching rule.
+	if pending := mgr.List(); len(pending) != 0 {
+		t.Fatalf("expected 0 pending requests after auto-approve, got %d (the rule was ignored — bug regressed)", len(pending))
+	}
+
+	// And the history should reflect that this was auto-approved.
+	entry := mgr.GetHistoryEntry(resp.RequestID)
+	if entry == nil {
+		t.Fatalf("expected history entry for request %s", resp.RequestID)
+	}
+	if entry.Resolution != approval.ResolutionAutoApproved {
+		t.Errorf("expected resolution %q, got %q", approval.ResolutionAutoApproved, entry.Resolution)
+	}
+}
+
+// TestHandleGPGSignRequest_NoMatchingRuleStaysPending guards the negative case:
+// an auto-approve rule whose invoker does not match must NOT short-circuit; the
+// request still enters the pending queue and waits for a desktop notification.
+func TestHandleGPGSignRequest_NoMatchingRuleStaysPending(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:             5 * time.Second,
+		HistoryMax:          100,
+		AutoApproveDuration: time.Minute,
+	})
+	handlers := testHandlers(t, mgr)
+	handlers.resolver.GPGRunner = &fakeGPGRunner{}
+
+	// Rule for a different invoker name.
+	mgr.AddAutoApproveRule(&approval.Request{
+		Type:       approval.RequestTypeGPGSign,
+		SenderInfo: approval.SenderInfo{UnitName: "some-other-process.service"},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
+		strings.NewReader(validGPGSignBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handlers.HandleGPGSignRequest(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if pending := mgr.List(); len(pending) != 1 {
+		t.Fatalf("expected 1 pending request when no rule matches, got %d", len(pending))
+	}
+}
+
 // TestHandleGPGSignRequest_WSSignatureOnApproval verifies Case 10:
 // When a gpg_sign request is approved, the resulting WSMessage has a non-empty
 // Signature field.

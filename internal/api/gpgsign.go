@@ -92,34 +92,15 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	// Trusted signer: run gpg and record the result directly, bypassing the
 	// pending request flow so no desktop notification appears.
 	if h.manager.CheckTrustedSigner(senderInfo, req.GPGSignInfo.RepoName, req.GPGSignInfo.ChangedFiles) {
-		gpgPath, findErr := h.resolver.GPGRunner.FindGPG()
-		if findErr != nil {
-			writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
-			return
-		}
-		res := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, senderInfo)
-		if res.err != nil {
-			writeError(w, fmt.Sprintf("gpg exec failed: %v", res.err), http.StatusInternalServerError)
-			return
-		}
-		sig, status, exitCode := res.sig, res.status, res.exitCode
-		if exitCode != 0 {
-			slog.Error("trusted signer gpg failed", "exit_code", exitCode)
-		}
+		h.signAndRecordAutoApproved(w, &req, senderInfo, commitSubject, "trusted signer")
+		return
+	}
 
-		id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, sig, status)
-		if err != nil {
-			writeError(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		slog.Info("gpg sign auto-approved (trusted signer)",
-			"request_id", id,
-			"repo", req.GPGSignInfo.RepoName,
-			"process", senderInfo.UnitName,
-			"pid", senderInfo.PID,
-			"commit", commitSubject,
-		)
-		writeJSON(w, GPGSignResponse{RequestID: id})
+	// Ephemeral auto-approve rule (created by "approve and auto-approve" on a
+	// prior notification). Same effect as trusted signer for the rule's TTL.
+	if rule := h.manager.CheckAutoApproveRules(senderInfo, nil, approval.RequestTypeGPGSign); rule != nil {
+		h.signAndRecordAutoApproved(w, &req, senderInfo, commitSubject,
+			fmt.Sprintf("auto-approve rule %s", rule.ID))
 		return
 	}
 
@@ -137,5 +118,40 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 		"commit", commitSubject,
 	)
 
+	writeJSON(w, GPGSignResponse{RequestID: id})
+}
+
+// signAndRecordAutoApproved runs gpg and records an auto-approved gpg_sign
+// request. Shared by the trusted-signer and ephemeral-auto-approve-rule paths;
+// both want the same outcome — sign without showing a notification — and differ
+// only in the log line.
+func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSignRequest, senderInfo approval.SenderInfo, commitSubject, reason string) {
+	gpgPath, findErr := h.resolver.GPGRunner.FindGPG()
+	if findErr != nil {
+		writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
+		return
+	}
+	res := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, senderInfo)
+	if res.err != nil {
+		writeError(w, fmt.Sprintf("gpg exec failed: %v", res.err), http.StatusInternalServerError)
+		return
+	}
+	if res.exitCode != 0 {
+		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.exitCode)
+	}
+
+	id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, res.sig, res.status)
+	if err != nil {
+		writeError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	slog.Info("gpg sign auto-approved",
+		"request_id", id,
+		"reason", reason,
+		"repo", req.GPGSignInfo.RepoName,
+		"process", senderInfo.UnitName,
+		"pid", senderInfo.PID,
+		"commit", commitSubject,
+	)
 	writeJSON(w, GPGSignResponse{RequestID: id})
 }

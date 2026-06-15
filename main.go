@@ -900,7 +900,7 @@ func runServiceInstall(args []string) {
 	start := fs.Bool("start", false, "Start the service immediately after installing")
 	configPath := fs.String("config", "", "Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	mode := fs.String("mode", "remote", "Topology mode: remote, local, or full")
-	backend := fs.String("backend", "", "Backend binary path (default: gopass-secret-service from PATH)")
+	backend := fs.String("backend", "", "Backend command or preset for local/full modes (default: gopass-secret-service; preset: gnome-keyring)")
 	fs.Parse(args)
 
 	if err := service.Install(service.Options{
@@ -919,14 +919,14 @@ func printServiceUsage() {
 
 Commands:
   install       Install and enable the systemd user service
-  uninstall     Stop, disable, and remove the systemd user service
+  uninstall     Stop, disable, and remove the systemd user service; restore saved GNOME Keyring/D-Bus state
   status        Show the service status
 
 Install options:
   --start       Start the service immediately after installing
   --config      Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
   --mode        Topology mode: remote, local, or full (default: remote)
-  --backend     Backend binary path for local/full modes (default: gopass-secret-service from PATH)
+  --backend     Backend command or preset for local/full modes (default: gopass-secret-service; preset: gnome-keyring)
 `, progName)
 }
 

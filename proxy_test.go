@@ -1215,6 +1215,145 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	}
 }
 
+// TestProxyCreateCollectionRequiresApproval tests that Service.CreateCollection is gated as a write.
+func TestProxyCreateCollectionRequiresApproval(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	createErr := make(chan error, 1)
+	go func() {
+		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+		properties := map[string]dbus.Variant{
+			"org.freedesktop.Secret.Collection.Label": dbus.MakeVariant("New Collection"),
+		}
+		call := serviceObj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, "new-alias")
+		createErr <- call.Err
+	}()
+
+	var reqID string
+	for range 50 {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("approval request did not appear for CreateCollection")
+	}
+
+	req := approvalMgr.GetPending(reqID)
+	if req.Type != approval.RequestTypeWrite {
+		t.Errorf("expected request type 'write', got %q", req.Type)
+	}
+	if len(req.Items) != 1 || req.Items[0].Label != "New Collection" {
+		t.Errorf("expected collection label 'New Collection', got %v", req.Items)
+	}
+
+	if err := approvalMgr.Approve(reqID); err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+
+	select {
+	case err := <-createErr:
+		if err != nil {
+			t.Errorf("CreateCollection returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for CreateCollection to complete")
+	}
+}
+
+// TestProxyUnlockRequiresApproval tests that Service.Unlock is gated by approval.
+func TestProxyUnlockRequiresApproval(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+	itemPath := mock.AddItem("Locked Item", map[string]string{"svc": "test"}, []byte("secret"))
+
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+		Approval:   approvalMgr,
+	})
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	unlockErr := make(chan error, 1)
+	go func() {
+		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+		call := serviceObj.Call(dbustypes.ServiceInterface+".Unlock", 0, []dbus.ObjectPath{itemPath})
+		unlockErr <- call.Err
+	}()
+
+	var reqID string
+	for range 50 {
+		reqs := approvalMgr.List()
+		if len(reqs) > 0 {
+			reqID = reqs[0].ID
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if reqID == "" {
+		t.Fatal("approval request did not appear for Unlock")
+	}
+
+	req := approvalMgr.GetPending(reqID)
+	if req.Type != approval.RequestTypeUnlock {
+		t.Errorf("expected request type 'unlock', got %q", req.Type)
+	}
+
+	if err := approvalMgr.Approve(reqID); err != nil {
+		t.Fatalf("approve failed: %v", err)
+	}
+
+	select {
+	case err := <-unlockErr:
+		if err != nil {
+			t.Errorf("Unlock returned error after approval: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Unlock to complete")
+	}
+}
+
 // TestProxyCreateItemIgnoresChromeDummy tests that CreateItem with Chrome's dummy
 // secret schema is silently ignored (not forwarded to backend, no pending request).
 func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {

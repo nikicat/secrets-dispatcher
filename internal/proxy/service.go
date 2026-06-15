@@ -22,10 +22,11 @@ type Service struct {
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
 	slowThreshold    time.Duration
+	prompts          *promptRegistry
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration, prompts *promptRegistry) *Service {
 	return &Service{
 		localConn:        localConn,
 		sessions:         sessions,
@@ -36,6 +37,7 @@ func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
 		slowThreshold:    slowThreshold,
+		prompts:          prompts,
 	}
 }
 
@@ -180,19 +182,17 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
 	infos := s.getUnlockInfo(objects, senderCtx)
+	reqCtx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
 	senderInfo := s.resolver.Resolve(sender)
 
-	// Check if request should be denied by a trust rule
-	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeUnlock, nil); rule != nil && rule.Action == "deny" {
-		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
-		return nil, "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	if _, err := s.approval.RequireApproval(reqCtx, s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo); err != nil {
+		return nil, "/", dbustypes.ErrAccessDenied(err.Error())
 	}
-
-	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
-		RequestType:   approval.RequestTypeUnlock,
-		Items:         infos,
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		RequestType: approval.RequestTypeUnlock,
+		Items:       infos,
+		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)
@@ -210,6 +210,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 
 	objStrs := objectPathsToStrings(objects)
 	s.logger.LogUnlock(context.Background(), objStrs, len(unlocked), "ok", nil)
+	s.prompts.register(prompt, sender)
 	return unlocked, prompt, nil
 }
 
@@ -232,6 +233,7 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
+	s.prompts.register(prompt, sender)
 	return locked, prompt, nil
 }
 
@@ -264,8 +266,17 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.ObjectPath) *dbus.Error {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	reqCtx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
+	senderInfo := s.resolver.Resolve(sender)
+	items := []approval.ItemInfo{aliasWriteInfo(name, collection)}
+	if _, err := s.approval.RequireApproval(reqCtx, s.clientName, items, "", approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		return dbustypes.ErrAccessDenied(err.Error())
+	}
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		RequestType: approval.RequestTypeWrite,
+		Items:       items,
+		SenderInfo:  senderInfo,
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection) })
 	if call.Err != nil {
@@ -279,8 +290,17 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	reqCtx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
+	senderInfo := s.resolver.Resolve(sender)
+	items := []approval.ItemInfo{createCollectionInfo(properties, alias)}
+	if _, err := s.approval.RequireApproval(reqCtx, s.clientName, items, "", approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
+	}
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		RequestType: approval.RequestTypeWrite,
+		Items:       items,
+		SenderInfo:  senderInfo,
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call {
 		return obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
@@ -294,7 +314,29 @@ func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
+	s.prompts.register(prompt, sender)
 	return collection, prompt, nil
+}
+
+func createCollectionInfo(properties map[string]dbus.Variant, alias string) approval.ItemInfo {
+	info := approval.ItemInfo{Path: string(dbustypes.ServicePath)}
+	if alias != "" {
+		info.Path = string(dbustypes.ServicePath) + "/aliases/" + alias
+		info.Attributes = map[string]string{"alias": alias}
+	}
+	if v, ok := properties[dbustypes.CollectionInterface+".Label"]; ok {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+	return info
+}
+
+func aliasWriteInfo(name string, collection dbus.ObjectPath) approval.ItemInfo {
+	return approval.ItemInfo{
+		Path:       string(collection),
+		Attributes: map[string]string{"alias": name},
+	}
 }
 
 // Get implements org.freedesktop.DBus.Properties.Get

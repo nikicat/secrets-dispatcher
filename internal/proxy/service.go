@@ -22,10 +22,13 @@ type Service struct {
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
 	slowThreshold    time.Duration
+	// Tracks backend prompt paths returned by service-level calls so PromptHandler
+	// can authorize later Prompt/Dismiss calls from the original D-Bus sender.
+	prompts *promptRegistry
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration, prompts *promptRegistry) *Service {
 	return &Service{
 		localConn:        localConn,
 		sessions:         sessions,
@@ -36,6 +39,7 @@ func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
 		slowThreshold:    slowThreshold,
+		prompts:          prompts,
 	}
 }
 
@@ -179,20 +183,22 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
+	// Resolve object metadata before prompting so approvals and trust rules can
+	// show labels/attributes instead of only backend object paths.
 	infos := s.getUnlockInfo(objects, senderCtx)
+	reqCtx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
 	senderInfo := s.resolver.Resolve(sender)
 
-	// Check if request should be denied by a trust rule
-	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeUnlock, nil); rule != nil && rule.Action == "deny" {
-		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
-		return nil, "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	// Unlock can expose decrypted secret material through later GetSecrets calls,
+	// so route it through the normal approval pipeline instead of deny-only passthrough.
+	if _, err := s.approval.RequireApproval(reqCtx, s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo); err != nil {
+		return nil, "/", dbustypes.ErrAccessDenied(err.Error())
 	}
-
-	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
-		RequestType:   approval.RequestTypeUnlock,
-		Items:         infos,
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		RequestType: approval.RequestTypeUnlock,
+		Items:       infos,
+		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)
@@ -210,6 +216,9 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 
 	objStrs := objectPathsToStrings(objects)
 	s.logger.LogUnlock(context.Background(), objStrs, len(unlocked), "ok", nil)
+	// Backends may return a prompt object; bind it to the original caller so
+	// only that D-Bus sender can drive the forwarded Prompt/Dismiss methods.
+	s.prompts.register(prompt, sender)
 	return unlocked, prompt, nil
 }
 
@@ -232,6 +241,9 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
+	// Lock can also return a backend prompt path; keep the same prompt ownership
+	// mapping used by Unlock/CreateCollection before exposing it on the front bus.
+	s.prompts.register(prompt, sender)
 	return locked, prompt, nil
 }
 
@@ -264,8 +276,19 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.ObjectPath) *dbus.Error {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	reqCtx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
+	senderInfo := s.resolver.Resolve(sender)
+	items := []approval.ItemInfo{aliasWriteInfo(name, collection)}
+	// Changing an alias affects which collection apps resolve later, so gate it as
+	// a backend write even though no individual secret item is modified here.
+	if _, err := s.approval.RequireApproval(reqCtx, s.clientName, items, "", approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		return dbustypes.ErrAccessDenied(err.Error())
+	}
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		RequestType: approval.RequestTypeWrite,
+		Items:       items,
+		SenderInfo:  senderInfo,
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection) })
 	if call.Err != nil {
@@ -279,8 +302,19 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	reqCtx := s.tracker.contextForSender(context.Background(), sender)
+	defer s.tracker.remove(sender)
+	senderInfo := s.resolver.Resolve(sender)
+	items := []approval.ItemInfo{createCollectionInfo(properties, alias)}
+	// Collection creation mutates backend state and may create a backend prompt, so
+	// use the write approval path before forwarding the request.
+	if _, err := s.approval.RequireApproval(reqCtx, s.clientName, items, "", approval.RequestTypeWrite, nil, senderInfo); err != nil {
+		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
+	}
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		RequestType: approval.RequestTypeWrite,
+		Items:       items,
+		SenderInfo:  senderInfo,
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call {
 		return obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
@@ -294,7 +328,33 @@ func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
+	// If the backend returns a prompt, bind it to this caller before the client
+	// drives the forwarded Prompt/Dismiss interaction.
+	s.prompts.register(prompt, sender)
 	return collection, prompt, nil
+}
+
+// Service-level writes do not target an existing item, so synthesize enough
+// ItemInfo for approval prompts, rules, and history to describe the operation.
+func createCollectionInfo(properties map[string]dbus.Variant, alias string) approval.ItemInfo {
+	info := approval.ItemInfo{Path: string(dbustypes.ServicePath)}
+	if alias != "" {
+		info.Path = string(dbustypes.ServicePath) + "/aliases/" + alias
+		info.Attributes = map[string]string{"alias": alias}
+	}
+	if v, ok := properties[dbustypes.CollectionInterface+".Label"]; ok {
+		if label, ok := v.Value().(string); ok {
+			info.Label = label
+		}
+	}
+	return info
+}
+
+func aliasWriteInfo(name string, collection dbus.ObjectPath) approval.ItemInfo {
+	return approval.ItemInfo{
+		Path:       string(collection),
+		Attributes: map[string]string{"alias": name},
+	}
 }
 
 // Get implements org.freedesktop.DBus.Properties.Get

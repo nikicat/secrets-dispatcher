@@ -1,6 +1,7 @@
 MAKEFLAGS += -j
 
 .PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
+	vm-test vm-test-ubuntu vm-test-fedora vm-test-ubuntu-gopass vm-test-fedora-gopass \
 	playwright-install dev version pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
@@ -59,6 +60,22 @@ test-e2e-all: backend-dev
 BROWSER ?= chromium
 test-e2e-browser: backend-dev
 	cd web && ALL_BROWSERS=1 deno run -A npm:@playwright/test@latest/cli test --project=$(BROWSER)
+
+# Host-driven libvirt/QEMU VM smoke test. Usage: make vm-test DISTRO=ubuntu MODE=local
+vm-test: backend
+	tests/vm/run.sh
+
+vm-test-ubuntu: backend
+	DISTRO=ubuntu tests/vm/run.sh
+
+vm-test-fedora: backend
+	DISTRO=fedora tests/vm/run.sh
+
+vm-test-ubuntu-gopass: backend
+	DISTRO=ubuntu BACKEND=gopass tests/vm/run.sh
+
+vm-test-fedora-gopass: backend
+	DISTRO=fedora BACKEND=gopass tests/vm/run.sh
 
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
 playwright-install:

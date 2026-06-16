@@ -16,3 +16,4 @@ internal/api/web/dist/*
 
 # Test artifacts
 web/test-results/
+.vm/

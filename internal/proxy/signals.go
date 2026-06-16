@@ -21,15 +21,17 @@ type signalForwarder struct {
 	logger      *logging.Logger
 	ch          chan *dbus.Signal
 	done        chan struct{}
+	prompts     *promptRegistry
 }
 
-func newSignalForwarder(backendConn, frontConn *dbus.Conn, logger *logging.Logger) (*signalForwarder, error) {
+func newSignalForwarder(backendConn, frontConn *dbus.Conn, logger *logging.Logger, prompts *promptRegistry) (*signalForwarder, error) {
 	f := &signalForwarder{
 		backendConn: backendConn,
 		frontConn:   frontConn,
 		logger:      logger,
 		ch:          make(chan *dbus.Signal, 64),
 		done:        make(chan struct{}),
+		prompts:     prompts,
 	}
 
 	if err := backendConn.AddMatchSignal(
@@ -54,6 +56,9 @@ func (f *signalForwarder) run() {
 			if !strings.HasPrefix(sig.Name, "org.freedesktop.Secret.") &&
 				!strings.HasPrefix(sig.Name, "org.freedesktop.DBus.Properties.") {
 				continue
+			}
+			if sig.Name == dbustypes.PromptInterface+".Completed" {
+				f.prompts.unregister(sig.Path)
 			}
 			if err := f.frontConn.Emit(sig.Path, sig.Name, sig.Body...); err != nil {
 				f.logger.Info("failed to forward signal", "signal", sig.Name, "path", sig.Path, "error", err)

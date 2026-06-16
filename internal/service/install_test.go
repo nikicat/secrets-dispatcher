@@ -27,6 +27,13 @@ func mockExecOutput(t *testing.T, fn func(string, ...string) ([]byte, error)) {
 	t.Cleanup(func() { execOutputFunc = orig })
 }
 
+func mockSystemctlOutput(t *testing.T, fn func(...string) ([]byte, error)) {
+	t.Helper()
+	orig := systemctlOutputFunc
+	systemctlOutputFunc = fn
+	t.Cleanup(func() { systemctlOutputFunc = orig })
+}
+
 func noopExecOutput(string, ...string) ([]byte, error) {
 	return nil, nil
 }
@@ -45,6 +52,20 @@ func mockSystemctl(t *testing.T) *[]string {
 
 func defaultLookPath(name string) (string, error) {
 	return "/usr/bin/" + name, nil
+}
+
+func readTestConfig(t *testing.T, configHome string) config.Config {
+	t.Helper()
+	configPath := filepath.Join(configHome, "secrets-dispatcher", "config.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var cfg config.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	return cfg
 }
 
 // --- remote mode (default) ---
@@ -204,7 +225,7 @@ func TestInstallCustomConfigPath(t *testing.T) {
 
 // --- local mode ---
 
-func TestInstallLocalWritesAllUnits(t *testing.T) {
+func TestInstallLocalWritesProxyUnitOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_DATA_HOME", tmpDir)
@@ -219,49 +240,19 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
-	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("unit file %s not found: %v", name, err)
+	for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-bus.service", "secrets-dispatcher-backend.service"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("local mode must not create exposed backend unit %s", name)
 		}
 	}
 
-	// Socket unit.
-	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-bus.socket"))
+	content, _ := os.ReadFile(filepath.Join(dir, unitFileName))
 	s := string(content)
-	if !strings.Contains(s, "ListenStream=%t/secrets-dispatcher/backend-bus.sock") {
-		t.Errorf("socket unit wrong ListenStream, got:\n%s", s)
-	}
-	if !strings.Contains(s, "WantedBy=sockets.target") {
-		t.Error("socket unit missing WantedBy=sockets.target")
-	}
-
-	// Bus service.
-	content, _ = os.ReadFile(filepath.Join(dir, "secrets-dispatcher-bus.service"))
-	if !strings.Contains(string(content), "/usr/bin/dbus-daemon --session --nofork --nopidfile --address=systemd:") {
-		t.Error("bus service wrong ExecStart")
-	}
-
-	// Backend service.
-	content, _ = os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
-	s = string(content)
-	if !strings.Contains(s, "ExecStart=/usr/bin/gopass-secret-service") {
-		t.Error("backend service wrong ExecStart")
-	}
-	if !strings.Contains(s, "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/secrets-dispatcher/backend-bus.sock") {
-		t.Error("backend service missing DBUS_SESSION_BUS_ADDRESS")
-	}
-	if !strings.Contains(s, "Requires=secrets-dispatcher-bus.socket") {
-		t.Error("backend service missing Requires")
-	}
-
-	// Proxy service (local variant).
-	content, _ = os.ReadFile(filepath.Join(dir, unitFileName))
-	s = string(content)
 	if !strings.Contains(s, "serve --config") {
 		t.Error("proxy service missing 'serve --config'")
 	}
-	if !strings.Contains(s, "Requires=secrets-dispatcher-backend.service") {
-		t.Error("proxy service missing Requires=backend")
+	if strings.Contains(s, "backend-bus.sock") || strings.Contains(s, "secrets-dispatcher-backend.service") {
+		t.Errorf("proxy unit should not expose or require backend bus, got:\n%s", s)
 	}
 }
 
@@ -290,12 +281,14 @@ func TestInstallLocalConfig(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if cfg.Serve.Upstream.Type != "socket" {
-		t.Errorf("upstream type = %q, want socket", cfg.Serve.Upstream.Type)
+	if cfg.Serve.Upstream.Type != "managed" {
+		t.Errorf("upstream type = %q, want managed", cfg.Serve.Upstream.Type)
 	}
-	wantPath := "/run/user/1000/secrets-dispatcher/backend-bus.sock"
-	if cfg.Serve.Upstream.Path != wantPath {
-		t.Errorf("upstream path = %q, want %q", cfg.Serve.Upstream.Path, wantPath)
+	if cfg.Serve.Upstream.Path != "" {
+		t.Errorf("managed upstream path = %q, want empty", cfg.Serve.Upstream.Path)
+	}
+	if cfg.Serve.BackendCommand != "/usr/bin/gopass-secret-service" {
+		t.Errorf("backend_command = %q, want /usr/bin/gopass-secret-service", cfg.Serve.BackendCommand)
 	}
 	if len(cfg.Serve.Downstream) != 1 || cfg.Serve.Downstream[0].Type != "session_bus" {
 		t.Errorf("downstream = %+v, want [{session_bus}]", cfg.Serve.Downstream)
@@ -318,7 +311,6 @@ func TestInstallLocalSystemctlCalls(t *testing.T) {
 
 	expected := []string{
 		"daemon-reload",
-		"enable secrets-dispatcher-bus.socket",
 		"enable " + unitFileName,
 	}
 	if len(*calls) != len(expected) {
@@ -347,9 +339,7 @@ func TestInstallLocalWithStart(t *testing.T) {
 
 	expected := []string{
 		"daemon-reload",
-		"enable secrets-dispatcher-bus.socket",
 		"enable " + unitFileName,
-		"start secrets-dispatcher-bus.socket",
 		"start " + unitFileName,
 	}
 	if len(*calls) != len(expected) {
@@ -389,8 +379,11 @@ func TestInstallFullConfig(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if cfg.Serve.Upstream.Type != "socket" {
-		t.Errorf("upstream type = %q, want socket", cfg.Serve.Upstream.Type)
+	if cfg.Serve.Upstream.Type != "managed" {
+		t.Errorf("upstream type = %q, want managed", cfg.Serve.Upstream.Type)
+	}
+	if cfg.Serve.BackendCommand != "/usr/bin/gopass-secret-service" {
+		t.Errorf("backend_command = %q, want /usr/bin/gopass-secret-service", cfg.Serve.BackendCommand)
 	}
 	if len(cfg.Serve.Downstream) != 2 {
 		t.Fatalf("downstream count = %d, want 2", len(cfg.Serve.Downstream))
@@ -407,7 +400,7 @@ func TestInstallFullConfig(t *testing.T) {
 	}
 }
 
-func TestInstallFullWritesAllUnits(t *testing.T) {
+func TestInstallFullWritesProxyUnitOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_DATA_HOME", tmpDir)
@@ -422,9 +415,12 @@ func TestInstallFullWritesAllUnits(t *testing.T) {
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
-	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("unit file %s not found: %v", name, err)
+	if _, err := os.Stat(filepath.Join(dir, unitFileName)); err != nil {
+		t.Errorf("unit file %s not found: %v", unitFileName, err)
+	}
+	for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-bus.service", "secrets-dispatcher-backend.service"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("full mode must not create exposed backend unit %s", name)
 		}
 	}
 }
@@ -466,8 +462,11 @@ func TestInstallPreservesExistingConfig(t *testing.T) {
 	yaml.Unmarshal(data, &cfg)
 
 	// Topology should be updated.
-	if cfg.Serve.Upstream.Type != "socket" {
-		t.Errorf("upstream should be socket, got %q", cfg.Serve.Upstream.Type)
+	if cfg.Serve.Upstream.Type != "managed" {
+		t.Errorf("upstream should be managed, got %q", cfg.Serve.Upstream.Type)
+	}
+	if cfg.Serve.BackendCommand != "/usr/bin/gopass-secret-service" {
+		t.Errorf("backend_command = %q, want /usr/bin/gopass-secret-service", cfg.Serve.BackendCommand)
 	}
 
 	// Other settings should be preserved.
@@ -551,10 +550,9 @@ func TestInstallLocalAutoDetectsBackend(t *testing.T) {
 		t.Fatalf("Install() error: %v", err)
 	}
 
-	dir := filepath.Join(tmpDir, "systemd", "user")
-	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
-	if !strings.Contains(string(content), "ExecStart=/opt/bin/gopass-secret-service") {
-		t.Error("should use auto-detected backend path")
+	cfg := readTestConfig(t, tmpDir)
+	if cfg.Serve.BackendCommand != "/opt/bin/gopass-secret-service" {
+		t.Errorf("backend_command = %q, want auto-detected backend path", cfg.Serve.BackendCommand)
 	}
 }
 
@@ -572,10 +570,214 @@ func TestInstallLocalExplicitBackendPath(t *testing.T) {
 		t.Fatalf("Install() error: %v", err)
 	}
 
+	cfg := readTestConfig(t, tmpDir)
+	if cfg.Serve.BackendCommand != "/custom/backend" {
+		t.Errorf("backend_command = %q, want explicit backend path", cfg.Serve.BackendCommand)
+	}
+}
+
+func TestInstallLocalGnomeKeyringBackendPreset(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	calls := mockSystemctl(t)
+	mockExecOutput(t, noopExecOutput)
+	mockSystemctlOutput(t, func(args ...string) ([]byte, error) {
+		if len(args) == 2 && args[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		if len(args) == 2 && args[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
+		return []byte("unknown\n"), nil
+	})
+	mockLookPath(t, func(name string) (string, error) {
+		switch name {
+		case "dbus-daemon":
+			return "/usr/bin/dbus-daemon", nil
+		case "gnome-keyring-daemon":
+			return "/usr/bin/gnome-keyring-daemon", nil
+		default:
+			return "", fmt.Errorf("not found: %s", name)
+		}
+	})
+
+	if err := Install(Options{Mode: "local", BackendPath: "gnome-keyring"}); err != nil {
+		t.Fatalf("Install() error: %v", err)
+	}
+
+	cfg := readTestConfig(t, tmpDir)
+	wantCommand := "/usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%B"
+	if cfg.Serve.BackendCommand != wantCommand {
+		t.Errorf("backend_command = %q, want %q", cfg.Serve.BackendCommand, wantCommand)
+	}
+
+	callStr := strings.Join(*calls, "\n")
+	if !strings.Contains(callStr, "mask --now gnome-keyring-daemon.service gnome-keyring-daemon.socket") {
+		t.Errorf("should mask public GNOME Keyring units, calls:\n%s", callStr)
+	}
+
+	statePath := filepath.Join(tmpDir, "secrets-dispatcher", gnomeKeyringStateFile)
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read GNOME Keyring state backup: %v", err)
+	}
+	var state gnomeKeyringState
+	if err := yaml.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("unmarshal state backup: %v", err)
+	}
+	if len(state.Units) != len(gnomeKeyringPublicUnits) {
+		t.Fatalf("state backup units = %d, want %d", len(state.Units), len(gnomeKeyringPublicUnits))
+	}
+	if state.Units[0].Enabled != "enabled" || state.Units[0].Active != "active" {
+		t.Errorf("state backup did not preserve enabled/active state: %+v", state.Units[0])
+	}
+}
+
+func TestInstallLocalGnomeKeyringMaskFailureFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	origSystemctl := systemctlFunc
+	var calls []string
+	systemctlFunc = func(args ...string) error {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		if call == "mask --now gnome-keyring-daemon.service gnome-keyring-daemon.socket" {
+			return fmt.Errorf("mask failed")
+		}
+		return nil
+	}
+	t.Cleanup(func() { systemctlFunc = origSystemctl })
+
+	mockExecOutput(t, noopExecOutput)
+	mockSystemctlOutput(t, func(args ...string) ([]byte, error) {
+		return []byte("enabled\n"), nil
+	})
+	mockLookPath(t, func(name string) (string, error) {
+		switch name {
+		case "dbus-daemon":
+			return "/usr/bin/dbus-daemon", nil
+		case "gnome-keyring-daemon":
+			return "/usr/bin/gnome-keyring-daemon", nil
+		default:
+			return "", fmt.Errorf("not found: %s", name)
+		}
+	})
+
+	err := Install(Options{Mode: "local", BackendPath: "gnome-keyring"})
+	if err == nil {
+		t.Fatal("expected install to fail when public GNOME Keyring masking fails")
+	}
+	if !strings.Contains(err.Error(), "mask public GNOME Keyring units") {
+		t.Fatalf("error should mention public GNOME Keyring masking, got: %v", err)
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), "mask --now gnome-keyring-daemon.service gnome-keyring-daemon.socket") {
+		t.Fatalf("expected public GNOME Keyring mask attempt, calls: %v", calls)
+	}
+
 	dir := filepath.Join(tmpDir, "systemd", "user")
-	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
-	if !strings.Contains(string(content), "ExecStart=/custom/backend") {
-		t.Error("should use explicit backend path")
+	if _, statErr := os.Stat(filepath.Join(dir, "secrets-dispatcher-backend.service")); !os.IsNotExist(statErr) {
+		t.Fatalf("backend unit should not be written after mask failure")
+	}
+}
+
+func TestInstallLocalExplicitGnomeKeyringCommandMasksPublicUnits(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	calls := mockSystemctl(t)
+	mockExecOutput(t, noopExecOutput)
+	mockSystemctlOutput(t, func(args ...string) ([]byte, error) {
+		return []byte("disabled\n"), nil
+	})
+	mockLookPath(t, func(name string) (string, error) {
+		if name == "dbus-daemon" {
+			return "/usr/bin/dbus-daemon", nil
+		}
+		return "", fmt.Errorf("not found: %s", name)
+	})
+
+	backend := "/usr/bin/gnome-keyring-daemon --foreground --components=secrets"
+	if err := Install(Options{Mode: "local", BackendPath: backend}); err != nil {
+		t.Fatalf("Install() error: %v", err)
+	}
+
+	callStr := strings.Join(*calls, "\n")
+	if !strings.Contains(callStr, "mask --now gnome-keyring-daemon.service gnome-keyring-daemon.socket") {
+		t.Fatalf("explicit GNOME Keyring backend should mask public units, calls:\n%s", callStr)
+	}
+	statePath := filepath.Join(tmpDir, "secrets-dispatcher", gnomeKeyringStateFile)
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("explicit GNOME Keyring backend should save state backup: %v", err)
+	}
+}
+
+func TestInstallRejectsBackendCommandWithNewline(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	mockSystemctl(t)
+	mockLookPath(t, defaultLookPath)
+
+	err := Install(Options{Mode: "local", BackendPath: "/custom/backend\nEnvironment=BAD=1"})
+	if err == nil {
+		t.Fatal("expected newline in backend command to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid backend command") {
+		t.Fatalf("error should mention invalid backend command, got: %v", err)
+	}
+}
+
+func TestInstallLocalGnomeKeyringStateBackupIsIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	mockSystemctl(t)
+	mockExecOutput(t, noopExecOutput)
+	mockSystemctlOutput(t, func(args ...string) ([]byte, error) {
+		return []byte("masked\n"), nil
+	})
+	mockLookPath(t, func(name string) (string, error) {
+		switch name {
+		case "dbus-daemon":
+			return "/usr/bin/dbus-daemon", nil
+		case "gnome-keyring-daemon":
+			return "/usr/bin/gnome-keyring-daemon", nil
+		default:
+			return "", fmt.Errorf("not found: %s", name)
+		}
+	})
+
+	statePath := filepath.Join(tmpDir, "secrets-dispatcher", gnomeKeyringStateFile)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	originalState := "version: 1\nunits:\n  - name: gnome-keyring-daemon.service\n    enabled: enabled\n    active: active\n"
+	if err := os.WriteFile(statePath, []byte(originalState), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Install(Options{Mode: "local", BackendPath: "gnome-keyring"}); err != nil {
+		t.Fatalf("Install() error: %v", err)
+	}
+
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state backup: %v", err)
+	}
+	if string(stateData) != originalState {
+		t.Errorf("state backup should not be overwritten, got:\n%s", string(stateData))
 	}
 }
 
@@ -718,6 +920,91 @@ func TestUninstallAllUnits(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
 			t.Errorf("unit file %s should have been removed", name)
 		}
+	}
+}
+
+func TestUninstallRestoresGnomeKeyringState(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+
+	statePath := filepath.Join(tmpDir, "secrets-dispatcher", gnomeKeyringStateFile)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	state := gnomeKeyringState{Version: 1, Units: []gnomeKeyringUnitState{
+		{Name: "gnome-keyring-daemon.service", Enabled: "enabled", Active: "active"},
+		{Name: "gnome-keyring-daemon.socket", Enabled: "disabled", Active: "inactive"},
+	}}
+	data, err := yaml.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := mockSystemctl(t)
+	mockExecOutput(t, noopExecOutput)
+
+	if err := Uninstall(); err != nil {
+		t.Fatalf("Uninstall() error: %v", err)
+	}
+
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Error("GNOME Keyring state backup should be removed after restore")
+	}
+
+	callStr := strings.Join(*calls, "\n")
+	for _, want := range []string{
+		"daemon-reload",
+		"unmask gnome-keyring-daemon.service",
+		"enable gnome-keyring-daemon.service",
+		"start gnome-keyring-daemon.service",
+		"unmask gnome-keyring-daemon.socket",
+		"disable gnome-keyring-daemon.socket",
+		"stop gnome-keyring-daemon.socket",
+	} {
+		if !strings.Contains(callStr, want) {
+			t.Errorf("missing systemctl call %q in:\n%s", want, callStr)
+		}
+	}
+}
+
+func TestInstallRemoteRestoresGnomeKeyringState(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	statePath := filepath.Join(tmpDir, "secrets-dispatcher", gnomeKeyringStateFile)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	state := gnomeKeyringState{Version: 1, Units: []gnomeKeyringUnitState{
+		{Name: "gnome-keyring-daemon.service", Enabled: "enabled", Active: "active"},
+	}}
+	data, err := yaml.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := mockSystemctl(t)
+	mockExecOutput(t, noopExecOutput)
+
+	if err := Install(Options{Mode: "remote"}); err != nil {
+		t.Fatalf("Install() error: %v", err)
+	}
+
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Error("GNOME Keyring state backup should be removed after remote-mode restore")
+	}
+	callStr := strings.Join(*calls, "\n")
+	if !strings.Contains(callStr, "unmask gnome-keyring-daemon.service") || !strings.Contains(callStr, "enable gnome-keyring-daemon.service") || !strings.Contains(callStr, "start gnome-keyring-daemon.service") {
+		t.Errorf("remote install should restore GNOME Keyring state, calls:\n%s", callStr)
 	}
 }
 

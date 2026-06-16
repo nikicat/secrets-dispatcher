@@ -24,10 +24,11 @@ type ItemHandler struct {
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
 	slowThreshold    time.Duration
+	prompts          *promptRegistry
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration, prompts *promptRegistry) *ItemHandler {
 	return &ItemHandler{
 		localConn:        localConn,
 		sessions:         sessions,
@@ -38,6 +39,7 @@ func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logg
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
 		slowThreshold:    slowThreshold,
+		prompts:          prompts,
 	}
 }
 
@@ -120,6 +122,7 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		"item": string(path),
 	}, "ok", nil)
 
+	i.prompts.register(prompt, sender)
 	return prompt, nil
 }
 

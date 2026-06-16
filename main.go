@@ -23,6 +23,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/daemon"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
+	"github.com/nikicat/secrets-dispatcher/internal/localbackend"
 	"github.com/nikicat/secrets-dispatcher/internal/notification"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/service"
@@ -448,7 +449,25 @@ func runServe(args []string) {
 
 	// Resolve upstream address
 	var upstreamAddr string
-	if cfg.Serve.Upstream.Type == "socket" {
+	var managedBackend *localbackend.Supervisor
+	if cfg.Serve.Upstream.Type == "managed" {
+		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+		if runtimeDir == "" {
+			fmt.Fprintln(os.Stderr, "error: XDG_RUNTIME_DIR must be set for managed local backend")
+			os.Exit(1)
+		}
+		managedBackend, err = localbackend.Start(ctx, localbackend.Options{
+			BackendCommand: cfg.Serve.BackendCommand,
+			RuntimeDir:     runtimeDir,
+			Log:            slog.Default(),
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error starting managed local backend: %v\n", err)
+			os.Exit(1)
+		}
+		defer managedBackend.Stop()
+		upstreamAddr = managedBackend.Address()
+	} else if cfg.Serve.Upstream.Type == "socket" {
 		upstreamAddr = "unix:path=" + cfg.Serve.Upstream.Path
 	}
 
@@ -457,6 +476,9 @@ func runServe(args []string) {
 	type downstreamRunner func(context.Context) error
 
 	var runners []downstreamRunner
+	if managedBackend != nil {
+		runners = append(runners, managedBackend.Wait)
+	}
 
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
@@ -900,7 +922,7 @@ func runServiceInstall(args []string) {
 	start := fs.Bool("start", false, "Start the service immediately after installing")
 	configPath := fs.String("config", "", "Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	mode := fs.String("mode", "remote", "Topology mode: remote, local, or full")
-	backend := fs.String("backend", "", "Backend binary path (default: gopass-secret-service from PATH)")
+	backend := fs.String("backend", "", "Backend command or preset for local/full modes (default: gopass-secret-service; preset: gnome-keyring)")
 	fs.Parse(args)
 
 	if err := service.Install(service.Options{
@@ -919,14 +941,14 @@ func printServiceUsage() {
 
 Commands:
   install       Install and enable the systemd user service
-  uninstall     Stop, disable, and remove the systemd user service
+  uninstall     Stop, disable, and remove the systemd user service; restore saved GNOME Keyring/D-Bus state
   status        Show the service status
 
 Install options:
   --start       Start the service immediately after installing
   --config      Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
   --mode        Topology mode: remote, local, or full (default: remote)
-  --backend     Backend binary path for local/full modes (default: gopass-secret-service from PATH)
+  --backend     Backend command or preset for local/full modes (default: gopass-secret-service; preset: gnome-keyring)
 `, progName)
 }
 

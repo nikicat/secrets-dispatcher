@@ -95,7 +95,8 @@ func TestTrackerContextForDisconnectedClient(t *testing.T) {
 
 	// Now call contextForSender for the disconnected client
 	// Without the fix, this would return a context that never gets cancelled
-	ctx := tracker.contextForSender(context.Background(), clientUniqueName)
+	ctx, release := tracker.contextForSender(context.Background(), clientUniqueName)
+	defer release()
 
 	// Verify the context is already cancelled (or gets cancelled very quickly)
 	select {
@@ -153,7 +154,8 @@ func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// Now simulate the handler flow: contextForSender + RequireApproval
-	ctx := tracker.contextForSender(context.Background(), clientUniqueName)
+	ctx, release := tracker.contextForSender(context.Background(), clientUniqueName)
+	defer release()
 
 	// Start RequireApproval in a goroutine (it should return quickly)
 	done := make(chan error, 1)
@@ -219,7 +221,8 @@ func TestTrackerContextCancelledOnDisconnect(t *testing.T) {
 	t.Logf("Client unique name: %s", clientUniqueName)
 
 	// Create context for the client WHILE it's still connected
-	ctx := tracker.contextForSender(context.Background(), clientUniqueName)
+	ctx, release := tracker.contextForSender(context.Background(), clientUniqueName)
+	defer release()
 
 	// Verify context is not cancelled yet
 	select {
@@ -239,5 +242,62 @@ func TestTrackerContextCancelledOnDisconnect(t *testing.T) {
 		t.Log("Context correctly cancelled after disconnect")
 	case <-time.After(2 * time.Second):
 		t.Error("Context was NOT cancelled after client disconnect")
+	}
+}
+
+func TestTrackerAllowsConcurrentRequestsFromSameSender(t *testing.T) {
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	cmd, addr := startTestDBusDaemon(t, socketPath)
+	defer func() {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	}()
+
+	trackerConn, err := dbus.Connect(addr)
+	if err != nil {
+		t.Fatalf("connect tracker: %v", err)
+	}
+	defer trackerConn.Close()
+
+	tracker, err := newClientTracker(trackerConn)
+	if err != nil {
+		t.Fatalf("create tracker: %v", err)
+	}
+	defer tracker.close()
+
+	clientConn, err := dbus.Connect(addr)
+	if err != nil {
+		t.Fatalf("connect client: %v", err)
+	}
+	clientUniqueName := clientConn.Names()[0]
+
+	ctx1, release1 := tracker.contextForSender(context.Background(), clientUniqueName)
+	defer release1()
+	ctx2, release2 := tracker.contextForSender(context.Background(), clientUniqueName)
+	defer release2()
+
+	for name, ctx := range map[string]context.Context{"first": ctx1, "second": ctx2} {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("%s context was cancelled while client remained connected", name)
+		default:
+		}
+	}
+
+	release1()
+	select {
+	case <-ctx2.Done():
+		t.Fatal("releasing the first context cancelled the second context")
+	default:
+	}
+
+	clientConn.Close()
+	select {
+	case <-ctx2.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("second context was not cancelled after client disconnect")
 	}
 }

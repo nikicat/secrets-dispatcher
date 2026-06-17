@@ -122,8 +122,8 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	}
 
 	// Get a context that will be cancelled if the client disconnects
-	ctx := s.tracker.contextForSender(context.Background(), sender)
-	defer s.tracker.remove(sender)
+	ctx, release := s.tracker.contextForSender(context.Background(), sender)
+	defer release()
 
 	// Resolve sender information
 	senderInfo := s.resolver.Resolve(sender)

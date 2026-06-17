@@ -13,18 +13,19 @@ import (
 type clientTracker struct {
 	conn *dbus.Conn
 	mu   sync.Mutex
-	// clients maps sender unique name (e.g., ":1.123") to cancel function
-	clients   map[string]context.CancelFunc
+	// clients maps sender unique name (e.g., ":1.123") to active request cancel functions.
+	clients   map[string]map[uint64]context.CancelFunc
 	signals   chan *dbus.Signal
 	done      chan struct{}
 	closeOnce sync.Once
+	nextID    uint64
 }
 
 // newClientTracker creates a new tracker and starts listening for NameOwnerChanged signals.
 func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 	t := &clientTracker{
 		conn:    conn,
-		clients: make(map[string]context.CancelFunc),
+		clients: make(map[string]map[uint64]context.CancelFunc),
 		signals: make(chan *dbus.Signal, 16),
 		done:    make(chan struct{}),
 	}
@@ -86,30 +87,47 @@ func (t *clientTracker) processSignals() {
 // clientDisconnected is called when a client disconnects.
 func (t *clientTracker) clientDisconnected(sender string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	contexts := t.clients[sender]
+	delete(t.clients, sender)
+	t.mu.Unlock()
 
-	if cancel, ok := t.clients[sender]; ok {
+	for _, cancel := range contexts {
 		cancel()
-		delete(t.clients, sender)
 	}
 }
 
-// contextForSender returns a context that will be cancelled when the given sender disconnects.
-// The context should be used for the duration of a single request.
+// contextForSender returns a context that will be cancelled when the given sender disconnects,
+// plus a release function that removes only this request's tracker entry when it completes.
 // If the client has already disconnected, returns an already-cancelled context.
-func (t *clientTracker) contextForSender(parent context.Context, sender string) context.Context {
+func (t *clientTracker) contextForSender(parent context.Context, sender string) (context.Context, func()) {
 	t.mu.Lock()
-
-	// If there's already a context for this sender, cancel it first
-	// (shouldn't happen normally, but be safe)
-	if cancel, ok := t.clients[sender]; ok {
-		cancel()
-	}
-
+	t.nextID++
+	id := t.nextID
 	ctx, cancel := context.WithCancel(parent)
-	t.clients[sender] = cancel
-
+	if t.clients == nil {
+		t.clients = make(map[string]map[uint64]context.CancelFunc)
+	}
+	if t.clients[sender] == nil {
+		t.clients[sender] = make(map[uint64]context.CancelFunc)
+	}
+	t.clients[sender][id] = cancel
 	t.mu.Unlock()
+
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			t.mu.Lock()
+			defer t.mu.Unlock()
+			contexts, ok := t.clients[sender]
+			if !ok {
+				return
+			}
+			delete(contexts, id)
+			if len(contexts) == 0 {
+				delete(t.clients, sender)
+			}
+		})
+	}
 
 	// Check if the client is still connected. This handles the race where:
 	// 1. Client sends request then immediately disconnects
@@ -122,26 +140,11 @@ func (t *clientTracker) contextForSender(parent context.Context, sender string) 
 		Store(&owner)
 	if err != nil {
 		// Client already disconnected - cancel the context immediately
-		t.mu.Lock()
-		if currentCancel, ok := t.clients[sender]; ok {
-			currentCancel()
-			delete(t.clients, sender)
-		}
-		t.mu.Unlock()
-	}
-
-	return ctx
-}
-
-// remove cleans up tracking for a sender after their request completes.
-func (t *clientTracker) remove(sender string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if cancel, ok := t.clients[sender]; ok {
+		release()
 		cancel()
-		delete(t.clients, sender)
 	}
+
+	return ctx, release
 }
 
 // close stops the tracker.
@@ -155,11 +158,17 @@ func (t *clientTracker) close() {
 	})
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	// Cancel all pending contexts
-	for _, cancel := range t.clients {
-		cancel()
+	var cancels []context.CancelFunc
+	for _, contexts := range t.clients {
+		for _, cancel := range contexts {
+			cancels = append(cancels, cancel)
+		}
 	}
 	t.clients = nil
+	t.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
 }

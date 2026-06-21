@@ -246,18 +246,15 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	// Map remote session to local session
-	localSession, ok := c.sessions.GetLocalSession(secret.Session)
+	// Map the remote session to the upstream session, decrypting the value for
+	// DH sessions before forwarding it to the (plain) upstream service.
+	localSecret, ok, err := c.sessions.ForUpstream(secret)
 	if !ok {
 		return "/", "/", dbustypes.ErrSessionNotFound(string(secret.Session))
 	}
-
-	// Create local secret with local session path
-	localSecret := dbustypes.Secret{
-		Session:     localSession,
-		Parameters:  secret.Parameters,
-		Value:       secret.Value,
-		ContentType: secret.ContentType,
+	if err != nil {
+		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "error", err)
+		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)

@@ -161,10 +161,15 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
-	// Rewrite session paths in the returned secrets to use remote session path
+	// Rewrite session paths and, for DH sessions, encrypt each secret value for
+	// the client.
 	for path, secret := range secrets {
-		secret.Session = session // Use remote session path
-		secrets[path] = secret
+		encoded, err := s.sessions.ForClient(session, secret)
+		if err != nil {
+			s.logger.LogGetSecrets(context.Background(), itemStrs, "error", err)
+			return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		}
+		secrets[path] = encoded
 	}
 
 	s.logger.LogGetSecrets(context.Background(), itemStrs, "ok", nil)

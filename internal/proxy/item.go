@@ -177,11 +177,15 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
-	// Rewrite session path to use remote session
-	secret.Session = session
+	// Rewrite session path and, for DH sessions, encrypt the value for the client.
+	encoded, err := i.sessions.ForClient(session, secret)
+	if err != nil {
+		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
+		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+	}
 
 	i.logger.LogItemGetSecret(context.Background(), string(path), "ok", nil)
-	return secret, nil
+	return encoded, nil
 }
 
 // SetSecret sets the secret for this item.
@@ -219,18 +223,15 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 		return dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	// Map remote session to local session
-	localSession, ok := i.sessions.GetLocalSession(secret.Session)
+	// Map the remote session to the upstream session, decrypting the value for
+	// DH sessions before forwarding it to the (plain) upstream service.
+	localSecret, ok, err := i.sessions.ForUpstream(secret)
 	if !ok {
 		return dbustypes.ErrSessionNotFound(string(secret.Session))
 	}
-
-	// Create local secret with local session path
-	localSecret := dbustypes.Secret{
-		Session:     localSession,
-		Parameters:  secret.Parameters,
-		Value:       secret.Value,
-		ContentType: secret.ContentType,
+	if err != nil {
+		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "error", err)
+		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)

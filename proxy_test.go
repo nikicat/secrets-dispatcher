@@ -13,6 +13,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/dhcrypto"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
@@ -1313,7 +1314,8 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	}
 }
 
-// TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects non-plain algorithms.
+// TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects algorithms
+// it does not implement (anything other than "plain" or the DH algorithm).
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)
 	defer env.cleanup()
@@ -1340,13 +1342,208 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	defer remoteConn.Close()
 
 	obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "dh-ietf1024-sha256-aes128-cbc-pkcs7", dbus.MakeVariant(""))
+	call := obj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "dh-ietf2048-sha512-aes256-cbc-pkcs7", dbus.MakeVariant(""))
 
 	if call.Err == nil {
 		t.Error("expected error for unsupported algorithm")
 	} else if !strings.Contains(call.Err.Error(), "not supported") {
 		t.Errorf("unexpected error: %v", call.Err)
 	}
+}
+
+// openDHSession performs the client side of the dh-ietf1024 handshake against
+// the proxy and returns the negotiated session and the remote session path.
+func openDHSession(t *testing.T, serviceObj dbus.BusObject) (*dhcrypto.Session, dbus.ObjectPath) {
+	t.Helper()
+
+	kp, err := dhcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0,
+		"dh-ietf1024-sha256-aes128-cbc-pkcs7", dbus.MakeVariant(kp.Public))
+	if call.Err != nil {
+		t.Fatalf("OpenSession(dh): %v", call.Err)
+	}
+
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store OpenSession result: %v", err)
+	}
+
+	serverPub, ok := output.Value().([]byte)
+	if !ok {
+		t.Fatalf("OpenSession output is not a byte array: %T", output.Value())
+	}
+	session, err := kp.Derive(serverPub)
+	if err != nil {
+		t.Fatalf("derive client session: %v", err)
+	}
+	return session, sessionPath
+}
+
+// TestProxyDHSession exercises the dh-ietf1024-sha256-aes128-cbc-pkcs7 algorithm
+// end to end: secrets read over a DH session arrive encrypted (and decrypt to
+// the stored plaintext), and secrets written over a DH session are decrypted by
+// the proxy before reaching the (plain) upstream backend.
+func TestProxyDHSession(t *testing.T) {
+	env := newTestEnv(t)
+	defer env.cleanup()
+
+	localConn := env.localConn()
+	defer localConn.Close()
+
+	mock := testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		t.Fatalf("register mock service: %v", err)
+	}
+	itemPath := mock.AddItem("DH Secret", map[string]string{"app": "dh-app"}, []byte("dh-secret-value"))
+
+	p := proxy.New(proxy.Config{
+		ClientName: "test-client",
+		LogLevel:   slog.LevelDebug,
+	})
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+		t.Fatalf("connect proxy: %v", err)
+	}
+	defer p.Close()
+
+	remoteConn := env.remoteConn()
+	defer remoteConn.Close()
+
+	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+
+	// Item.GetSecret over a DH session returns ciphertext that decrypts to the
+	// stored plaintext.
+	t.Run("ItemGetSecretEncrypted", func(t *testing.T) {
+		session, sessionPath := openDHSession(t, serviceObj)
+
+		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
+		call := itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		if call.Err != nil {
+			t.Fatalf("Item.GetSecret: %v", call.Err)
+		}
+		var secret dbustypes.Secret
+		if err := call.Store(&secret); err != nil {
+			t.Fatalf("store secret: %v", err)
+		}
+
+		if string(secret.Value) == "dh-secret-value" {
+			t.Fatal("secret value was returned in plaintext over a DH session")
+		}
+		if len(secret.Parameters) != 16 {
+			t.Errorf("expected 16-byte IV in Parameters, got %d bytes", len(secret.Parameters))
+		}
+		plaintext, err := session.Decrypt(secret.Parameters, secret.Value)
+		if err != nil {
+			t.Fatalf("decrypt secret: %v", err)
+		}
+		if string(plaintext) != "dh-secret-value" {
+			t.Errorf("decrypted secret = %q, want %q", plaintext, "dh-secret-value")
+		}
+	})
+
+	// Service.GetSecrets over a DH session encrypts every returned secret.
+	t.Run("ServiceGetSecretsEncrypted", func(t *testing.T) {
+		session, sessionPath := openDHSession(t, serviceObj)
+
+		call := serviceObj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"app": "dh-app"})
+		if call.Err != nil {
+			t.Fatalf("SearchItems: %v", call.Err)
+		}
+		var unlocked, locked []dbus.ObjectPath
+		if err := call.Store(&unlocked, &locked); err != nil {
+			t.Fatalf("store search result: %v", err)
+		}
+		if len(unlocked) == 0 {
+			t.Fatal("no items found")
+		}
+
+		call = serviceObj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, unlocked, sessionPath)
+		if call.Err != nil {
+			t.Fatalf("GetSecrets: %v", call.Err)
+		}
+		var secrets map[dbus.ObjectPath]dbustypes.Secret
+		if err := call.Store(&secrets); err != nil {
+			t.Fatalf("store secrets: %v", err)
+		}
+		if len(secrets) == 0 {
+			t.Fatal("expected at least one secret")
+		}
+		for path, secret := range secrets {
+			if secret.Session != sessionPath {
+				t.Errorf("secret %s: session = %s, want %s", path, secret.Session, sessionPath)
+			}
+			plaintext, err := session.Decrypt(secret.Parameters, secret.Value)
+			if err != nil {
+				t.Fatalf("decrypt secret %s: %v", path, err)
+			}
+			if string(plaintext) != "dh-secret-value" {
+				t.Errorf("secret %s: decrypted = %q, want %q", path, plaintext, "dh-secret-value")
+			}
+		}
+	})
+
+	// CreateItem over a DH session: the proxy decrypts before storing upstream,
+	// so the value can be read back as plaintext over a plain session.
+	t.Run("CreateItemEncrypted", func(t *testing.T) {
+		session, sessionPath := openDHSession(t, serviceObj)
+
+		ciphertext, iv, err := session.Encrypt([]byte("written-over-dh"))
+		if err != nil {
+			t.Fatalf("encrypt: %v", err)
+		}
+
+		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+		properties := map[string]dbus.Variant{
+			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("DH Written"),
+			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"dh-written": "yes"}),
+		}
+		secret := dbustypes.Secret{
+			Session:     sessionPath,
+			Parameters:  iv,
+			Value:       ciphertext,
+			ContentType: "text/plain",
+		}
+		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		if call.Err != nil {
+			t.Fatalf("CreateItem: %v", call.Err)
+		}
+		var newItem, prompt dbus.ObjectPath
+		if err := call.Store(&newItem, &prompt); err != nil {
+			t.Fatalf("store CreateItem result: %v", err)
+		}
+		if newItem == "/" || newItem == "" {
+			t.Fatal("expected a valid item path")
+		}
+
+		// Read it back over a *plain* session: the backend must hold plaintext,
+		// proving the proxy decrypted the DH-encrypted write before forwarding.
+		call = serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+		if call.Err != nil {
+			t.Fatalf("OpenSession(plain): %v", call.Err)
+		}
+		var plainOut dbus.Variant
+		var plainSession dbus.ObjectPath
+		if err := call.Store(&plainOut, &plainSession); err != nil {
+			t.Fatalf("store plain session: %v", err)
+		}
+
+		itemObj := remoteConn.Object(dbustypes.BusName, newItem)
+		call = itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, plainSession)
+		if call.Err != nil {
+			t.Fatalf("GetSecret(plain): %v", call.Err)
+		}
+		var got dbustypes.Secret
+		if err := call.Store(&got); err != nil {
+			t.Fatalf("store secret: %v", err)
+		}
+		if string(got.Value) != "written-over-dh" {
+			t.Errorf("backend stored %q, want plaintext %q", got.Value, "written-over-dh")
+		}
+	})
 }
 
 // TestProxyDetectsSocketDisconnect tests that the proxy detects when the remote

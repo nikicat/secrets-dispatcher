@@ -159,7 +159,7 @@ func runLogin(args []string) {
 	fmt.Println("Open this URL to access the Web UI:")
 	fmt.Println(url)
 	fmt.Println()
-	fmt.Println("(Link expires in 5 minutes)")
+	fmt.Println("(Single-use link; expires in 5 minutes)")
 
 	// Try to open the URL in the default browser
 	if err := exec.Command("xdg-open", url).Start(); err != nil {

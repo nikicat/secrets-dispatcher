@@ -401,14 +401,25 @@ func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate the JWT
-	_, err := h.auth.ValidateJWT(req.Token)
+	claims, err := h.auth.ValidateJWT(req.Token)
 	if err != nil {
 		writeError(w, "invalid or expired token", http.StatusUnauthorized)
 		return
 	}
 
+	// Enforce single use: a login token is redeemable exactly once, so a token
+	// captured from the launcher/browser argv cannot be replayed (the legitimate
+	// browser's own page-load exchange has already consumed it).
+	if !h.auth.consumeJTI(jti(claims.Jti), claims.Exp) {
+		writeError(w, "invalid or expired token", http.StatusUnauthorized)
+		return
+	}
+
 	// Set the session cookie
-	h.auth.SetSessionCookie(w)
+	if err := h.auth.SetSessionCookie(w); err != nil {
+		writeError(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
 
 	writeJSON(w, ActionResponse{Status: "authenticated"})
 }

@@ -11,6 +11,23 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
+// mintSession mints a live browser session on auth and returns the matching
+// "session=<id>" Cookie header value. Session cookies are independent random IDs
+// (not the master token), so tests must obtain one this way rather than reusing
+// auth.Token().
+func mintSession(t *testing.T, auth *Auth) string {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	if err := auth.SetSessionCookie(rr); err != nil {
+		t.Fatalf("failed to mint session: %v", err)
+	}
+	cookies := rr.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatal("SetSessionCookie set no cookie")
+	}
+	return cookies[0].Name + "=" + cookies[0].Value
+}
+
 // testHandlers creates handlers with a test auth for use in tests.
 func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 	t.Helper()

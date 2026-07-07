@@ -75,7 +75,7 @@ func TestWSHandler_Snapshot(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -195,7 +195,7 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -266,7 +266,7 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -324,7 +324,7 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -386,7 +386,7 @@ func TestWSHandler_BroadcastClient(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -448,7 +448,7 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -498,7 +498,7 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -565,7 +565,7 @@ func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
 
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader: http.Header{
-			"Cookie": []string{"session=" + auth.Token()},
+			"Cookie": []string{mintSession(t, auth)},
 		},
 	})
 	if err != nil {
@@ -633,7 +633,7 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 	for i := range 3 {
 		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 			HTTPHeader: http.Header{
-				"Cookie": []string{"session=" + auth.Token()},
+				"Cookie": []string{mintSession(t, auth)},
 			},
 		})
 		if err != nil {

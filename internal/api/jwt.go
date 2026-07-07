@@ -2,8 +2,10 @@ package api
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -20,15 +22,23 @@ type jwtHeader struct {
 	Typ string `json:"typ"`
 }
 
-// jwtClaims contains the JWT claims we use.
+// jwtClaims contains the JWT claims we use. Jti is a random per-token nonce that
+// makes the login token single-use: HandleAuth records the jti on redemption and
+// rejects any later presentation of the same token (see Auth.consumeJTI).
 type jwtClaims struct {
-	Exp int64 `json:"exp"`
-	Iat int64 `json:"iat"`
+	Exp int64  `json:"exp"`
+	Iat int64  `json:"iat"`
+	Jti string `json:"jti"`
 }
 
-// GenerateJWT creates a short-lived JWT signed with the auth token.
+// GenerateJWT creates a short-lived, single-use JWT signed with the auth token.
 func (a *Auth) GenerateJWT() (string, error) {
 	now := time.Now()
+
+	jtiBytes := make([]byte, 16)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return "", fmt.Errorf("generate jti: %w", err)
+	}
 
 	header := jwtHeader{
 		Alg: "HS256",
@@ -38,6 +48,7 @@ func (a *Auth) GenerateJWT() (string, error) {
 	claims := jwtClaims{
 		Iat: now.Unix(),
 		Exp: now.Add(jwtExpiry).Unix(),
+		Jti: hex.EncodeToString(jtiBytes),
 	}
 
 	headerJSON, err := json.Marshal(header)

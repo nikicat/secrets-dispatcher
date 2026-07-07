@@ -10,18 +10,54 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
 	cookieFileName    = ".cookie"
 	cookieSize        = 32 // 32 bytes = 256 bits
 	sessionCookieName = "session"
+	sessionIDSize     = 32 // 32 bytes = 256 bits
 )
 
+// sessionID is an opaque, independent browser session identifier. It is a random
+// value minted server-side — never the master token — so a leaked session cookie
+// discloses nothing reusable as the Bearer credential.
+type sessionID string
+
+// jti is a login-token nonce (the JWT "jti" claim) used to enforce single use.
+type jti string
+
 // Auth handles cookie-based authentication for the API.
+//
+// The master token (loaded from / persisted to the 0600 .cookie file) is the
+// Bearer credential used by same-user thin clients (gpg-sign, CLI). Browser
+// sessions are deliberately NOT the master token: SetSessionCookie mints an
+// independent random session ID stored server-side, so a leaked session cookie
+// never discloses the master token and can be revoked without rotating it.
 type Auth struct {
 	token    string
 	filePath string
+
+	mu sync.Mutex
+	// sessions holds the set of live browser session IDs. Membership is the sole
+	// session check.
+	sessions map[sessionID]struct{}
+	// usedJTIs records login-token nonces already redeemed, mapped to their
+	// expiry (unix seconds), so a single-use JWT cannot be replayed within its
+	// validity window. Pruned lazily on each redemption.
+	usedJTIs map[jti]int64
+}
+
+// newAuth constructs an Auth with its in-memory session/nonce maps initialized.
+func newAuth(token, filePath string) *Auth {
+	return &Auth{
+		token:    token,
+		filePath: filePath,
+		sessions: make(map[sessionID]struct{}),
+		usedJTIs: make(map[jti]int64),
+	}
 }
 
 // NewAuth creates or loads an Auth from the config directory.
@@ -39,10 +75,7 @@ func NewAuth(configDir string) (*Auth, error) {
 	if data, err := os.ReadFile(filePath); err == nil {
 		token := strings.TrimSpace(string(data))
 		if token != "" {
-			return &Auth{
-				token:    token,
-				filePath: filePath,
-			}, nil
+			return newAuth(token, filePath), nil
 		}
 	}
 
@@ -58,10 +91,7 @@ func NewAuth(configDir string) (*Auth, error) {
 		return nil, err
 	}
 
-	return &Auth{
-		token:    token,
-		filePath: filePath,
-	}, nil
+	return newAuth(token, filePath), nil
 }
 
 // Middleware returns an HTTP middleware that checks for valid auth.
@@ -121,10 +151,7 @@ func LoadAuth(configDir string) (*Auth, error) {
 		return nil, fmt.Errorf("empty cookie file")
 	}
 
-	return &Auth{
-		token:    token,
-		filePath: filePath,
-	}, nil
+	return newAuth(token, filePath), nil
 }
 
 // GenerateLoginURL creates a login URL with an embedded JWT.
@@ -136,14 +163,16 @@ func (a *Auth) GenerateLoginURL(addr string) (string, error) {
 	return fmt.Sprintf("http://%s/?token=%s", addr, jwt), nil
 }
 
-// ValidateSession checks if the session cookie is valid.
-// Returns true if the session cookie matches the auth token.
+// ValidateSession checks if the session cookie names a live server-side session.
 func (a *Auth) ValidateSession(r *http.Request) bool {
 	cookie, err := r.Cookie(sessionCookieName)
-	if err != nil {
+	if err != nil || cookie.Value == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(a.token)) == 1
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.sessions[sessionID(cookie.Value)]
+	return ok
 }
 
 // ValidateRequest checks session cookie first, then falls back to Bearer token
@@ -160,13 +189,50 @@ func (a *Auth) ValidateRequest(r *http.Request) bool {
 	return false
 }
 
-// SetSessionCookie sets the session cookie on the response.
-func (a *Auth) SetSessionCookie(w http.ResponseWriter) {
+// SetSessionCookie mints a fresh, independent server-side session and sets it as
+// the session cookie. The cookie value is a random session ID — never the master
+// token — so reading it (e.g. from a curl client) grants only a revocable browser
+// session, not the Bearer credential.
+func (a *Auth) SetSessionCookie(w http.ResponseWriter) error {
+	idBytes := make([]byte, sessionIDSize)
+	if _, err := rand.Read(idBytes); err != nil {
+		return fmt.Errorf("generate session id: %w", err)
+	}
+	id := sessionID(hex.EncodeToString(idBytes))
+
+	a.mu.Lock()
+	a.sessions[id] = struct{}{}
+	a.mu.Unlock()
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
-		Value:    a.token,
+		Value:    string(id),
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 	})
+	return nil
+}
+
+// consumeJTI records a login-token nonce as redeemed and reports whether this is
+// the first time it has been seen (i.e. whether redemption may proceed). Replays
+// of the same token — including a token captured from the launcher/browser argv —
+// return false. exp is the token's expiry (unix seconds); entries are pruned once
+// past expiry since an expired JWT is already rejected by ValidateJWT.
+func (a *Auth) consumeJTI(id jti, exp int64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	now := time.Now().Unix()
+	for used, usedExp := range a.usedJTIs {
+		if usedExp <= now {
+			delete(a.usedJTIs, used)
+		}
+	}
+
+	if _, seen := a.usedJTIs[id]; seen {
+		return false
+	}
+	a.usedJTIs[id] = exp
+	return true
 }

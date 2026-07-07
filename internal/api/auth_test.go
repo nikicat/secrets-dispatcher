@@ -5,7 +5,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewAuth(t *testing.T) {
@@ -233,4 +239,82 @@ func TestAuth_PreservesExistingCookie(t *testing.T) {
 	if string(content) != token1 {
 		t.Error("cookie file content doesn't match original token")
 	}
+}
+
+// TestSessionCookieIsNotMasterToken verifies the amplification fix (Vuln 2): the
+// session cookie is an independent random value, never the master Bearer token,
+// and each login mints a distinct one.
+func TestSessionCookieIsNotMasterToken(t *testing.T) {
+	auth, err := NewAuth(t.TempDir())
+	require.NoError(t, err)
+
+	rr1 := httptest.NewRecorder()
+	require.NoError(t, auth.SetSessionCookie(rr1))
+	c1 := rr1.Result().Cookies()
+	require.Len(t, c1, 1)
+
+	rr2 := httptest.NewRecorder()
+	require.NoError(t, auth.SetSessionCookie(rr2))
+	c2 := rr2.Result().Cookies()
+	require.Len(t, c2, 1)
+
+	assert.NotEqual(t, auth.Token(), c1[0].Value, "session cookie must not be the master token")
+	assert.NotEqual(t, c1[0].Value, c2[0].Value, "each login must mint a distinct session id")
+	assert.True(t, c1[0].HttpOnly)
+	assert.Equal(t, http.SameSiteStrictMode, c1[0].SameSite)
+
+	// A minted session validates; the master token presented as a session cookie does not.
+	reqGood := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqGood.AddCookie(&http.Cookie{Name: sessionCookieName, Value: c1[0].Value})
+	assert.True(t, auth.ValidateSession(reqGood), "minted session should validate")
+
+	reqBad := httptest.NewRequest(http.MethodGet, "/", nil)
+	reqBad.AddCookie(&http.Cookie{Name: sessionCookieName, Value: auth.Token()})
+	assert.False(t, auth.ValidateSession(reqBad), "master token as session cookie must not validate")
+}
+
+// TestLoginJWTIsSingleUse verifies that a login JWT can be redeemed for a session
+// exactly once: a replay of the same token (e.g. captured from launcher/browser
+// argv) is rejected even while still within its validity window.
+func TestLoginJWTIsSingleUse(t *testing.T) {
+	auth, err := NewAuth(t.TempDir())
+	require.NoError(t, err)
+
+	token, err := auth.GenerateJWT()
+	require.NoError(t, err)
+
+	claims, err := auth.ValidateJWT(token)
+	require.NoError(t, err)
+	require.NotEmpty(t, claims.Jti, "generated JWT must carry a jti nonce")
+
+	// First redemption succeeds.
+	assert.True(t, auth.consumeJTI(jti(claims.Jti), claims.Exp))
+	// Replay of the same nonce is rejected.
+	assert.False(t, auth.consumeJTI(jti(claims.Jti), claims.Exp))
+
+	// The signature/expiry are still valid — only single-use blocks the replay.
+	_, err = auth.ValidateJWT(token)
+	assert.NoError(t, err, "token remains cryptographically valid; single-use is enforced separately")
+}
+
+// TestHandleAuthRejectsReplayedToken exercises single use through the HTTP handler:
+// the same login token cannot be exchanged for a session cookie twice.
+func TestHandleAuthRejectsReplayedToken(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Minute, HistoryMax: 10})
+	handlers := testHandlers(t, mgr)
+
+	token, err := handlers.auth.GenerateJWT()
+	require.NoError(t, err)
+	body := `{"token":"` + token + `"}`
+
+	req1 := httptest.NewRequest(http.MethodPost, "/api/v1/auth", strings.NewReader(body))
+	rr1 := httptest.NewRecorder()
+	handlers.HandleAuth(rr1, req1)
+	require.Equal(t, http.StatusOK, rr1.Code)
+	require.Len(t, rr1.Result().Cookies(), 1, "first exchange should set a session cookie")
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/auth", strings.NewReader(body))
+	rr2 := httptest.NewRecorder()
+	handlers.HandleAuth(rr2, req2)
+	assert.Equal(t, http.StatusUnauthorized, rr2.Code, "replayed token must be rejected")
 }

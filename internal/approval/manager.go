@@ -142,9 +142,15 @@ type TrustedSigner struct {
 }
 
 // AutoApproveRule defines a temporary rule that auto-approves matching requests.
+//
+// InvokerExe is the non-spoofable identity the rule matches on: the invoking
+// process's /proc/PID/exe path. InvokerName holds the caller's comm and is
+// retained for display/logging only — it is attacker-controllable
+// (prctl(PR_SET_NAME)) and must never be the basis for a match.
 type AutoApproveRule struct {
 	ID          string            `json:"id"`
 	InvokerName string            `json:"invoker_name"`
+	InvokerExe  string            `json:"invoker_exe,omitempty"`
 	RequestType RequestType       `json:"request_type"`
 	Collection  string            `json:"collection"`
 	Attributes  map[string]string `json:"attributes,omitempty"`
@@ -669,6 +675,7 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 	rule := AutoApproveRule{
 		ID:          uuid.New().String(),
 		InvokerName: req.SenderInfo.UnitName,
+		InvokerExe:  invokerExePath(req.SenderInfo),
 		RequestType: req.Type,
 		ExpiresAt:   time.Now().Add(duration),
 	}
@@ -688,7 +695,7 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 	// Dedup: if a matching rule already exists, refresh its expiry
 	for i := range m.autoApproveRules {
 		existing := &m.autoApproveRules[i]
-		if existing.InvokerName == rule.InvokerName &&
+		if existing.InvokerExe == rule.InvokerExe &&
 			existing.RequestType == rule.RequestType &&
 			existing.Collection == rule.Collection &&
 			attributesEqual(existing.Attributes, rule.Attributes) {
@@ -746,8 +753,11 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 			continue // already found a match, just cleaning
 		}
 
-		// Match invoker name
-		if rule.InvokerName != senderInfo.UnitName {
+		// Match on the non-spoofable invoker exe path, never the caller's comm
+		// (UnitName), which is attacker-controllable. Fail closed when either the
+		// rule or the caller lacks a resolved exe.
+		callerExe := invokerExePath(senderInfo)
+		if callerExe == "" || rule.InvokerExe != callerExe {
 			continue
 		}
 		// Match request type
@@ -897,6 +907,20 @@ func allFilesMatch(files []string, prefix string) bool {
 		}
 	}
 	return true
+}
+
+// invokerExePath returns the non-spoofable executable path (/proc/PID/exe) of the
+// invoking process — the chain entry identified by senderInfo.PID. Unlike
+// UnitName (which normally holds the caller's spoofable comm), this cannot be
+// forged with prctl(PR_SET_NAME). Returns "" when no exe can be resolved, in which
+// case callers must fail closed rather than fall back to comm.
+func invokerExePath(s SenderInfo) string {
+	for _, p := range s.ProcessChain {
+		if p.PID == s.PID && p.Exe != "" {
+			return p.Exe
+		}
+	}
+	return ""
 }
 
 // readExePath reads the executable path from /proc/PID/exe.

@@ -1872,14 +1872,14 @@ func TestRequireApproval_AutoApproved_AutoApproveRule(t *testing.T) {
 		ID:         "r1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	})
 
 	autoApproved, err := mgr.RequireApproval(
 		context.Background(), "c",
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i2"}}, "",
 		RequestTypeGetSecret, nil,
-		SenderInfo{UnitName: "gh"},
+		testSender("gh", "/usr/bin/gh"),
 	)
 	if err != nil {
 		t.Fatal(err)

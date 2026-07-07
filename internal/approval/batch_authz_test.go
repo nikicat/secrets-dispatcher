@@ -21,11 +21,13 @@ func itemInCollection(collection, name string) ItemInfo {
 func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
 
+	sender := testSender("someapp", "/usr/bin/someapp")
+
 	// The user auto-approved a read scoped to the "public" collection.
 	mgr.AddAutoApproveRule(&Request{
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{itemInCollection("public", "x")},
-		SenderInfo: SenderInfo{UnitName: "someapp"},
+		SenderInfo: sender,
 	})
 
 	// A batch whose first item is the benign one, second item is sensitive.
@@ -33,7 +35,7 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	assert.Nil(t, mgr.checkAutoApproveRules(SenderInfo{UnitName: "someapp"}, batch, RequestTypeGetSecret),
+	assert.Nil(t, mgr.checkAutoApproveRules(sender, batch, RequestTypeGetSecret),
 		"auto-approve scoped to 'public' must not cover a batch that also reads 'login'")
 
 	// A batch fully inside the approved collection is still covered.
@@ -41,7 +43,7 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("public", "y"),
 	}
-	assert.NotNil(t, mgr.checkAutoApproveRules(SenderInfo{UnitName: "someapp"}, inScope, RequestTypeGetSecret),
+	assert.NotNil(t, mgr.checkAutoApproveRules(sender, inScope, RequestTypeGetSecret),
 		"auto-approve scoped to 'public' should still cover an all-'public' batch")
 }
 

@@ -6,6 +6,19 @@ import (
 	"time"
 )
 
+// testSender builds a SenderInfo whose invoker process (PID) carries the given
+// comm and /proc/PID/exe, mirroring how the daemon resolves a live caller.
+// Auto-approve matching keys on the non-spoofable exe, so tests exercising a
+// match must supply one.
+func testSender(comm, exe string) SenderInfo {
+	const pid = 4242
+	return SenderInfo{
+		PID:          pid,
+		UnitName:     comm,
+		ProcessChain: []ProcessInfo{{Name: comm, PID: pid, Exe: exe}},
+	}
+}
+
 func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
 
@@ -19,13 +32,13 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 			Label:      "gh:github.com",
 			Attributes: map[string]string{"service": "gh:github.com"},
 		}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	mgr.AddAutoApproveRule(req)
 
 	// Retry with same invoker, type, collection, attributes → should match
 	rule := mgr.checkAutoApproveRules(
-		SenderInfo{UnitName: "gh"},
+		testSender("gh", "/usr/bin/gh"),
 		[]ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i99",
 			Attributes: map[string]string{"service": "gh:github.com", "extra": "val"},
@@ -37,6 +50,42 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 	}
 }
 
+// TestAutoApproveRule_CommSpoofDoesNotMatch is the regression test for Vuln 4:
+// an ephemeral auto-approve rule must key on the non-spoofable invoker exe, so a
+// process that merely sets its comm (UnitName) to impersonate the trusted app —
+// while running a different real binary — is not auto-approved.
+func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+
+	// User approved "always allow" for the real node binary reading login secrets.
+	mgr.AddAutoApproveRule(&Request{
+		Type:       RequestTypeGetSecret,
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
+		SenderInfo: testSender("node", "/usr/bin/node"),
+	})
+
+	// Malware sets comm to "node" but runs /tmp/malware.
+	spoofed := testSender("node", "/tmp/malware")
+	rule := mgr.checkAutoApproveRules(
+		spoofed,
+		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
+		RequestTypeGetSecret,
+	)
+	if rule != nil {
+		t.Fatal("comm-spoofed caller with a different exe must not match the auto-approve rule")
+	}
+
+	// The genuine binary still matches.
+	rule = mgr.checkAutoApproveRules(
+		testSender("node", "/usr/bin/node"),
+		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
+		RequestTypeGetSecret,
+	)
+	if rule == nil {
+		t.Fatal("the genuine invoker exe should still match")
+	}
+}
+
 func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
 
@@ -44,12 +93,12 @@ func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	mgr.AddAutoApproveRule(req)
 
 	rule := mgr.checkAutoApproveRules(
-		SenderInfo{UnitName: "seahorse"},
+		testSender("seahorse", "/usr/bin/seahorse"),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		RequestTypeGetSecret,
 	)
@@ -65,14 +114,14 @@ func TestAutoApproveRule_Expiry(t *testing.T) {
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	mgr.AddAutoApproveRule(req)
 
 	time.Sleep(60 * time.Millisecond)
 
 	rule := mgr.checkAutoApproveRules(
-		SenderInfo{UnitName: "gh"},
+		testSender("gh", "/usr/bin/gh"),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		RequestTypeGetSecret,
 	)
@@ -94,7 +143,7 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	mgr.AddAutoApproveRule(req)
 
@@ -106,7 +155,7 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 		"session",
 		RequestTypeGetSecret,
 		nil,
-		SenderInfo{UnitName: "gh"},
+		testSender("gh", "/usr/bin/gh"),
 	)
 	if err != nil {
 		t.Fatalf("expected auto-approved, got: %v", err)
@@ -119,7 +168,7 @@ func TestAutoApproveRule_ListAndRemove(t *testing.T) {
 	req := &Request{
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	ruleID := mgr.AddAutoApproveRule(req)
 
@@ -149,13 +198,13 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 			Path:       "/org/freedesktop/secrets/collection/default/i1",
 			Attributes: map[string]string{"service": "gh:github.com"},
 		}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	mgr.AddAutoApproveRule(req)
 
 	// Request with superset attributes → should match
 	rule := mgr.checkAutoApproveRules(
-		SenderInfo{UnitName: "gh"},
+		testSender("gh", "/usr/bin/gh"),
 		[]ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i2",
 			Attributes: map[string]string{"service": "gh:github.com", "user": "nb"},
@@ -168,7 +217,7 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 
 	// Request with different attribute value → should NOT match
 	rule = mgr.checkAutoApproveRules(
-		SenderInfo{UnitName: "gh"},
+		testSender("gh", "/usr/bin/gh"),
 		[]ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i2",
 			Attributes: map[string]string{"service": "other:example.com"},
@@ -187,7 +236,7 @@ func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 
 	id1 := mgr.AddAutoApproveRule(req)
@@ -225,7 +274,7 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 			Path:       "/org/freedesktop/secrets/collection/default/i1",
 			Attributes: map[string]string{"service": "gh:github.com", "username": "nikicat"},
 		}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 	req2 := &Request{
 		ID:   "req-2",
@@ -234,7 +283,7 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 			Path:       "/org/freedesktop/secrets/collection/default/i2",
 			Attributes: map[string]string{"service": "gh:github.com", "username": ""},
 		}},
-		SenderInfo: SenderInfo{UnitName: "gh"},
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 
 	id1 := mgr.AddAutoApproveRule(req1)

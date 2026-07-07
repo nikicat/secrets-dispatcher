@@ -255,66 +255,77 @@ func (f *fakeGPGRunner) RunGPG(_ /* path */, _ /* keyID */ string, _ /* commit *
 	return f.sig, f.status, 0, nil
 }
 
-// TestHandleGPGSignRequest_EphemeralAutoApproveRuleSkipsPending is the
-// regression test for the bug where ApproveAndAutoApprove on a gpg_sign
-// notification added an AutoApproveRule that was then ignored on subsequent
-// gpg_sign requests, because HandleGPGSignRequest only checked permanent
-// TrustedSigners and went straight to CreateGPGSignRequest. With the fix, an
-// ephemeral rule of type gpg_sign matching the sender skips the pending
-// notification and signs immediately.
-func TestHandleGPGSignRequest_EphemeralAutoApproveRuleSkipsPending(t *testing.T) {
+// TestHandleGPGSignRequest_UnverifiableInvokerStaysPending guards the
+// fail-closed half of the comm-spoofing fix (Vuln 4): an ephemeral gpg_sign
+// auto-approve rule keys on the non-spoofable invoker /proc/PID/exe, so when the
+// caller's exe cannot be resolved (as here — an httptest request carries no peer
+// socket) the rule must NOT silently short-circuit; the request enters the
+// pending flow and waits for an explicit decision. The positive case (a caller
+// whose exe matches the rule signs without a prompt) is exercised end-to-end by
+// the podman E2E suite, where real processes with distinct exes exist.
+func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
 	mgr := approval.NewManager(approval.ManagerConfig{
 		Timeout:             5 * time.Second,
 		HistoryMax:          100,
 		AutoApproveDuration: time.Minute,
 	})
 	handlers := testHandlers(t, mgr)
-	// Inject a fake gpg runner so the auto-approved path does not need real gpg.
 	handlers.resolver.GPGRunner = &fakeGPGRunner{
 		sig:    []byte("FAKE_SIG"),
 		status: []byte("[GNUPG:] SIG_CREATED D"),
 	}
 
-	// Seed an auto-approve rule for gpg_sign that matches the test sender
-	// (httptest requests yield SenderInfo{} so UnitName is "").
+	// A rule whose invoker exe is unset (as ApproveAndAutoApprove would record
+	// for a caller whose exe could not be resolved) must never match, since exe
+	// is the sole identity and an empty exe fails closed.
 	mgr.AddAutoApproveRule(&approval.Request{
 		Type:       approval.RequestTypeGPGSign,
 		SenderInfo: approval.SenderInfo{},
 	})
 
-	// POST the request — should be auto-approved, not added to pending.
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
 		strings.NewReader(validGPGSignBody))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handlers.HandleGPGSignRequest(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
-	}
+	require.Equalf(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
 
-	var resp GPGSignResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if resp.RequestID == "" {
-		t.Fatal("expected non-empty request_id even on auto-approve")
-	}
+	// The request must be pending (awaiting a decision), not silently signed.
+	assert.Len(t, mgr.List(), 1, "unverifiable invoker must not be auto-approved")
+}
 
-	// Critical: no pending request. The bug was the request hanging in pending
-	// waiting for a desktop notification despite a matching rule.
-	if pending := mgr.List(); len(pending) != 0 {
-		t.Fatalf("expected 0 pending requests after auto-approve, got %d (the rule was ignored — bug regressed)", len(pending))
-	}
+// TestGPGSignEphemeralRuleMatchesOnInvokerExe is the manager-level regression
+// test for the wiring the HTTP handler depends on: an ephemeral gpg_sign rule is
+// consulted by CheckAutoApproveRules and matches a caller whose invoker exe
+// equals the rule's — never merely its comm.
+func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:             5 * time.Second,
+		HistoryMax:          100,
+		AutoApproveDuration: time.Minute,
+	})
 
-	// And the history should reflect that this was auto-approved.
-	entry := mgr.GetHistoryEntry(resp.RequestID)
-	if entry == nil {
-		t.Fatalf("expected history entry for request %s", resp.RequestID)
+	const pid = 4242
+	exeSender := approval.SenderInfo{
+		PID:          pid,
+		UnitName:     "git",
+		ProcessChain: []approval.ProcessInfo{{Name: "git", PID: pid, Exe: "/usr/bin/git"}},
 	}
-	if entry.Resolution != approval.ResolutionAutoApproved {
-		t.Errorf("expected resolution %q, got %q", approval.ResolutionAutoApproved, entry.Resolution)
+	mgr.AddAutoApproveRule(&approval.Request{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender})
+
+	// Same exe → matches.
+	assert.NotNil(t, mgr.CheckAutoApproveRules(exeSender, nil, approval.RequestTypeGPGSign),
+		"rule should match a caller with the same invoker exe")
+
+	// Same spoofable comm but a different real exe → must NOT match.
+	spoofed := approval.SenderInfo{
+		PID:          pid,
+		UnitName:     "git", // attacker set comm to "git"
+		ProcessChain: []approval.ProcessInfo{{Name: "git", PID: pid, Exe: "/tmp/malware"}},
 	}
+	assert.Nil(t, mgr.CheckAutoApproveRules(spoofed, nil, approval.RequestTypeGPGSign),
+		"rule must not match a caller that only spoofed the comm")
 }
 
 // TestHandleGPGSignRequest_NoMatchingRuleStaysPending guards the negative case:

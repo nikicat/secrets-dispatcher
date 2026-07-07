@@ -754,20 +754,12 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 		if rule.RequestType != reqType {
 			continue
 		}
-		// Match collection
-		reqCollection := ""
-		if len(items) > 0 {
-			reqCollection = extractCollection(items[0].Path)
-		}
-		if rule.Collection != "" && rule.Collection != reqCollection {
-			continue
-		}
-		// Match attributes (subset match: all rule attrs must be present in request)
-		reqAttrs := map[string]string{}
-		if len(items) > 0 && items[0].Attributes != nil {
-			reqAttrs = items[0].Attributes
-		}
-		if attributesMatch(rule.Attributes, reqAttrs) {
+		// Match collection + attributes for EVERY item in the batch. An
+		// auto-approve rule is permissive, so a single decision covers the whole
+		// batch only when every item falls within the rule's scope; matching just
+		// items[0] would let a batch smuggle an out-of-scope secret past a rule
+		// scoped to a benign collection.
+		if autoApproveCoversAll(rule, items) {
 			matched := *rule
 			match = &matched
 		}
@@ -775,6 +767,30 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 
 	m.autoApproveRules = active
 	return match
+}
+
+// autoApproveCoversAll reports whether an auto-approve rule covers every item in
+// the batch (collection and attributes). An auto-approve rule is permissive, so
+// it may only authorize a batch when all items are in scope. An empty batch is
+// covered only when the rule imposes no secret-scope constraints — the case that
+// carries the itemless gpg_sign path.
+func autoApproveCoversAll(rule *AutoApproveRule, items []ItemInfo) bool {
+	if len(items) == 0 {
+		return rule.Collection == "" && len(rule.Attributes) == 0
+	}
+	for _, it := range items {
+		if rule.Collection != "" && rule.Collection != extractCollection(it.Path) {
+			return false
+		}
+		attrs := it.Attributes
+		if attrs == nil {
+			attrs = map[string]string{}
+		}
+		if !attributesMatch(rule.Attributes, attrs) {
+			return false
+		}
+	}
+	return true
 }
 
 // attributesEqual returns true if both maps have the same keys and values.
@@ -925,9 +941,11 @@ func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, re
 		}
 	}
 
-	// Check secret matcher
+	// Check secret matcher. deny/ignore rules are restrictive (fire if ANY item
+	// is in scope); approve rules are permissive (fire only if EVERY item is).
 	if rule.Secret != nil {
-		if !matchSecret(rule.Secret, items) {
+		restrictive := rule.Action == "deny" || rule.Action == "ignore"
+		if !matchSecret(rule.Secret, items, restrictive) {
 			return false
 		}
 	}
@@ -993,39 +1011,60 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 	return true
 }
 
-// matchSecret checks if the items match the secret matcher.
-// Uses the first item for collection/label/attributes matching.
-func matchSecret(sm *SecretMatcher, items []ItemInfo) bool {
+// matchSecret checks whether a batch of items matches the secret matcher.
+//
+// A single approval decision covers the whole batch, so every item must be
+// considered — never just items[0]. The quantifier depends on the rule's
+// polarity so that both directions fail closed:
+//
+//   - restrictive rules (deny/ignore) match if ANY item is in scope, so a deny
+//     scoped to a sensitive collection still fires when a batch smuggles that
+//     item alongside benign ones.
+//   - permissive rules (approve) match only if EVERY item is in scope, so an
+//     approve scoped to a low-value collection cannot silently authorize a batch
+//     that also pulls out-of-scope secrets.
+//
+// A matcher with no constraints matches any batch (including the empty batch);
+// a constrained matcher never matches an empty batch, since no item is in scope.
+func matchSecret(sm *SecretMatcher, items []ItemInfo, restrictive bool) bool {
+	if sm.Collection == "" && sm.Label == "" && len(sm.Attributes) == 0 {
+		return true
+	}
+	if restrictive {
+		return slices.ContainsFunc(items, func(it ItemInfo) bool { return matchSecretItem(sm, it) })
+	}
+	if len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		if !matchSecretItem(sm, it) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchSecretItem checks whether a single item matches the secret matcher.
+func matchSecretItem(sm *SecretMatcher, item ItemInfo) bool {
 	if sm.Collection != "" {
-		col := ""
-		if len(items) > 0 {
-			col = extractCollection(items[0].Path)
-		}
-		if ok, _ := path.Match(sm.Collection, col); !ok {
+		if ok, _ := path.Match(sm.Collection, extractCollection(item.Path)); !ok {
 			return false
 		}
 	}
-
 	if sm.Label != "" {
-		label := ""
-		if len(items) > 0 {
-			label = items[0].Label
-		}
-		if ok, _ := path.Match(sm.Label, label); !ok {
+		if ok, _ := path.Match(sm.Label, item.Label); !ok {
 			return false
 		}
 	}
-
 	if len(sm.Attributes) > 0 {
-		attrs := map[string]string{}
-		if len(items) > 0 && items[0].Attributes != nil {
-			attrs = items[0].Attributes
+		attrs := item.Attributes
+		if attrs == nil {
+			attrs = map[string]string{}
 		}
 		if !attributesMatch(sm.Attributes, attrs) {
 			return false
 		}
 	}
-
 	return true
 }
 

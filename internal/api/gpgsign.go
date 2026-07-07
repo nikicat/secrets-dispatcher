@@ -84,6 +84,14 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	senderInfo := resolvePeerInfo(r.Context(), h.trimProcessChain)
 
+	// WYSIWYS: bind the human-visible commit metadata to the exact bytes that
+	// will be fed to gpg, discarding the client's own author/committer/message/
+	// parent fields. Without this, a caller could present benign metadata in the
+	// approval prompt (and desktop notification, and web UI) while signing
+	// attacker-chosen bytes — a consent spoof / signing oracle. Every downstream
+	// path reads these fields off GPGSignInfo, so binding once here covers them all.
+	bindDisplayToCommitObject(req.GPGSignInfo, senderInfo)
+
 	commitSubject := req.GPGSignInfo.CommitMsg
 	if i := strings.IndexByte(commitSubject, '\n'); i >= 0 {
 		commitSubject = commitSubject[:i]
@@ -119,6 +127,32 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	)
 
 	writeJSON(w, GPGSignResponse{RequestID: id})
+}
+
+// bindDisplayToCommitObject re-derives the human-visible commit metadata
+// (author, committer, message, parent hash) from the raw CommitObject bytes that
+// will actually be fed to gpg, overwriting whatever the client supplied. This
+// enforces WYSIWYS: the approval prompt can only ever show metadata computed from
+// the exact bytes being signed. A legitimate thin client derives these same fields
+// with the same parser (internal/gpgsign.Run), so for honest callers this is a
+// no-op; a mismatch means the caller tried to display metadata that does not match
+// the signed payload, which we log and then override.
+//
+// RepoName and ChangedFiles are NOT derivable from a commit object (they describe
+// the working tree, not the signed bytes) and are deliberately left untouched here;
+// see CheckTrustedSigner for their (necessarily weaker) treatment.
+func bindDisplayToCommitObject(info *approval.GPGSignInfo, senderInfo approval.SenderInfo) {
+	author, committer, message, parentHash := gpgsign.ParseCommitObject([]byte(info.CommitObject))
+	if author != info.Author || committer != info.Committer || message != info.CommitMsg {
+		slog.Warn("gpg sign: client-supplied commit metadata does not match signed bytes; overriding with parsed values",
+			"pid", senderInfo.PID,
+			"process", senderInfo.UnitName,
+		)
+	}
+	info.Author = author
+	info.Committer = committer
+	info.CommitMsg = message
+	info.ParentHash = parentHash
 }
 
 // signAndRecordAutoApproved runs gpg and records an auto-approved gpg_sign

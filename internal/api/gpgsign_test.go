@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // validGPGSignBody is a JSON POST body with all required fields present.
@@ -141,6 +143,63 @@ func TestHandleGPGSignRequest_KeyIDVisibleInPendingList(t *testing.T) {
 	if pr.Type != string(approval.RequestTypeGPGSign) {
 		t.Errorf("expected type %q, got %q", approval.RequestTypeGPGSign, pr.Type)
 	}
+}
+
+// TestHandleGPGSignRequest_DisplayBoundToCommitObject is the regression test for
+// the consent-spoofing / signing-oracle finding (Vuln 1). A caller supplies
+// benign display metadata (author/committer/message) that does NOT match the raw
+// commit_object it asks the daemon to sign. The daemon must ignore the client's
+// display fields and derive them from the bytes it will actually sign, so the
+// approval prompt reflects the real payload.
+func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	handlers := testHandlers(t, mgr)
+
+	// The bytes that will actually be signed describe an attacker identity and a
+	// dangerous commit message; the client lies about all of them in the display
+	// fields, claiming a benign typo fix.
+	commitObject := "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\n" +
+		"parent 1111111111111111111111111111111111111111\n" +
+		"author Real Attacker <evil@example.com> 1700000000 +0000\n" +
+		"committer Real Attacker <evil@example.com> 1700000000 +0000\n" +
+		"\n" +
+		"backdoor: exfiltrate secrets\n"
+
+	body := map[string]any{
+		"client": "test",
+		"gpg_sign_info": map[string]any{
+			"repo_name":     "myrepo",
+			"commit_msg":    "docs: fix typo",
+			"author":        "Benign Author <good@example.com>",
+			"committer":     "Benign Author <good@example.com>",
+			"key_id":        "ABCD1234",
+			"changed_files": []string{"README.md"},
+			"parent_hash":   "2222222222222222222222222222222222222222",
+			"commit_object": commitObject,
+		},
+	}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request", strings.NewReader(string(raw)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handlers.HandleGPGSignRequest(rr, req)
+
+	require.Equalf(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	pending := mgr.List()
+	require.Len(t, pending, 1)
+	info := pending[0].GPGSignInfo
+	require.NotNil(t, info)
+
+	// The displayed fields must come from the signed bytes, not the client's lie.
+	assert.Equal(t, "Real Attacker <evil@example.com> 1700000000 +0000", info.Author, "author must be bound to commit object")
+	assert.Equal(t, "Real Attacker <evil@example.com> 1700000000 +0000", info.Committer, "committer must be bound to commit object")
+	assert.Equal(t, "backdoor: exfiltrate secrets", info.CommitMsg, "commit message must be bound to commit object")
+	assert.Equal(t, "1111111111111111111111111111111111111111", info.ParentHash, "parent hash must be bound to commit object")
+	// The bytes to be signed must be preserved verbatim.
+	assert.Equal(t, commitObject, info.CommitObject, "commit object must not be mutated")
 }
 
 // wsEventObserver is a minimal approval.Observer that captures OnEvent calls

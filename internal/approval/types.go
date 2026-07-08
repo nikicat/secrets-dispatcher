@@ -43,4 +43,13 @@ type SenderInfo struct {
 	UserName     string        `json:"user_name"`               // Username (may be empty if lookup fails)
 	UnitName     string        `json:"unit_name"`               // Systemd unit (may be empty)
 	ProcessChain []ProcessInfo `json:"process_chain,omitempty"` // Full process chain from requestor to init
+	// PeerTrusted reports whether the process that opened the connection is a
+	// trusted transport for this request — one whose self-reported, server-
+	// unverifiable fields (repo name, changed files, commit object) we can rely on
+	// because our own code produced them. Today the only trusted transport is our
+	// gpg-sign thin client (the peer's exe is our own binary); the field is named
+	// generally so other trusted transports can set it later. It gates the silent
+	// trusted-signer path — see Manager.CheckTrustedSigner. Unset for requests that
+	// speak the socket protocol directly.
+	PeerTrusted bool `json:"peer_trusted,omitempty"`
 }

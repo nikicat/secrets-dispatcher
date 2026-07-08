@@ -4,9 +4,7 @@ package approval
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"os"
 	"path"
 	"slices"
 	"strings"
@@ -870,21 +868,35 @@ func (m *Manager) RemoveAutoApproveRule(id string) error {
 	return nil
 }
 
-// CheckTrustedSigner checks if a GPG sign request comes from a trusted signer.
-// Returns true if ANY process in the sender's process chain matches a
-// trusted_signers entry (exe_path + repo_path + file_prefix all match).
+// CheckTrustedSigner reports whether a GPG sign request should be silently
+// auto-signed under a trusted_signers entry.
+//
+// Matching is intentionally any-ancestor: a trusted_signers exe_path names the app
+// that INITIATED the commit (e.g. an editor or deploy script), which sits above git
+// in the chain — not git itself, which is the universal direct invoker. So the
+// trusted exe may appear anywhere in the sender's process chain.
+//
+// The silent path is gated on senderInfo.PeerTrusted: the request must have arrived
+// through our own gpg-sign thin client. That is the only case in which repoName and
+// changedFiles are trustworthy — our helper computed them from the real repository.
+// A process speaking the socket protocol directly can put any exe in its ancestry
+// and forge repoName/changedFiles (neither is verifiable against the signed commit
+// object), so it must never take the silent path; it falls through to interactive
+// approval instead (which, per the WYSIWYS binding, shows the real committed bytes).
 func (m *Manager) CheckTrustedSigner(senderInfo SenderInfo, repoName string, changedFiles []string) bool {
 	if len(m.trustedSigners) == 0 {
 		return false
 	}
+	if !senderInfo.PeerTrusted {
+		return false
+	}
 
 	for _, proc := range senderInfo.ProcessChain {
-		exePath := readExePath(proc.PID)
-		if exePath == "" {
+		if proc.Exe == "" {
 			continue
 		}
 		for _, ts := range m.trustedSigners {
-			if exePath != ts.ExePath {
+			if proc.Exe != ts.ExePath {
 				continue
 			}
 			if ts.RepoPath != "" && repoName != ts.RepoPath {
@@ -921,18 +933,6 @@ func invokerExePath(s SenderInfo) string {
 		}
 	}
 	return ""
-}
-
-// readExePath reads the executable path from /proc/PID/exe.
-func readExePath(pid uint32) string {
-	if pid == 0 {
-		return ""
-	}
-	target, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		return ""
-	}
-	return target
 }
 
 // CheckTrustRules checks if the request matches any configured trust rule.

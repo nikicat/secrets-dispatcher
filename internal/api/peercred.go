@@ -79,6 +79,13 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 	// Convert the full chain to ProcessChain for the API,
 	// filtering out our own binary (the thin client).
 	selfExe, _ := os.Executable()
+
+	// The peer (chain[0]) is the process that opened the socket. When it is our
+	// own binary, the request came through our gpg-sign thin client, so the
+	// repo/changed-file fields it reported were computed by our trusted code —
+	// see approval.SenderInfo.PeerTrusted / Manager.CheckTrustedSigner.
+	peerTrusted := len(chain) > 0 && selfExe != "" && chain[0].Exe == selfExe
+
 	processChain := make([]approval.ProcessInfo, 0, len(chain))
 	for _, p := range chain {
 		if selfExe != "" && p.Exe == selfExe {
@@ -98,5 +105,6 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 		UID:          uint32(cred.Uid),
 		UnitName:     invoker.Comm,
 		ProcessChain: processChain,
+		PeerTrusted:  peerTrusted,
 	}
 }

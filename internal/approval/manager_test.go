@@ -2,12 +2,13 @@ package approval
 
 import (
 	"context"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestManager_RequireApproval_Approved(t *testing.T) {
@@ -1257,93 +1258,92 @@ func TestRecordIgnored(t *testing.T) {
 	mgr.Unsubscribe(obs)
 }
 
-func TestCheckTrustedSigner_WalksProcessChain(t *testing.T) {
-	// Use the current test process as the "trusted" exe.
-	selfExe, err := os.Readlink("/proc/self/exe")
-	if err != nil {
-		t.Skipf("cannot read /proc/self/exe: %v", err)
-	}
-	selfPID := uint32(os.Getpid())
-
+func TestCheckTrustedSigner(t *testing.T) {
+	const nvimExe = "/usr/bin/nvim"
 	mgr := NewManager(ManagerConfig{
 		Timeout:    5 * time.Second,
 		HistoryMax: 100,
 		TrustedSigners: []TrustedSigner{
-			{ExePath: selfExe, RepoPath: "my-repo"},
+			{ExePath: nvimExe, RepoPath: "my-repo"},
 		},
 	})
-	selfChain := []ProcessInfo{
-		{Name: "thin-client", PID: 1},
-		{Name: "git", PID: 2},
-		{Name: "test-binary", PID: selfPID},
+	// A legit commit initiated from nvim, arriving via our thin client. The chain
+	// as the daemon stores it has our own binary filtered out, so it starts at git
+	// (the direct invoker); the trusted app, nvim, is an ancestor. PeerTrusted is
+	// set because the connection was opened by our thin client.
+	viaHelper := SenderInfo{
+		PeerTrusted: true,
+		ProcessChain: []ProcessInfo{
+			{Name: "git", Exe: "/usr/bin/git"},
+			{Name: "nvim", Exe: nvimExe},
+			{Name: "kgx", Exe: "/usr/bin/kgx"},
+		},
 	}
 
-	t.Run("match in chain", func(t *testing.T) {
-		info := SenderInfo{ProcessChain: selfChain}
-		if !mgr.CheckTrustedSigner(info, "my-repo", nil) {
-			t.Error("expected match")
-		}
+	t.Run("trusted ancestor via helper", func(t *testing.T) {
+		assert.True(t, mgr.CheckTrustedSigner(viaHelper, "my-repo", nil))
 	})
 
-	t.Run("no match wrong repo", func(t *testing.T) {
-		info := SenderInfo{ProcessChain: selfChain}
-		if mgr.CheckTrustedSigner(info, "other-repo", nil) {
-			t.Error("expected no match for wrong repo")
-		}
-	})
-
-	t.Run("no match wrong exe", func(t *testing.T) {
-		info := SenderInfo{ProcessChain: []ProcessInfo{{Name: "git", PID: 1}}}
-		if mgr.CheckTrustedSigner(info, "my-repo", nil) {
-			t.Error("expected no match for wrong exe")
-		}
+	t.Run("wrong repo", func(t *testing.T) {
+		assert.False(t, mgr.CheckTrustedSigner(viaHelper, "other-repo", nil))
 	})
 
 	t.Run("empty chain", func(t *testing.T) {
-		if mgr.CheckTrustedSigner(SenderInfo{}, "my-repo", nil) {
-			t.Error("expected no match for empty chain")
-		}
+		assert.False(t, mgr.CheckTrustedSigner(SenderInfo{PeerTrusted: true}, "my-repo", nil))
 	})
 
 	t.Run("empty repo matches any", func(t *testing.T) {
 		m := NewManager(ManagerConfig{
 			Timeout:        5 * time.Second,
 			HistoryMax:     100,
-			TrustedSigners: []TrustedSigner{{ExePath: selfExe}},
+			TrustedSigners: []TrustedSigner{{ExePath: nvimExe}},
 		})
-		info := SenderInfo{ProcessChain: selfChain}
-		if !m.CheckTrustedSigner(info, "any-repo", nil) {
-			t.Error("expected match with empty repo_path")
-		}
+		assert.True(t, m.CheckTrustedSigner(viaHelper, "any-repo", nil))
 	})
 
-	t.Run("file prefix match", func(t *testing.T) {
+	t.Run("file prefix match and reject", func(t *testing.T) {
 		m := NewManager(ManagerConfig{
-			Timeout:    5 * time.Second,
-			HistoryMax: 100,
-			TrustedSigners: []TrustedSigner{
-				{ExePath: selfExe, FilePrefix: "secret-service/"},
-			},
+			Timeout:        5 * time.Second,
+			HistoryMax:     100,
+			TrustedSigners: []TrustedSigner{{ExePath: nvimExe, FilePrefix: "secret-service/"}},
 		})
-		info := SenderInfo{ProcessChain: selfChain}
-		if !m.CheckTrustedSigner(info, "any", []string{"secret-service/default/i1.age", "secret-service/login/i2.age"}) {
-			t.Error("expected match when all files under prefix")
-		}
+		assert.True(t, m.CheckTrustedSigner(viaHelper, "any", []string{"secret-service/default/i1.age", "secret-service/login/i2.age"}))
+		assert.False(t, m.CheckTrustedSigner(viaHelper, "any", []string{"secret-service/default/i1.age", "other/sneaky.gpg"}))
+	})
+}
+
+// TestCheckTrustedSigner_RejectsUntrustedPeer is the regression test for Vuln 5:
+// a request that did NOT arrive through our own thin client (PeerTrusted=false) must
+// never take the silent path, even with a trusted binary in its ancestry — because
+// its self-reported repo/changed-file fields are forgeable and unverifiable against
+// the signed commit object. This is the reviewed exploit: malware speaks the socket
+// protocol directly while a real trusted binary sits in its ancestry.
+func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
+	const nvimExe = "/usr/bin/nvim"
+	mgr := NewManager(ManagerConfig{
+		Timeout:        5 * time.Second,
+		HistoryMax:     100,
+		TrustedSigners: []TrustedSigner{{ExePath: nvimExe}},
 	})
 
-	t.Run("file prefix reject", func(t *testing.T) {
-		m := NewManager(ManagerConfig{
-			Timeout:    5 * time.Second,
-			HistoryMax: 100,
-			TrustedSigners: []TrustedSigner{
-				{ExePath: selfExe, FilePrefix: "secret-service/"},
-			},
-		})
-		info := SenderInfo{ProcessChain: selfChain}
-		if m.CheckTrustedSigner(info, "any", []string{"secret-service/default/i1.age", "other/sneaky.gpg"}) {
-			t.Error("expected no match when a file is outside prefix")
-		}
-	})
+	// Same ancestry a genuine nvim commit would have, but the peer is malware
+	// speaking the protocol directly, not our thin client.
+	forged := SenderInfo{
+		PeerTrusted: false,
+		ProcessChain: []ProcessInfo{
+			{Name: "malware", Exe: "/tmp/malware"},
+			{Name: "git", Exe: "/usr/bin/git"},
+			{Name: "nvim", Exe: nvimExe},
+		},
+	}
+	assert.False(t, mgr.CheckTrustedSigner(forged, "any", nil),
+		"a direct protocol speaker must not silently sign even with a trusted ancestor")
+
+	// Flipping only the PeerTrusted gate lets the trusted ancestor match again,
+	// confirming the gate — not the ancestry — is what blocked the forged request.
+	trusted := forged
+	trusted.PeerTrusted = true
+	assert.True(t, mgr.CheckTrustedSigner(trusted, "any", nil))
 }
 
 func TestCheckTrustRules(t *testing.T) {

@@ -83,7 +83,7 @@ func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agen
 		"fingerprint", fingerprint,
 		"comment", comment,
 		"destination", p.destination,
-		"invoker", p.senderInfo.UnitName)
+		"invoker", p.senderInfo.InvokerName)
 
 	if _, err := p.approval.RequireApproval(
 		context.TODO(),

@@ -523,7 +523,7 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 	h.mu.Unlock()
 
 	// Send a follow-up "Auto-approve?" notification
-	invoker := req.SenderInfo.UnitName
+	invoker := req.SenderInfo.InvokerName
 	if invoker == "" {
 		invoker = "client"
 	}
@@ -655,8 +655,8 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			}
 		} else {
 			// Fallback: old format for remote requests without process chain
-			if req.SenderInfo.UnitName != "" {
-				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", req.SenderInfo.UnitName, req.Client, req.SenderInfo.PID)
+			if req.SenderInfo.InvokerName != "" {
+				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", req.SenderInfo.InvokerName, req.Client, req.SenderInfo.PID)
 			} else if req.SenderInfo.PID != 0 {
 				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", req.Client, req.SenderInfo.PID)
 			} else {

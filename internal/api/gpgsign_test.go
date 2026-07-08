@@ -309,7 +309,7 @@ func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
 	const pid = 4242
 	exeSender := approval.SenderInfo{
 		PID:          pid,
-		UnitName:     "git",
+		InvokerName:  "git",
 		ProcessChain: []approval.ProcessInfo{{Name: "git", PID: pid, Exe: "/usr/bin/git"}},
 	}
 	mgr.AddAutoApproveRule(&approval.Request{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender})
@@ -321,7 +321,7 @@ func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
 	// Same spoofable comm but a different real exe → must NOT match.
 	spoofed := approval.SenderInfo{
 		PID:          pid,
-		UnitName:     "git", // attacker set comm to "git"
+		InvokerName:  "git", // attacker set comm to "git"
 		ProcessChain: []approval.ProcessInfo{{Name: "git", PID: pid, Exe: "/tmp/malware"}},
 	}
 	assert.Nil(t, mgr.CheckAutoApproveRules(spoofed, nil, approval.RequestTypeGPGSign),
@@ -343,7 +343,7 @@ func TestHandleGPGSignRequest_NoMatchingRuleStaysPending(t *testing.T) {
 	// Rule for a different invoker name.
 	mgr.AddAutoApproveRule(&approval.Request{
 		Type:       approval.RequestTypeGPGSign,
-		SenderInfo: approval.SenderInfo{UnitName: "some-other-process.service"},
+		SenderInfo: approval.SenderInfo{InvokerName: "some-other-process.service"},
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",

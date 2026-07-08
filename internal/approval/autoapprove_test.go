@@ -14,7 +14,7 @@ func testSender(comm, exe string) SenderInfo {
 	const pid = 4242
 	return SenderInfo{
 		PID:          pid,
-		UnitName:     comm,
+		InvokerName:  comm,
 		ProcessChain: []ProcessInfo{{Name: comm, PID: pid, Exe: exe}},
 	}
 }
@@ -52,7 +52,7 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 
 // TestAutoApproveRule_CommSpoofDoesNotMatch is the regression test for Vuln 4:
 // an ephemeral auto-approve rule must key on the non-spoofable invoker exe, so a
-// process that merely sets its comm (UnitName) to impersonate the trusted app —
+// process that merely sets its comm (InvokerName) to impersonate the trusted app —
 // while running a different real binary — is not auto-approved.
 func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})

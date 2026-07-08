@@ -43,7 +43,7 @@ type SenderInfo struct {
 	PID          uint32        `json:"pid"`
 	UID          uint32        `json:"uid"`
 	UserName     string        `json:"user_name"`
-	UnitName     string        `json:"unit_name"`
+	InvokerName  string        `json:"unit_name"`
 	ProcessChain []ProcessInfo `json:"process_chain,omitempty"`
 }
 

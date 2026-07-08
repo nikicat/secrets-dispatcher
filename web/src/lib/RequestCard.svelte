@@ -34,8 +34,8 @@
     const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
 
     // If we have a unit name, show that with username
-    if (info.unit_name) {
-      return user ? `${info.unit_name} (${user})` : info.unit_name;
+    if (info.invoker_name) {
+      return user ? `${info.invoker_name} (${user})` : info.invoker_name;
     }
 
     // Fall back to username with PID

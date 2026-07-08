@@ -434,7 +434,7 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 	req := &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: approval.SenderInfo{UnitName: "gh"},
+		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
 	}
 	mgr.AddAutoApproveRule(req)
 
@@ -513,7 +513,7 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 	req := &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
-		SenderInfo: approval.SenderInfo{UnitName: "gh"},
+		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
 	}
 	mgr.AddAutoApproveRule(req)
 
@@ -580,7 +580,7 @@ func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
 	req := &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: approval.SenderInfo{UnitName: "gh"},
+		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
 	}
 	ruleID := mgr.AddAutoApproveRule(req)
 

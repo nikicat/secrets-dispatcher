@@ -304,7 +304,7 @@
 
   function autoApproveKey(e: HistoryEntry): string {
     const type = e.request.type;
-    const invoker = e.request.sender_info?.unit_name ?? "";
+    const invoker = e.request.sender_info?.invoker_name ?? "";
     const items = e.request.items.map(i => i.path).join("\0");
     return `${type}\0${invoker}\0${items}`;
   }

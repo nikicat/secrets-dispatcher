@@ -124,8 +124,8 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 	}
 
 	// Sender process info
-	if req.SenderInfo.UnitName != "" {
-		fmt.Fprintf(f.w, "Process: %s\n", req.SenderInfo.UnitName)
+	if req.SenderInfo.InvokerName != "" {
+		fmt.Fprintf(f.w, "Process: %s\n", req.SenderInfo.InvokerName)
 	}
 	if req.SenderInfo.PID != 0 {
 		fmt.Fprintf(f.w, "PID:     %d\n", req.SenderInfo.PID)

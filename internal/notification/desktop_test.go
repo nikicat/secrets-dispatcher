@@ -155,8 +155,8 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 			{Label: "GitHub Token", Path: "/org/secrets/github"},
 		},
 		SenderInfo: approval.SenderInfo{
-			PID:      1234,
-			UnitName: "ssh-agent.service",
+			PID:         1234,
+			InvokerName: "ssh-agent.service",
 		},
 	}
 
@@ -332,7 +332,7 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 		Items:  []approval.ItemInfo{{Label: "Secret"}},
 		SenderInfo: approval.SenderInfo{
 			PID: 5678,
-			// No UnitName
+			// No InvokerName
 		},
 	}
 
@@ -359,8 +359,8 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 			ChangedFiles: []string{"a.go", "b.go"},
 		},
 		SenderInfo: approval.SenderInfo{
-			PID:      1234,
-			UnitName: "ssh-agent.service",
+			PID:         1234,
+			InvokerName: "ssh-agent.service",
 		},
 	}
 
@@ -426,8 +426,8 @@ func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
 			{Label: "GitHub Token", Path: "/org/secrets/github"},
 		},
 		SenderInfo: approval.SenderInfo{
-			PID:      1234,
-			UnitName: "secret-tool.service",
+			PID:         1234,
+			InvokerName: "secret-tool.service",
 		},
 	}
 
@@ -848,7 +848,7 @@ func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
 		Type:   approval.RequestTypeGetSecret,
 		Items:  []approval.ItemInfo{{Label: "Secret"}},
 		SenderInfo: approval.SenderInfo{
-			UnitName: "test-unit",
+			InvokerName: "test-unit",
 		},
 	}
 

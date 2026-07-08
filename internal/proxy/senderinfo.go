@@ -59,8 +59,19 @@ func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
 		info.UID = uid
 	}
 
+	// Resolve the caller's real systemd unit (authoritative and non-spoofable for
+	// systemd-managed services). Stored separately from InvokerName (the spoofable
+	// comm) and consulted by the `unit` process matcher.
+	if info.PID != 0 {
+		if unit, err := r.client.GetUnitByPID(pid); err != nil {
+			slog.Debug("failed to get unit by PID", "pid", pid, "error", err)
+		} else {
+			info.SystemdUnit = unit
+		}
+	}
+
 	// Resolve the user-facing invoker process via /proc.
-	// Falls back to systemd unit name if /proc walking fails.
+	// Falls back to the systemd unit as the display name if /proc walking fails.
 	if info.PID != 0 {
 		chain := procutil.ReadProcessChain(int32(info.PID), r.trimProcessChain)
 		if len(chain) > 0 {
@@ -78,17 +89,14 @@ func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
 					CWD:  entry.CWD,
 				})
 			}
-			// Resolve invoker (skip shells) for backward-compat UnitName.
+			// Resolve invoker (skip shells) for the display InvokerName (comm).
 			comm, invokerPID := procutil.ResolveInvoker(info.PID)
-			info.UnitName = comm
+			info.InvokerName = comm
 			info.PID = invokerPID
 		} else {
-			unitName, err := r.client.GetUnitByPID(pid)
-			if err != nil {
-				slog.Info("failed to get unit by PID", "pid", pid, "error", err)
-			} else {
-				info.UnitName = unitName
-			}
+			// No /proc chain (e.g. remote/tunneled caller): use the systemd unit
+			// as the display name too.
+			info.InvokerName = info.SystemdUnit
 		}
 	}
 

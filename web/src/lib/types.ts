@@ -17,7 +17,8 @@ export interface SenderInfo {
   pid: number;
   uid: number;
   user_name: string;
-  unit_name: string;
+  invoker_name: string; // invoker process comm (display); spoofable
+  systemd_unit?: string; // real systemd unit (authoritative)
   process_chain?: ProcessInfo[];
 }
 

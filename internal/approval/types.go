@@ -41,7 +41,8 @@ type SenderInfo struct {
 	PID          uint32        `json:"pid"`                     // Process ID
 	UID          uint32        `json:"uid"`                     // User ID
 	UserName     string        `json:"user_name"`               // Username (may be empty if lookup fails)
-	UnitName     string        `json:"unit_name"`               // Systemd unit (may be empty)
+	InvokerName  string        `json:"invoker_name"`            // Invoker process comm (display); spoofable — NOT the systemd unit
+	SystemdUnit  string        `json:"systemd_unit,omitempty"`  // Real systemd unit (from GetUnitByPID); authoritative, matched by the `unit` rule
 	ProcessChain []ProcessInfo `json:"process_chain,omitempty"` // Full process chain from requestor to init
 	// PeerTrusted reports whether the process that opened the connection is a
 	// trusted transport for this request — one whose self-reported, server-

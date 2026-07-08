@@ -1312,6 +1312,30 @@ func TestCheckTrustedSigner(t *testing.T) {
 	})
 }
 
+// TestProcessUnitMatchesSystemdUnitNotComm is the regression test for Vuln 6: the
+// `unit` matcher must compare the caller's real systemd unit, never the spoofable
+// invoker comm (InvokerName). A process that sets its comm to look like a unit
+// name must not satisfy a `unit` rule.
+func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr.trustRules = []TrustRule{{
+		Name:    "approve-firefox-unit",
+		Action:  "approve",
+		Process: &ProcessMatcher{Unit: "firefox.service"},
+	}}
+	items := []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}}
+
+	// Genuine caller: comm is "firefox", real systemd unit is "firefox.service".
+	genuine := SenderInfo{InvokerName: "firefox", SystemdUnit: "firefox.service"}
+	assert.NotNil(t, mgr.CheckTrustRules(genuine, items, RequestTypeGetSecret, nil),
+		"unit rule should match the real systemd unit")
+
+	// Spoofer: sets its comm to "firefox.service" but has no such systemd unit.
+	spoofed := SenderInfo{InvokerName: "firefox.service", SystemdUnit: ""}
+	assert.Nil(t, mgr.CheckTrustRules(spoofed, items, RequestTypeGetSecret, nil),
+		"unit rule must not match a comm spoofed to look like a unit name")
+}
+
 // TestCheckTrustedSigner_RejectsUntrustedPeer is the regression test for Vuln 5:
 // a request that did NOT arrive through our own thin client (PeerTrusted=false) must
 // never take the silent path, even with a trusted binary in its ancestry — because
@@ -1406,7 +1430,7 @@ func TestCheckTrustRules(t *testing.T) {
 
 	ghChain := []ProcessInfo{{Name: "gh", PID: 100, Exe: "/usr/bin/gh"}}
 	chromeChain := []ProcessInfo{{Name: "chrome", PID: 200, Exe: "/opt/google/chrome/chrome"}}
-	gopassSender := SenderInfo{UnitName: "gopass-secret-service.service", ProcessChain: []ProcessInfo{{Name: "gopass", PID: 300}}}
+	gopassSender := SenderInfo{InvokerName: "gopass", SystemdUnit: "gopass-secret-service.service", ProcessChain: []ProcessInfo{{Name: "gopass", PID: 300}}}
 
 	t.Run("match process name + request type", func(t *testing.T) {
 		rule := mgr.CheckTrustRules(
@@ -1929,7 +1953,7 @@ func TestRecordPassthrough(t *testing.T) {
 
 	items := []ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}
 	searchAttrs := map[string]string{"xdg:schema": "org.gnome.keyring.Note"}
-	sender := SenderInfo{Sender: ":1.42", UnitName: "app.service", PID: 123}
+	sender := SenderInfo{Sender: ":1.42", InvokerName: "app.service", PID: 123}
 
 	mgr.RecordPassthrough("test-client", items, "", RequestTypeSearch, searchAttrs, sender)
 

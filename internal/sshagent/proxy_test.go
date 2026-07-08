@@ -62,7 +62,7 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 	})
 
 	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{
-		UnitName: "test-proc",
+		InvokerName: "test-proc",
 	}, "example.com", slog.Default())
 
 	// Pre-populate key cache (normally done by List())
@@ -141,7 +141,7 @@ func TestProxyAgent_SignDenied(t *testing.T) {
 	})
 
 	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{
-		UnitName: "test-proc",
+		InvokerName: "test-proc",
 	}, "", slog.Default())
 
 	keys, _ := upstream.List()

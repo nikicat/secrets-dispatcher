@@ -7,6 +7,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/stretchr/testify/assert"
 )
 
 // mockDBusClient implements dbusClient for testing.
@@ -50,8 +51,8 @@ func TestSenderInfoResolver_Resolve_AllSuccess(t *testing.T) {
 	if info.UID != 1000 {
 		t.Errorf("expected UID 1000, got %d", info.UID)
 	}
-	if info.UnitName != "test.service" {
-		t.Errorf("expected unit_name test.service, got %s", info.UnitName)
+	if info.InvokerName != "test.service" {
+		t.Errorf("expected unit_name test.service, got %s", info.InvokerName)
 	}
 }
 
@@ -75,8 +76,8 @@ func TestSenderInfoResolver_Resolve_NoSystemd(t *testing.T) {
 	if info.UID != 1000 {
 		t.Errorf("expected UID 1000, got %d", info.UID)
 	}
-	if info.UnitName != "" {
-		t.Errorf("expected empty unit_name, got %s", info.UnitName)
+	if info.InvokerName != "" {
+		t.Errorf("expected empty unit_name, got %s", info.InvokerName)
 	}
 }
 
@@ -99,8 +100,8 @@ func TestSenderInfoResolver_Resolve_PIDFails(t *testing.T) {
 		t.Errorf("expected UID 1000, got %d", info.UID)
 	}
 	// Unit lookup should be skipped when PID is 0
-	if info.UnitName != "" {
-		t.Errorf("expected empty unit_name, got %s", info.UnitName)
+	if info.InvokerName != "" {
+		t.Errorf("expected empty unit_name, got %s", info.InvokerName)
 	}
 }
 
@@ -120,8 +121,8 @@ func TestSenderInfoResolver_Resolve_UIDFails(t *testing.T) {
 	if info.UID != 0 {
 		t.Errorf("expected UID 0, got %d", info.UID)
 	}
-	if info.UnitName != "test.service" {
-		t.Errorf("expected unit_name test.service, got %s", info.UnitName)
+	if info.InvokerName != "test.service" {
+		t.Errorf("expected unit_name test.service, got %s", info.InvokerName)
 	}
 }
 
@@ -144,18 +145,18 @@ func TestSenderInfoResolver_Resolve_AllFail(t *testing.T) {
 	if info.UID != 0 {
 		t.Errorf("expected UID 0, got %d", info.UID)
 	}
-	if info.UnitName != "" {
-		t.Errorf("expected empty unit_name, got %s", info.UnitName)
+	if info.InvokerName != "" {
+		t.Errorf("expected empty unit_name, got %s", info.InvokerName)
 	}
 }
 
 func TestSenderInfoResolver_Resolve_PartialInfo(t *testing.T) {
 	// Verify that SenderInfo struct is properly initialized
 	info := approval.SenderInfo{
-		Sender:   ":1.456",
-		PID:      12345,
-		UID:      1000,
-		UnitName: "test.service",
+		Sender:      ":1.456",
+		PID:         12345,
+		UID:         1000,
+		InvokerName: "test.service",
 	}
 
 	if info.Sender != ":1.456" {
@@ -167,8 +168,8 @@ func TestSenderInfoResolver_Resolve_PartialInfo(t *testing.T) {
 	if info.UID != 1000 {
 		t.Errorf("expected UID 1000, got %d", info.UID)
 	}
-	if info.UnitName != "test.service" {
-		t.Errorf("expected unit_name test.service, got %s", info.UnitName)
+	if info.InvokerName != "test.service" {
+		t.Errorf("expected unit_name test.service, got %s", info.InvokerName)
 	}
 }
 
@@ -195,18 +196,13 @@ func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
 
 	info := resolver.Resolve(":1.42")
 
-	// procutil should have resolved the invoker, so UnitName is the process comm.
+	// procutil should have resolved the invoker, so InvokerName is the process comm.
 	expectedComm, expectedPID := procutil.ResolveInvoker(selfPID)
-	if info.UnitName != expectedComm {
-		t.Errorf("expected UnitName %q (from procutil), got %q", expectedComm, info.UnitName)
-	}
-	if info.PID != expectedPID {
-		t.Errorf("expected PID %d (from procutil), got %d", expectedPID, info.PID)
-	}
-	// GetUnitByPID should NOT have been called since procutil succeeded.
-	if info.UnitName == "should-not-be-used.service" {
-		t.Error("systemd fallback was used despite procutil succeeding")
-	}
+	assert.Equal(t, expectedComm, info.InvokerName, "InvokerName should be the process comm from procutil")
+	assert.Equal(t, expectedPID, info.PID, "PID should be the invoker PID from procutil")
+	// The systemd unit is resolved separately and never overwrites the comm display.
+	assert.NotEqual(t, "should-not-be-used.service", info.InvokerName, "systemd unit must not leak into InvokerName")
+	assert.Equal(t, "should-not-be-used.service", info.SystemdUnit, "SystemdUnit should be resolved from GetUnitByPID")
 
 	// Verify process chain entries have Exe/Args/CWD populated.
 	if len(info.ProcessChain) == 0 {
@@ -269,8 +265,8 @@ func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
 
 	info := resolver.Resolve(":1.42")
 
-	if info.UnitName != "fallback.service" {
-		t.Errorf("expected UnitName %q from systemd fallback, got %q", "fallback.service", info.UnitName)
+	if info.InvokerName != "fallback.service" {
+		t.Errorf("expected InvokerName %q from systemd fallback, got %q", "fallback.service", info.InvokerName)
 	}
 	// PID should remain as the original D-Bus PID when procutil fails.
 	if info.PID != 12345 {

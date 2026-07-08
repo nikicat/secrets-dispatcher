@@ -143,6 +143,8 @@ serve:
 
 Rules match on process attributes (exe, name, CWD, systemd unit) and secret attributes (collection, label, custom attributes). All patterns support globs. Process matching checks the full process chain, not just the immediate caller.
 
+For security-relevant rules — especially `deny` — match on **`exe`**: it compares the kernel-resolved `/proc/PID/exe` and cannot be spoofed. **`name`** matches the process `comm`, which any process can set freely (`prctl(PR_SET_NAME)`); treat it as advisory only and never rely on it to block an application. **`unit`** matches the caller's real systemd unit (resolved via `GetUnitByPID`), which is authoritative for systemd-managed services.
+
 ## Process Chain Detection
 
 When a request comes in, secrets-dispatcher resolves the full process ancestry:

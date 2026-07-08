@@ -672,7 +672,7 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 
 	rule := AutoApproveRule{
 		ID:          uuid.New().String(),
-		InvokerName: req.SenderInfo.UnitName,
+		InvokerName: req.SenderInfo.InvokerName,
 		InvokerExe:  invokerExePath(req.SenderInfo),
 		RequestType: req.Type,
 		ExpiresAt:   time.Now().Add(duration),
@@ -752,7 +752,7 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 		}
 
 		// Match on the non-spoofable invoker exe path, never the caller's comm
-		// (UnitName), which is attacker-controllable. Fail closed when either the
+		// (InvokerName), which is attacker-controllable. Fail closed when either the
 		// rule or the caller lacks a resolved exe.
 		callerExe := invokerExePath(senderInfo)
 		if callerExe == "" || rule.InvokerExe != callerExe {
@@ -923,7 +923,7 @@ func allFilesMatch(files []string, prefix string) bool {
 
 // invokerExePath returns the non-spoofable executable path (/proc/PID/exe) of the
 // invoking process — the chain entry identified by senderInfo.PID. Unlike
-// UnitName (which normally holds the caller's spoofable comm), this cannot be
+// InvokerName (which normally holds the caller's spoofable comm), this cannot be
 // forged with prctl(PR_SET_NAME). Returns "" when no exe can be resolved, in which
 // case callers must fail closed rather than fall back to comm.
 func invokerExePath(s SenderInfo) string {
@@ -1027,7 +1027,9 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 	}
 
 	if pm.Unit != "" {
-		if ok, _ := path.Match(pm.Unit, senderInfo.UnitName); !ok {
+		// Match against the real systemd unit (authoritative), never the spoofable
+		// InvokerName/comm.
+		if ok, _ := path.Match(pm.Unit, senderInfo.SystemdUnit); !ok {
 			return false
 		}
 	}

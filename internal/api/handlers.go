@@ -307,11 +307,12 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 // convertSenderInfo converts approval.SenderInfo to api.SenderInfo.
 func convertSenderInfo(s approval.SenderInfo) SenderInfo {
 	info := SenderInfo{
-		Sender:   s.Sender,
-		PID:      s.PID,
-		UID:      s.UID,
-		UserName: s.UserName,
-		UnitName: s.UnitName,
+		Sender:      s.Sender,
+		PID:         s.PID,
+		UID:         s.UID,
+		UserName:    s.UserName,
+		InvokerName: s.InvokerName,
+		SystemdUnit: s.SystemdUnit,
 	}
 	if len(s.ProcessChain) > 0 {
 		info.ProcessChain = make([]ProcessInfo, len(s.ProcessChain))
@@ -454,11 +455,11 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	approvalSender := approval.SenderInfo{
-		Sender:   entry.Request.SenderInfo.Sender,
-		PID:      entry.Request.SenderInfo.PID,
-		UID:      entry.Request.SenderInfo.UID,
-		UserName: entry.Request.SenderInfo.UserName,
-		UnitName: entry.Request.SenderInfo.UnitName,
+		Sender:      entry.Request.SenderInfo.Sender,
+		PID:         entry.Request.SenderInfo.PID,
+		UID:         entry.Request.SenderInfo.UID,
+		UserName:    entry.Request.SenderInfo.UserName,
+		InvokerName: entry.Request.SenderInfo.InvokerName,
 	}
 	if len(entry.Request.SenderInfo.ProcessChain) > 0 {
 		approvalSender.ProcessChain = make([]approval.ProcessInfo, len(entry.Request.SenderInfo.ProcessChain))

@@ -44,8 +44,8 @@
     const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
 
     // If we have a unit name, show that with user
-    if (info.unit_name) {
-      return repoPrefix + (user ? `${info.unit_name} (${user})` : info.unit_name);
+    if (info.invoker_name) {
+      return repoPrefix + (user ? `${info.invoker_name} (${user})` : info.invoker_name);
     }
 
     // Fall back to user with PID
@@ -84,7 +84,7 @@
   }
 
   function historyEntryProps(req: PendingRequest): { process?: string; collection?: string; attributes?: Record<string, string> } {
-    const process = req.sender_info?.unit_name || undefined;
+    const process = req.sender_info?.invoker_name || undefined;
     const collection = req.items.length > 0 ? extractCollection(req.items[0].path) || undefined : undefined;
     let attributes: Record<string, string> | undefined;
     if (req.type === "search" && req.search_attributes && Object.keys(req.search_attributes).length > 0) {
@@ -106,7 +106,7 @@
 
   function hasMatchingRule(entry: HistoryEntryType): boolean {
     const req = entry.request;
-    const invoker = req.sender_info?.unit_name ?? "";
+    const invoker = req.sender_info?.invoker_name ?? "";
     const collection = req.items.length > 0 ? extractCollection(req.items[0].path) : "";
     const attrs = req.items.length > 0 ? req.items[0].attributes : undefined;
     return autoApproveRules.some(r =>

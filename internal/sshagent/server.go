@@ -79,7 +79,7 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 
 	s.logger.Debug("new SSH agent connection",
 		"pid", senderInfo.PID,
-		"invoker", senderInfo.UnitName,
+		"invoker", senderInfo.InvokerName,
 		"destination", destination)
 
 	// Dial upstream agent
@@ -142,7 +142,7 @@ func (s *Server) extractSenderInfo(conn net.Conn) approval.SenderInfo {
 	return approval.SenderInfo{
 		PID:          invokerPID,
 		UID:          uint32(cred.Uid),
-		UnitName:     comm,
+		InvokerName:  comm,
 		ProcessChain: processChain,
 	}
 }

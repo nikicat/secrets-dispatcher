@@ -121,7 +121,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	slog.Info("gpg sign request created",
 		"request_id", id,
 		"repo", req.GPGSignInfo.RepoName,
-		"process", senderInfo.UnitName,
+		"process", senderInfo.InvokerName,
 		"pid", senderInfo.PID,
 		"commit", commitSubject,
 	)
@@ -146,7 +146,7 @@ func bindDisplayToCommitObject(info *approval.GPGSignInfo, senderInfo approval.S
 	if author != info.Author || committer != info.Committer || message != info.CommitMsg {
 		slog.Warn("gpg sign: client-supplied commit metadata does not match signed bytes; overriding with parsed values",
 			"pid", senderInfo.PID,
-			"process", senderInfo.UnitName,
+			"process", senderInfo.InvokerName,
 		)
 	}
 	info.Author = author
@@ -183,7 +183,7 @@ func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSign
 		"request_id", id,
 		"reason", reason,
 		"repo", req.GPGSignInfo.RepoName,
-		"process", senderInfo.UnitName,
+		"process", senderInfo.InvokerName,
 		"pid", senderInfo.PID,
 		"commit", commitSubject,
 	)

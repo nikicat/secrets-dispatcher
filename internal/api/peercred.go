@@ -103,7 +103,7 @@ func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.Sen
 	return approval.SenderInfo{
 		PID:          uint32(invoker.PID),
 		UID:          uint32(cred.Uid),
-		UnitName:     invoker.Comm,
+		InvokerName:  invoker.Comm,
 		ProcessChain: processChain,
 		PeerTrusted:  peerTrusted,
 	}

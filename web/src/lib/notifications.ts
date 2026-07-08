@@ -85,8 +85,8 @@ function formatBody(request: PendingRequest): string {
 
   parts.push(`Client: ${request.client}`);
 
-  if (request.sender_info?.unit_name) {
-    parts.push(`Process: ${request.sender_info.unit_name}`);
+  if (request.sender_info?.invoker_name) {
+    parts.push(`Process: ${request.sender_info.invoker_name}`);
   } else if (request.sender_info?.pid) {
     parts.push(`PID: ${request.sender_info.pid}`);
   }

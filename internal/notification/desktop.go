@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -581,102 +582,91 @@ func commitSubject(msg string) string {
 func (h *Handler) formatBody(req *approval.Request) string {
 	var b strings.Builder
 
+	// esc escapes client-controlled substrings before they are interpolated into
+	// the org.freedesktop.Notifications markup body. Every dynamic value here
+	// (repo/commit/label/search attrs, and process comm which is itself
+	// attacker-settable via prctl) must be escaped; only our own literal <b>/<i>
+	// tags are emitted raw. The notification carries approve/deny action buttons,
+	// so unescaped markup could forge reassuring content on the consent surface.
+	esc := html.EscapeString
+
+	// writeChain appends the process chain (comm names), escaping each name.
+	writeChain := func(chain []approval.ProcessInfo) {
+		for i, p := range chain {
+			if i == 0 {
+				b.WriteString("\n")
+			} else {
+				b.WriteString(" ← ")
+			}
+			b.WriteString(esc(p.Name))
+			if h.showPIDs {
+				fmt.Fprintf(&b, "[%d]", p.PID)
+			}
+		}
+	}
+
+	// escapedSearchAttrs renders "k=v, k=v" with keys and values escaped.
+	escapedSearchAttrs := func() string {
+		attrs := make([]string, 0, len(req.SearchAttributes))
+		for k, v := range req.SearchAttributes {
+			attrs = append(attrs, fmt.Sprintf("%s=%s", esc(k), esc(v)))
+		}
+		return strings.Join(attrs, ", ")
+	}
+
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		if req.GPGSignInfo != nil {
-			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", req.GPGSignInfo.RepoName, commitSubject(req.GPGSignInfo.CommitMsg))
-			if len(req.SenderInfo.ProcessChain) > 0 {
-				for i, p := range req.SenderInfo.ProcessChain {
-					if i == 0 {
-						b.WriteString("\n")
-					} else {
-						b.WriteString(" ← ")
-					}
-					b.WriteString(p.Name)
-					if h.showPIDs {
-						fmt.Fprintf(&b, "[%d]", p.PID)
-					}
-				}
-			}
+			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(req.GPGSignInfo.RepoName), esc(commitSubject(req.GPGSignInfo.CommitMsg)))
+			writeChain(req.SenderInfo.ProcessChain)
 		}
 	case approval.RequestTypeSSHSign:
 		// Show key label and destination
 		if len(req.Items) > 0 {
-			fmt.Fprintf(&b, "<b>%s</b>", req.Items[0].Label)
+			fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].Label))
 			if dest, ok := req.Items[0].Attributes["destination"]; ok && dest != "" {
-				fmt.Fprintf(&b, " → %s", dest)
+				fmt.Fprintf(&b, " → %s", esc(dest))
 			}
 		}
-		if len(req.SenderInfo.ProcessChain) > 0 {
-			for i, p := range req.SenderInfo.ProcessChain {
-				if i == 0 {
-					b.WriteString("\n")
-				} else {
-					b.WriteString(" ← ")
-				}
-				b.WriteString(p.Name)
-				if h.showPIDs {
-					fmt.Fprintf(&b, "[%d]", p.PID)
-				}
-			}
-		}
+		writeChain(req.SenderInfo.ProcessChain)
 	default:
 		if len(req.SenderInfo.ProcessChain) > 0 {
 			// New format: item label, then process chain (parent → child order)
 			switch req.Type {
 			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
 				if len(req.Items) == 1 {
-					fmt.Fprintf(&b, "<b>%s</b>", req.Items[0].Label)
+					fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].Label))
 				} else {
 					fmt.Fprintf(&b, "<b>%d items</b>", len(req.Items))
 				}
 			case approval.RequestTypeSearch:
 				if len(req.SearchAttributes) > 0 {
-					attrs := make([]string, 0, len(req.SearchAttributes))
-					for k, v := range req.SearchAttributes {
-						attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
-					}
-					fmt.Fprintf(&b, "<b>%s</b>", strings.Join(attrs, ", "))
+					fmt.Fprintf(&b, "<b>%s</b>", escapedSearchAttrs())
 				} else {
 					b.WriteString("<b>all</b>")
 				}
 			}
-			chain := req.SenderInfo.ProcessChain
-			for i, p := range chain {
-				if i == 0 {
-					b.WriteString("\n")
-				} else {
-					b.WriteString(" ← ")
-				}
-				b.WriteString(p.Name)
-				if h.showPIDs {
-					fmt.Fprintf(&b, "[%d]", p.PID)
-				}
-			}
+			writeChain(req.SenderInfo.ProcessChain)
 		} else {
 			// Fallback: old format for remote requests without process chain
 			if req.SenderInfo.InvokerName != "" {
-				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", req.SenderInfo.InvokerName, req.Client, req.SenderInfo.PID)
+				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", esc(req.SenderInfo.InvokerName), esc(req.Client), req.SenderInfo.PID)
 			} else if req.SenderInfo.PID != 0 {
-				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", req.Client, req.SenderInfo.PID)
+				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", esc(req.Client), req.SenderInfo.PID)
 			} else {
-				fmt.Fprintf(&b, "<b>%s</b>: ", req.Client)
+				fmt.Fprintf(&b, "<b>%s</b>: ", esc(req.Client))
 			}
 
 			switch req.Type {
 			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
 				if len(req.Items) == 1 {
-					fmt.Fprintf(&b, "<i>%s</i>", req.Items[0].Label)
+					fmt.Fprintf(&b, "<i>%s</i>", esc(req.Items[0].Label))
 				} else {
 					fmt.Fprintf(&b, "<i>%d items</i>", len(req.Items))
 				}
 			case approval.RequestTypeSearch:
 				if len(req.SearchAttributes) > 0 {
-					attrs := make([]string, 0, len(req.SearchAttributes))
-					for k, v := range req.SearchAttributes {
-						attrs = append(attrs, fmt.Sprintf("%s=%s", k, v))
-					}
-					fmt.Fprintf(&b, "<i>%s</i>", strings.Join(attrs, ", "))
+					fmt.Fprintf(&b, "<i>%s</i>", escapedSearchAttrs())
 				} else {
 					b.WriteString("<i>all</i>")
 				}

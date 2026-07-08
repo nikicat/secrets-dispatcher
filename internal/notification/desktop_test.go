@@ -14,6 +14,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/stretchr/testify/assert"
 )
 
 // mockNotifier records calls for testing.
@@ -413,6 +414,46 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 	if !contains(call.body, "<i>Fix bug</i>") {
 		t.Errorf("body should contain italic commit subject: %s", call.body)
 	}
+}
+
+// TestHandler_FormatBody_EscapesInjectedMarkup is the regression test for Vuln 7:
+// client-controlled fields must be HTML-escaped before being interpolated into the
+// notification markup body, so an attacker cannot forge reassuring markup on the
+// (directly actionable) consent surface. The notification carries approve/deny
+// buttons, so injected bold/italic text would aid a consent spoof.
+func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	// A crafted commit message that tries to close the <i> and inject a bold
+	// "Verified" reassurance, plus a process comm that injects markup too.
+	req := &approval.Request{
+		ID:     "inject-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGPGSign,
+		GPGSignInfo: &approval.GPGSignInfo{
+			RepoName:  "repo<script>",
+			CommitMsg: "docs: typo</i> <b>Verified · GNOME Keyring</b>",
+		},
+		SenderInfo: approval.SenderInfo{
+			ProcessChain: []approval.ProcessInfo{{Name: "evil</b><b>git", PID: 9}},
+		},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	body := mock.lastNotify().body
+
+	// No raw attacker-supplied tags survive.
+	assert.NotContains(t, body, "<b>Verified", "injected bold reassurance must be escaped")
+	assert.NotContains(t, body, "typo</i>", "injected closing tag must be escaped")
+	assert.NotContains(t, body, "<script>", "injected repo markup must be escaped")
+	assert.NotContains(t, body, "evil</b><b>git", "injected process-name markup must be escaped")
+
+	// The content is still present, escaped.
+	assert.Contains(t, body, "&lt;b&gt;Verified", "escaped commit text should be present")
+	assert.Contains(t, body, "repo&lt;script&gt;", "escaped repo name should be present")
+
+	// Our own wrapping markup is intact.
+	assert.Contains(t, body, "<b>repo&lt;script&gt;</b>", "our own <b> tag must remain literal")
 }
 
 func TestHandler_OnEvent_DeleteRequest(t *testing.T) {

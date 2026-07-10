@@ -9,6 +9,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
@@ -24,6 +25,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
@@ -35,6 +37,9 @@ jobs:
 
   test-e2e:
     runs-on: ubuntu-latest
+    # The suite takes ~2 minutes; a hang in browser install or test startup
+    # must fail fast, not sit until the 6-hour GitHub default.
+    timeout-minutes: 15
     strategy:
       matrix:
         browser: [chromium, firefox]

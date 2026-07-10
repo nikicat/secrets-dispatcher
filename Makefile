@@ -58,16 +58,16 @@ test-e2e-all: backend-dev
 # E2E tests for a single browser (usage: make test-e2e-browser BROWSER=firefox)
 BROWSER ?= chromium
 test-e2e-browser: backend-dev
-	cd web && ALL_BROWSERS=1 deno run -A npm:@playwright/test@latest/cli test --project=$(BROWSER)
+	cd web && ALL_BROWSERS=1 deno run -A npm:@playwright/test@1.58.2/cli test --project=$(BROWSER)
 
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
 playwright-install:
-	cd web && deno run -A npm:@playwright/test@latest/cli install --with-deps $(BROWSER)
+	cd web && deno run -A npm:@playwright/test@1.58.2/cli install --with-deps $(BROWSER)
 
 # Generate screenshots for docs (output: docs/screenshots/)
 screenshots: backend-dev
 	cd web && deno cache --node-modules-dir playwright.config.ts tests/screenshots.spec.ts && \
-		deno run -A npm:@playwright/test@latest/cli test --project=chromium tests/screenshots.spec.ts
+		deno run -A npm:@playwright/test@1.58.2/cli test --project=chromium tests/screenshots.spec.ts
 
 # Show the version that will be embedded
 version:

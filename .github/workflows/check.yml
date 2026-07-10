@@ -19,10 +19,11 @@ jobs:
 
       - uses: nikicat/setup-deno@node24
         with:
-          # Pinned: deno 2.9.x hangs extracting playwright browsers
-          # (0% CPU after the download reaches 100%); 2.8.3 is the last
-          # version verified good. Bump deliberately, not by float.
-          deno-version: "2.8.3"
+          # Pinned deliberately, not by float. Requires @playwright/test
+          # >= 1.60: deno >= 2.9 ports Node 26.1 stream semantics
+          # (nodejs/node#62557), which deadlock the fd-slicer bundled in
+          # playwright <= 1.59 during browser-archive extraction.
+          deno-version: "2.9.2"
 
       - run: make check
 
@@ -55,10 +56,11 @@ jobs:
 
       - uses: nikicat/setup-deno@node24
         with:
-          # Pinned: deno 2.9.x hangs extracting playwright browsers
-          # (0% CPU after the download reaches 100%); 2.8.3 is the last
-          # version verified good. Bump deliberately, not by float.
-          deno-version: "2.8.3"
+          # Pinned deliberately, not by float. Requires @playwright/test
+          # >= 1.60: deno >= 2.9 ports Node 26.1 stream semantics
+          # (nodejs/node#62557), which deadlock the fd-slicer bundled in
+          # playwright <= 1.59 during browser-archive extraction.
+          deno-version: "2.9.2"
 
       - run: make playwright-install BROWSER=${{ matrix.browser }}
 

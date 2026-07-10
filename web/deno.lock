@@ -2,7 +2,7 @@
   "version": "5",
   "specifiers": {
     "npm:@playwright/test@1.52.0": "1.52.0",
-    "npm:@playwright/test@1.58.2": "1.58.2",
+    "npm:@playwright/test@1.61.1": "1.61.1",
     "npm:@sveltejs/vite-plugin-svelte@5": "5.1.1_svelte@5.50.0__acorn@8.15.0_vite@6.4.1__picomatch@4.0.3",
     "npm:svelte-check@*": "4.3.6_svelte@5.50.0__acorn@8.15.0_typescript@5.9.3",
     "npm:svelte-check@4": "4.3.6_svelte@5.50.0__acorn@8.15.0_typescript@5.9.3",
@@ -175,10 +175,10 @@
       ],
       "bin": true
     },
-    "@playwright/test@1.58.2": {
-      "integrity": "sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA==",
+    "@playwright/test@1.61.1": {
+      "integrity": "sha512-8nKv6+0RJSL9FE4jYOEGXnPeM/Hg12qZpmqzZjRh3qM0Y7c3z1mrOTfFLids72RDQYVh9WpLEfR5WdpNX4fkig==",
       "dependencies": [
-        "playwright@1.58.2"
+        "playwright@1.61.1"
       ],
       "bin": true
     },
@@ -468,8 +468,8 @@
       "integrity": "sha512-l2osTgLXSMeuLZOML9qYODUQoPPnUsKsb5/P6LJ2e6uPKXUdPK5WYhN4z03G+YNbWmGDY4YENauNu4ZKczreHg==",
       "bin": true
     },
-    "playwright-core@1.58.2": {
-      "integrity": "sha512-yZkEtftgwS8CsfYo7nm0KE8jsvm6i/PTgVtB8DL726wNf6H2IMsDuxCpJj59KDaxCtSnrWan2AeDqM7JBaultg==",
+    "playwright-core@1.61.1": {
+      "integrity": "sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==",
       "bin": true
     },
     "playwright@1.52.0": {
@@ -482,10 +482,10 @@
       ],
       "bin": true
     },
-    "playwright@1.58.2": {
-      "integrity": "sha512-vA30H8Nvkq/cPBnNw4Q8TWz1EJyqgpuinBcHET0YVJVFldr8JDNiU9LaWAE1KqSkRYazuaBhTpB5ZzShOezQ6A==",
+    "playwright@1.61.1": {
+      "integrity": "sha512-DWnY5o3YbLWK4GovuAVwpqL+1VwGNdUGrRr++8j8PtQQzvAVZUIMjKQ90fY689sEJZJBbZVw1rXaOKSTitkzPQ==",
       "dependencies": [
-        "playwright-core@1.58.2"
+        "playwright-core@1.61.1"
       ],
       "optionalDependencies": [
         "fsevents@2.3.2"
@@ -621,7 +621,7 @@
   },
   "workspace": {
     "dependencies": [
-      "npm:@playwright/test@1.58.2",
+      "npm:@playwright/test@1.61.1",
       "npm:@sveltejs/vite-plugin-svelte@5",
       "npm:svelte-check@4",
       "npm:svelte@5",

@@ -10,14 +10,22 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import { dirname, extname, join } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHmac, randomBytes } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import type { Socket } from "node:net";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PROJECT_ROOT = join(__dirname, "..", "..", "..");
+// Resolved from the runner's cwd — every entry point (`deno task test:e2e`,
+// `make test-e2e*`, `make screenshots`) launches Playwright from `web/`.
+// Not `import.meta.url`: Playwright >= 1.59 transpiles this file to
+// CommonJS, where `import.meta` is a syntax error.
+const PROJECT_ROOT = resolve("..");
+if (!existsSync(join(PROJECT_ROOT, "go.mod"))) {
+  throw new Error(
+    `expected the repo root at ${PROJECT_ROOT} (cwd must be web/); ` +
+      "launch the E2E suite via `deno task test:e2e` or `make test-e2e`",
+  );
+}
 const BINARY_PATH = join(PROJECT_ROOT, ".build", "secrets-dispatcher");
 const FRONTEND_DIR = join(PROJECT_ROOT, "web", "dist");
 

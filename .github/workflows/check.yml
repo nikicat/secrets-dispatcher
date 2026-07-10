@@ -19,7 +19,10 @@ jobs:
 
       - uses: nikicat/setup-deno@node24
         with:
-          deno-version: v2.x
+          # Pinned: deno 2.9.x hangs extracting playwright browsers
+          # (0% CPU after the download reaches 100%); 2.8.3 is the last
+          # version verified good. Bump deliberately, not by float.
+          deno-version: "2.8.3"
 
       - run: make check
 
@@ -52,7 +55,10 @@ jobs:
 
       - uses: nikicat/setup-deno@node24
         with:
-          deno-version: v2.x
+          # Pinned: deno 2.9.x hangs extracting playwright browsers
+          # (0% CPU after the download reaches 100%); 2.8.3 is the last
+          # version verified good. Bump deliberately, not by float.
+          deno-version: "2.8.3"
 
       - run: make playwright-install BROWSER=${{ matrix.browser }}
 

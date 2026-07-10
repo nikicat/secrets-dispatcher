@@ -1,6 +1,7 @@
 # Maintainer: Nikolay Bryskin <nikicat@users.noreply.github.com>
 # Rendered by .github/workflows/release.yml: @PKGVER@ is replaced with the
-# release tag and sha256sums is filled by updpkgsums before pushing to the AUR.
+# release tag and sha256sums is filled by updpkgsums during the test build,
+# so the published PKGBUILD is exactly what was built and verified.
 pkgname=secrets-dispatcher
 pkgver=@PKGVER@
 pkgrel=1

@@ -74,7 +74,7 @@ jobs:
       image: archlinux:latest@sha256:681569955d1d17313ef7134acc8b5cd8adcda2fc24709bed472d95e1cf3d71a1
     steps:
       - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed base-devel go deno git
+        run: pacman -Syu --noconfirm --needed base-devel go deno git pacman-contrib
 
       # The triggering commit provides the PKGBUILD template; the *tag*
       # determines what the package builds (it's baked into source=()), so a
@@ -87,23 +87,29 @@ jobs:
           mkdir -p /tmp/aur-build
           sed "s/@PKGVER@/${TAG#v}/" packaging/aur/PKGBUILD.in > /tmp/aur-build/PKGBUILD
           cp packaging/aur/secrets-dispatcher.install /tmp/aur-build/
+          cp packaging/aur/gitignore /tmp/aur-build/.gitignore
 
-      - name: Build the package as an unprivileged user
+      - name: Fill checksums and build the package as an unprivileged user
         run: |
           useradd -m builder
           chown -R builder /tmp/aur-build
           cd /tmp/aur-build
-          # sha256sums is filled by updpkgsums at deploy time; SKIP is fine for
-          # the test build. --noconfirm because deps are preinstalled above.
+          # updpkgsums downloads the source tarball and writes real sha256sums
+          # into the PKGBUILD; makepkg then verifies them, so the PKGBUILD we
+          # publish is exactly what was test-built. --noconfirm because deps
+          # are preinstalled above.
+          sudo -u builder updpkgsums
           sudo -u builder makepkg -f --noconfirm
           sudo -u builder makepkg --printsrcinfo
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pkgbuild
+          include-hidden-files: true
           path: |
             /tmp/aur-build/PKGBUILD
             /tmp/aur-build/secrets-dispatcher.install
+            /tmp/aur-build/.gitignore
 
   publish-aur:
     name: push to AUR
@@ -114,13 +120,17 @@ jobs:
         with:
           name: pkgbuild
 
+      # Checksums were already filled during the test build. Running updpkgsums
+      # here would download the source tarball into the AUR repo checkout, and
+      # with assets set the action stages it via `git add --all` — the AUR
+      # rejects blobs over 488 KiB. The .gitignore asset guards the same
+      # failure mode against future drift.
       - name: Publish secrets-dispatcher to the AUR
         uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
         with:
           pkgname: secrets-dispatcher
           pkgbuild: ./PKGBUILD
-          assets: ./secrets-dispatcher.install
-          updpkgsums: true
+          assets: ./secrets-dispatcher.install ./.gitignore
           commit_username: Nikolay Bryskin
           commit_email: nikicat@users.noreply.github.com
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

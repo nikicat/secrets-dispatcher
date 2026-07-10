@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
-import { Buffer } from "node:buffer";
-import { createHmac } from "node:crypto";
+import {
+  generateJWT,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 
 // These tests verify the approval flow of the WebUI.
 // Each test starts an isolated backend instance.
@@ -44,19 +46,7 @@ test.describe("Approval Flow", () => {
   test("authenticated API calls succeed", async ({ request }) => {
     // Exchange JWT for session cookie
     const token = await backend.getAuthToken();
-    const header = Buffer.from(
-      JSON.stringify({ alg: "HS256", typ: "JWT" }),
-    ).toString("base64url");
-    const now = Math.floor(Date.now() / 1000);
-    const claims = Buffer.from(
-      JSON.stringify({ iat: now, exp: now + 300 }),
-    ).toString("base64url");
-
-    const signingInput = `${header}.${claims}`;
-    const signature = createHmac("sha256", token)
-      .update(signingInput)
-      .digest("base64url");
-    const jwt = `${signingInput}.${signature}`;
+    const jwt = generateJWT(token);
 
     // Get session cookie
     const authResponse = await request.post(`${backend.url}/api/v1/auth`, {

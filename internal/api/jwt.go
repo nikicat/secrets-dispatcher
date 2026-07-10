@@ -118,6 +118,13 @@ func (a *Auth) ValidateJWT(tokenString string) (*jwtClaims, error) {
 		return nil, fmt.Errorf("token expired")
 	}
 
+	// Every token we mint carries a random jti (single-use enforcement keys on
+	// it). A missing jti would make "" the shared nonce for all such tokens,
+	// silently breaking replay protection — reject it as malformed instead.
+	if claims.Jti == "" {
+		return nil, fmt.Errorf("missing jti claim")
+	}
+
 	return &claims, nil
 }
 

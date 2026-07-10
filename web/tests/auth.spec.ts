@@ -1,4 +1,8 @@
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  generateJWT,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 import { expect, test } from "@playwright/test";
 import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
@@ -93,10 +97,26 @@ test.describe("Authentication", () => {
   });
 
   test("auth endpoint accepts valid JWT and sets cookie", async ({ request }) => {
-    // Generate a valid JWT
+    const token = await backend.getAuthToken();
+    const jwt = generateJWT(token);
+
+    const response = await request.post(`${backend.url}/api/v1/auth`, {
+      data: { token: jwt },
+    });
+
+    expect(response.status()).toBe(200);
+
+    // Check that session cookie was set
+    const cookies = response.headers()["set-cookie"];
+    expect(cookies).toContain("session=");
+  });
+
+  test("auth endpoint rejects correctly signed JWT without jti", async ({ request }) => {
+    // Login JWTs are single-use, keyed by jti. A token without one (the
+    // pre-single-use format) must be rejected as malformed rather than
+    // letting "" act as the shared nonce.
     const token = await backend.getAuthToken();
 
-    // Create JWT manually for testing
     const header = Buffer.from(
       JSON.stringify({ alg: "HS256", typ: "JWT" }),
     ).toString("base64url");
@@ -115,10 +135,6 @@ test.describe("Authentication", () => {
       data: { token: jwt },
     });
 
-    expect(response.status()).toBe(200);
-
-    // Check that session cookie was set
-    const cookies = response.headers()["set-cookie"];
-    expect(cookies).toContain("session=");
+    expect(response.status()).toBe(401);
   });
 });

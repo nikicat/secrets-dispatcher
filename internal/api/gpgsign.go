@@ -79,6 +79,12 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, "gpg_sign_info is required", http.StatusBadRequest)
 		return
 	}
+	// Without commit bytes there is nothing to sign and nothing to bind the
+	// approval display to — every downstream field would silently render blank.
+	if req.GPGSignInfo.CommitObject == "" {
+		writeError(w, "gpg_sign_info.commit_object is required", http.StatusBadRequest)
+		return
+	}
 	if req.Client == "" {
 		req.Client = "unknown"
 	}

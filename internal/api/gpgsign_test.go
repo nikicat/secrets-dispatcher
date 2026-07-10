@@ -16,6 +16,8 @@ import (
 )
 
 // validGPGSignBody is a JSON POST body with all required fields present.
+// The display fields agree with commit_object; the handler re-derives them
+// from the raw bytes (WYSIWYS), so a mismatch would be overridden.
 const validGPGSignBody = `{
 	"client": "test",
 	"gpg_sign_info": {
@@ -24,7 +26,8 @@ const validGPGSignBody = `{
 		"author":        "A",
 		"committer":     "A",
 		"key_id":        "ABCD1234",
-		"changed_files": ["main.go"]
+		"changed_files": ["main.go"],
+		"commit_object": "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A\ncommitter A\n\nfix: thing\n"
 	}
 }`
 
@@ -79,6 +82,34 @@ func TestHandleGPGSignRequest_MissingGPGSignInfo(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing gpg_sign_info, got %d", rr.Code)
 	}
+}
+
+// TestHandleGPGSignRequest_MissingCommitObject: a request without the raw
+// commit bytes has nothing to sign and nothing to bind the approval display
+// to, so it must fail loudly with 400 instead of rendering blank fields.
+func TestHandleGPGSignRequest_MissingCommitObject(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	handlers := testHandlers(t, mgr)
+
+	body := `{
+		"client": "test",
+		"gpg_sign_info": {
+			"repo_name":  "myrepo",
+			"commit_msg": "fix: thing",
+			"author":     "A",
+			"committer":  "A",
+			"key_id":     "ABCD1234"
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handlers.HandleGPGSignRequest(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code, "empty commit_object must be rejected")
+	assert.Empty(t, mgr.List(), "no pending request may be created")
 }
 
 // TestHandleGPGSignRequest_WrongMethod verifies Case 8:

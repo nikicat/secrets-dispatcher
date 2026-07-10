@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -295,6 +297,25 @@ func TestLoginJWTIsSingleUse(t *testing.T) {
 	// The signature/expiry are still valid — only single-use blocks the replay.
 	_, err = auth.ValidateJWT(token)
 	assert.NoError(t, err, "token remains cryptographically valid; single-use is enforced separately")
+}
+
+// TestValidateJWTRejectsMissingJti: a correctly signed token whose claims lack
+// a jti (the pre-single-use format) must be rejected outright. If it were
+// accepted, "" would act as the shared nonce for every such token and replay
+// protection would silently key on nothing.
+func TestValidateJWTRejectsMissingJti(t *testing.T) {
+	auth, err := NewAuth(t.TempDir())
+	require.NoError(t, err)
+
+	now := time.Now()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	claims := base64.RawURLEncoding.EncodeToString(
+		fmt.Appendf(nil, `{"iat":%d,"exp":%d}`, now.Unix(), now.Add(time.Minute).Unix()))
+	signingInput := header + "." + claims
+	token := signingInput + "." + auth.sign(signingInput)
+
+	_, err = auth.ValidateJWT(token)
+	assert.ErrorContains(t, err, "jti", "token without jti must be rejected as malformed")
 }
 
 // TestHandleAuthRejectsReplayedToken exercises single use through the HTTP handler:

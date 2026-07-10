@@ -51,7 +51,7 @@ const secretRequest = {
       pid: 48210,
       uid: 1000,
       user_name: "dev",
-      unit_name: "app-org.freedesktop.secrets.slice",
+      invoker_name: "app-org.freedesktop.secrets.slice",
       process_chain: [
         {
           name: "secret-tool",
@@ -95,7 +95,7 @@ const gpgSignRequest = {
       pid: 49300,
       uid: 1000,
       user_name: "dev",
-      unit_name: "",
+      invoker_name: "",
       process_chain: [
         {
           name: "secrets-dispatcher-gpg",
@@ -214,7 +214,7 @@ function makeHistory() {
           pid: 10000,
           uid: 1000,
           user_name: "dev",
-          unit_name: r.unit,
+          invoker_name: r.unit,
         },
       },
       resolution: r.resolution,

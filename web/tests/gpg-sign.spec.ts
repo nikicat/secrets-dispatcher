@@ -1,5 +1,9 @@
 import { expect, type Page, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  buildCommitObject,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 
 // These tests verify GPG commit signing approval flow in the WebUI.
 // They exercise the /api/v1/gpg-sign/request endpoint and the UI rendering
@@ -27,7 +31,12 @@ async function createGPGSignRequest(
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ client, gpg_sign_info: info }),
+    body: JSON.stringify({
+      client,
+      // The daemon rebinds display fields to commit_object (WYSIWYS), so the
+      // posted metadata only shows up in the UI if the raw bytes agree with it.
+      gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
+    }),
   });
   if (!res.ok) throw new Error(`POST gpg-sign/request failed: ${res.status}`);
   const data = (await res.json()) as { request_id: string };
@@ -516,7 +525,7 @@ test.describe("GPG Sign Corner Cases", () => {
           pid: 1234,
           uid: 1000,
           user_name: "dev",
-          unit_name: "claude",
+          invoker_name: "claude",
           process_chain: [
             {
               name: "secrets-dispatcher",

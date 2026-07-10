@@ -42,7 +42,7 @@ test.describe("Timestamp Display Toggle", () => {
             pid: 0,
             uid: 0,
             user_name: "",
-            unit_name: "",
+            invoker_name: "",
           },
         },
         resolution: "approved",

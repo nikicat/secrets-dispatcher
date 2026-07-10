@@ -1,95 +1,106 @@
 import { expect, test } from "@playwright/test";
 import { startTestBackend } from "./fixtures/test-utils.mts";
 
-// These tests verify the version mismatch auto-reload functionality.
-// Each test uses its own backend instance to allow version changes.
+// These tests verify the version mismatch auto-reload functionality and the
+// session behavior across daemon restarts.
+//
+// Since sessions became server-side and in-memory (single-use login JWT fix),
+// a daemon restart revokes every browser session: the WebSocket reconnect hits
+// 401 and the UI drops to the login prompt instead of silently reloading. The
+// version-mismatch reload logic itself is exercised via WebSocket interception,
+// which can change the snapshot version without restarting the backend.
 
-test.describe("Version Mismatch Auto-Reload", () => {
-  test("auto-reloads on version mismatch after server restart", async ({ page }) => {
-    // Start backend with a specific version
+test.describe("Sessions Across Restart", () => {
+  test("restart revokes browser session; fresh login recovers", async ({ page }) => {
     const backend = await startTestBackend({ version: "version_aaa1" });
 
     try {
       const loginURL = await backend.generateLoginURL();
       await page.goto(loginURL);
-
-      // Wait for WebSocket connection
       await expect(page.getByText("No pending requests")).toBeVisible();
 
-      // Set up load event listener before triggering the restart
-      const reloadPromise = page.waitForEvent("load", { timeout: 15000 });
-
-      // Restart backend with different version to simulate server upgrade
-      await backend.restart({ version: "version_bbb2" });
-
-      // Wait for the page to automatically reload
-      // The WebSocket should reconnect, detect version mismatch, and trigger reload
-      await reloadPromise;
-
-      // After reload, page should still work
-      await expect(page.getByText("No pending requests")).toBeVisible();
-    } finally {
-      await backend.cleanup();
-    }
-  });
-
-  test("no reload when version matches after server restart", async ({ page }) => {
-    // Start backend with a specific version
-    const backend = await startTestBackend({ version: "version_same" });
-
-    try {
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
-
-      // Wait for WebSocket connection
-      await expect(page.getByText("No pending requests")).toBeVisible();
-
-      // Track page reload
       let reloadCount = 0;
       page.on("load", () => {
         reloadCount++;
       });
 
-      // Restart backend with SAME version
-      await backend.restart({ version: "version_same" });
+      // Restart with a different version. The session set is in-memory, so
+      // the page's session dies with the old process; the version bump is
+      // invisible to the page because the WS can no longer authenticate.
+      await backend.restart({ version: "version_bbb2" });
 
-      // Wait for WebSocket to reconnect.
-      // Don't assert transient "Reconnecting..." state — it may resolve
-      // faster than Playwright can observe. Instead, wait for the end state.
-      await expect(page.getByText("No pending requests")).toBeVisible({
+      await expect(page.getByText("Authentication Required")).toBeVisible({
         timeout: 15000,
       });
-
-      // Give extra time to ensure no delayed reload happens
-      await page.waitForTimeout(2000);
       expect(reloadCount).toBe(0);
+
+      // A fresh login URL (new JWT, same master token) recovers the session.
+      const freshLoginURL = await backend.generateLoginURL();
+      await page.goto(freshLoginURL);
+      await expect(page.getByText("No pending requests")).toBeVisible();
     } finally {
       await backend.cleanup();
     }
   });
+});
 
-  test("reloads when version changes from empty to non-empty", async ({ page }) => {
-    // Start backend without a version (empty string)
-    const backend = await startTestBackend();
+test.describe("Version Mismatch Auto-Reload", () => {
+  test("reloads on version change across reconnects, not on match", async ({ page }) => {
+    const backend = await startTestBackend({ version: "real_version" });
 
     try {
+      // Rewrite the snapshot version per WS connection:
+      //   1st connect: "" (empty, like a dev build) — stored as the baseline
+      //   2nd connect: ""  — same version, must NOT reload
+      //   3rd connect: "version_new" — mismatch, must reload
+      const versions = ["", "", "version_new"];
+      let connectCount = 0;
+      let currentRoute: import("@playwright/test").WebSocketRoute | null = null;
+
+      await page.routeWebSocket("**/api/v1/ws", (ws) => {
+        const version = versions[Math.min(connectCount, versions.length - 1)];
+        connectCount++;
+        currentRoute = ws;
+        const server = ws.connectToServer();
+        server.onMessage((message) => {
+          if (typeof message === "string") {
+            try {
+              const parsed = JSON.parse(message);
+              if (parsed.type === "snapshot") {
+                parsed.version = version;
+                ws.send(JSON.stringify(parsed));
+                return;
+              }
+            } catch { /* not JSON */ }
+          }
+          ws.send(message);
+        });
+      });
+
       const loginURL = await backend.generateLoginURL();
       await page.goto(loginURL);
-
-      // Wait for WebSocket connection
       await expect(page.getByText("No pending requests")).toBeVisible();
 
-      // Set up load event listener before triggering the restart
+      let reloadCount = 0;
+      page.on("load", () => {
+        reloadCount++;
+      });
+
+      // Force a reconnect with the SAME version — no reload expected.
+      currentRoute!.close({ code: 1006, reason: "test-induced drop" });
+      await expect(page.getByText("client connected")).toBeVisible({
+        timeout: 15000,
+      });
+      await page.waitForTimeout(1000);
+      expect(reloadCount).toBe(0);
+
+      // Force a reconnect with a DIFFERENT version — the page must reload.
       const reloadPromise = page.waitForEvent("load", { timeout: 15000 });
-
-      // Restart backend WITH a version now
-      // Since the initial version was empty, this IS a version change
-      await backend.restart({ version: "new_version_1" });
-
-      // Wait for the page to automatically reload
+      currentRoute!.close({ code: 1006, reason: "test-induced drop" });
       await reloadPromise;
 
-      // After reload, page should still work
+      // After reload the session cookie is still valid (no restart happened),
+      // so the page comes back up authenticated.
       await expect(page.getByText("No pending requests")).toBeVisible();
     } finally {
       await backend.cleanup();

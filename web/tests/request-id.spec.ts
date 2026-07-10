@@ -1,5 +1,9 @@
 import { expect, type Page, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  buildCommitObject,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 
 // These tests verify that request IDs are displayed on pending and history cards.
 
@@ -24,7 +28,10 @@ async function createGPGSignRequest(
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ client, gpg_sign_info: info }),
+    body: JSON.stringify({
+      client,
+      gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
+    }),
   });
   if (!res.ok) throw new Error(`POST gpg-sign/request failed: ${res.status}`);
   const data = (await res.json()) as { request_id: string };
@@ -102,7 +109,7 @@ test.describe("Request ID on History Cards", () => {
                       pid: 12345,
                       uid: 1000,
                       user_name: "testuser",
-                      unit_name: "test.service",
+                      invoker_name: "test.service",
                     },
                   },
                   resolution: "approved",

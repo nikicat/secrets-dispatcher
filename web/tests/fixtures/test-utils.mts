@@ -35,9 +35,11 @@ export interface TestBackend {
 
 /**
  * Generate a JWT token for testing.
- * Matches the format expected by the backend.
+ * Matches the format expected by the backend. Exported so specs never
+ * hand-roll their own (a drifted copy is how the missing-jti breakage
+ * slipped past the suite).
  */
-function generateJWT(secret: string): string {
+export function generateJWT(secret: string): string {
   const header = Buffer.from(
     JSON.stringify({ alg: "HS256", typ: "JWT" }),
   ).toString("base64url");
@@ -47,6 +49,9 @@ function generateJWT(secret: string): string {
     JSON.stringify({
       iat: now,
       exp: now + 300, // 5 minutes
+      // Login JWTs are single-use, keyed by jti: without a fresh nonce the
+      // backend rejects every login after the first as a replay.
+      jti: randomBytes(16).toString("hex"),
     }),
   ).toString("base64url");
 
@@ -56,6 +61,23 @@ function generateJWT(secret: string): string {
     .digest("base64url");
 
   return `${signingInput}.${signature}`;
+}
+
+/**
+ * Build a raw git commit object from display fields, the way a real thin
+ * client feeds one to gpg. The daemon re-derives author/committer/message/
+ * parent from these bytes (WYSIWYS) and discards the client's display fields,
+ * so tests must supply a commit_object consistent with their expectations.
+ */
+export function buildCommitObject(info: Record<string, unknown>): string {
+  const lines = ["tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904"];
+  if (typeof info.parent_hash === "string" && info.parent_hash !== "") {
+    lines.push(`parent ${info.parent_hash}`);
+  }
+  lines.push(`author ${info.author ?? ""}`);
+  lines.push(`committer ${info.committer ?? ""}`);
+  const msg = typeof info.commit_msg === "string" ? info.commit_msg : "";
+  return `${lines.join("\n")}\n\n${msg}\n`;
 }
 
 // MIME types for static file serving
@@ -163,6 +185,25 @@ function proxyWebSocket(
 
     proxySocket.on("error", () => socket.destroy());
     socket.on("error", () => proxySocket.destroy());
+  });
+
+  proxyReq.on("response", (proxyRes) => {
+    // The backend refused the upgrade (e.g. 401 for a dead session). Forward
+    // the HTTP error response and close, like a real reverse proxy would —
+    // otherwise the browser's WebSocket hangs in CONNECTING forever and the
+    // frontend never learns the handshake failed.
+    let response = `HTTP/1.1 ${proxyRes.statusCode} ${
+      proxyRes.statusMessage ?? ""
+    }\r\n`;
+    for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) {
+      response += `${proxyRes.rawHeaders[i]}: ${
+        proxyRes.rawHeaders[i + 1]
+      }\r\n`;
+    }
+    response += "\r\n";
+    socket.write(response);
+    proxyRes.on("data", (chunk) => socket.write(chunk));
+    proxyRes.on("end", () => socket.end());
   });
 
   proxyReq.on("error", () => socket.destroy());

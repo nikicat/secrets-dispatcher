@@ -116,7 +116,7 @@ test.describe("Browser Notifications", () => {
         client: "my-app",
         type: "get_secret",
         items: [{ path: "/secrets/api-key", label: "API Key" }],
-        sender_info: { unit_name: "my-app.service", pid: 1234 },
+        sender_info: { invoker_name: "my-app.service", pid: 1234 },
         expires_at: new Date(Date.now() + 300000).toISOString(),
       };
 
@@ -132,8 +132,8 @@ test.describe("Browser Notifications", () => {
       // Format body like notifications.ts does
       const parts: string[] = [];
       parts.push(`Client: ${request.client}`);
-      if (request.sender_info?.unit_name) {
-        parts.push(`Process: ${request.sender_info.unit_name}`);
+      if (request.sender_info?.invoker_name) {
+        parts.push(`Process: ${request.sender_info.invoker_name}`);
       }
       if (request.items.length === 1) {
         parts.push(
@@ -342,8 +342,8 @@ test.describe("Browser Notifications", () => {
 
       const parts: string[] = [];
       parts.push(`Client: ${request.client}`);
-      if (request.sender_info?.unit_name) {
-        parts.push(`Process: ${request.sender_info.unit_name}`);
+      if (request.sender_info?.invoker_name) {
+        parts.push(`Process: ${request.sender_info.invoker_name}`);
       } else if (request.sender_info?.pid) {
         parts.push(`PID: ${request.sender_info.pid}`);
       }

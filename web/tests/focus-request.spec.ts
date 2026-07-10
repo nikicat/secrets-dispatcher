@@ -1,5 +1,9 @@
 import { expect, type Page, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  buildCommitObject,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 
 declare global {
   interface Window {
@@ -44,7 +48,10 @@ async function createRequest(
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ client: "focus-test", gpg_sign_info: info }),
+    body: JSON.stringify({
+      client: "focus-test",
+      gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
+    }),
   });
   if (!res.ok) throw new Error(`POST gpg-sign/request failed: ${res.status}`);
   const data = (await res.json()) as { request_id: string };
@@ -291,14 +298,17 @@ test.describe("Focus Mode — Request Expiration", () => {
         },
         body: JSON.stringify({
           client: "expire-test",
-          gpg_sign_info: {
-            repo_name: "test-repo",
-            commit_msg: "feat: will expire",
-            author: "Dev <dev@example.com> 1700000000 +0000",
-            committer: "Dev <dev@example.com> 1700000000 +0000",
-            key_id: "EXPIRE01",
-            changed_files: ["main.go"],
-          },
+          gpg_sign_info: (() => {
+            const info = {
+              repo_name: "test-repo",
+              commit_msg: "feat: will expire",
+              author: "Dev <dev@example.com> 1700000000 +0000",
+              committer: "Dev <dev@example.com> 1700000000 +0000",
+              key_id: "EXPIRE01",
+              changed_files: ["main.go"],
+            };
+            return { commit_object: buildCommitObject(info), ...info };
+          })(),
         }),
       },
     );

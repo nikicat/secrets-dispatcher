@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -571,6 +570,17 @@ func (h *Handler) handleResolved(requestID string) {
 	slog.Debug("closed desktop notification", "request_id", requestID, "notification_id", notifID)
 }
 
+// markupEscaper escapes the only characters that are special in the
+// org.freedesktop.Notifications markup body: & < >. Quotes are deliberately
+// left alone — body text never appears inside an attribute value, and
+// html.EscapeString's &#39;/&#34; showed up literally on servers (dunst, mako,
+// GNOME Shell) that don't decode numeric character references.
+var markupEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+func escapeMarkup(s string) string {
+	return markupEscaper.Replace(s)
+}
+
 // commitSubject returns the first line of a commit message.
 func commitSubject(msg string) string {
 	if before, _, ok := strings.Cut(msg, "\n"); ok {
@@ -588,7 +598,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	// attacker-settable via prctl) must be escaped; only our own literal <b>/<i>
 	// tags are emitted raw. The notification carries approve/deny action buttons,
 	// so unescaped markup could forge reassuring content on the consent surface.
-	esc := html.EscapeString
+	esc := escapeMarkup
 
 	// writeChain appends the process chain (comm names), escaping each name.
 	writeChain := func(chain []approval.ProcessInfo) {

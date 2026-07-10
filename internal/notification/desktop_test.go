@@ -456,6 +456,33 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 	assert.Contains(t, body, "<b>repo&lt;script&gt;</b>", "our own <b> tag must remain literal")
 }
 
+// TestHandler_FormatBody_QuotesNotEscaped guards against over-escaping: quotes
+// don't need escaping in the notification markup body (text is never inside an
+// attribute), and servers like dunst and mako render html.EscapeString's
+// &#39;/&#34; literally instead of decoding them.
+func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	req := &approval.Request{
+		ID:     "quotes-1",
+		Client: "user@host",
+		Type:   approval.RequestTypeGPGSign,
+		GPGSignInfo: &approval.GPGSignInfo{
+			RepoName:  "my-project",
+			CommitMsg: `fix: don't say "hello" to <script> & friends`,
+		},
+		SenderInfo: approval.SenderInfo{PID: 5678},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	body := mock.lastNotify().body
+
+	assert.Contains(t, body, `don't say "hello"`, "quotes must pass through verbatim")
+	assert.NotContains(t, body, "&#39;", "apostrophe must not be numerically escaped")
+	assert.NotContains(t, body, "&#34;", "double quote must not be numerically escaped")
+	assert.Contains(t, body, "&lt;script&gt; &amp; friends", "markup-relevant characters must still be escaped")
+}
+
 func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 

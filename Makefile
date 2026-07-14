@@ -1,7 +1,7 @@
 MAKEFLAGS += -j
 
 .PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
-	playwright-install dev version pre-commit screenshots \
+	playwright-install dev version release pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
@@ -72,6 +72,37 @@ screenshots: backend-dev
 # Show the version that will be embedded
 version:
 	@echo $(VERSION)
+
+# Cut a new release and block until it ships. Creating the GitHub release fires
+# the Release workflow (binary uploads + AUR publish); this target creates it
+# from the tip of master, then watches that run and fails if the run fails. The
+# tag is the sole source of version truth. Usage: make release TAG=vX.Y.Z
+# Does NOT run tests/checks first — CI covers that on the PR; run 'make
+# pre-commit' yourself beforehand if desired.
+release:
+	@echo "$(TAG)" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "Usage: make release TAG=vX.Y.Z (got TAG='$(TAG)')"; exit 1; }
+	@git diff --quiet && git diff --cached --quiet || { echo "Working tree is dirty — commit or stash before releasing."; exit 1; }
+	@git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null && { echo "Tag $(TAG) already exists locally."; exit 1; } || true
+	@git ls-remote --exit-code --tags origin "refs/tags/$(TAG)" >/dev/null 2>&1 && { echo "Tag $(TAG) already exists on origin."; exit 1; } || true
+	@git fetch -q origin master
+	@unpushed=$$(git rev-list origin/master..master 2>/dev/null); \
+		[ -z "$$unpushed" ] || { echo "Local master has unpushed commits — push before releasing (the release tags the tip of origin/master)."; exit 1; }
+	@echo "==> Creating release $(TAG) at $$(git rev-parse --short origin/master) (tip of origin/master), fires the Release workflow"
+	gh release create "$(TAG)" --target master --generate-notes --title "$(TAG)"
+	@echo "==> Waiting for the Release workflow run to appear"
+	@run_id=""; \
+	for i in $$(seq 1 30); do \
+		run_id=$$(gh run list --workflow=release.yml --event=release --limit 20 \
+			--json databaseId,headBranch --jq 'map(select(.headBranch=="$(TAG)")) | .[0].databaseId'); \
+		if [ -n "$$run_id" ] && [ "$$run_id" != "null" ]; then break; fi; \
+		sleep 5; \
+	done; \
+	if [ -z "$$run_id" ] || [ "$$run_id" = "null" ]; then \
+		echo "No Release workflow run found for $(TAG); inspect: gh run list --workflow=release.yml"; \
+		exit 1; \
+	fi; \
+	echo "==> Watching run $$run_id"; \
+	gh run watch "$$run_id" --exit-status --interval 15
 
 # Clean build artifacts
 clean:

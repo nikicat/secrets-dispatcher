@@ -1610,6 +1610,54 @@ func TestCheckTrustRules(t *testing.T) {
 	})
 }
 
+func TestMatchProcessArgs(t *testing.T) {
+	// Interpreter-run script: exe is the interpreter, the script path is only
+	// visible in argv — the case the args matcher exists for.
+	sender := SenderInfo{ProcessChain: []ProcessInfo{
+		{Name: "secret-tool", PID: 100, Exe: "/usr/bin/secret-tool", Args: []string{"secret-tool", "lookup", "service", "http-basic-auth"}},
+		{Name: "bash", PID: 99, Exe: "/usr/bin/bash", Args: []string{"bash", "/home/me/.local/bin/logcli", "query"}},
+		{Name: "fish", PID: 98, Exe: "/usr/bin/fish", Args: []string{"fish"}},
+	}}
+
+	t.Run("matches script path in interpreter argv", func(t *testing.T) {
+		pm := &ProcessMatcher{Exe: "/usr/bin/bash", Args: "/home/me/.local/bin/logcli"}
+		assert.True(t, matchProcess(pm, sender))
+	})
+
+	t.Run("glob within final path segment", func(t *testing.T) {
+		pm := &ProcessMatcher{Args: "/home/me/.local/bin/log*"}
+		assert.True(t, matchProcess(pm, sender))
+	})
+
+	t.Run("glob does not cross path separators", func(t *testing.T) {
+		pm := &ProcessMatcher{Args: "*/logcli"}
+		assert.False(t, matchProcess(pm, sender))
+	})
+
+	t.Run("no match on absent arg", func(t *testing.T) {
+		pm := &ProcessMatcher{Args: "/home/me/.local/bin/other"}
+		assert.False(t, matchProcess(pm, sender))
+	})
+
+	t.Run("matches only whole args, not substrings", func(t *testing.T) {
+		pm := &ProcessMatcher{Args: "logcli"}
+		assert.False(t, matchProcess(pm, sender))
+	})
+
+	t.Run("all fields must match, each anywhere in chain", func(t *testing.T) {
+		pm := &ProcessMatcher{Exe: "/usr/bin/zsh", Args: "/home/me/.local/bin/logcli"}
+		assert.False(t, matchProcess(pm, sender), "exe not in chain")
+
+		pm = &ProcessMatcher{Exe: "/usr/bin/secret-tool", Args: "/home/me/.local/bin/logcli"}
+		assert.True(t, matchProcess(pm, sender), "exe and args may match different chain entries")
+	})
+
+	t.Run("no match on empty chain", func(t *testing.T) {
+		pm := &ProcessMatcher{Args: "*"}
+		assert.False(t, matchProcess(pm, SenderInfo{}))
+	})
+}
+
 func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 	mgr := NewManager(ManagerConfig{
 		Timeout:    5 * time.Second,

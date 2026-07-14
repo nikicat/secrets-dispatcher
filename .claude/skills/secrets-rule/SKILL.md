@@ -67,6 +67,8 @@ Build a trust rule. When choosing process identifiers, walk UP the process chain
 
 **Prefer `process.exe`** with the full path from history. Avoid `process.name` unless the exe is unavailable (name is truncated at 15 chars by `/proc/PID/comm`).
 
+**Interpreter-run scripts** (shebang wrappers): the kernel reports the interpreter as exe (`/usr/bin/bash`), and the script path only appears in argv. Anchor these with `exe` (the interpreter) + `args` (the script's full path from `process_chain[].args`).
+
 Do NOT include in the rule:
 - `process.name` when exe is available (redundant, and name may be truncated)
 - `secret.label` (usually too specific / session-dependent)
@@ -114,6 +116,7 @@ serve:
           process:
               exe: /usr/bin/app      # glob, matches any process in chain
               name: app              # glob, matches any process in chain (15-char limit!)
+              args: /path/to/script  # glob, matches any single cmdline arg of any process in chain — use for interpreter-run scripts (exe would be /usr/bin/bash)
               cwd: /home/user/proj   # glob, matches any process in chain
               unit: "app-*"          # glob, matches systemd unit name
           secret:                    # optional, for get_secret/delete/write

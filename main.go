@@ -366,6 +366,8 @@ func runServe(args []string) {
 			tr.Process = &approval.ProcessMatcher{
 				Exe:  r.Process.Exe,
 				Name: r.Process.Name,
+				Args: r.Process.Args,
+				CWD:  r.Process.CWD,
 				Unit: r.Process.Unit,
 			}
 		}

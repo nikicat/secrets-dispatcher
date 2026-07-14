@@ -301,6 +301,44 @@ func TestValidate(t *testing.T) {
 			}},
 			wantErr: `action must be "approve", "ignore", or "deny"`,
 		},
+		{
+			name: "valid args rule",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Rules: []TrustRule{{
+					Name:    "logcli",
+					Action:  "approve",
+					Process: &ProcessMatcher{Exe: "/usr/bin/bash", Args: "/home/me/.local/bin/logcli"},
+				}},
+			}},
+		},
+		{
+			name: "invalid args glob",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Rules: []TrustRule{{
+					Name:    "bad-args",
+					Action:  "approve",
+					Process: &ProcessMatcher{Args: "["},
+				}},
+			}},
+			wantErr: "invalid glob in process.args",
+		},
+		{
+			name: "invalid cwd glob",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Rules: []TrustRule{{
+					Name:    "bad-cwd",
+					Action:  "approve",
+					Process: &ProcessMatcher{CWD: "["},
+				}},
+			}},
+			wantErr: "invalid glob in process.cwd",
+		},
 	}
 
 	for _, tc := range tests {

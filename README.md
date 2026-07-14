@@ -121,6 +121,14 @@ serve:
       process:
         cwd: "/home/me/src/my-project/*"
 
+    # Auto-approve a shell-script wrapper (exe is the interpreter, so
+    # identify the script via its argv)
+    - name: logcli-wrapper
+      action: approve
+      process:
+        exe: "/usr/bin/bash"
+        args: "/home/me/.local/bin/logcli"
+
     # Ignore Chrome's dummy secret probe
     - name: chrome-probe
       action: ignore
@@ -141,9 +149,9 @@ serve:
     - exe_path: /usr/bin/nvim
 ```
 
-Rules match on process attributes (exe, name, CWD, systemd unit) and secret attributes (collection, label, custom attributes). All patterns support globs. Process matching checks the full process chain, not just the immediate caller.
+Rules match on process attributes (exe, name, args, CWD, systemd unit) and secret attributes (collection, label, custom attributes). All patterns support globs. Process matching checks the full process chain, not just the immediate caller. `args` is matched against each individual cmdline argument of each process in the chain — useful for interpreter-run scripts, whose exe is the interpreter (`/usr/bin/bash`) while the script path only appears in argv.
 
-For security-relevant rules — especially `deny` — match on **`exe`**: it compares the kernel-resolved `/proc/PID/exe` and cannot be spoofed. **`name`** matches the process `comm`, which any process can set freely (`prctl(PR_SET_NAME)`); treat it as advisory only and never rely on it to block an application. **`unit`** matches the caller's real systemd unit (resolved via `GetUnitByPID`), which is authoritative for systemd-managed services.
+For security-relevant rules — especially `deny` — match on **`exe`**: it compares the kernel-resolved `/proc/PID/exe` and cannot be spoofed. **`name`** matches the process `comm`, which any process can set freely (`prctl(PR_SET_NAME)`); treat it as advisory only and never rely on it to block an application. **`args`** is likewise self-reported — a process can rewrite its argv after exec — so it is advisory only too. **`unit`** matches the caller's real systemd unit (resolved via `GetUnitByPID`), which is authoritative for systemd-managed services.
 
 ## Process Chain Detection
 

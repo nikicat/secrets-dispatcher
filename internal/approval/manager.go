@@ -1013,6 +1013,27 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 		}
 	}
 
+	if pm.Args != "" {
+		// Matched against each individual argument of each process in the
+		// chain. Like Name, cmdline is self-reported (a process can rewrite
+		// its argv after exec) — advisory only, never rely on it for deny.
+		matched := false
+		for _, proc := range senderInfo.ProcessChain {
+			for _, arg := range proc.Args {
+				if ok, _ := path.Match(pm.Args, arg); ok {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
 	if pm.CWD != "" {
 		matched := false
 		for _, proc := range senderInfo.ProcessChain {

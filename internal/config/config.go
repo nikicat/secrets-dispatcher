@@ -153,6 +153,8 @@ func (cfg *Config) Validate() error {
 		for _, pat := range []struct{ name, val string }{
 			{"process.exe", strFromProcessMatcher(rule.Process, "exe")},
 			{"process.name", strFromProcessMatcher(rule.Process, "name")},
+			{"process.args", strFromProcessMatcher(rule.Process, "args")},
+			{"process.cwd", strFromProcessMatcher(rule.Process, "cwd")},
 			{"process.unit", strFromProcessMatcher(rule.Process, "unit")},
 			{"secret.collection", strFromSecretMatcher(rule.Secret, "collection")},
 			{"secret.label", strFromSecretMatcher(rule.Secret, "label")},
@@ -189,6 +191,10 @@ func strFromProcessMatcher(p *ProcessMatcher, field string) string {
 		return p.Exe
 	case "name":
 		return p.Name
+	case "args":
+		return p.Args
+	case "cwd":
+		return p.CWD
 	case "unit":
 		return p.Unit
 	}
@@ -281,10 +287,13 @@ type TrustRule struct {
 // Exe is the security-grade matcher: it compares the kernel-resolved
 // /proc/PID/exe and cannot be spoofed. Name matches the process comm, which is
 // attacker-controllable (prctl(PR_SET_NAME)) — it is advisory only and must not
-// be relied on for deny rules. Unit matches the caller's real systemd unit.
+// be relied on for deny rules. Args matches individual cmdline arguments, which
+// are equally self-reported (a process can rewrite its argv after exec) — also
+// advisory only. Unit matches the caller's real systemd unit.
 type ProcessMatcher struct {
 	Exe  string `yaml:"exe,omitempty"`  // glob, matches any process's /proc/exe in the chain (non-spoofable)
 	Name string `yaml:"name,omitempty"` // glob, matches any process comm in the chain — ADVISORY: comm is spoofable
+	Args string `yaml:"args,omitempty"` // glob, matches any single cmdline arg of any process in the chain — ADVISORY: argv is spoofable
 	CWD  string `yaml:"cwd,omitempty"`  // glob, matches any process's CWD in the chain
 	Unit string `yaml:"unit,omitempty"` // glob, matches the caller's real systemd unit (from GetUnitByPID)
 }

@@ -584,7 +584,7 @@
                     <span class="rule-permanent">config</span>
                   </div>
                   <PropsTable
-                    process={rule.process?.name ?? rule.process?.exe ?? rule.process?.unit ?? undefined}
+                    process={rule.process?.name ?? rule.process?.exe ?? rule.process?.args ?? rule.process?.cwd ?? rule.process?.unit ?? undefined}
                     collection={rule.secret?.collection ?? undefined}
                     attributes={rule.secret?.attributes ?? rule.search_attributes ?? undefined}
                   />

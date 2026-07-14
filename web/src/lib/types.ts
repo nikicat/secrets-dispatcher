@@ -106,6 +106,8 @@ export interface TrustedSigner {
 export interface ProcessMatcher {
   exe?: string;
   name?: string;
+  args?: string;
+  cwd?: string;
   unit?: string;
 }
 

@@ -51,7 +51,17 @@ secrets-dispatcher adds a controlled gateway with:
 
 **Prerequisites:** A Secret Service provider (gnome-keyring, [gopass-secret-service](https://github.com/nikicat/gopass-secret-service), KeePassXC) and/or GPG configured.
 
-### Build & Install
+### Install
+
+**Prebuilt binary** — each [release](https://github.com/nikicat/secrets-dispatcher/releases) ships static Linux binaries (amd64/arm64):
+
+```bash
+curl -Lo ~/.local/bin/secrets-dispatcher \
+  https://github.com/nikicat/secrets-dispatcher/releases/latest/download/secrets-dispatcher-linux-amd64
+chmod +x ~/.local/bin/secrets-dispatcher
+```
+
+**From source** (requires Go and npm for the embedded web UI):
 
 ```bash
 git clone https://github.com/nikicat/secrets-dispatcher.git

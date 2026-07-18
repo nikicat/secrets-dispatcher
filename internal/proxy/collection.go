@@ -85,7 +85,7 @@ func isCollectionPath(path dbus.ObjectPath) bool {
 // Delete deletes the collection.
 // Signature: Delete() -> (prompt ObjectPath)
 func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isCollectionPath(path) {
 		return "/", dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -170,7 +170,7 @@ func extractItemInfo(collectionPath string, properties map[string]dbus.Variant) 
 // SearchItems searches for items in this collection matching the given attributes.
 // Signature: SearchItems(attributes Dict<String,String>) -> (results Array<ObjectPath>)
 func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isCollectionPath(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -213,7 +213,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 // CreateItem creates a new item in the collection.
 // Signature: CreateItem(properties Dict<String,Variant>, secret Secret, replace Boolean) -> (item ObjectPath, prompt ObjectPath)
 func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]dbus.Variant, secret dbustypes.Secret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isCollectionPath(path) {
 		return "/", "/", dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -292,7 +292,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 
 // Get implements org.freedesktop.DBus.Properties.Get for collections.
 func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isCollectionPath(path) {
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -314,7 +314,7 @@ func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.
 
 // GetAll implements org.freedesktop.DBus.Properties.GetAll for collections.
 func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isCollectionPath(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -338,7 +338,7 @@ func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]d
 
 // Set implements org.freedesktop.DBus.Properties.Set for collections.
 func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isCollectionPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}

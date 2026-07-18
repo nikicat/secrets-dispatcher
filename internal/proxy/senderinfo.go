@@ -14,6 +14,11 @@ func senderOf(msg dbus.Message) senderName {
 	return senderName(msg.Headers[dbus.FieldSender].Value().(string))
 }
 
+// pathOf returns the object path an incoming message is addressed to.
+func pathOf(msg dbus.Message) dbus.ObjectPath {
+	return msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+}
+
 // dbusClient abstracts D-Bus operations for testing.
 type dbusClient interface {
 	GetConnectionUnixProcessID(sender senderName) (uint32, error)

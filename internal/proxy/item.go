@@ -80,7 +80,7 @@ func isItemPath(path dbus.ObjectPath) bool {
 // Delete deletes the item.
 // Signature: Delete() -> (prompt ObjectPath)
 func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return "/", dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -131,7 +131,7 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 // GetSecret retrieves the secret for this item.
 // Signature: GetSecret(session ObjectPath) -> (secret Secret)
 func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbustypes.Secret, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -196,7 +196,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 // SetSecret sets the secret for this item.
 // Signature: SetSecret(secret Secret)
 func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus.Error {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -258,7 +258,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 
 // Get implements org.freedesktop.DBus.Properties.Get for items.
 func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -280,7 +280,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 
 // GetAll implements org.freedesktop.DBus.Properties.GetAll for items.
 func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -304,7 +304,7 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 
 // Set implements org.freedesktop.DBus.Properties.Set for items.
 func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}

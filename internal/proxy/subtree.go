@@ -30,7 +30,7 @@ func (h *SubtreePropertiesHandler) upstream(path dbus.ObjectPath) dbus.BusObject
 
 // Get implements org.freedesktop.DBus.Properties.Get for collections and items.
 func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 
 	// Route based on path type
 	if !isCollectionPath(path) && !isItemPath(path) {
@@ -48,7 +48,7 @@ func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string)
 
 // GetAll implements org.freedesktop.DBus.Properties.GetAll for collections and items.
 func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 
 	if !isCollectionPath(path) && !isItemPath(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
@@ -70,7 +70,7 @@ func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[s
 
 // Set implements org.freedesktop.DBus.Properties.Set for collections and items.
 func (h *SubtreePropertiesHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 
 	if !isCollectionPath(path) && !isItemPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))

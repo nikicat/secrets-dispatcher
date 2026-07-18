@@ -7,9 +7,12 @@ name: E2E GNOME
 # Tier-2 (full) GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init) with
 # gdm autologin — the only honest coverage for the takeover acceptance gates
 # (US-4 ownership, US-5 re-grab resistance across a session restart, US-9
-# reversal). Runs on every PR (~1.5 min with warm image cache, ~4 min cold);
-# the weekly cache key forces a fresh provision so Ubuntu package drift in
-# noble/current still gets caught. See docs/plans/onboarding-and-e2e.md.
+# reversal). One VM leg per supported Ubuntu series (24.04 LTS + 26.04 LTS),
+# in parallel on every PR (~1.5 min with warm image cache, ~4 min cold); the
+# weekly cache key forces a fresh provision so Ubuntu package drift in each
+# series' /current image still gets caught. The "full" job is the aggregate
+# gate over the legs — branch protection requires a check named exactly
+# "full", so that name must stay stable. See docs/plans/onboarding-and-e2e.md.
 
 on:
   push:
@@ -40,9 +43,15 @@ jobs:
 
       - run: make test-e2e-gnome
 
-  full:
+  vm:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        series: [noble, resolute]
+    env:
+      UBUNTU_SERIES: ${{ matrix.series }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -63,7 +72,7 @@ jobs:
 
       # The provisioned desktop base is cached with a weekly-rotating key (no
       # restore-keys fallback, deliberately: on rollover the job re-provisions
-      # from the current noble/current image, so upstream drift is picked up
+      # from the series' current cloud image, so upstream drift is picked up
       # at least weekly). Both files must travel together — the qcow2 overlay
       # references the pristine image as its backing file.
       - name: Compute image cache key (rotates weekly)
@@ -79,10 +88,24 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cache/secrets-dispatcher/e2e/noble-server-cloudimg-amd64.img
-            ~/.cache/secrets-dispatcher/e2e/desktop-base.qcow2
+            ~/.cache/secrets-dispatcher/e2e/${{ matrix.series }}-server-cloudimg-amd64.img
+            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ matrix.series }}.qcow2
             ~/.cache/secrets-dispatcher/e2e/id_ed25519
             ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
-          key: e2e-vm-images-${{ steps.imgkey.outputs.week }}
+          key: e2e-vm-images-${{ matrix.series }}-${{ steps.imgkey.outputs.week }}
 
       - run: make test-e2e-gnome-vm
+
+  # Aggregate gate over the VM matrix legs. Branch protection on master
+  # requires a status check named exactly "full" (the pre-matrix VM job's
+  # name); this job keeps that contract without touching repo settings.
+  # if: always() is load-bearing — without it a failed leg would leave this
+  # job "skipped", which branch protection counts as passing.
+  full:
+    needs: vm
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: All VM legs must succeed
+        run: test "${{ needs.vm.result }}" = success

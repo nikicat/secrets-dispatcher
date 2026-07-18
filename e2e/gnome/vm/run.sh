@@ -11,22 +11,28 @@
 #   stop           kill the running VM (overlay is kept for post-mortem)
 #   destroy        stop + delete the instance work dir
 #
+# UBUNTU_SERIES picks the release under test (noble = 24.04 LTS, resolute =
+# 26.04 LTS). Images and the instance dir are per-series, so bases for
+# different series coexist in the cache; to run two VMs at once also set
+# SSH_PORT.
+#
 # Layout:
 #   cache (shared, immutable after provision): $CACHE_DIR
-#     noble-server-cloudimg-amd64.img   pristine cloud image (downloaded)
-#     desktop-base.qcow2                provisioned GNOME desktop image
-#     id_ed25519[.pub]                  SSH keypair baked into the base
+#     $UBUNTU_SERIES-server-cloudimg-amd64.img  pristine cloud image (downloaded)
+#     desktop-base-$UBUNTU_SERIES.qcow2         provisioned GNOME desktop image
+#     id_ed25519[.pub]                          SSH keypair baked into the base
 #   instance (throwaway): $VM_DIR — overlay disk, seed iso, pidfile, logs
 set -euo pipefail
 
+UBUNTU_SERIES=${UBUNTU_SERIES:-noble}
 CACHE_DIR=${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/secrets-dispatcher/e2e}
-VM_DIR=${VM_DIR:-$CACHE_DIR/instance}
+VM_DIR=${VM_DIR:-$CACHE_DIR/instance-$UBUNTU_SERIES}
 SSH_PORT=${SSH_PORT:-2222}
 VM_MEM=${VM_MEM:-4G}
 VM_CPUS=${VM_CPUS:-4}
-IMG_URL=https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
-PRISTINE=$CACHE_DIR/noble-server-cloudimg-amd64.img
-BASE=$CACHE_DIR/desktop-base.qcow2
+IMG_URL=https://cloud-images.ubuntu.com/$UBUNTU_SERIES/current/$UBUNTU_SERIES-server-cloudimg-amd64.img
+PRISTINE=$CACHE_DIR/$UBUNTU_SERIES-server-cloudimg-amd64.img
+BASE=$CACHE_DIR/desktop-base-$UBUNTU_SERIES.qcow2
 SSH_KEY=$CACHE_DIR/id_ed25519
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 

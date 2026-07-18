@@ -91,6 +91,10 @@ test-e2e-gnome-container: backend-go
 # Tier-2 GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init), covers the
 # takeover/re-grab/reversal acceptance gates. First run provisions a cached
 # desktop base image (~10 min); each run boots a throwaway overlay.
+# UBUNTU_SERIES picks the release (noble = 24.04 LTS, resolute = 26.04 LTS):
+#   make test-e2e-gnome-vm UBUNTU_SERIES=resolute
+UBUNTU_SERIES ?= noble
+export UBUNTU_SERIES
 test-e2e-gnome-vm: backend-go
 	e2e/gnome/vm/run.sh provision
 	e2e/gnome/vm/run.sh destroy

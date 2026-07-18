@@ -1,5 +1,6 @@
 #cloud-config
-# Provisions an Ubuntu 24.04 cloud image into a minimal real-GNOME desktop:
+# Provisions an Ubuntu cloud image (any UBUNTU_SERIES run.sh supports — same
+# package set on 24.04 and 26.04) into a minimal real-GNOME desktop:
 # gdm3 + gnome-shell + gnome-keyring with autologin for the e2e user. This is
 # the Tier-2 fidelity environment — the only place gnome-keyring's real
 # start/re-grab vectors (systemd user units, XDG autostart, D-Bus activation,

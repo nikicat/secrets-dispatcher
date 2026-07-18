@@ -44,6 +44,12 @@ func (s *Service) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return s.localConn.Object(dbustypes.BusName, path)
 }
 
+// senderResolver returns a lazy resolver of sender's SenderInfo, suitable for an
+// UpstreamCallContext.ResolveSender field.
+func (s *Service) senderResolver(sender senderName) func() approval.SenderInfo {
+	return func() approval.SenderInfo { return s.resolver.Resolve(sender) }
+}
+
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (s *Service) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
@@ -96,7 +102,7 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
 		Items:         infos,
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", call.Err)
@@ -119,7 +125,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	// Fetch item info (label + attributes) for each item
 	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	itemInfos := make([]approval.ItemInfo, len(items))
 	for i, path := range items {
@@ -187,7 +193,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	infos := s.getUnlockInfo(objects, senderCtx)
 	senderInfo := s.resolver.Resolve(sender)
@@ -202,7 +208,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeUnlock,
 		Items:         infos,
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)
@@ -229,7 +235,7 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Lock", 0, objects) })
 	if call.Err != nil {
@@ -251,7 +257,7 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".ReadAlias", 0, name) })
 	if call.Err != nil {
@@ -275,7 +281,7 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection) })
 	if call.Err != nil {
@@ -290,7 +296,7 @@ func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call {
 		return obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
@@ -316,7 +322,7 @@ func (s *Service) Get(msg dbus.Message, iface, property string) (dbus.Variant, *
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	variant, err := s.upstreamGetProperty(obj, iface+"."+property, ctx)
 	if err != nil {
@@ -335,7 +341,7 @@ func (s *Service) GetAll(msg dbus.Message, iface string) (map[string]dbus.Varian
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
@@ -359,7 +365,7 @@ func (s *Service) Set(msg dbus.Message, iface, property string, value dbus.Varia
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
+		ResolveSender: s.senderResolver(sender),
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call {
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)

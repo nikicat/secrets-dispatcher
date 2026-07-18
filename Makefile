@@ -1,6 +1,6 @@
 MAKEFLAGS += -j
 
-.PHONY: all build frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
+.PHONY: all build install frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
 	playwright-install dev version release pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
@@ -35,6 +35,15 @@ backend-dev: frontend
 
 # Full build
 build: backend
+
+# Install destination. Override PREFIX (e.g. PREFIX=/usr) or set DESTDIR for
+# staged/packaging installs.
+PREFIX ?= $(HOME)/.local
+
+# Install the built ./secrets-dispatcher binary to $(PREFIX)/bin
+# (default: ~/.local/bin). Run `make build` first.
+install:
+	install -Dm755 secrets-dispatcher $(DESTDIR)$(PREFIX)/bin/secrets-dispatcher
 
 # Run frontend dev server (with API proxy to localhost:8484)
 dev:

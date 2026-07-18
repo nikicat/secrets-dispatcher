@@ -34,10 +34,10 @@ Companion user exists, system D-Bus policy is verified, and the provisioning too
 - Stub methods return canned responses — proves D-Bus policy works, Phase 5 adds real logic
 
 ### HTTP/WebSocket handling
-- Keep existing HTTP/WS/Web UI code untouched
-- New `daemon` subcommand simply does not initialize HTTP listeners
-- Old `serve` command continues to work as before
-- HTTP/WS kept as opt-in alternative permanently (not planned for removal)
+- Keep existing HTTP/WS/Web UI code and locally-running daemon flow untouched
+- New `daemon` subcommand (companion-user privsep path) does not initialize HTTP listeners
+- Old `serve` command continues to work as before — both modes coexist as parallel approaches
+- This is a research project exploring both UX and security tradeoffs; both the VT-based privsep path and the HTTP/Web UI path are first-class until we learn what works best
 
 ### Testing approach
 - All tests fully automated — no manual steps, no user-assisted testing, no "run this and verify"

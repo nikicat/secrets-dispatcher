@@ -70,12 +70,19 @@ jobs:
         id: imgkey
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache VM images (pristine + provisioned desktop base)
+      # The SSH keypair is generated at provision time and baked into the
+      # desktop base's authorized_keys, so it must travel with the base image
+      # (a restored base is unreachable without it). Caching the private key
+      # is fine: it authenticates only to a throwaway localhost-forwarded VM
+      # that lives for minutes inside a runner.
+      - name: Cache VM images (pristine + provisioned desktop base + SSH key)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cache/secrets-dispatcher/e2e/noble-server-cloudimg-amd64.img
             ~/.cache/secrets-dispatcher/e2e/desktop-base.qcow2
+            ~/.cache/secrets-dispatcher/e2e/id_ed25519
+            ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
           key: e2e-vm-images-${{ steps.imgkey.outputs.week }}
 
       - run: make test-e2e-gnome-vm

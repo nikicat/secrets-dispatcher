@@ -119,6 +119,9 @@ cmd_provision() {
 
 cmd_boot() {
     [[ -f "$BASE" ]] || die "no desktop base — run '$0 provision' first"
+    # The keypair is baked into the base at provision time; a base without
+    # its keypair (e.g. an incomplete CI cache restore) is unreachable.
+    [[ -f "$SSH_KEY" ]] || die "SSH keypair missing: $SSH_KEY (must accompany desktop-base.qcow2 — delete the base to re-provision)"
     mkdir -p "$VM_DIR"
     [[ -f "$VM_DIR/vm.pid" ]] && kill -0 "$(cat "$VM_DIR/vm.pid")" 2>/dev/null &&
         die "VM already running (pid $(cat "$VM_DIR/vm.pid"))"

@@ -34,6 +34,7 @@ type Proxy struct {
 	service           *Service
 	collection        *CollectionHandler
 	item              *ItemHandler
+	prompt            *PromptHandler
 	subtreeProperties *SubtreePropertiesHandler
 	signals           *signalForwarder
 }
@@ -93,6 +94,7 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.prompt = NewPromptHandler(p.backendConn, p.logger)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 
 	// Export interfaces on the front connection (where clients call us)
@@ -129,6 +131,15 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 			p.Close()
 			return fmt.Errorf("export Item subtree at %s: %w", prefix, err)
 		}
+	}
+
+	// Export the prompt handler so clients can act on prompt paths returned by
+	// Unlock/Lock/CreateCollection/CreateItem/Delete. Without this, a locked
+	// collection is a dead end: the client gets a prompt path from us but the
+	// object "does not implement org.freedesktop.Secret.Prompt".
+	if err := p.frontConn.ExportSubtree(p.prompt, "/org/freedesktop/secrets/prompt", dbustypes.PromptInterface); err != nil {
+		p.Close()
+		return fmt.Errorf("export Prompt subtree: %w", err)
 	}
 
 	// Request the bus name on the front connection

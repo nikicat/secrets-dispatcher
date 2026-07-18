@@ -14,11 +14,14 @@ import (
 type MockSecretService struct {
 	conn *dbus.Conn
 
-	mu         sync.RWMutex
-	items      map[dbus.ObjectPath]*MockItem
-	sessions   map[dbus.ObjectPath]bool
-	sessionCtr atomic.Uint64
-	itemCtr    atomic.Uint64
+	mu           sync.RWMutex
+	items        map[dbus.ObjectPath]*MockItem
+	sessions     map[dbus.ObjectPath]bool
+	locked       bool // the default collection (and all its items) is locked
+	lastWindowID string
+	sessionCtr   atomic.Uint64
+	itemCtr      atomic.Uint64
+	promptCtr    atomic.Uint64
 }
 
 // MockItem represents a stored secret item.
@@ -58,7 +61,9 @@ func (m *MockSecretService) Register(conn *dbus.Conn) error {
 	}
 
 	// Export collection at both /collection/default and /aliases/default paths.
-	// Real backends (gopass-secret-service, gnome-keyring) export both.
+	// gopass-secret-service serves both; gnome-keyring serves only /collection
+	// paths and answers UnknownMethod on /aliases (libsecret falls back to
+	// CreateCollection in that case).
 	for _, collPath := range []dbus.ObjectPath{
 		"/org/freedesktop/secrets/collection/default",
 		"/org/freedesktop/secrets/aliases/default",
@@ -106,13 +111,16 @@ func (m *MockSecretService) SearchItems(attributes map[string]string) ([]dbus.Ob
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var unlocked []dbus.ObjectPath
+	var matched []dbus.ObjectPath
 	for path, item := range m.items {
 		if matchesAttributes(item.Attributes, attributes) {
-			unlocked = append(unlocked, path)
+			matched = append(matched, path)
 		}
 	}
-	return unlocked, nil, nil
+	if m.locked {
+		return nil, matched, nil
+	}
+	return matched, nil, nil
 }
 
 // GetSecrets retrieves secrets for the given items.
@@ -126,6 +134,9 @@ func (m *MockSecretService) GetSecrets(items []dbus.ObjectPath, session dbus.Obj
 
 	secrets := make(map[dbus.ObjectPath]dbustypes.Secret)
 	for _, path := range items {
+		if m.locked {
+			return nil, dbustypes.ErrLocked(string(path))
+		}
 		item, ok := m.items[path]
 		if !ok {
 			continue
@@ -140,13 +151,25 @@ func (m *MockSecretService) GetSecrets(items []dbus.ObjectPath, session dbus.Obj
 	return secrets, nil
 }
 
-// Unlock "unlocks" objects (mock always returns them as unlocked).
+// Unlock unlocks objects. If the collection is locked, unlocking requires a
+// prompt: the objects stay locked and the caller must invoke Prompt() on the
+// returned prompt path (mirroring gnome-keyring's behavior).
 func (m *MockSecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	return objects, "/", nil
+	m.mu.RLock()
+	locked := m.locked
+	m.mu.RUnlock()
+
+	if !locked {
+		return objects, "/", nil
+	}
+	return nil, m.newPrompt(objects), nil
 }
 
-// Lock "locks" objects (mock no-op).
+// Lock locks the collection.
 func (m *MockSecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
+	m.mu.Lock()
+	m.locked = true
+	m.mu.Unlock()
 	return objects, "/", nil
 }
 
@@ -274,6 +297,68 @@ func (m *MockSecretService) ItemCount() int {
 	return len(m.items)
 }
 
+// SetLocked locks or unlocks the default collection (for test setup).
+func (m *MockSecretService) SetLocked(locked bool) {
+	m.mu.Lock()
+	m.locked = locked
+	m.mu.Unlock()
+}
+
+// Locked reports whether the default collection is locked.
+func (m *MockSecretService) Locked() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.locked
+}
+
+// LastWindowID returns the window ID passed to the most recent Prompt() call.
+func (m *MockSecretService) LastWindowID() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastWindowID
+}
+
+// newPrompt exports a prompt object that will unlock the given objects when
+// prompted, and returns its path.
+func (m *MockSecretService) newPrompt(objects []dbus.ObjectPath) dbus.ObjectPath {
+	id := m.promptCtr.Add(1)
+	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/prompt/p%d", id))
+
+	prompt := &mockPrompt{service: m, path: path, objects: objects}
+	m.conn.Export(prompt, path, dbustypes.PromptInterface)
+
+	return path
+}
+
+// mockPrompt implements org.freedesktop.Secret.Prompt. Prompting unlocks the
+// collection and emits Completed with the unlocked objects; dismissing leaves
+// it locked and emits Completed(dismissed=true).
+type mockPrompt struct {
+	service *MockSecretService
+	path    dbus.ObjectPath
+	objects []dbus.ObjectPath
+}
+
+func (p *mockPrompt) Prompt(windowID string) *dbus.Error {
+	p.service.mu.Lock()
+	p.service.locked = false
+	p.service.lastWindowID = windowID
+	p.service.mu.Unlock()
+
+	return p.completed(false, dbus.MakeVariant(p.objects))
+}
+
+func (p *mockPrompt) Dismiss() *dbus.Error {
+	return p.completed(true, dbus.MakeVariant(""))
+}
+
+func (p *mockPrompt) completed(dismissed bool, result dbus.Variant) *dbus.Error {
+	if err := p.service.conn.Emit(p.path, dbustypes.PromptInterface+".Completed", dismissed, result); err != nil {
+		return dbustypes.ErrFailed(err)
+	}
+	return nil
+}
+
 // mockCollection implements Collection interface.
 type mockCollection struct {
 	service *MockSecretService
@@ -332,7 +417,7 @@ func (c *mockCollection) Get(iface, property string) (dbus.Variant, *dbus.Error)
 	case "Label":
 		return dbus.MakeVariant("Default"), nil
 	case "Locked":
-		return dbus.MakeVariant(false), nil
+		return dbus.MakeVariant(c.service.Locked()), nil
 	case "Items":
 		c.service.mu.RLock()
 		items := make([]dbus.ObjectPath, 0, len(c.service.items))
@@ -351,11 +436,12 @@ func (c *mockCollection) GetAll(iface string) (map[string]dbus.Variant, *dbus.Er
 	for path := range c.service.items {
 		items = append(items, path)
 	}
+	locked := c.service.locked
 	c.service.mu.RUnlock()
 
 	return map[string]dbus.Variant{
 		"Label":  dbus.MakeVariant("Default"),
-		"Locked": dbus.MakeVariant(false),
+		"Locked": dbus.MakeVariant(locked),
 		"Items":  dbus.MakeVariant(items),
 	}, nil
 }
@@ -383,6 +469,10 @@ func (i *mockItem) GetSecret(session dbus.ObjectPath) (dbustypes.Secret, *dbus.E
 
 	if !i.service.sessions[session] {
 		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
+	}
+
+	if i.service.locked {
+		return dbustypes.Secret{}, dbustypes.ErrLocked(string(i.path))
 	}
 
 	item, ok := i.service.items[i.path]
@@ -427,7 +517,7 @@ func (i *mockItem) Get(iface, property string) (dbus.Variant, *dbus.Error) {
 	case "Attributes":
 		return dbus.MakeVariant(item.Attributes), nil
 	case "Locked":
-		return dbus.MakeVariant(false), nil
+		return dbus.MakeVariant(i.service.locked), nil
 	}
 	return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownProperty"}
 }

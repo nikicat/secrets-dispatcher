@@ -1,0 +1,57 @@
+#cloud-config
+# Provisions an Ubuntu 24.04 cloud image into a minimal real-GNOME desktop:
+# gdm3 + gnome-shell + gnome-keyring with autologin for the e2e user. This is
+# the Tier-2 fidelity environment — the only place gnome-keyring's real
+# start/re-grab vectors (systemd user units, XDG autostart, D-Bus activation,
+# gnome-session) are honestly reproduced. See docs/plans/onboarding-and-e2e.md.
+#
+# @SSH_PUBKEY@ is substituted by run.sh at seed-build time.
+
+users:
+  - name: e2e
+    gecos: E2E Test User
+    groups: [adm, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    # Throwaway test VM — plain text is fine and keeps the password greppable
+    # for VT logins during interactive debugging.
+    plain_text_passwd: tier2-password
+    ssh_authorized_keys:
+      - "@SSH_PUBKEY@"
+
+package_update: true
+packages:
+  - gdm3
+  - gnome-session
+  - gnome-shell
+  - gnome-keyring
+  - dbus-user-session
+  - libsecret-tools
+  - seahorse
+
+write_files:
+  # gdm autologin for the e2e user — the realistic "stock desktop" case the
+  # dispatcher will meet in the wild (and the hard one for keyring unlock).
+  - path: /etc/gdm3/custom.conf
+    content: |
+      [daemon]
+      AutomaticLoginEnable=true
+      AutomaticLogin=e2e
+  # Skip gnome-initial-setup so the session comes up unattended.
+  - path: /home/e2e/.config/gnome-initial-setup-done
+    defer: true
+    owner: e2e:e2e
+    content: "yes"
+
+runcmd:
+  - systemctl set-default graphical.target
+  # Linger so the e2e user's systemd user instance (and user bus) survives
+  # SSH session churn during tests.
+  - loginctl enable-linger e2e
+  - touch /var/tmp/cloud-init-ready
+
+power_state:
+  mode: poweroff
+  message: provisioning complete
+  condition: true

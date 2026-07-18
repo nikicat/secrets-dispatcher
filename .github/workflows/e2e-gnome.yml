@@ -3,17 +3,26 @@ name: E2E GNOME
 # Tier-1 (fast) GNOME e2e: real gnome-keyring behind the proxy on private
 # D-Bus buses, no VM. Covers the US-6 prompt-forwarding regression (issue #1)
 # and a secret round trip through the proxy against a real backend.
-# Tier-2 (real GNOME desktop VM) will be added alongside the PR B spike —
-# see docs/plans/onboarding-and-e2e.md.
+#
+# Tier-2 (full) GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init) with
+# gdm autologin — the only honest coverage for the takeover acceptance gates
+# (US-4 ownership, US-5 re-grab resistance across a session restart, US-9
+# reversal). Slow, so it runs nightly, on the `e2e-gnome` PR label, or
+# manually. See docs/plans/onboarding-and-e2e.md.
 
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 jobs:
   fast:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -30,3 +39,37 @@ jobs:
             dbus dbus-daemon dbus-bin gnome-keyring libsecret-tools
 
       - run: make test-e2e-gnome
+
+  full:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'e2e-gnome'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install QEMU/KVM + cloud-image tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd
+          # GitHub-hosted runners expose /dev/kvm but not to the runner user.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache pristine Ubuntu cloud image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/secrets-dispatcher/e2e/noble-server-cloudimg-amd64.img
+          key: noble-server-cloudimg-amd64
+
+      - run: make test-e2e-gnome-vm

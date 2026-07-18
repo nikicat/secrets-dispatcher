@@ -9,6 +9,11 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
+// senderOf returns the unique D-Bus name of the sender of an incoming message.
+func senderOf(msg dbus.Message) senderName {
+	return senderName(msg.Headers[dbus.FieldSender].Value().(string))
+}
+
 // dbusClient abstracts D-Bus operations for testing.
 type dbusClient interface {
 	GetConnectionUnixProcessID(sender senderName) (uint32, error)

@@ -81,7 +81,7 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	}
 
 	// Fetch item info (label + attributes)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}
@@ -132,7 +132,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	}
 
 	// Fetch item info (label + attributes)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}
@@ -197,7 +197,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	}
 
 	// Fetch item info (label + attributes)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}
@@ -259,7 +259,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}, func() propResult {
@@ -281,7 +281,7 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
@@ -305,7 +305,7 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 	}
 
 	obj := i.localConn.Object(dbustypes.BusName, path)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}, func() *dbus.Call {

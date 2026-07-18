@@ -78,7 +78,7 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	infos := searchAttributesToItemInfo(attributes)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	senderInfo := s.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
@@ -112,7 +112,7 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 // Signature: GetSecrets(items Array<ObjectPath>, session ObjectPath) -> (secrets Dict<ObjectPath,Secret>)
 func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
 	// Fetch item info (label + attributes) for each item
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -180,7 +180,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 // Signature: Unlock(objects Array<ObjectPath>) -> (unlocked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -222,7 +222,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 // Signature: Lock(objects Array<ObjectPath>) -> (locked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -244,7 +244,7 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 // Signature: ReadAlias(name String) -> (collection ObjectPath)
 func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -268,7 +268,7 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 // Signature: SetAlias(name String, collection ObjectPath)
 func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.ObjectPath) *dbus.Error {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -283,7 +283,7 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 // Signature: CreateCollection(properties Dict<String,Variant>, alias String) -> (collection ObjectPath, prompt ObjectPath)
 func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -309,7 +309,7 @@ func (s *Service) Get(msg dbus.Message, iface, property string) (dbus.Variant, *
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -328,7 +328,7 @@ func (s *Service) GetAll(msg dbus.Message, iface string) (map[string]dbus.Varian
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}
@@ -352,7 +352,7 @@ func (s *Service) Set(msg dbus.Message, iface, property string, value dbus.Varia
 	}
 
 	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
 	}

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -40,6 +41,16 @@ var (
 	progName = filepath.Base(os.Args[0])
 	version  = "dev" // injected via -ldflags "-X main.version=..."
 )
+
+func init() {
+	// `go install module@version` builds without our Makefile ldflags; the
+	// module version from build info is the next best truth.
+	if version == "dev" {
+		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			version = bi.Main.Version
+		}
+	}
+}
 
 func main() {
 	if len(os.Args) < 2 {

@@ -61,6 +61,12 @@ curl -Lo ~/.local/bin/secrets-dispatcher \
 chmod +x ~/.local/bin/secrets-dispatcher
 ```
 
+**With Go** (full build, web UI included — the compiled frontend is committed):
+
+```bash
+go install github.com/nikicat/secrets-dispatcher@latest
+```
+
 **From source** (requires Go and npm for the embedded web UI):
 
 ```bash

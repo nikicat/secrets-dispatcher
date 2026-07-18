@@ -27,6 +27,33 @@ jobs:
 
       - run: make check
 
+  # The compiled frontend under internal/api/web/dist is committed so a plain
+  # `go install` ships the full web UI. This job fails when it drifts from the
+  # web/ sources — fix with `make embed-frontend` and commit the result.
+  embed-freshness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: nikicat/setup-deno@node24
+        with:
+          # Pinned deliberately, not by float. Requires @playwright/test
+          # >= 1.60: deno >= 2.9 ports Node 26.1 stream semantics
+          # (nodejs/node#62557), which deadlock the fd-slicer bundled in
+          # playwright <= 1.59 during browser-archive extraction.
+          deno-version: "2.9.2"
+
+      - run: make embed-frontend
+
+      - name: Committed embed must match a fresh build
+        run: |
+          git add -N internal/api/web/dist
+          git diff --stat --exit-code internal/api/web/dist || {
+            echo "::error::internal/api/web/dist is stale — run 'make embed-frontend' and commit the result"
+            exit 1
+          }
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

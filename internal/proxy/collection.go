@@ -41,6 +41,11 @@ func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger
 	}
 }
 
+// upstream returns the backend object at path on the upstream Secret Service bus.
+func (c *CollectionHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
+	return c.localConn.Object(dbustypes.BusName, path)
+}
+
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (c *CollectionHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
@@ -106,7 +111,7 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeDelete,
 		Items:       items,
@@ -132,7 +137,7 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
 	info := approval.ItemInfo{Path: string(path)}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 
 	// Get Label property
 	if v, err := c.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label", ctx); err == nil {
@@ -170,7 +175,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 	infos := searchAttributesToItemInfo(attributes)
 	sender := senderOf(msg)
 	senderInfo := c.resolver.Resolve(sender)
@@ -257,7 +262,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeWrite,
 		Items:       items,
@@ -292,7 +297,7 @@ func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 	sender := senderOf(msg)
 	r := WithSlowNotify(c.slowThreshold, c.upstreamNotifier, UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
@@ -314,7 +319,7 @@ func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]d
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 	sender := senderOf(msg)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
@@ -338,7 +343,7 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := c.localConn.Object(dbustypes.BusName, path)
+	obj := c.upstream(path)
 	sender := senderOf(msg)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },

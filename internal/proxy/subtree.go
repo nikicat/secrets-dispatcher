@@ -23,6 +23,11 @@ func NewSubtreePropertiesHandler(localConn *dbus.Conn, sessions *SessionManager,
 	}
 }
 
+// upstream returns the backend object at path on the upstream Secret Service bus.
+func (h *SubtreePropertiesHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
+	return h.localConn.Object(dbustypes.BusName, path)
+}
+
 // Get implements org.freedesktop.DBus.Properties.Get for collections and items.
 func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
 	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
@@ -32,7 +37,7 @@ func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string)
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := h.localConn.Object(dbustypes.BusName, path)
+	obj := h.upstream(path)
 	variant, err := obj.GetProperty(iface + "." + property)
 	if err != nil {
 		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
@@ -49,7 +54,7 @@ func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[s
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := h.localConn.Object(dbustypes.BusName, path)
+	obj := h.upstream(path)
 	call := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface)
 	if call.Err != nil {
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
@@ -71,7 +76,7 @@ func (h *SubtreePropertiesHandler) Set(msg dbus.Message, iface, property string,
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := h.localConn.Object(dbustypes.BusName, path)
+	obj := h.upstream(path)
 	call := obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	if call.Err != nil {
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}

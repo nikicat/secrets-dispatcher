@@ -41,6 +41,11 @@ func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logg
 	}
 }
 
+// upstream returns the backend object at path on the upstream Secret Service bus.
+func (i *ItemHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
+	return i.localConn.Object(dbustypes.BusName, path)
+}
+
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (i *ItemHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
@@ -101,7 +106,7 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeDelete,
 		Items:       items,
@@ -160,7 +165,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeGetSecret,
 		Items:       items,
@@ -234,7 +239,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeWrite,
 		Items:       items,
@@ -258,7 +263,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	sender := senderOf(msg)
 	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
@@ -280,7 +285,7 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	sender := senderOf(msg)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
@@ -304,7 +309,7 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	sender := senderOf(msg)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
@@ -322,7 +327,7 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 func (i *ItemHandler) getItemInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
 	info := approval.ItemInfo{Path: string(path)}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 
 	// Get Label property
 	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label", ctx); err == nil {

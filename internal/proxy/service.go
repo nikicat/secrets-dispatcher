@@ -39,6 +39,11 @@ func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.
 	}
 }
 
+// upstream returns the backend object at path on the upstream Secret Service bus.
+func (s *Service) upstream(path dbus.ObjectPath) dbus.BusObject {
+	return s.localConn.Object(dbustypes.BusName, path)
+}
+
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (s *Service) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
@@ -76,7 +81,7 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 // SearchItems searches for items matching the given attributes.
 // Signature: SearchItems(attributes Dict<String,String>) -> (unlocked Array<ObjectPath>, locked Array<ObjectPath>)
 func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	infos := searchAttributesToItemInfo(attributes)
 	sender := senderOf(msg)
 	senderInfo := s.resolver.Resolve(sender)
@@ -143,7 +148,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 		return nil, dbustypes.ErrSessionNotFound(string(session))
 	}
 
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeGetSecret,
 		Items:       itemInfos,
@@ -179,7 +184,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 // Unlock unlocks the specified objects.
 // Signature: Unlock(objects Array<ObjectPath>) -> (unlocked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -221,7 +226,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 // Lock locks the specified objects.
 // Signature: Lock(objects Array<ObjectPath>) -> (locked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -243,7 +248,7 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 // ReadAlias returns the collection with the given alias.
 // Signature: ReadAlias(name String) -> (collection ObjectPath)
 func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *dbus.Error) {
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -267,7 +272,7 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 // SetAlias sets an alias for a collection.
 // Signature: SetAlias(name String, collection ObjectPath)
 func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.ObjectPath) *dbus.Error {
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -282,7 +287,7 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 // CreateCollection creates a new collection.
 // Signature: CreateCollection(properties Dict<String,Variant>, alias String) -> (collection ObjectPath, prompt ObjectPath)
 func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -308,7 +313,7 @@ func (s *Service) Get(msg dbus.Message, iface, property string) (dbus.Variant, *
 		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownInterface", Body: []any{iface}}
 	}
 
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -327,7 +332,7 @@ func (s *Service) GetAll(msg dbus.Message, iface string) (map[string]dbus.Varian
 		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownInterface", Body: []any{iface}}
 	}
 
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -351,7 +356,7 @@ func (s *Service) Set(msg dbus.Message, iface, property string, value dbus.Varia
 		return &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownInterface", Body: []any{iface}}
 	}
 
-	obj := s.localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
 	ctx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return s.resolver.Resolve(sender) },
@@ -454,7 +459,7 @@ func (s *Service) Introspect() string {
 func (s *Service) getItemInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
 	info := approval.ItemInfo{Path: string(path)}
 
-	obj := s.localConn.Object(dbustypes.BusName, path)
+	obj := s.upstream(path)
 
 	// Get Label property
 	if v, err := s.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label", ctx); err == nil {
@@ -497,7 +502,7 @@ func (s *Service) getUnlockInfo(objects []dbus.ObjectPath, ctx UpstreamCallConte
 	infos := make([]approval.ItemInfo, len(objects))
 	for i, path := range objects {
 		infos[i] = approval.ItemInfo{Path: string(path)}
-		obj := s.localConn.Object(dbustypes.BusName, path)
+		obj := s.upstream(path)
 		if v, err := s.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label", ctx); err == nil {
 			if label, ok := v.Value().(string); ok {
 				infos[i].Label = label

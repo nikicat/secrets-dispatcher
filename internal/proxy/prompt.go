@@ -16,21 +16,16 @@ import (
 // needs to relay the method calls; the Completed signal is already forwarded
 // by the signal forwarder.
 type PromptHandler struct {
-	localConn *dbus.Conn
+	toBackend callForwarder
 	logger    *logging.Logger
 }
 
 // NewPromptHandler creates a new PromptHandler.
 func NewPromptHandler(localConn *dbus.Conn, logger *logging.Logger) *PromptHandler {
 	return &PromptHandler{
-		localConn: localConn,
+		toBackend: callForwarder{dst: localConn, dstName: dbustypes.BusName},
 		logger:    logger,
 	}
-}
-
-// upstream returns the backend object at path on the upstream Secret Service bus.
-func (h *PromptHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
-	return h.localConn.Object(dbustypes.BusName, path)
 }
 
 // isPromptPath checks if the path is a prompt object.
@@ -51,10 +46,7 @@ func (h *PromptHandler) Prompt(msg dbus.Message, windowID string) *dbus.Error {
 
 	h.logger.Info("forwarding prompt", "path", path, "sender", senderOf(msg))
 
-	if call := h.upstream(path).Call(dbustypes.PromptInterface+".Prompt", 0, windowID); call.Err != nil {
-		return dbustypes.ErrFailed(call.Err)
-	}
-	return nil
+	return h.toBackend.forwardVoid(msg)
 }
 
 // Dismiss dismisses the prompt.
@@ -66,8 +58,5 @@ func (h *PromptHandler) Dismiss(msg dbus.Message) *dbus.Error {
 
 	h.logger.Info("dismissing prompt", "path", path, "sender", senderOf(msg))
 
-	if call := h.upstream(path).Call(dbustypes.PromptInterface+".Dismiss", 0); call.Err != nil {
-		return dbustypes.ErrFailed(call.Err)
-	}
-	return nil
+	return h.toBackend.forwardVoid(msg)
 }

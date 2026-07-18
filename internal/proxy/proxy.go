@@ -37,6 +37,7 @@ type Proxy struct {
 	prompt            *PromptHandler
 	subtreeProperties *SubtreePropertiesHandler
 	signals           *signalForwarder
+	prompter          *prompterBridge
 }
 
 // Config holds configuration for the proxy.
@@ -160,6 +161,16 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 		return fmt.Errorf("start signal forwarder: %w", err)
 	}
 
+	// Bridge the backend keyring's unlock prompter to the session prompter
+	// (gnome-shell), so a locked-collection unlock renders a real dialog
+	// instead of hanging on the display-less fallback. No-op when the
+	// topology doesn't need it (returns nil, nil).
+	p.prompter, err = newPrompterBridge(p.frontConn, p.backendConn, p.logger)
+	if err != nil {
+		p.Close()
+		return fmt.Errorf("start prompter bridge: %w", err)
+	}
+
 	return nil
 }
 
@@ -188,6 +199,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 // Close shuts down the proxy and closes all connections.
 func (p *Proxy) Close() error {
 	p.logger.Info("shutting down")
+
+	if p.prompter != nil {
+		p.prompter.close()
+	}
 
 	if p.signals != nil {
 		p.signals.close()

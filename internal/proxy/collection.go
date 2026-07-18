@@ -86,14 +86,14 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 	}
 
 	// Fetch collection label for the approval prompt
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
 	senderCtx := UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
 	}
 	collectionInfo := c.getCollectionInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	ctx, release := c.tracker.contextForSender(context.Background(), senderName(sender))
+	ctx, release := c.tracker.contextForSender(context.Background(), sender)
 	defer release()
 
 	// Resolve sender information
@@ -172,7 +172,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
 	infos := searchAttributesToItemInfo(attributes)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
 	senderInfo := c.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
@@ -217,8 +217,8 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	itemInfo := extractItemInfo(string(path), properties)
 
 	// Get a context that will be cancelled if the client disconnects
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
-	ctx, release := c.tracker.contextForSender(context.Background(), senderName(sender))
+	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	ctx, release := c.tracker.contextForSender(context.Background(), sender)
 	defer release()
 
 	// Resolve sender information
@@ -275,7 +275,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	// Cache the new item path so immediate read-back (e.g., gh verification) is auto-approved.
-	c.approval.CacheItemForSender(sender, string(item))
+	c.approval.CacheItemForSender(string(sender), string(item))
 
 	c.logger.LogMethod(context.Background(), "Collection.CreateItem", map[string]any{
 		"collection": string(path),
@@ -293,7 +293,7 @@ func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
 	r := WithSlowNotify(c.slowThreshold, c.upstreamNotifier, UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
 	}, func() propResult {
@@ -315,7 +315,7 @@ func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]d
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
 	call := c.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
 	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
@@ -339,7 +339,7 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 	}
 
 	obj := c.localConn.Object(dbustypes.BusName, path)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderName(msg.Headers[dbus.FieldSender].Value().(string))
 	call := c.upstreamWithContext(UpstreamCallContext{
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
 	}, func() *dbus.Call {

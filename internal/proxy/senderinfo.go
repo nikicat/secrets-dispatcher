@@ -11,8 +11,8 @@ import (
 
 // dbusClient abstracts D-Bus operations for testing.
 type dbusClient interface {
-	GetConnectionUnixProcessID(sender string) (uint32, error)
-	GetConnectionUnixUser(sender string) (uint32, error)
+	GetConnectionUnixProcessID(sender senderName) (uint32, error)
+	GetConnectionUnixUser(sender senderName) (uint32, error)
 	GetUnitByPID(pid uint32) (string, error)
 }
 
@@ -40,8 +40,8 @@ func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
 // Uses GetConnectionUnixProcessID and GetConnectionUnixUser instead of
 // GetConnectionCredentials to avoid ProcessFD which cannot be forwarded
 // over SSH tunneled sockets (dbus-broker v34+ includes ProcessFD).
-func (r *SenderInfoResolver) Resolve(sender string) approval.SenderInfo {
-	info := approval.SenderInfo{Sender: sender}
+func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
+	info := approval.SenderInfo{Sender: string(sender)}
 
 	// Get PID
 	pid, err := r.client.GetConnectionUnixProcessID(sender)
@@ -108,9 +108,9 @@ type realDBusClient struct {
 	conn *dbus.Conn
 }
 
-func (c *realDBusClient) GetConnectionUnixProcessID(sender string) (uint32, error) {
+func (c *realDBusClient) GetConnectionUnixProcessID(sender senderName) (uint32, error) {
 	obj := c.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
-	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixProcessID", 0, sender)
+	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixProcessID", 0, string(sender))
 	if call.Err != nil {
 		return 0, call.Err
 	}
@@ -123,9 +123,9 @@ func (c *realDBusClient) GetConnectionUnixProcessID(sender string) (uint32, erro
 	return pid, nil
 }
 
-func (c *realDBusClient) GetConnectionUnixUser(sender string) (uint32, error) {
+func (c *realDBusClient) GetConnectionUnixUser(sender senderName) (uint32, error) {
 	obj := c.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
-	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, sender)
+	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, string(sender))
 	if call.Err != nil {
 		return 0, call.Err
 	}

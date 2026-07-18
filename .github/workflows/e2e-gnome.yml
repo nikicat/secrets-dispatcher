@@ -7,15 +7,15 @@ name: E2E GNOME
 # Tier-2 (full) GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init) with
 # gdm autologin — the only honest coverage for the takeover acceptance gates
 # (US-4 ownership, US-5 re-grab resistance across a session restart, US-9
-# reversal). Slow, so it runs nightly, on the `e2e-gnome` PR label, or
-# manually. See docs/plans/onboarding-and-e2e.md.
+# reversal). Runs on every PR (~1.5 min with warm image cache, ~4 min cold);
+# the weekly cache key forces a fresh provision so Ubuntu package drift in
+# noble/current still gets caught. See docs/plans/onboarding-and-e2e.md.
 
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
-    types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -41,11 +41,6 @@ jobs:
       - run: make test-e2e-gnome
 
   full:
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       contains(github.event.pull_request.labels.*.name, 'e2e-gnome'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -66,10 +61,21 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Cache pristine Ubuntu cloud image
+      # The provisioned desktop base is cached with a weekly-rotating key (no
+      # restore-keys fallback, deliberately: on rollover the job re-provisions
+      # from the current noble/current image, so upstream drift is picked up
+      # at least weekly). Both files must travel together — the qcow2 overlay
+      # references the pristine image as its backing file.
+      - name: Compute image cache key (rotates weekly)
+        id: imgkey
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VM images (pristine + provisioned desktop base)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/secrets-dispatcher/e2e/noble-server-cloudimg-amd64.img
-          key: noble-server-cloudimg-amd64
+          path: |
+            ~/.cache/secrets-dispatcher/e2e/noble-server-cloudimg-amd64.img
+            ~/.cache/secrets-dispatcher/e2e/desktop-base.qcow2
+          key: e2e-vm-images-${{ steps.imgkey.outputs.week }}
 
       - run: make test-e2e-gnome-vm

@@ -1,0 +1,32 @@
+name: E2E GNOME
+
+# Tier-1 (fast) GNOME e2e: real gnome-keyring behind the proxy on private
+# D-Bus buses, no VM. Covers the US-6 prompt-forwarding regression (issue #1)
+# and a secret round trip through the proxy against a real backend.
+# Tier-2 (real GNOME desktop VM) will be added alongside the PR B spike —
+# see docs/plans/onboarding-and-e2e.md.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install gnome-keyring stack
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            dbus dbus-daemon dbus-bin gnome-keyring libsecret-tools
+
+      - run: make test-e2e-gnome

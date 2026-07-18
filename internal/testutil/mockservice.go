@@ -61,7 +61,9 @@ func (m *MockSecretService) Register(conn *dbus.Conn) error {
 	}
 
 	// Export collection at both /collection/default and /aliases/default paths.
-	// Real backends (gopass-secret-service, gnome-keyring) export both.
+	// gopass-secret-service serves both; gnome-keyring serves only /collection
+	// paths and answers UnknownMethod on /aliases (libsecret falls back to
+	// CreateCollection in that case).
 	for _, collPath := range []dbus.ObjectPath{
 		"/org/freedesktop/secrets/collection/default",
 		"/org/freedesktop/secrets/aliases/default",

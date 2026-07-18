@@ -1,7 +1,7 @@
 MAKEFLAGS += -j
 
-.PHONY: all build install frontend backend backend-dev clean test test-go test-e2e test-e2e-all test-e2e-browser \
-	playwright-install dev version release pre-commit screenshots \
+.PHONY: all build install frontend backend backend-dev backend-go clean test test-go test-e2e test-e2e-all test-e2e-browser \
+	test-e2e-gnome test-e2e-gnome-container playwright-install dev version release pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
@@ -68,6 +68,22 @@ test-e2e-all: backend-dev
 BROWSER ?= chromium
 test-e2e-browser: backend-dev
 	cd web && ALL_BROWSERS=1 deno run -A npm:@playwright/test@1.61.1/cli test --project=$(BROWSER)
+
+# Go-only dev binary (no frontend, no deno). Distinct output so it can't race
+# a parallel backend-dev build of .build/secrets-dispatcher.
+backend-go:
+	@mkdir -p .build
+	CGO_ENABLED=0 go build -tags dev -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher-go .
+
+# Tier-1 GNOME e2e: real gnome-keyring behind the proxy on private buses.
+# Needs gnome-keyring + libsecret installed (Ubuntu/CI); elsewhere use
+# test-e2e-gnome-container.
+test-e2e-gnome: backend-go
+	timeout 120 e2e/gnome/fast.sh .build/secrets-dispatcher-go
+
+# Same, inside an ubuntu:24.04 container (podman or docker)
+test-e2e-gnome-container: backend-go
+	e2e/gnome/container.sh .build/secrets-dispatcher-go
 
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
 playwright-install:

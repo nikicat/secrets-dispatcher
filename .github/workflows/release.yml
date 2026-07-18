@@ -45,10 +45,13 @@ jobs:
 
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
-          deno-version: v2.x
+          # .dvmrc single-sources the deno pin — releases must build with the
+          # exact toolchain CI tests (see check.yml for the pin rationale).
+          # This previously floated on v2.x.
+          deno-version-file: .dvmrc
 
       - name: Build frontend
-        run: make frontend && mkdir -p internal/api/web && cp -r web/dist internal/api/web/
+        run: make embed-frontend
 
       - name: Build binary
         env:

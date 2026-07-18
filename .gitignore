@@ -8,11 +8,9 @@ mock-secret-service
 web/dist/
 web/node_modules/
 
-# Embedded frontend (copied from web/dist)
-internal/api/web/*
-!internal/api/web/dist/
-internal/api/web/dist/*
-!internal/api/web/dist/PLACEHOLDER
+# Embedded frontend: internal/api/web/dist is COMMITTED (keeps plain
+# `go install` fully functional, web UI included). Regenerate with
+# `make embed-frontend`; CI fails if it drifts from web/ sources.
 
 # Test artifacts
 web/test-results/

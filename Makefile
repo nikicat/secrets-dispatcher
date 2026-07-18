@@ -11,10 +11,13 @@ all: build
 frontend:
 	cd web && deno task build
 
-# Copy frontend dist to internal/api for embedding
-# This creates the web/dist directory that embed.go expects
+# Copy frontend dist to internal/api for embedding. The dist is committed
+# (go-install support), so the copy must be exact: remove first, or stale
+# content-hashed bundles from previous builds accumulate and the freshness
+# check (CI) can never pass.
 embed-frontend: frontend
 	mkdir -p internal/api/web
+	rm -rf internal/api/web/dist
 	cp -r web/dist internal/api/web/
 
 # Version from git (fallback for untagged repos)

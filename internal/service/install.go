@@ -103,6 +103,19 @@ type Options struct {
 	BackendPath string
 }
 
+// Verbose gates the per-change narration (Wrote/Enabled/Removed/… lines and
+// systemctl's own output) printed by Install, Uninstall, and the trial.
+// Milestone lines (provider detection, ownership, ✓ summaries, warnings)
+// always print. Set from the CLI's --verbose flag.
+var Verbose bool
+
+// verbosef prints per-change narration only when Verbose is set.
+func verbosef(format string, args ...any) {
+	if Verbose {
+		fmt.Printf(format, args...)
+	}
+}
+
 // lookPathFunc is the function used to find binaries on PATH.
 // Replaced in tests.
 var lookPathFunc = exec.LookPath
@@ -148,7 +161,7 @@ func Install(opts Options) error {
 	if err := updateTopologyConfig(in.configPath, in.runtimeDir, in.mode); err != nil {
 		return err
 	}
-	fmt.Printf("Wrote config: %s\n", in.configPath)
+	verbosef("Wrote config: %s\n", in.configPath)
 
 	// Detect the current provider BEFORE taking over — masking and stopping
 	// the D-Bus-activated owner below destroy the evidence.
@@ -200,7 +213,7 @@ func Install(opts Options) error {
 			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 				return fmt.Errorf("write %s: %w", name, err)
 			}
-			fmt.Printf("Wrote unit file: %s\n", path)
+			verbosef("Wrote unit file: %s\n", path)
 		} else {
 			// Clean up units from a previous mode if they exist.
 			if _, statErr := os.Stat(path); statErr == nil {
@@ -209,7 +222,7 @@ func Install(opts Options) error {
 				if rmErr := os.Remove(path); rmErr != nil {
 					return fmt.Errorf("remove stale %s: %w", name, rmErr)
 				}
-				fmt.Printf("Removed stale unit: %s\n", path)
+				verbosef("Removed stale unit: %s\n", path)
 			}
 		}
 	}
@@ -222,24 +235,24 @@ func Install(opts Options) error {
 		if err := systemctlFunc("enable", "secrets-dispatcher-bus.socket"); err != nil {
 			return err
 		}
-		fmt.Println("Enabled secrets-dispatcher-bus.socket")
+		verbosef("Enabled secrets-dispatcher-bus.socket\n")
 	}
 	if err := systemctlFunc("enable", unitFileName); err != nil {
 		return err
 	}
-	fmt.Printf("Enabled %s\n", unitFileName)
+	verbosef("Enabled %s\n", unitFileName)
 
 	if opts.Start {
 		if in.mode != "remote" {
 			if err := systemctlFunc("start", "secrets-dispatcher-bus.socket"); err != nil {
 				return err
 			}
-			fmt.Println("Started secrets-dispatcher-bus.socket")
+			verbosef("Started secrets-dispatcher-bus.socket\n")
 		}
 		if err := systemctlFunc("start", unitFileName); err != nil {
 			return err
 		}
-		fmt.Printf("Started %s\n", unitFileName)
+		verbosef("Started %s\n", unitFileName)
 
 		if in.mode != "remote" {
 			reportOwnership()
@@ -343,7 +356,7 @@ func Uninstall() error {
 			}
 			continue
 		}
-		fmt.Printf("Removed %s\n", path)
+		verbosef("Removed %s\n", path)
 	}
 
 	if err := unmaskDBusActivation(); err != nil {
@@ -364,10 +377,19 @@ var systemctlFunc = systemctlExec
 func systemctlExec(args ...string) error {
 	fullArgs := append([]string{"--user"}, args...)
 	cmd := exec.Command("systemctl", fullArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("systemctl %s: %w", args[0], err)
+	if Verbose {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("systemctl %s: %w", args[0], err)
+		}
+		return nil
+	}
+	// Quiet mode: swallow systemctl's narration ("Created symlink …"), but a
+	// failure must still show everything it said.
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("systemctl %s: %w\n%s", args[0], err, out)
 	}
 	return nil
 }
@@ -405,7 +427,7 @@ func maskDBusActivation() error {
 		if err := os.Rename(path, backupPath); err != nil {
 			return fmt.Errorf("backup %s: %w", dbusServiceFile, err)
 		}
-		fmt.Printf("Backed up %s\n", path)
+		verbosef("Backed up %s\n", path)
 	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -415,7 +437,7 @@ func maskDBusActivation() error {
 	if err := os.WriteFile(path, []byte(dbusActivationMask), 0644); err != nil {
 		return fmt.Errorf("write dbus mask: %w", err)
 	}
-	fmt.Printf("Masked D-Bus activation: %s\n", path)
+	verbosef("Masked D-Bus activation: %s\n", path)
 
 	reloadDBus()
 	return nil
@@ -441,12 +463,12 @@ func unmaskDBusActivation() error {
 		if err := os.Rename(backupPath, path); err != nil {
 			return fmt.Errorf("restore %s: %w", dbusServiceFile, err)
 		}
-		fmt.Printf("Restored %s from backup\n", path)
+		verbosef("Restored %s from backup\n", path)
 	} else {
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("remove dbus mask: %w", err)
 		}
-		fmt.Printf("Removed D-Bus activation mask: %s\n", path)
+		verbosef("Removed D-Bus activation mask: %s\n", path)
 	}
 
 	reloadDBus()
@@ -471,6 +493,6 @@ func stopDBusActivatedService() {
 	if err != nil {
 		return
 	}
-	fmt.Printf("Stopping D-Bus activated owner of %s (PID %d)\n", dbusServiceFile, pid)
+	verbosef("Stopping D-Bus activated owner of %s (PID %d)\n", dbusServiceFile, pid)
 	_ = p.Signal(syscall.SIGTERM)
 }

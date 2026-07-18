@@ -893,7 +893,9 @@ func runTry(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Print what the trial would change, then exit without changing anything")
 	configPath := fs.String("config", "", "Base config the trial copies settings from, never modified (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	backend := fs.String("backend", "", "Backend for the trial: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
+	verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
 	fs.Parse(args)
+	service.Verbose = *verbose
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -918,10 +920,15 @@ func runService(args []string) {
 	case "install":
 		runServiceInstall(args[1:])
 	case "uninstall":
+		fs := flag.NewFlagSet("service uninstall", flag.ExitOnError)
+		verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
+		fs.Parse(args[1:])
+		service.Verbose = *verbose
 		if err := service.Uninstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+		fmt.Println("✓ Uninstalled — stock Secret Service restored")
 	case "status":
 		if err := service.Status(); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -943,7 +950,9 @@ func runServiceInstall(args []string) {
 	mode := fs.String("mode", "remote", "Topology mode: remote, local, or full")
 	backend := fs.String("backend", "", "Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
 	dryRun := fs.Bool("dry-run", false, "Print what the install would change, then exit without changing anything")
+	verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
 	fs.Parse(args)
+	service.Verbose = *verbose
 
 	opts := service.Options{
 		ConfigPath:  *configPath,
@@ -980,6 +989,7 @@ Install options:
   --mode        Topology mode: remote, local, or full (default: remote)
   --backend     Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects
   --dry-run     Print what the install would change, then exit without changing anything
+  --verbose     Narrate every file and unit change (default: milestones only)
 `, progName)
 }
 

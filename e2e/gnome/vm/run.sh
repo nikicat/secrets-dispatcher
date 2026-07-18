@@ -77,12 +77,17 @@ start_qemu() {
     local disk=$1 pidfile=$2 log=$3
     shift 3
     # virtio-vga gives gdm/gnome-shell a virtual monitor with no host display;
-    # daemonize keeps qemu alive across the calling shell.
+    # daemonize keeps qemu alive across the calling shell. The QMP socket
+    # plus the tablet (absolute-coordinate pointer) are host-side input
+    # injection (demo.sh types keys and clicks notification buttons with
+    # them); both are inert for the test path.
     qemu-system-x86_64 \
         -enable-kvm -cpu host -m "$VM_MEM" -smp "$VM_CPUS" \
         -drive "file=$disk,format=qcow2,if=virtio" \
         -device virtio-vga \
+        -device virtio-tablet-pci \
         -display none \
+        -qmp "unix:$VM_DIR/qmp.sock,server,nowait" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \
         -serial "file:$log" \
@@ -155,6 +160,19 @@ cmd_stop() {
         kill "$(cat "$VM_DIR/vm.pid")" 2>/dev/null || true
         rm -f "$VM_DIR/vm.pid"
     fi
+    # Belt and braces: a qemu that outlived its pidfile would still hold
+    # SSH_PORT and break the next boot. Match on this instance's overlay
+    # disk path (unique per instance; the provision VM runs off the base
+    # image, so it never matches). Then wait for the port to actually free —
+    # kill is async and boot may follow immediately.
+    pkill -f "$VM_DIR/disk.qcow2" 2>/dev/null || true
+    local i
+    for ((i = 0; i < 20; i++)); do
+        pgrep -f "$VM_DIR/disk.qcow2" >/dev/null || return 0
+        sleep 0.5
+    done
+    pkill -9 -f "$VM_DIR/disk.qcow2" 2>/dev/null || true
+    sleep 1
 }
 
 cmd_destroy() {

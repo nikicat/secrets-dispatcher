@@ -1,0 +1,65 @@
+name: Demos
+
+# Screen-recorded product demos from the Tier-2 GNOME VM (e2e/gnome/vm/
+# demo.sh): the install/try arc typed live into a gnome-terminal on a real
+# Ubuntu desktop, captured via GNOME Shell's screencast service. Videos are
+# build artifacts, never committed — download them from the workflow run.
+#
+# Manual-only: recording takes minutes and the output only changes when the
+# UX does, so it isn't part of the PR gate. Shares the VM image cache with
+# e2e-gnome.yml (same key), so a warm run skips the ~10 min provision.
+
+on:
+  workflow_dispatch:
+    inputs:
+      series:
+        description: Ubuntu series to record on
+        type: choice
+        default: noble
+        options: [noble, resolute]
+      go_ref:
+        description: Module version the on-camera `go install` fetches
+        default: master
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      UBUNTU_SERIES: ${{ inputs.series }}
+      GO_REF: ${{ inputs.go_ref }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install QEMU/KVM + cloud-image tooling + ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            qemu-system-x86 qemu-utils cloud-image-utils genisoimage ffmpeg
+          # GitHub-hosted runners expose /dev/kvm but not to the runner user.
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Compute image cache key (rotates weekly, mirrors e2e-gnome.yml)
+        id: imgkey
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VM images (pristine + provisioned desktop base + SSH key)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/secrets-dispatcher/e2e/${{ inputs.series }}-server-cloudimg-amd64.img
+            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ inputs.series }}.qcow2
+            ~/.cache/secrets-dispatcher/e2e/id_ed25519
+            ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
+          key: e2e-vm-images-${{ inputs.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
+
+      - run: make demo
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: demos-${{ inputs.series }}
+          path: .build/demos/
+          if-no-files-found: error

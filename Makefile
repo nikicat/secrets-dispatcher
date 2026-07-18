@@ -1,7 +1,7 @@
 MAKEFLAGS += -j
 
 .PHONY: all build install frontend backend backend-dev backend-go clean test test-go test-e2e test-e2e-all test-e2e-browser \
-	test-e2e-gnome test-e2e-gnome-container playwright-install dev version release pre-commit screenshots \
+	test-e2e-gnome test-e2e-gnome-container demo playwright-install dev version release pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
@@ -101,6 +101,18 @@ test-e2e-gnome-vm: backend-go
 	e2e/gnome/vm/run.sh boot
 	e2e/gnome/vm/run.sh wait-desktop
 	e2e/gnome/vm/scenario.sh .build/secrets-dispatcher-go
+	e2e/gnome/vm/run.sh destroy
+
+# Screen-recorded product demos from the Tier-2 GNOME VM (same cached desktop
+# base as test-e2e-gnome-vm). Output: .build/demos/*.webm (+ .mp4 when ffmpeg
+# is installed) — throwaway artifacts, never committed; demos.yml uploads
+# them from CI. GO_REF picks what the on-camera `go install` fetches.
+demo:
+	e2e/gnome/vm/run.sh provision
+	e2e/gnome/vm/run.sh destroy
+	e2e/gnome/vm/run.sh boot
+	e2e/gnome/vm/run.sh wait-desktop
+	e2e/gnome/vm/demo.sh .build/demos
 	e2e/gnome/vm/run.sh destroy
 
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)

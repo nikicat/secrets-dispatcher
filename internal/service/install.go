@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"gopkg.in/yaml.v3"
@@ -96,7 +97,9 @@ type Options struct {
 	Start bool
 	// Mode selects the topology: "remote", "local", or "full" (default: "remote").
 	Mode string
-	// BackendPath overrides the backend binary path (for local/full modes).
+	// BackendPath selects the private backend for local/full modes: a binary
+	// path, a keyword ("gopass", "gnome-keyring"), or empty for the
+	// detection-driven default. See resolveBackendExec.
 	BackendPath string
 }
 
@@ -174,15 +177,31 @@ func Install(opts Options) error {
 	}
 	fmt.Printf("Wrote config: %s\n", configPath)
 
+	// Detect the current provider BEFORE taking over — masking and stopping
+	// the D-Bus-activated owner below destroy the evidence.
+	var provider Provider
+	if mode != "remote" {
+		provider = DetectProvider()
+		fmt.Printf("Detected Secret Service provider: %s\n", provider)
+	}
+
 	// Mask/unmask D-Bus activation based on mode.
 	switch mode {
 	case "local", "full":
 		if err := maskDBusActivation(); err != nil {
 			return err
 		}
+		if provider.Kind == ProviderGnomeKeyring {
+			if err := demoteGnomeKeyring(); err != nil {
+				return err
+			}
+		}
 		stopDBusActivatedService()
 	case "remote":
 		if err := unmaskDBusActivation(); err != nil {
+			return err
+		}
+		if err := restoreGnomeKeyring(); err != nil {
 			return err
 		}
 	}
@@ -199,16 +218,13 @@ func Install(opts Options) error {
 		if lpErr != nil {
 			return fmt.Errorf("find dbus-daemon: %w", lpErr)
 		}
-		backendPath := opts.BackendPath
-		if backendPath == "" {
-			backendPath, lpErr = lookPathFunc("gopass-secret-service")
-			if lpErr != nil {
-				return fmt.Errorf("find gopass-secret-service: %w", lpErr)
-			}
+		backendExec, beErr := resolveBackendExec(opts.BackendPath, provider)
+		if beErr != nil {
+			return beErr
 		}
 		needed["secrets-dispatcher-bus.socket"] = busSocketTemplate
 		needed["secrets-dispatcher-bus.service"] = fmt.Sprintf(busServiceTemplate, dbusDaemon)
-		needed["secrets-dispatcher-backend.service"] = fmt.Sprintf(backendServiceTemplate, backendPath)
+		needed["secrets-dispatcher-backend.service"] = fmt.Sprintf(backendServiceTemplate, backendExec)
 		needed[unitFileName] = fmt.Sprintf(localProxyTemplate, execStart)
 	}
 
@@ -267,9 +283,27 @@ func Install(opts Options) error {
 			return err
 		}
 		fmt.Printf("Started %s\n", unitFileName)
+
+		if mode != "remote" {
+			reportOwnership()
+		}
 	}
 
 	return nil
+}
+
+// reportOwnership prints who owns org.freedesktop.secrets after a takeover
+// start, warning when the dispatcher did not end up in front (US-11).
+func reportOwnership() {
+	var p Provider
+	for range 20 {
+		if p = DetectProvider(); p.Kind == ProviderDispatcher {
+			fmt.Printf("org.freedesktop.secrets is now owned by secrets-dispatcher (pid %d)\n", p.PID)
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	fmt.Printf("WARNING: org.freedesktop.secrets is owned by %s — secrets-dispatcher is NOT in front\n", p)
 }
 
 // updateTopologyConfig loads the config, sets upstream/downstream for the given mode,
@@ -339,6 +373,10 @@ func Uninstall() error {
 	}
 
 	if err := unmaskDBusActivation(); err != nil {
+		return err
+	}
+
+	if err := restoreGnomeKeyring(); err != nil {
 		return err
 	}
 

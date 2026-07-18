@@ -85,6 +85,17 @@ test-e2e-gnome: backend-go
 test-e2e-gnome-container: backend-go
 	e2e/gnome/container.sh .build/secrets-dispatcher-go
 
+# Tier-2 GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init), covers the
+# takeover/re-grab/reversal acceptance gates. First run provisions a cached
+# desktop base image (~10 min); each run boots a throwaway overlay.
+test-e2e-gnome-vm: backend-go
+	e2e/gnome/vm/run.sh provision
+	e2e/gnome/vm/run.sh destroy
+	e2e/gnome/vm/run.sh boot
+	e2e/gnome/vm/run.sh wait-desktop
+	e2e/gnome/vm/scenario.sh .build/secrets-dispatcher-go
+	e2e/gnome/vm/run.sh destroy
+
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
 playwright-install:
 	cd web && deno run -A npm:@playwright/test@1.61.1/cli install --with-deps $(BROWSER)

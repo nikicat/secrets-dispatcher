@@ -78,6 +78,12 @@ secrets-dispatcher serve &
 # Or install as a systemd user service (auto-start on login)
 secrets-dispatcher service install --start
 
+# On GNOME: put the dispatcher in front of your existing keyring. Detects
+# gnome-keyring, demotes only its secrets component to a private backend
+# (pkcs11/ssh/PAM unlock keep working), same keyring data. `service
+# uninstall` restores stock behavior exactly.
+secrets-dispatcher service install --mode local --start
+
 # Open the web UI
 secrets-dispatcher login
 

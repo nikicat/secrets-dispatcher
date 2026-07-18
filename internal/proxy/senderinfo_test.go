@@ -20,11 +20,11 @@ type mockDBusClient struct {
 	unitErr  error
 }
 
-func (m *mockDBusClient) GetConnectionUnixProcessID(sender string) (uint32, error) {
+func (m *mockDBusClient) GetConnectionUnixProcessID(sender senderName) (uint32, error) {
 	return m.pid, m.pidErr
 }
 
-func (m *mockDBusClient) GetConnectionUnixUser(sender string) (uint32, error) {
+func (m *mockDBusClient) GetConnectionUnixUser(sender senderName) (uint32, error) {
 	return m.uid, m.uidErr
 }
 

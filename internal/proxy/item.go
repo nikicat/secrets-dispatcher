@@ -41,6 +41,17 @@ func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logg
 	}
 }
 
+// upstream returns the backend object at path on the upstream Secret Service bus.
+func (i *ItemHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
+	return i.localConn.Object(dbustypes.BusName, path)
+}
+
+// senderResolver returns a lazy resolver of sender's SenderInfo, suitable for an
+// UpstreamCallContext.ResolveSender field.
+func (i *ItemHandler) senderResolver(sender senderName) func() approval.SenderInfo {
+	return func() approval.SenderInfo { return i.resolver.Resolve(sender) }
+}
+
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (i *ItemHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
@@ -75,21 +86,21 @@ func isItemPath(path dbus.ObjectPath) bool {
 // Delete deletes the item.
 // Signature: Delete() -> (prompt ObjectPath)
 func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return "/", dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	// Fetch item info (label + attributes)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+		ResolveSender: i.senderResolver(sender),
 	}
 	itemInfo := i.getItemInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	ctx := i.tracker.contextForSender(context.Background(), sender)
-	defer i.tracker.remove(sender)
+	ctx, release := i.tracker.contextForSender(context.Background(), sender)
+	defer release()
 
 	// Resolve sender information
 	senderInfo := i.resolver.Resolve(sender)
@@ -101,19 +112,19 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeDelete,
 		Items:       items,
 		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".Delete", 0) })
 	if call.Err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", dbustypes.ErrFailed(err)
 	}
 
 	i.logger.LogMethod(context.Background(), "Item.Delete", map[string]any{
@@ -126,21 +137,21 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 // GetSecret retrieves the secret for this item.
 // Signature: GetSecret(session ObjectPath) -> (secret Secret)
 func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbustypes.Secret, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	// Fetch item info (label + attributes)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+		ResolveSender: i.senderResolver(sender),
 	}
 	itemInfo := i.getItemInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	ctx := i.tracker.contextForSender(context.Background(), sender)
-	defer i.tracker.remove(sender)
+	ctx, release := i.tracker.contextForSender(context.Background(), sender)
+	defer release()
 
 	// Resolve sender information
 	senderInfo := i.resolver.Resolve(sender)
@@ -160,7 +171,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeGetSecret,
 		Items:       items,
@@ -168,20 +179,20 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession) })
 	if call.Err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", call.Err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.Secret{}, dbustypes.ErrFailed(call.Err)
 	}
 
 	var secret dbustypes.Secret
 	if err := call.Store(&secret); err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbustypes.Secret{}, dbustypes.ErrFailed(err)
 	}
 
 	// Rewrite session path and, for DH sessions, encrypt the value for the client.
 	encoded, err := i.sessions.ForClient(session, secret)
 	if err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbustypes.Secret{}, dbustypes.ErrFailed(err)
 	}
 
 	i.logger.LogItemGetSecret(context.Background(), string(path), "ok", nil)
@@ -191,21 +202,21 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 // SetSecret sets the secret for this item.
 // Signature: SetSecret(secret Secret)
 func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus.Error {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	// Fetch item info (label + attributes)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	sender := senderOf(msg)
 	senderCtx := UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+		ResolveSender: i.senderResolver(sender),
 	}
 	itemInfo := i.getItemInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
-	ctx := i.tracker.contextForSender(context.Background(), sender)
-	defer i.tracker.remove(sender)
+	ctx, release := i.tracker.contextForSender(context.Background(), sender)
+	defer release()
 
 	// Resolve sender information
 	senderInfo := i.resolver.Resolve(sender)
@@ -231,17 +242,17 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	}
 	if err != nil {
 		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "error", err)
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbustypes.ErrFailed(err)
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 	call := i.upstreamWithContext(UpstreamCallContext{
 		RequestType: approval.RequestTypeWrite,
 		Items:       items,
 		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret) })
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 
 	i.logger.LogMethod(context.Background(), "Item.SetSecret", map[string]any{
@@ -253,21 +264,21 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 
 // Get implements org.freedesktop.DBus.Properties.Get for items.
 func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	obj := i.upstream(path)
+	sender := senderOf(msg)
 	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+		ResolveSender: i.senderResolver(sender),
 	}, func() propResult {
 		v, err := obj.GetProperty(iface + "." + property)
 		return propResult{v, err}
 	})
 	if r.err != nil {
-		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{r.err.Error()}}
+		return dbus.Variant{}, dbustypes.ErrFailed(r.err)
 	}
 
 	return r.v, nil
@@ -275,23 +286,23 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 
 // GetAll implements org.freedesktop.DBus.Properties.GetAll for items.
 func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	obj := i.upstream(path)
+	sender := senderOf(msg)
 	call := i.upstreamWithContext(UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+		ResolveSender: i.senderResolver(sender),
 	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	var props map[string]dbus.Variant
 	if err := call.Store(&props); err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, dbustypes.ErrFailed(err)
 	}
 
 	return props, nil
@@ -299,20 +310,20 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 
 // Set implements org.freedesktop.DBus.Properties.Set for items.
 func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
-	path := msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
+	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
-	sender := msg.Headers[dbus.FieldSender].Value().(string)
+	obj := i.upstream(path)
+	sender := senderOf(msg)
 	call := i.upstreamWithContext(UpstreamCallContext{
-		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
+		ResolveSender: i.senderResolver(sender),
 	}, func() *dbus.Call {
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 
 	return nil
@@ -322,7 +333,7 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 func (i *ItemHandler) getItemInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
 	info := approval.ItemInfo{Path: string(path)}
 
-	obj := i.localConn.Object(dbustypes.BusName, path)
+	obj := i.upstream(path)
 
 	// Get Label property
 	if v, err := i.upstreamGetProperty(obj, dbustypes.ItemInterface+".Label", ctx); err == nil {

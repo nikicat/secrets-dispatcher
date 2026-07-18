@@ -75,6 +75,11 @@ func ErrAccessDenied(message string) *dbus.Error {
 	return NewDBusError("org.freedesktop.DBus.Error.AccessDenied", message)
 }
 
+// ErrFailed returns a generic Failed error wrapping the underlying error.
+func ErrFailed(err error) *dbus.Error {
+	return NewDBusError("org.freedesktop.DBus.Error.Failed", err.Error())
+}
+
 // ExtractCollection extracts the collection name from a Secret Service item path.
 // Handles both /org/freedesktop/secrets/collection/X/... and /org/freedesktop/secrets/aliases/X/...
 // Returns "" if the path doesn't match either format.

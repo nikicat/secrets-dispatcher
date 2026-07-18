@@ -1,7 +1,23 @@
 # Plan: onboarding ("install & try") + Ubuntu e2e testing
 
-Status: **planning** (no code yet for the sections below). Written for future
-sessions to pick up. Companion issue: **#1** (GNOME bypass + prompt forwarding).
+Status: **PR A + PR B landed** (2026-07-18); **PR C is the live roadmap** —
+future sessions pick up from the PR C section below. Companion issue **#1**
+(GNOME bypass + prompt forwarding) is closed, fixed by PR A + PR B.
+
+Landed:
+- **PR A** (#13) — prompt forwarding + Tier-1 container e2e (`e2e/gnome/fast.sh`).
+- **PR B** (#14) — provider detection, `--backend` keywords, secrets-only
+  gnome-keyring demotion, Tier-2 desktop-VM harness (`e2e/gnome/vm/`,
+  `make test-e2e-gnome-vm`). The VM gate runs on every PR (~1.5 min with the
+  weekly image cache) and is a required check on master.
+- **#15** — `go install` ships the full web UI (US-2's Go path; committed dist
+  + embed-freshness CI guard).
+- **Spike resolved (was PR B step 3)**: *secrets-only demotion*, NOT
+  whole-daemon masking — with the units masked, pam_gnome_keyring respawns an
+  unmanaged `--daemonize --login` daemon at next login that re-grabs the name,
+  and pkcs11 dies. Demotion = user drop-in (`--components=pkcs11`) + Hidden=true
+  autostart shadow + the D-Bus activation mask; all user-level files, exactly
+  reversible. See `internal/service/gnomekeyring.go`.
 
 ## The reframe that drives everything
 
@@ -51,7 +67,7 @@ $ secrets-dispatcher try
 
 ## Implementation plan
 
-### PR A — Forward `Secret.Prompt` objects (US-6, #1-B) — do first
+### PR A — Forward `Secret.Prompt` objects (US-6, #1-B) — ✅ shipped (#13)
 
 Small, self-contained, fixes a correctness lockout (locked collection →
 `Object does not implement …Prompt` → user locked out of their own secret).
@@ -91,7 +107,7 @@ Steps:
 
 Effort ~S–M; main cost is the mock extension; low product risk (purely additive).
 
-### PR B — Keep secrets-dispatcher the owner on GNOME (US-4 + US-5, #1-A)
+### PR B — Keep secrets-dispatcher the owner on GNOME (US-4 + US-5, #1-A) — ✅ shipped (#14)
 
 Current state: name grab = `maskDBusActivation()` + one-shot
 `stopDBusActivatedService()` SIGTERM (`install.go:472`) +
@@ -126,10 +142,27 @@ Steps:
 Effort ~M–L. Risks: reversibility of user-unit masking; the step-3 spike;
 distro unit-name variance.
 
-### PR C — `try` command + `status`/doctor (US-9 + US-11) — after A/B
+### PR C — `try` command + `status`/doctor (US-9 + US-11) — ⏭ NEXT (the live roadmap)
 
-The reversible trial (north-star) + "am I actually in front" check. Attaches
-naturally after B (B needs the status check for its own verification anyway).
+The reversible trial (north-star) + "am I actually in front" check. A/B are
+landed, so `try` composes proven primitives: `DetectProvider()` (detect.go),
+demote/restore (gnomekeyring.go), `reportOwnership()` (the US-11 seed in
+install.go), and the Tier-2 scenario as its acceptance template
+(`e2e/gnome/vm/scenario.sh` already exercises install→verify→uninstall).
+
+Notes for the implementing session:
+- `try` ≈ install(local, detection-driven backend) + live ownership/status
+  output + Ctrl-C → uninstall-equivalent full restore; `--dry-run` prints the
+  exact file/unit changes (US-1) — the demotion state model makes this easy
+  (the managed files ARE the plan).
+- `status`/`doctor`: name owner (+ exe classification), backend health,
+  masked/demoted state consistency, warn on re-grab (extend reportOwnership).
+- Autologin caveat (spike finding): on autologin desktops the login collection
+  starts locked; `try`'s "see it work" hint must not assume an unlocked
+  keyring — prefer a `secret-tool store`+`lookup` pair or surface the unlock
+  prompt flow (PR A forwards it).
+- Acceptance: extend `e2e/gnome/vm/scenario.sh` with a `try` leg (trial → 
+  Ctrl-C → assert stock state byte-exact, mirroring the uninstall leg).
 
 ## E2E testing plan
 
@@ -234,19 +267,26 @@ One `e2e/gnome/scenario.sh`, run in both tiers (extra desktop-only steps in Tier
 3. `e2e/gnome/scenario.sh` — the shared journey above.
 4. `.github/workflows/e2e-gnome.yml` — `fast` job (Tier 1, every PR) + `full`
    job (Tier 2 desktop VM: `schedule` nightly, `e2e-gnome` label, pre-release).
+   *(Landed better than planned: the `full` job proved cheap enough — ~1.5 min
+   with the weekly image cache — to run on EVERY PR, and is a required check
+   on master; nightly + dispatch remain, the label opt-in was dropped.)*
 
 The shared script + notif-stub are independent of the product fixes (work even
 against the mock), so they can land first and unblock everything.
 
 ## Sequencing
 
-1. (optional) shared `scenario.sh` + notif-stub — independent, unblock later tiers.
-2. **PR A** (prompt forwarding) + Tier-1 container test.
-3. **PR B** spike (secrets-only vs whole-daemon mask) — same investigation as the
-   Tier-2 desktop-VM harness; build the VM harness here and make scenario steps
-   2/3/6 the acceptance gate for PR B.
-4. **PR B** proper (detection, `--backend gnome-keyring`, masking, reversibility).
-5. **PR C** (`try` + `status`/doctor).
+1. (optional) shared `scenario.sh` + notif-stub — notif-stub still open (goes
+   with the US-7 notification work).
+2. ✅ **PR A** (prompt forwarding) + Tier-1 container test — #13.
+3. ✅ **PR B** spike — verdict: secrets-only demotion; VM harness built,
+   scenario steps 2/3/6 are the acceptance gate (`e2e/gnome/vm/scenario.sh`).
+4. ✅ **PR B** proper (detection, `--backend gnome-keyring`, demotion,
+   reversibility) — #14.
+5. ⏭ **PR C** (`try` + `status`/doctor) — see the PR C section for the
+   session-ready notes.
+6. Then: US-7 notification work (auto-dismiss fix + notif-stub + AT-SPI
+   fidelity tier — strategy below remains the plan of record).
 
 ## Decisions locked this session (don't re-litigate)
 

@@ -118,12 +118,12 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".Delete", 0) })
 	if call.Err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", dbustypes.ErrFailed(err)
 	}
 
 	c.logger.LogMethod(context.Background(), "Collection.Delete", map[string]any{
@@ -193,12 +193,12 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
 	}, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	var results []dbus.ObjectPath
 	if err := call.Store(&results); err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, dbustypes.ErrFailed(err)
 	}
 
 	c.logger.LogMethod(context.Background(), "Collection.SearchItems", map[string]any{
@@ -259,7 +259,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 	if err != nil {
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "error", err)
-		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", "/", dbustypes.ErrFailed(err)
 	}
 
 	obj := c.upstream(path)
@@ -271,12 +271,12 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace)
 	})
 	if call.Err != nil {
-		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return "/", "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var item, prompt dbus.ObjectPath
 	if err := call.Store(&item, &prompt); err != nil {
-		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", "/", dbustypes.ErrFailed(err)
 	}
 
 	// Cache the new item path so immediate read-back (e.g., gh verification) is auto-approved.
@@ -306,7 +306,7 @@ func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.
 		return propResult{v, err}
 	})
 	if r.err != nil {
-		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{r.err.Error()}}
+		return dbus.Variant{}, dbustypes.ErrFailed(r.err)
 	}
 
 	return r.v, nil
@@ -325,12 +325,12 @@ func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]d
 		ResolveSender: func() approval.SenderInfo { return c.resolver.Resolve(sender) },
 	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	var props map[string]dbus.Variant
 	if err := call.Store(&props); err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, dbustypes.ErrFailed(err)
 	}
 
 	return props, nil
@@ -351,7 +351,7 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 
 	return nil

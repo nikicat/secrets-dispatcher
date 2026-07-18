@@ -113,12 +113,12 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".Delete", 0) })
 	if call.Err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", dbustypes.ErrFailed(err)
 	}
 
 	i.logger.LogMethod(context.Background(), "Item.Delete", map[string]any{
@@ -173,20 +173,20 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession) })
 	if call.Err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", call.Err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.Secret{}, dbustypes.ErrFailed(call.Err)
 	}
 
 	var secret dbustypes.Secret
 	if err := call.Store(&secret); err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbustypes.Secret{}, dbustypes.ErrFailed(err)
 	}
 
 	// Rewrite session path and, for DH sessions, encrypt the value for the client.
 	encoded, err := i.sessions.ForClient(session, secret)
 	if err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
-		return dbustypes.Secret{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbustypes.Secret{}, dbustypes.ErrFailed(err)
 	}
 
 	i.logger.LogItemGetSecret(context.Background(), string(path), "ok", nil)
@@ -236,7 +236,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	}
 	if err != nil {
 		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "error", err)
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbustypes.ErrFailed(err)
 	}
 
 	obj := i.upstream(path)
@@ -246,7 +246,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret) })
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 
 	i.logger.LogMethod(context.Background(), "Item.SetSecret", map[string]any{
@@ -272,7 +272,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 		return propResult{v, err}
 	})
 	if r.err != nil {
-		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{r.err.Error()}}
+		return dbus.Variant{}, dbustypes.ErrFailed(r.err)
 	}
 
 	return r.v, nil
@@ -291,12 +291,12 @@ func (i *ItemHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Va
 		ResolveSender: func() approval.SenderInfo { return i.resolver.Resolve(sender) },
 	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	var props map[string]dbus.Variant
 	if err := call.Store(&props); err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, dbustypes.ErrFailed(err)
 	}
 
 	return props, nil
@@ -317,7 +317,7 @@ func (i *ItemHandler) Set(msg dbus.Message, iface, property string, value dbus.V
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 
 	return nil

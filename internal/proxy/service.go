@@ -71,7 +71,7 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 			return dbus.Variant{}, "", dbusErr
 		}
 		s.logger.LogOpenSession(context.Background(), algorithm, "", "error", err)
-		return dbus.Variant{}, "", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbus.Variant{}, "", dbustypes.ErrFailed(err)
 	}
 
 	s.logger.LogOpenSession(context.Background(), algorithm, string(sessionPath), "ok", nil)
@@ -100,13 +100,13 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", call.Err)
-		return nil, nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	var unlocked, locked []dbus.ObjectPath
 	if err := call.Store(&unlocked, &locked); err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", err)
-		return nil, nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, nil, dbustypes.ErrFailed(err)
 	}
 
 	s.logger.LogSearchItems(context.Background(), attributes, len(unlocked), len(locked), "ok", nil)
@@ -156,14 +156,14 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
 	if call.Err != nil {
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", call.Err)
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	// The return type is Dict<ObjectPath, Secret> where Secret is (oayays)
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	if err := call.Store(&secrets); err != nil {
 		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", err)
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, dbustypes.ErrFailed(err)
 	}
 
 	// Rewrite session paths and, for DH sessions, encrypt each secret value for
@@ -172,7 +172,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 		encoded, err := s.sessions.ForClient(session, secret)
 		if err != nil {
 			s.logger.LogGetSecrets(context.Background(), itemStrs, "error", err)
-			return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+			return nil, dbustypes.ErrFailed(err)
 		}
 		secrets[path] = encoded
 	}
@@ -207,7 +207,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	if call.Err != nil {
 		objStrs := objectPathsToStrings(objects)
 		s.logger.LogUnlock(context.Background(), objStrs, 0, "error", call.Err)
-		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var unlocked []dbus.ObjectPath
@@ -215,7 +215,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	if err := call.Store(&unlocked, &prompt); err != nil {
 		objStrs := objectPathsToStrings(objects)
 		s.logger.LogUnlock(context.Background(), objStrs, 0, "error", err)
-		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, "/", dbustypes.ErrFailed(err)
 	}
 
 	objStrs := objectPathsToStrings(objects)
@@ -233,13 +233,13 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Lock", 0, objects) })
 	if call.Err != nil {
-		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var locked []dbus.ObjectPath
 	var prompt dbus.ObjectPath
 	if err := call.Store(&locked, &prompt); err != nil {
-		return nil, "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, "/", dbustypes.ErrFailed(err)
 	}
 
 	return locked, prompt, nil
@@ -256,13 +256,13 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".ReadAlias", 0, name) })
 	if call.Err != nil {
 		s.logger.LogReadAlias(context.Background(), name, "", "error", call.Err)
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var collection dbus.ObjectPath
 	if err := call.Store(&collection); err != nil {
 		s.logger.LogReadAlias(context.Background(), name, "", "error", err)
-		return "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", dbustypes.ErrFailed(err)
 	}
 
 	s.logger.LogReadAlias(context.Background(), name, string(collection), "ok", nil)
@@ -279,7 +279,7 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection) })
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 	return nil
 }
@@ -296,12 +296,12 @@ func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.
 		return obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
 	})
 	if call.Err != nil {
-		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return "/", "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var collection, prompt dbus.ObjectPath
 	if err := call.Store(&collection, &prompt); err != nil {
-		return "/", "/", &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return "/", "/", dbustypes.ErrFailed(err)
 	}
 
 	return collection, prompt, nil
@@ -320,7 +320,7 @@ func (s *Service) Get(msg dbus.Message, iface, property string) (dbus.Variant, *
 	}
 	variant, err := s.upstreamGetProperty(obj, iface+"."+property, ctx)
 	if err != nil {
-		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return dbus.Variant{}, dbustypes.ErrFailed(err)
 	}
 
 	return variant, nil
@@ -339,12 +339,12 @@ func (s *Service) GetAll(msg dbus.Message, iface string) (map[string]dbus.Varian
 	}
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	var props map[string]dbus.Variant
 	if err := call.Store(&props); err != nil {
-		return nil, &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{err.Error()}}
+		return nil, dbustypes.ErrFailed(err)
 	}
 
 	return props, nil
@@ -365,7 +365,7 @@ func (s *Service) Set(msg dbus.Message, iface, property string, value dbus.Varia
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})
 	if call.Err != nil {
-		return &dbus.Error{Name: "org.freedesktop.DBus.Error.Failed", Body: []any{call.Err.Error()}}
+		return dbustypes.ErrFailed(call.Err)
 	}
 
 	return nil

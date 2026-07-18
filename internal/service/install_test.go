@@ -340,6 +340,7 @@ func TestInstallLocalWithStart(t *testing.T) {
 	calls := mockSystemctl(t)
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
+	shortOwnerWait(t)
 
 	if err := Install(Options{Mode: "local", Start: true}); err != nil {
 		t.Fatalf("Install() error: %v", err)

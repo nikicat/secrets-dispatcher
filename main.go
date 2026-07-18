@@ -75,6 +75,8 @@ func main() {
 		runCLI("history", os.Args[2:])
 	case "config":
 		runConfig(os.Args[2:])
+	case "try":
+		runTry(os.Args[2:])
 	case "service":
 		runService(os.Args[2:])
 	case "gpg-sign":
@@ -106,6 +108,7 @@ Commands:
   deny          Deny a pending request
   history       Show resolved requests
   config        Show or manage configuration
+  try           Reversible trial: take over the Secret Service, Ctrl-C restores everything
   service       Manage the systemd user service
   gpg-sign      GPG signing proxy (called by git as gpg.program)
   gpg-sign setup  Configure git to use secrets-dispatcher for GPG signing
@@ -883,6 +886,28 @@ Show-only options:
 }
 
 // runService handles the "service" subcommand group (install/uninstall/status).
+// runTry handles the `try` command: a reversible trial of the takeover
+// (US-9). Ctrl-C (or SIGTERM) restores the original Secret Service.
+func runTry(args []string) {
+	fs := flag.NewFlagSet("try", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "Print what the trial would change, then exit without changing anything")
+	configPath := fs.String("config", "", "Base config the trial copies settings from, never modified (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	backend := fs.String("backend", "", "Backend for the trial: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
+	fs.Parse(args)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := service.Try(ctx, service.TryOptions{
+		ConfigPath:  *configPath,
+		BackendPath: *backend,
+		DryRun:      *dryRun,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func runService(args []string) {
 	if len(args) == 0 {
 		printServiceUsage()
@@ -898,7 +923,10 @@ func runService(args []string) {
 			os.Exit(1)
 		}
 	case "status":
-		service.Status()
+		if err := service.Status(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		printServiceUsage()
 	default:
@@ -914,14 +942,25 @@ func runServiceInstall(args []string) {
 	configPath := fs.String("config", "", "Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	mode := fs.String("mode", "remote", "Topology mode: remote, local, or full")
 	backend := fs.String("backend", "", "Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
+	dryRun := fs.Bool("dry-run", false, "Print what the install would change, then exit without changing anything")
 	fs.Parse(args)
 
-	if err := service.Install(service.Options{
+	opts := service.Options{
 		ConfigPath:  *configPath,
 		Start:       *start,
 		Mode:        *mode,
 		BackendPath: *backend,
-	}); err != nil {
+	}
+
+	if *dryRun {
+		if err := service.PrintPlan(opts); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := service.Install(opts); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -933,13 +972,14 @@ func printServiceUsage() {
 Commands:
   install       Install and enable the systemd user service
   uninstall     Stop, disable, and remove the systemd user service
-  status        Show the service status
+  status        Doctor-style health report: name owner, unit states, mask/demotion consistency
 
 Install options:
   --start       Start the service immediately after installing
   --config      Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
   --mode        Topology mode: remote, local, or full (default: remote)
-  --backend     Backend binary path for local/full modes (default: gopass-secret-service from PATH)
+  --backend     Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects
+  --dry-run     Print what the install would change, then exit without changing anything
 `, progName)
 }
 

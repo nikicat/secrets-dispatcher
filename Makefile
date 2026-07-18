@@ -120,9 +120,10 @@ version:
 release:
 	@BUMP="$(BUMP)" TAG="$(TAG)" scripts/release.sh
 
-# Clean build artifacts
+# Clean build artifacts. internal/api/web/dist is COMMITTED (go-install
+# support) — never remove it here; `make embed-frontend` refreshes it.
 clean:
-	rm -rf web/dist internal/api/web secrets-dispatcher .build
+	rm -rf web/dist secrets-dispatcher .build
 
 # Run checks and tests in parallel
 pre-commit: check test

@@ -136,57 +136,30 @@ func UnitPath() (string, error) {
 }
 
 // Install writes systemd user unit files, updates the config topology,
-// reloads systemd, and enables the service.
+// reloads systemd, and enables the service. Plan(opts) previews the same
+// changes without making them.
 func Install(opts Options) error {
-	mode := opts.Mode
-	if mode == "" {
-		mode = "remote"
-	}
-	switch mode {
-	case "remote", "local", "full":
-	default:
-		return fmt.Errorf("unknown mode %q (must be remote, local, or full)", mode)
-	}
-
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return fmt.Errorf("XDG_RUNTIME_DIR must be set")
-	}
-
-	self, err := os.Executable()
+	in, err := resolveInstallInputs(opts)
 	if err != nil {
-		return fmt.Errorf("find executable: %w", err)
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return fmt.Errorf("resolve executable: %w", err)
-	}
-
-	// Resolve config path.
-	configPath := opts.ConfigPath
-	if configPath == "" {
-		configPath = config.DefaultPath()
-		if configPath == "" {
-			return fmt.Errorf("cannot determine config path (is HOME set?)")
-		}
+		return err
 	}
 
 	// Update only the topology fields in the config, preserving everything else.
-	if err := updateTopologyConfig(configPath, runtimeDir, mode); err != nil {
+	if err := updateTopologyConfig(in.configPath, in.runtimeDir, in.mode); err != nil {
 		return err
 	}
-	fmt.Printf("Wrote config: %s\n", configPath)
+	fmt.Printf("Wrote config: %s\n", in.configPath)
 
 	// Detect the current provider BEFORE taking over — masking and stopping
 	// the D-Bus-activated owner below destroy the evidence.
 	var provider Provider
-	if mode != "remote" {
+	if in.mode != "remote" {
 		provider = DetectProvider()
 		fmt.Printf("Detected Secret Service provider: %s\n", provider)
 	}
 
 	// Mask/unmask D-Bus activation based on mode.
-	switch mode {
+	switch in.mode {
 	case "local", "full":
 		if err := maskDBusActivation(); err != nil {
 			return err
@@ -207,25 +180,9 @@ func Install(opts Options) error {
 	}
 
 	// Build unit file contents for this mode.
-	execStart := self + " serve --config " + configPath
-	needed := make(map[string]string)
-
-	switch mode {
-	case "remote":
-		needed[unitFileName] = fmt.Sprintf(unitTemplate, execStart)
-	case "local", "full":
-		dbusDaemon, lpErr := lookPathFunc("dbus-daemon")
-		if lpErr != nil {
-			return fmt.Errorf("find dbus-daemon: %w", lpErr)
-		}
-		backendExec, beErr := resolveBackendExec(opts.BackendPath, provider)
-		if beErr != nil {
-			return beErr
-		}
-		needed["secrets-dispatcher-bus.socket"] = busSocketTemplate
-		needed["secrets-dispatcher-bus.service"] = fmt.Sprintf(busServiceTemplate, dbusDaemon)
-		needed["secrets-dispatcher-backend.service"] = fmt.Sprintf(backendServiceTemplate, backendExec)
-		needed[unitFileName] = fmt.Sprintf(localProxyTemplate, execStart)
+	needed, err := buildUnits(in.mode, in.execStart, provider, opts.BackendPath)
+	if err != nil {
+		return err
 	}
 
 	// Write needed units; stop/disable/remove stale ones from a different mode.
@@ -261,7 +218,7 @@ func Install(opts Options) error {
 	if err := systemctlFunc("daemon-reload"); err != nil {
 		return err
 	}
-	if mode != "remote" {
+	if in.mode != "remote" {
 		if err := systemctlFunc("enable", "secrets-dispatcher-bus.socket"); err != nil {
 			return err
 		}
@@ -273,7 +230,7 @@ func Install(opts Options) error {
 	fmt.Printf("Enabled %s\n", unitFileName)
 
 	if opts.Start {
-		if mode != "remote" {
+		if in.mode != "remote" {
 			if err := systemctlFunc("start", "secrets-dispatcher-bus.socket"); err != nil {
 				return err
 			}
@@ -284,7 +241,7 @@ func Install(opts Options) error {
 		}
 		fmt.Printf("Started %s\n", unitFileName)
 
-		if mode != "remote" {
+		if in.mode != "remote" {
 			reportOwnership()
 		}
 	}
@@ -292,16 +249,33 @@ func Install(opts Options) error {
 	return nil
 }
 
+// ownerWaitTimeout bounds the post-start/post-restore ownership confirmation
+// polls. Shortened in tests.
+var ownerWaitTimeout = 5 * time.Second
+
+// waitForOwner polls until kind owns org.freedesktop.secrets or the timeout
+// expires, returning the last-seen provider either way.
+func waitForOwner(kind ProviderKind, timeout time.Duration) (Provider, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		p := DetectProvider()
+		if p.Kind == kind {
+			return p, true
+		}
+		if time.Now().After(deadline) {
+			return p, false
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 // reportOwnership prints who owns org.freedesktop.secrets after a takeover
 // start, warning when the dispatcher did not end up in front (US-11).
 func reportOwnership() {
-	var p Provider
-	for range 20 {
-		if p = DetectProvider(); p.Kind == ProviderDispatcher {
-			fmt.Printf("org.freedesktop.secrets is now owned by secrets-dispatcher (pid %d)\n", p.PID)
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
+	p, ok := waitForOwner(ProviderDispatcher, ownerWaitTimeout)
+	if ok {
+		fmt.Printf("org.freedesktop.secrets is now owned by secrets-dispatcher (pid %d)\n", p.PID)
+		return
 	}
 	fmt.Printf("WARNING: org.freedesktop.secrets is owned by %s — secrets-dispatcher is NOT in front\n", p)
 }
@@ -381,34 +355,6 @@ func Uninstall() error {
 	}
 
 	return systemctlFunc("daemon-reload")
-}
-
-// Status runs systemctl --user status for all installed unit files.
-func Status() error {
-	dir, err := unitDir()
-	if err != nil {
-		return err
-	}
-
-	var found []string
-	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			found = append(found, name)
-		}
-	}
-
-	if len(found) == 0 {
-		fmt.Println("No secrets-dispatcher unit files found.")
-		return nil
-	}
-
-	args := append([]string{"--user", "status"}, found...)
-	cmd := exec.Command("systemctl", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	// systemctl status exits non-zero when inactive — not an error for us.
-	cmd.Run()
-	return nil
 }
 
 // systemctlFunc is the function used to run systemctl commands.

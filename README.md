@@ -75,6 +75,24 @@ cd secrets-dispatcher
 make build && make install   # installs to ~/.local/bin
 ```
 
+### Try it (fully reversible)
+
+The fastest way to see the approval flow on your real desktop — one command,
+no commitment:
+
+```bash
+secrets-dispatcher try
+```
+
+It detects your current Secret Service (e.g. gnome-keyring), puts the
+dispatcher in front of it (same keyring data, demoted to a private backend),
+and prints the web UI address. Ctrl-C stops the trial and restores the
+original setup exactly — every file it touched is reverted, and your config is
+never modified. `try --dry-run` lists the exact file and unit changes first.
+
+To check any time whether the dispatcher is really in front (and that
+takeover state is consistent): `secrets-dispatcher service status`.
+
 ### Secret Access Control (local)
 
 ```bash

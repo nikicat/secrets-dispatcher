@@ -1,8 +1,9 @@
 # Plan: onboarding ("install & try") + Ubuntu e2e testing
 
-Status: **PR A + PR B landed** (2026-07-18); **PR C is the live roadmap** —
-future sessions pick up from the PR C section below. Companion issue **#1**
-(GNOME bypass + prompt forwarding) is closed, fixed by PR A + PR B.
+Status: **PR A + PR B + PR C landed** (2026-07-18) — the plan's install/try
+arc is complete. Companion issue **#1** (GNOME bypass + prompt forwarding) is
+closed, fixed by PR A + PR B. Remaining follow-up: the US-7 notification work
+(sequencing item 6 below).
 
 Landed:
 - **PR A** (#13) — prompt forwarding + Tier-1 container e2e (`e2e/gnome/fast.sh`).
@@ -12,6 +13,9 @@ Landed:
   weekly image cache) and is a required check on master.
 - **#15** — `go install` ships the full web UI (US-2's Go path; committed dist
   + embed-freshness CI guard).
+- **PR C** (#16) — `try` reversible trial (US-9), `--dry-run` change plan on
+  `try`/`service install` (US-1), doctor-style `service status` (US-11);
+  Tier-2 scenario gained the try/status acceptance legs.
 - **Spike resolved (was PR B step 3)**: *secrets-only demotion*, NOT
   whole-daemon masking — with the units masked, pam_gnome_keyring respawns an
   unmanaged `--daemonize --login` daemon at next login that re-grabs the name,
@@ -142,7 +146,7 @@ Steps:
 Effort ~M–L. Risks: reversibility of user-unit masking; the step-3 spike;
 distro unit-name variance.
 
-### PR C — `try` command + `status`/doctor (US-9 + US-11) — ⏭ NEXT (the live roadmap)
+### PR C — `try` command + `status`/doctor (US-9 + US-11) — ✅ shipped (#16)
 
 The reversible trial (north-star) + "am I actually in front" check. A/B are
 landed, so `try` composes proven primitives: `DetectProvider()` (detect.go),
@@ -283,9 +287,8 @@ against the mock), so they can land first and unblock everything.
    scenario steps 2/3/6 are the acceptance gate (`e2e/gnome/vm/scenario.sh`).
 4. ✅ **PR B** proper (detection, `--backend gnome-keyring`, demotion,
    reversibility) — #14.
-5. ⏭ **PR C** (`try` + `status`/doctor) — see the PR C section for the
-   session-ready notes.
-6. Then: US-7 notification work (auto-dismiss fix + notif-stub + AT-SPI
+5. ✅ **PR C** (`try` + `status`/doctor) — #16.
+6. ⏭ Next: US-7 notification work (auto-dismiss fix + notif-stub + AT-SPI
    fidelity tier — strategy below remains the plan of record).
 
 ## Decisions locked this session (don't re-litigate)

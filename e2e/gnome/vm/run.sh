@@ -83,13 +83,25 @@ start_qemu() {
     # consumes virtio-input, not the emulated PS/2 devices, so both the
     # tablet (absolute-coordinate pointer) and keyboard must be explicit.
     # All three are inert for the test path.
+    #
+    # By default the guest is software-rendered (llvmpipe), under which mutter
+    # disables all animations. VM_GL=1 instead exposes the host GPU to the guest
+    # via virgl (virtio-vga-gl + an EGL-headless context on a DRM render node),
+    # so the guest gets hardware GL and mutter re-enables animations — the demo's
+    # window glide only renders this way. Local-only: CI runners have no
+    # /dev/dri, so leave VM_GL unset there. Override the node with VM_GL_RENDERNODE.
+    local video=virtio-vga display=none
+    if [[ -n "${VM_GL:-}" ]]; then
+        video=virtio-vga-gl
+        display="egl-headless,rendernode=${VM_GL_RENDERNODE:-/dev/dri/renderD128}"
+    fi
     qemu-system-x86_64 \
         -enable-kvm -cpu host -m "$VM_MEM" -smp "$VM_CPUS" \
         -drive "file=$disk,format=qcow2,if=virtio" \
-        -device virtio-vga \
+        -device "$video" \
         -device virtio-tablet-pci \
         -device virtio-keyboard-pci \
-        -display none \
+        -display "$display" \
         -qmp "unix:$VM_DIR/qmp.sock,server,nowait" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \

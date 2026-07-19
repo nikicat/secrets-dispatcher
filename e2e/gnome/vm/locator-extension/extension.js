@@ -77,10 +77,13 @@ export default class LocatorExtension extends Extension {
         const win = global.display.get_focus_window();
         if (!win)
             return false;
-        if (win.get_maximized())
+        // GNOME 48 (Ubuntu 26.04) removed Meta.Window.get_maximized(); feature-
+        // detect it. The demo's freshly-opened terminals are never maximized, so
+        // skipping the unmaximize where the API is gone is harmless.
+        if (typeof win.get_maximized === 'function' && win.get_maximized())
             win.unmaximize(Meta.MaximizeFlags.BOTH);
         win.move_resize_frame(false, x, y, w, h);
-        win.raise();
+        win.raise?.(); // also version-guarded (raise() has churned across Meta)
         return true;
     }
 

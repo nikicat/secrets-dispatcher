@@ -14,3 +14,7 @@ web/node_modules/
 
 # Test artifacts
 web/test-results/
+
+# Python bytecode (e2e demo/harness helpers, e.g. rd_agent.py)
+__pycache__/
+*.pyc

@@ -78,14 +78,17 @@ start_qemu() {
     shift 3
     # virtio-vga gives gdm/gnome-shell a virtual monitor with no host display;
     # daemonize keeps qemu alive across the calling shell. The QMP socket
-    # plus the tablet (absolute-coordinate pointer) are host-side input
-    # injection (demo.sh types keys and clicks notification buttons with
-    # them); both are inert for the test path.
+    # plus the virtio input devices are host-side input injection (demo.sh
+    # types keys and clicks notification buttons over QMP); mutter only
+    # consumes virtio-input, not the emulated PS/2 devices, so both the
+    # tablet (absolute-coordinate pointer) and keyboard must be explicit.
+    # All three are inert for the test path.
     qemu-system-x86_64 \
         -enable-kvm -cpu host -m "$VM_MEM" -smp "$VM_CPUS" \
         -drive "file=$disk,format=qcow2,if=virtio" \
         -device virtio-vga \
         -device virtio-tablet-pci \
+        -device virtio-keyboard-pci \
         -display none \
         -qmp "unix:$VM_DIR/qmp.sock,server,nowait" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \

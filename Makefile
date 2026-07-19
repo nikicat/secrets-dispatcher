@@ -107,12 +107,12 @@ test-e2e-gnome-vm: backend-go
 # base as test-e2e-gnome-vm). Output: .build/demos/*.webm (+ .mp4 when ffmpeg
 # is installed) — throwaway artifacts, never committed; demos.yml uploads
 # them from CI. GO_REF picks what the on-camera `go install` fetches.
-demo:
+demo: backend-go
 	e2e/gnome/vm/run.sh provision
 	e2e/gnome/vm/run.sh destroy
 	e2e/gnome/vm/run.sh boot
 	e2e/gnome/vm/run.sh wait-desktop
-	e2e/gnome/vm/demo.sh .build/demos
+	e2e/gnome/vm/demo.sh .build/demos .build/secrets-dispatcher-go
 	e2e/gnome/vm/run.sh destroy
 
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)

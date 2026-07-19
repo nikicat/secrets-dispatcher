@@ -54,11 +54,13 @@ type ItemInfo struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
-// GPGSignInfo carries commit context for a gpg_sign approval request.
+// GPGSignInfo carries signing context for a gpg_sign approval request.
 // This is an intentional duplication of approval.GPGSignInfo — the cli package
-// deliberately does not import internal/approval or internal/api.
+// deliberately does not import internal/approval or internal/api. Keep the JSON
+// tags in sync with that struct.
 type GPGSignInfo struct {
 	RepoName     string   `json:"repo_name"`
+	Kind         string   `json:"kind,omitempty"`
 	CommitMsg    string   `json:"commit_msg"`
 	Author       string   `json:"author"`
 	Committer    string   `json:"committer"`
@@ -66,6 +68,9 @@ type GPGSignInfo struct {
 	Fingerprint  string   `json:"fingerprint,omitempty"`
 	ChangedFiles []string `json:"changed_files"`
 	ParentHash   string   `json:"parent_hash,omitempty"`
+	TagName      string   `json:"tag_name,omitempty"`
+	Target       string   `json:"target,omitempty"`
+	Pushee       string   `json:"pushee,omitempty"`
 }
 
 // PendingRequest represents a pending approval request.

@@ -55,12 +55,20 @@ func Run(args []string, stdin io.Reader) int {
 		return 2
 	}
 
-	// 3. Parse commit object for display context (SIGN-02).
-	author, committer, message, parentHash := ParseCommitObject(commitBytes)
+	// 3. Parse the signed payload for display context (SIGN-02). git signs
+	// commits, annotated tags, and push certificates through this same path;
+	// detect which so the approval prompt shows the right fields.
+	payload := ParseSignedPayload(commitBytes)
 
-	// 4. Collect git context (SIGN-03, SIGN-04).
+	// 4. Collect git context (SIGN-03, SIGN-04). Changed files describe a
+	// commit's staged tree — they are meaningless for tag/push signing and
+	// could mislead both the prompt and trusted-signer matching, so gather them
+	// for commits only.
 	repoName := resolveRepoName(debug)
-	changedFiles := collectChangedFiles(debug)
+	var changedFiles []string
+	if payload.Kind == KindCommit {
+		changedFiles = collectChangedFiles(debug)
+	}
 
 	// 5. Load auth token (ERR-01 if missing).
 	token, err := loadAuthToken()
@@ -91,12 +99,16 @@ func Run(args []string, stdin io.Reader) int {
 	// 9. POST signing request to daemon (SIGN-05).
 	reqID, err := client.PostSigningRequest(ctx, repoName, &approval.GPGSignInfo{
 		RepoName:     repoName,
-		CommitMsg:    message,
-		Author:       author,
-		Committer:    committer,
+		Kind:         string(payload.Kind),
+		CommitMsg:    payload.Message,
+		Author:       payload.Signer,
+		Committer:    payload.Committer,
 		KeyID:        keyID,
 		ChangedFiles: changedFiles,
-		ParentHash:   parentHash,
+		ParentHash:   payload.ParentHash,
+		TagName:      payload.TagName,
+		Target:       payload.Target,
+		Pushee:       payload.Pushee,
 		CommitObject: string(commitBytes),
 	})
 	if err != nil {

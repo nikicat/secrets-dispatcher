@@ -244,16 +244,35 @@
     </div>
   {:else if request.type === "gpg_sign" && request.gpg_sign_info}
     {@const info = request.gpg_sign_info}
+    {@const signerLabel = info.kind === "tag" ? "Tagger" : info.kind === "push" ? "Pusher" : "Author"}
     <div class="gpg-sign-content">
       <div class="commit-meta">
+        {#if info.kind === "tag" && info.tag_name}
+          <div class="meta-row">
+            <span class="meta-label">Tag</span>
+            <span class="meta-value">{info.tag_name}</span>
+          </div>
+        {/if}
         <div class="meta-row">
-          <span class="meta-label">Author</span>
+          <span class="meta-label">{signerLabel}</span>
           <span class="meta-value">{info.author}</span>
         </div>
+        {#if info.kind === "push" && info.pushee}
+          <div class="meta-row">
+            <span class="meta-label">Pushee</span>
+            <span class="meta-value mono">{info.pushee}</span>
+          </div>
+        {/if}
         <div class="meta-row">
           <span class="meta-label">Key</span>
           <span class="meta-value mono">{info.key_id}</span>
         </div>
+        {#if info.kind === "tag" && info.target}
+          <div class="meta-row">
+            <span class="meta-label">Target</span>
+            <span class="meta-value mono">{info.target}</span>
+          </div>
+        {/if}
       </div>
 
       {#if commitBody(info.commit_msg)}

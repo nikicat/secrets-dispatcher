@@ -233,6 +233,60 @@ func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
 	assert.Equal(t, commitObject, info.CommitObject, "commit object must not be mutated")
 }
 
+// TestHandleGPGSignRequest_DisplayBoundToTagObject is the WYSIWYS guarantee for
+// annotated-tag signing: git routes `git tag -s` through the same signer, and
+// the displayed fields (kind, tagger, tag name, target, message) must be
+// re-derived from the signed tag bytes — not trusted from a client that lies
+// about them (here claiming a benign commit).
+func TestHandleGPGSignRequest_DisplayBoundToTagObject(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	handlers := testHandlers(t, mgr)
+
+	tagObject := "object 1111111111111111111111111111111111111111\n" +
+		"type commit\n" +
+		"tag v9.9.9\n" +
+		"tagger Real Tagger <tag@example.com> 1700000000 +0000\n" +
+		"\n" +
+		"release: v9.9.9\n"
+
+	body := map[string]any{
+		"client": "test",
+		"gpg_sign_info": map[string]any{
+			"repo_name": "myrepo",
+			// The client lies: claims a benign commit, hiding the tag.
+			"kind":          "commit",
+			"commit_msg":    "docs: fix typo",
+			"author":        "Benign Author <good@example.com>",
+			"committer":     "Benign Author <good@example.com>",
+			"key_id":        "ABCD1234",
+			"changed_files": []string{"README.md"},
+			"commit_object": tagObject,
+		},
+	}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request", strings.NewReader(string(raw)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handlers.HandleGPGSignRequest(rr, req)
+
+	require.Equalf(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	pending := mgr.List()
+	require.Len(t, pending, 1)
+	info := pending[0].GPGSignInfo
+	require.NotNil(t, info)
+
+	assert.Equal(t, "tag", info.Kind, "kind must be re-derived from the signed bytes")
+	assert.Equal(t, "Real Tagger <tag@example.com> 1700000000 +0000", info.Author, "tagger must be bound to the tag object")
+	assert.Equal(t, "v9.9.9", info.TagName, "tag name must be bound to the tag object")
+	assert.Equal(t, "1111111111111111111111111111111111111111", info.Target, "tag target must be bound to the tag object")
+	assert.Equal(t, "release: v9.9.9", info.CommitMsg, "tag message must be bound to the tag object")
+	assert.Empty(t, info.Committer, "a tag has no committer")
+	assert.Equal(t, tagObject, info.CommitObject, "signed bytes must not be mutated")
+}
+
 // wsEventObserver is a minimal approval.Observer that captures OnEvent calls
 // and constructs WSMessages the same way wsConnection.OnEvent does, so we can
 // inspect the Signature field without needing a real WebSocket.

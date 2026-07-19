@@ -1,15 +1,34 @@
 name: Demos
 
 # Screen-recorded product demos from the Tier-2 GNOME VM (e2e/gnome/vm/
-# demo.sh): the install/try arc typed live into a gnome-terminal on a real
-# Ubuntu desktop, captured via GNOME Shell's screencast service. Videos are
-# build artifacts, never committed — download them from the workflow run.
+# demo.sh): the install/try arc typed live into two gnome-terminal windows on a
+# real Ubuntu desktop, captured via GNOME Shell's screencast service. The
+# resulting webm/mp4 are uploaded as run artifacts, downloadable from the
+# commit's "Demos" check. Shares the VM image cache with e2e-gnome.yml (same
+# key), so a warm run skips the ~10 min provision.
 #
-# Manual-only: recording takes minutes and the output only changes when the
-# UX does, so it isn't part of the PR gate. Shares the VM image cache with
-# e2e-gnome.yml (same key), so a warm run skips the ~10 min provision.
+# Runs on PRs and master pushes that touch the product CLI or the demo harness
+# — the only things that change what the demo shows — plus on demand. It is NOT
+# a required check: a demo flake must not block a merge, so keep it out of
+# branch protection.
 
 on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'main.go'
+      - 'internal/**'
+      - 'go.mod'
+      - 'e2e/gnome/vm/**'
+      - '.github/workflows/demos.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'main.go'
+      - 'internal/**'
+      - 'go.mod'
+      - 'e2e/gnome/vm/**'
+      - '.github/workflows/demos.yml'
   workflow_dispatch:
     inputs:
       series:
@@ -17,17 +36,19 @@ on:
         type: choice
         default: noble
         options: [noble, resolute]
-      go_ref:
-        description: Module version the on-camera `go install` fetches
-        default: master
+
+concurrency:
+  # A superseded PR run's video is stale — cancel it; master pushes each stand.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref_name != 'master' }}
 
 jobs:
   record:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      UBUNTU_SERIES: ${{ inputs.series }}
-      GO_REF: ${{ inputs.go_ref }}
+      # inputs.* is only set on workflow_dispatch; default to noble otherwise.
+      UBUNTU_SERIES: ${{ inputs.series || 'noble' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -40,7 +61,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            qemu-system-x86 qemu-utils cloud-image-utils genisoimage ffmpeg
+            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd ffmpeg
           # GitHub-hosted runners expose /dev/kvm but not to the runner user.
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -51,20 +72,33 @@ jobs:
         id: imgkey
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
+      # Same key as e2e-gnome.yml's VM leg, so the two workflows share one
+      # provisioned desktop base (whichever runs first fills the cache).
       - name: Cache VM images (pristine + provisioned desktop base + SSH key)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cache/secrets-dispatcher/e2e/${{ inputs.series }}-server-cloudimg-amd64.img
-            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ inputs.series }}.qcow2
+            ~/.cache/secrets-dispatcher/e2e/${{ env.UBUNTU_SERIES }}-server-cloudimg-amd64.img
+            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ env.UBUNTU_SERIES }}.qcow2
             ~/.cache/secrets-dispatcher/e2e/id_ed25519
             ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
-          key: e2e-vm-images-${{ inputs.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
+          key: e2e-vm-images-${{ env.UBUNTU_SERIES }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
 
       - run: make demo
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - name: Upload the recording
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: demos-${{ inputs.series }}
+          name: demo-${{ env.UBUNTU_SERIES }}-${{ github.event.pull_request.number || github.sha }}
           path: .build/demos/
           if-no-files-found: error
+
+      - name: Link the recording in the run summary
+        if: always()
+        run: |
+          {
+            echo "## Demo recording"
+            echo
+            echo "Recorded from this \`${{ github.event_name }}\` on **${{ env.UBUNTU_SERIES }}**."
+            echo "Download \`trial.mp4\` / \`trial.webm\` from the **Artifacts** section of this run."
+          } >> "$GITHUB_STEP_SUMMARY"

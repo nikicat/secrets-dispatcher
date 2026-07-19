@@ -184,8 +184,32 @@ finish() {
             local dur; dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
             LC_ALL=C printf '%s: %.0fs\n' "$f" "$dur"
         fi
-        command -v ffmpeg >/dev/null &&
-            ffmpeg -y -v error -i "$f" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "${f%.webm}.mp4"
+        command -v ffmpeg >/dev/null || continue
+        # mp4 for the click-through player. -crf 30 + a pinned 15 fps CFR keep
+        # it small: the screencast is variable-rate (undefined avg frame rate),
+        # which without -r lets some ffmpeg builds duplicate frames and balloon
+        # the bitrate (~20 MB in CI vs the ~120 kbps VP8 source). With these it
+        # tracks the webm's size.
+        ffmpeg -y -v error -i "$f" -c:v libx264 -pix_fmt yuv420p \
+            -crf 30 -preset veryfast -r 15 -movflags +faststart "${f%.webm}.mp4"
+        # webp preview: this is what embeds *inline* in a PR comment (an image,
+        # served through GitHub's proxy), where an external <video> is CSP-
+        # blocked. Full colour AND smaller than a 256-colour GIF because
+        # `img2webp -min_size` does changed-rectangle inter-frame diffing (only
+        # the changed part of each frame is stored). ffmpeg's own webp muxer
+        # can't do that — it re-encodes every full frame (~20 MB) — hence the
+        # frames -> img2webp two-step. -d 125 = the 8 fps sampling above.
+        # 15 fps matches record.sh's screencast cap, so every source frame —
+        # including the window-map and notification-slide animations — lands in
+        # the preview. img2webp dedupes the repeated static frames, so the higher
+        # rate barely grows the file (~420 KB vs ~390 KB at 8 fps). -d 67 ≈ 15 fps.
+        if command -v img2webp >/dev/null; then
+            local fr
+            fr=$(mktemp -d)
+            ffmpeg -y -v error -i "$f" -vf "fps=15,scale=900:-1:flags=lanczos" "$fr/f-%05d.png"
+            img2webp -min_size -lossy -q 80 -m 6 -d 67 "$fr"/f-*.png -o "${f%.webm}.webp" >/dev/null 2>&1
+            rm -rf "$fr"
+        fi
     done
 }
 

@@ -2,15 +2,19 @@ name: Demos
 
 # Screen-recorded product demos from the Tier-2 GNOME VM (e2e/gnome/vm/
 # demo.sh): the install/try arc typed live into two gnome-terminal windows on a
-# real Ubuntu desktop, captured via GNOME Shell's screencast service. The
-# resulting webm/mp4 are uploaded as run artifacts, downloadable from the
-# commit's "Demos" check. Shares the VM image cache with e2e-gnome.yml (same
-# key), so a warm run skips the ~10 min provision.
+# real Ubuntu desktop, captured via GNOME Shell's screencast service. One leg
+# per supported Ubuntu series (24.04 + 26.04).
+#
+# Each leg uploads its webm/mp4/gif as a run artifact AND publishes them to the
+# secrets-dispatcher-ci-media sidecar repo (pr-<N>/ for PRs, latest/ on master),
+# which GitHub Pages serves. A single PR comment then embeds the GIF previews
+# (an external <video> is CSP-blocked in comments; a proxied image is not) and
+# links each to the full-quality Pages-hosted mp4.
 #
 # Runs on PRs and master pushes that touch the product CLI or the demo harness
-# — the only things that change what the demo shows — plus on demand. It is NOT
-# a required check: a demo flake must not block a merge, so keep it out of
-# branch protection.
+# — the only things that change what the demo shows — plus on demand. NOT a
+# required check: a demo flake must not block a merge (keep it out of branch
+# protection).
 
 on:
   pull_request:
@@ -30,25 +34,29 @@ on:
       - 'e2e/gnome/vm/**'
       - '.github/workflows/demos.yml'
   workflow_dispatch:
-    inputs:
-      series:
-        description: Ubuntu series to record on
-        type: choice
-        default: noble
-        options: [noble, resolute]
 
 concurrency:
   # A superseded PR run's video is stale — cancel it; master pushes each stand.
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.ref_name != 'master' }}
 
+permissions:
+  contents: read
+
 jobs:
   record:
+    # Publishing to the sidecar needs the deploy-key secret, absent on fork PRs.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        series: [noble, resolute]
     env:
-      # inputs.* is only set on workflow_dispatch; default to noble otherwise.
-      UBUNTU_SERIES: ${{ inputs.series || 'noble' }}
+      UBUNTU_SERIES: ${{ matrix.series }}
+      # Where in the sidecar this run's videos land.
+      DEST: ${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || 'latest' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -61,7 +69,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
-            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd ffmpeg
+            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd ffmpeg webp
           # GitHub-hosted runners expose /dev/kvm but not to the runner user.
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -78,27 +86,108 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.cache/secrets-dispatcher/e2e/${{ env.UBUNTU_SERIES }}-server-cloudimg-amd64.img
-            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ env.UBUNTU_SERIES }}.qcow2
+            ~/.cache/secrets-dispatcher/e2e/${{ matrix.series }}-server-cloudimg-amd64.img
+            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ matrix.series }}.qcow2
             ~/.cache/secrets-dispatcher/e2e/id_ed25519
             ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
-          key: e2e-vm-images-${{ env.UBUNTU_SERIES }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
+          key: e2e-vm-images-${{ matrix.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
 
       - run: make demo
 
-      - name: Upload the recording
+      - name: Stage the recording under the series name
+        run: |
+          mkdir -p out
+          for ext in webm mp4 webp; do
+            cp ".build/demos/trial.$ext" "out/trial-${{ matrix.series }}.$ext"
+          done
+
+      - name: Upload the recording artifact
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: demo-${{ env.UBUNTU_SERIES }}-${{ github.event.pull_request.number || github.sha }}
-          path: .build/demos/
-          if-no-files-found: error
+          name: demo-${{ matrix.series }}-${{ github.event.pull_request.number || github.sha }}
+          path: out/
+          if-no-files-found: warn
 
-      - name: Link the recording in the run summary
-        if: always()
+      - name: Check out the media sidecar
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: nikicat/secrets-dispatcher-ci-media
+          ssh-key: ${{ secrets.CI_MEDIA_DEPLOY_KEY }}
+          path: media
+
+      - name: Publish the recording to the sidecar
         run: |
-          {
-            echo "## Demo recording"
-            echo
-            echo "Recorded from this \`${{ github.event_name }}\` on **${{ env.UBUNTU_SERIES }}**."
-            echo "Download \`trial.mp4\` / \`trial.webm\` from the **Artifacts** section of this run."
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          mkdir -p "media/$DEST"
+          cp out/trial-${{ matrix.series }}.* "media/$DEST/"
+          cd media
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "recording byte-identical to what's published; nothing to push"
+            exit 0
+          fi
+          git commit -q -m "demos: $DEST/${{ matrix.series }} @ ${{ github.sha }}"
+          # Both series legs push here concurrently — rebase-retry the race.
+          for _ in 1 2 3 4 5; do
+            git push && exit 0
+            git pull --rebase --quiet
+          done
+          git push
+
+  # One comment for the whole PR, after both legs, embedding the GIF previews.
+  embed:
+    needs: record
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      MEDIA: nikicat/secrets-dispatcher-ci-media
+    steps:
+      - name: Upsert the demo-recordings comment
+        run: |
+          set -euo pipefail
+          raw="https://raw.githubusercontent.com/$MEDIA/main/pr-$PR"
+          pages="https://nikicat.github.io/secrets-dispatcher-ci-media/pr-$PR"
+
+          marker='<!-- demos-embed -->'
+          body="$marker"$'\n'"## 🎬 Demo recordings"$'\n\n'
+          body+="Recorded from this PR by the Demos workflow. Click a preview for the full-quality video."$'\n\n'
+
+          declare -A label=( [noble]="Ubuntu 24.04 (noble)" [resolute]="Ubuntu 26.04 (resolute)" )
+          for s in noble resolute; do
+            body+="### ${label[$s]}"$'\n\n'
+            # Wait for raw to actually serve the just-pushed webp: GitHub's image
+            # proxy caches a 404 for a while if it fetches too early.
+            # Successful legs serve within seconds; cap the wait so a failed
+            # leg (webp never published) can't burn the job timeout.
+            served=""
+            for _ in $(seq 1 20); do
+              if curl -fsS -o /dev/null "$raw/trial-$s.webp"; then served=1; break; fi
+              sleep 4
+            done
+            if [ -n "$served" ]; then
+              body+="[![demo — $s]($raw/trial-$s.webp)]($pages/trial-$s.mp4)"$'\n\n'
+              body+="▶ [full video]($pages/trial-$s.mp4) · [webm]($pages/trial-$s.webm)"$'\n\n'
+            else
+              body+="_Recording unavailable — the \`$s\` leg didn't publish (see the Demos check)._"$'\n\n'
+            fi
+          done
+          body+="<sub>Videos live in [$MEDIA](https://github.com/$MEDIA) (throwaway; pruned periodically).</sub>"
+
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                 --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
+            echo "updated comment $id"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
+            echo "created comment"
+          fi

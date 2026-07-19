@@ -15,6 +15,10 @@ gsettings set org.gnome.desktop.screensaver lock-enabled false
 # Dark, high-contrast look.
 gsettings set org.gnome.desktop.interface color-scheme prefer-dark
 
+# Keep GNOME's own animations on — the notification slide-in is part of the
+# demo (default is on, but be explicit).
+gsettings set org.gnome.desktop.interface enable-animations true
+
 # A large cursor so its movement reads clearly on camera.
 gsettings set org.gnome.desktop.interface cursor-size 64
 

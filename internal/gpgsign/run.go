@@ -28,6 +28,20 @@ import (
 func Run(args []string, stdin io.Reader) int {
 	debug := os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"
 
+	// 0. Delegate non-signing invocations to the real gpg. git also calls
+	// gpg.program to *verify* signatures (verify-commit, verify-tag, log
+	// --show-signature, merge/pull verification) and to list keys or probe
+	// --version; this proxy only knows how to create signatures via the daemon.
+	// Anything that is not a sign request goes straight to real gpg, so those
+	// operations work exactly as if gpg.program were plain gpg (see
+	// passThroughToGPG).
+	if !isSignRequest(args) {
+		if debug {
+			fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: non-signing invocation, delegating to real gpg: %v\n", args)
+		}
+		return passThroughToGPG(args, stdin)
+	}
+
 	// 1. Parse key ID from args.
 	keyID := extractKeyID(args)
 	if debug {

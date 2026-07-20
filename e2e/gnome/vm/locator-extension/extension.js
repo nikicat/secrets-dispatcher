@@ -8,8 +8,9 @@
 // inside the shell and export a D-Bus interface — which is all this does: walk
 // the stage for a button whose visible label matches, and return its
 // transformed (screen, logical-pixel) rectangle. demo.sh feeds that rectangle
-// to RemoteDesktop so the cursor glides to a button located by *text*, not by
-// a hardcoded coordinate.
+// to host-side QMP input so the cursor glides to a button located by *text*, not
+// by a hardcoded coordinate. This is a plain D-Bus query — no ScreenCast — so it
+// never lights the "screen is being shared" indicator.
 
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
@@ -59,7 +60,8 @@ export default class LocatorExtension extends Extension {
     // nearest clickable ancestor — notification action buttons and dialog
     // buttons are built differently, so matching by text is more robust than
     // matching a specific widget class. Coordinates are stage (screen) logical
-    // pixels, matching RemoteDesktop's absolute-motion coordinate space.
+    // pixels, which map 1:1 to the QMP tablet's guest-pixel coordinate space
+    // (the guest is pinned to 1280x800, scale 1).
     Locate(label) {
         const target = this._matchByText(global.stage, label);
         if (!target)

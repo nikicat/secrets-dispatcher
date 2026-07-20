@@ -12,18 +12,24 @@
 #   << demo.sh relogs in here; the recording keeps rolling >>
 #   part2 (after relogin):
 #     service status STILL shows it in front (survived the restart — the payoff)
-#     -> a client asks for a secret -> the (re-locked) keyring unlock dialog ->
-#     type the password -> the approval notification -> click APPROVE (prints).
-#     Leaves the service installed for demo_uninstall.
+#     -> a client asks for a secret -> the (re-locked) keyring unlock dialog.
+#     Ends with the lookup typed; demo.sh then drives the unlock + APPROVE click
+#     host-side over QMP, and part2b narrates the payoff. Leaves the service
+#     installed for demo_uninstall.
+#   part2b: the "it survived, and still served the secret" comment.
 # demo_uninstall (uninstall):
-#     service uninstall restores the stock provider — the deliberate reversal.
+#     service uninstall restores the stock provider, then a final secret-tool
+#     lookup proves the stock keyring still serves the secret — with NO approval
+#     step (that was the dispatcher's). demo.sh soft-unlocks the keyring host-side
+#     if it happens to be locked.
 #
 # Two windows are used the way a user would: an upper "admin" window for the
 # service commands, a lower "client" window for the secret request. Both are
 # placed by the locator extension (a Wayland client can't position itself).
 #
-# Env in:
-#   KEYRING_PW   password typed into the "Unlock Login Keyring" dialog (part2)
+# GUI input (leaving the overview, typing the keyring password, clicking APPROVE)
+# is NOT done here: demo.sh drives it host-side over QMP between these phases, so
+# no RemoteDesktop/ScreenCast session — and thus no share indicator — is created.
 #
 # shellcheck disable=SC2016  # single-quoted $… is deliberate: text typed into
 # the terminal for the VM's interactive shell to expand, not by this script.
@@ -59,10 +65,6 @@ owner_is() { # owner_is <exe-substr> — is that binary the org.freedesktop.secr
     [[ $(readlink "/proc/$pid/exe") == *"$1"* ]]
 }
 
-# rd_agent runs one command batch synchronously (fresh RemoteDesktop session),
-# persisting the cursor position so each glide continues from the last.
-rd() { printf '%s\nquit\n' "$1" | python3 ~/rd_agent.py; }
-
 # place moves/resizes the just-opened (focused) window to an absolute rectangle
 # via the locator extension — the compositor-side way to position a Wayland win.
 place() { # place <x> <y> <w> <h>
@@ -84,6 +86,25 @@ open_window() { # open_window <tmux-session> — open a gnome-terminal on that s
     return 1
 }
 
+# swap_fixed replaces the just-installed @latest binary with the caller-provided
+# fixed build (it carries the unreleased prompter-bridge fix; see demo.sh
+# prep_common). No-op once @latest carries the fix. It cp's in a loop until the
+# swap sticks: `go install` may still be flushing its binary when wait_for's
+# test -x first passes (a cross-filesystem install is a non-atomic copy, not a
+# rename), and that late write would clobber a single cp — leaving the service to
+# run (and, critically, re-run after the relogin) the unfixed @latest, whose
+# unlock dialog is the display-less gcr fallback. Re-cp until a copy survives.
+swap_fixed() {
+    [ -f "$HOME/secrets-dispatcher-fixed" ] || return 0
+    local i
+    for ((i = 0; i < 30; i++)); do
+        cp "$HOME/secrets-dispatcher-fixed" "$HOME/go/bin/secrets-dispatcher"
+        sleep 0.5
+        cmp -s "$HOME/secrets-dispatcher-fixed" "$HOME/go/bin/secrets-dispatcher" && return 0
+    done
+    echo "warning: fixed-binary swap did not stick (go install kept overwriting it)" >&2
+}
+
 # --- phases ---
 
 part1() {
@@ -94,13 +115,13 @@ part1() {
     open_window admin
     sleep 1
     place 110 84 1100 440
+    # Remove any binary a prior demo left here, so wait_for below blocks on THIS
+    # go install finishing rather than passing instantly on a stale binary (which
+    # would let go install overwrite the swap and the service run unfixed @latest).
+    rm -f "$HOME/go/bin/secrets-dispatcher"
     type_cmd admin "go install github.com/nikicat/secrets-dispatcher@latest"
     wait_for 180 test -x "$HOME/go/bin/secrets-dispatcher"
-    # Off-camera: swap in the fixed build until the prompter-bridge fix ships in
-    # a release (see demo.sh prep_common). No-op once @latest carries the fix.
-    if [ -f "$HOME/secrets-dispatcher-fixed" ]; then
-        cp "$HOME/secrets-dispatcher-fixed" "$HOME/go/bin/secrets-dispatcher"
-    fi
+    swap_fixed
     sleep 1
     type_cmd admin 'export PATH="$HOME/go/bin:$PATH"'
     sleep 1
@@ -113,10 +134,8 @@ part1() {
 }
 
 part2() {
-    local pw=${KEYRING_PW:?part2 needs KEYRING_PW}
-    # A fresh login parks in the overview and re-locks the keyring; leave the
-    # overview and re-assert no-blank so the unlock dialog renders.
-    rd 'key esc'
+    # A fresh login re-locks the keyring; the overview was already left by demo.sh
+    # (host-side Esc over QMP). Re-assert no-blank so the unlock dialog renders.
     gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
     busctl --user call org.gnome.ScreenSaver /org/gnome/ScreenSaver \
         org.gnome.ScreenSaver SetActive b false 2>/dev/null || true
@@ -129,34 +148,37 @@ part2() {
     type_cmd admin "secrets-dispatcher service status   # STILL in front after relogin"
     sleep 4
 
-    # Lower "client" window: a real secret request, approved on camera.
+    # Lower "client" window: a real secret request. Ends with the lookup typed;
+    # the (re-locked) keyring's unlock dialog is now up. The prompter bridge
+    # forwards it to gnome-shell's modal (re-established after the relogin), so
+    # it's in the shell actor tree and the locator can aim at it by text —
+    # demo.sh then types the password + Enter and clicks APPROVE, host-side.
     open_window client
     sleep 1
     place 140 470 1100 260
     sleep 1
     type_cmd client "secret-tool lookup service demo   # locked: unlock, then APPROVE"
-    # The prompter bridge forwards the unlock to gnome-shell's modal (which the
-    # bridge now re-establishes after the relogin), so it's in the shell actor
-    # tree and the locator can aim at it by text — same as the try demo: type the
-    # password + Enter, then click Approve on the notification.
-    rd "$(printf 'waittext Unlock\ntype %s\nkey enter\nwaittext Approve\nclicktext Approve' "$pw")"
-    sleep 2 # the secret value prints (it lands right after the Approve click)
+}
+
+part2b() {
+    sleep 2 # the secret value prints (it lands right after the host's Approve click)
     # Call out the payoff (plain glyphs only — the mono terminal font has no
     # colour-emoji, they render as tofu).
     type_cmd client "# ✓ survived the relogin, still served the secret — it works!"
     sleep 5
 }
 
-# logout drives a real, mouse-visible GNOME logout (demo.sh calls it between the
-# install and the post-relogin part, so it reads as a deliberate logout, not a
-# crash). GDM's TimedLogin then logs back in on its own — we don't drive the
-# greeter. The session ends mid-phase, which kills our RemoteDesktop session;
-# that's fine, the Log Out click has already landed.
+# The logout between part1 and part2 is a real, mouse-visible GNOME logout driven
+# by demo.sh host-side over QMP (so it reads as a deliberate logout, not a crash);
+# GDM's TimedLogin then logs back in on its own. See demo.sh.
+#
 # uninstall is its own demo (demo_uninstall): the deliberate reversal, back to
 # stock. Runs after demo_install left the service in front (demo.sh reinstalls
 # off-camera first when this demo is run standalone). A single, focused window.
+# It ends by typing a lookup that proves the stock keyring still serves the
+# secret with no approval step; demo.sh soft-unlocks host-side if the keyring is
+# locked, then the secret prints.
 uninstall() {
-    rd 'key esc'
     gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
     busctl --user call org.gnome.ScreenSaver /org/gnome/ScreenSaver \
         org.gnome.ScreenSaver SetActive b false 2>/dev/null || true
@@ -170,12 +192,17 @@ uninstall() {
     wait_for 30 owner_is gnome-keyring-daemon
     sleep 2
     type_cmd admin "secrets-dispatcher service status   # stock gnome-keyring restored"
-    sleep 5
+    sleep 4
+    # The payoff: the stock keyring still serves the secret, and there's no
+    # approval prompt any more — that was the dispatcher's. (demo.sh drives the
+    # keyring unlock host-side if a dialog appears; then the secret prints.)
+    type_cmd admin "secret-tool lookup service demo   # stock keyring serves it — no approval"
 }
 
-case "${1:?usage: demo-driver-install.sh part1|part2|uninstall}" in
+case "${1:?usage: demo-driver-install.sh part1|part2|part2b|uninstall}" in
 part1) part1 ;;
 part2) part2 ;;
+part2b) part2b ;;
 uninstall) uninstall ;;
 *) echo "unknown phase: $1" >&2; exit 2 ;;
 esac

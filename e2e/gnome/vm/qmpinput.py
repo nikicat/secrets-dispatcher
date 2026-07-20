@@ -1,28 +1,36 @@
 #!/usr/bin/env python3
-"""Host-side pointer control for the Tier-2 demo VM via QEMU's QMP
-input-send-event (the guest's virtio-tablet, absolute positioning).
+"""Host-side input control for the Tier-2 demo VM via QEMU's QMP input-send-event
+(the guest's virtio-tablet + virtio-keyboard).
 
-Runs on the HOST (unlike rd_agent, which runs in the guest over RemoteDesktop).
-Two reasons the demo uses this for the logout:
+Runs on the HOST. This is the demo's ONLY input path: it drives every pointer
+move/click AND every keystroke (leaving the overview, typing the keyring
+password, clicking notification buttons). It deliberately replaces the old
+in-guest RemoteDesktop agent so that:
   - RemoteDesktop can't drive the top-panel/quick-settings menus (injected clicks
-    there don't open them), and each rd_agent call is its own session, so an
-    opened menu dismisses before the next click — the host-side tablet has
+    there don't open them), and each RemoteDesktop batch was its own session, so
+    an opened menu dismissed before the next click — the host-side tablet has
     neither problem.
-  - No RemoteDesktop/ScreenCast session means no "screen is being shared"
-    indicator on camera.
+  - RemoteDesktop needs a linked ScreenCast stream for absolute motion, which
+    lights the "screen is being shared" indicator on camera. QMP input needs no
+    such session, so nothing ever appears.
+
+Coordinates come from the locator gnome-shell extension (a pure D-Bus query, no
+ScreenCast), resolved in-guest by demo.sh and passed here as guest pixels.
 
 The guest must run with MUTTER_DEBUG_DISABLE_HW_CURSORS=1 (demo.sh sets it) so the
 software cursor composites into the framebuffer VNC captures — otherwise the
-moving pointer wouldn't be recorded.
+moving pointer wouldn't be recorded (keystrokes need no such thing).
 
 Reads a command script on stdin, one per line:
   glide X Y   ease the pointer to guest pixel (X, Y) with a visible, moving cursor
   move  X Y   jump the pointer to (X, Y)
   click       left press + release at the current position
+  type  TEXT  type TEXT into the focused window (rest of the line, spaces kept)
+  key   NAME  press a named key: enter esc tab backspace space
   sleep S     wait S seconds (let a menu open/animate before the next click)
-Coordinates are guest pixels in a WIDTHxHEIGHT screen (default 1280x800),
+Pointer coordinates are guest pixels in a WIDTHxHEIGHT screen (default 1280x800),
 mapped to QMP's 0..32767 absolute axis range. The pointer position is persisted
-between invocations (like rd_agent) so glides continue from where they stopped.
+between invocations so glides continue from where they stopped.
 
 Usage: qmpinput.py <qmp.sock> [WIDTH HEIGHT]   # script on stdin
 """
@@ -37,7 +45,25 @@ SOCK = sys.argv[1]
 W = int(sys.argv[2]) if len(sys.argv) > 2 else 1280
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 800
 STATE = os.path.expanduser("~/.cache/secrets-dispatcher-qmpcursor")
-PARKED = (W - 110, H - 60)  # bottom-right, matches rd_agent's resting corner
+PARKED = (640, 775)  # bottom-centre, clear of the demo's terminal windows
+
+# Character -> (QKeyCode, shift) for the text the demo types (the keyring
+# password + short shell-ish tokens). Only what's needed; unknown chars warn.
+CHAR2KEY = {}
+for _c in "abcdefghijklmnopqrstuvwxyz":
+    CHAR2KEY[_c] = (_c, False)
+    CHAR2KEY[_c.upper()] = (_c, True)
+for _c in "0123456789":
+    CHAR2KEY[_c] = (_c, False)
+CHAR2KEY[" "] = ("spc", False)
+CHAR2KEY["-"] = ("minus", False)
+CHAR2KEY["_"] = ("minus", True)
+CHAR2KEY["."] = ("dot", False)
+CHAR2KEY["/"] = ("slash", False)
+
+# `key NAME` -> QKeyCode for the named keys the demo presses.
+NAMED = {"enter": "ret", "esc": "esc", "tab": "tab",
+         "backspace": "backspace", "space": "spc"}
 
 
 def load_pos():
@@ -86,8 +112,37 @@ class QMP:
         time.sleep(0.08)
         self.send([{"type": "btn", "data": {"down": False, "button": "left"}}])
 
+    def _key(self, qcode, down):
+        self.send([{"type": "key", "data": {"down": down,
+                                            "key": {"type": "qcode", "data": qcode}}}])
 
-def ease(t):  # ease-in-out, matching rd_agent's glide feel
+    def tap(self, qcode, shift=False):
+        if shift:
+            self._key("shift", True)
+        self._key(qcode, True)
+        time.sleep(0.02)
+        self._key(qcode, False)
+        if shift:
+            self._key("shift", False)
+        time.sleep(0.045)  # human pace
+
+    def type_text(self, text):
+        for ch in text:
+            qk = CHAR2KEY.get(ch)
+            if qk is None:
+                print(f"qmpinput: no key mapping for {ch!r}, skipping", file=sys.stderr)
+                continue
+            self.tap(qk[0], qk[1])
+
+    def key_named(self, name):
+        qcode = NAMED.get(name)
+        if qcode is None:
+            print(f"qmpinput: unknown key name {name!r}", file=sys.stderr)
+            return
+        self.tap(qcode)
+
+
+def ease(t):  # ease-in-out
     return 3 * t * t - 2 * t * t * t
 
 
@@ -96,16 +151,21 @@ def main():
     cx, cy = load_pos()
     q.abs_to(cx, cy)
     for line in sys.stdin:
-        parts = line.split()
-        if not parts:
+        line = line.rstrip("\n")
+        if not line.strip():
             continue
-        cmd = parts[0]
+        cmd, _, arg = line.partition(" ")
         if cmd == "click":
             q.click()
+        elif cmd == "type":
+            q.type_text(arg)
+        elif cmd == "key":
+            q.key_named(arg.strip())
         elif cmd == "sleep":
-            time.sleep(float(parts[1]))
+            time.sleep(float(arg))
         elif cmd in ("glide", "move"):
-            tx, ty = float(parts[1]), float(parts[2])
+            parts = arg.split()
+            tx, ty = float(parts[0]), float(parts[1])
             if cmd == "move":
                 cx, cy = tx, ty
                 q.abs_to(cx, cy)

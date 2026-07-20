@@ -136,6 +136,10 @@ func (n *DBusNotifier) Actions() <-chan Action {
 // ClosedEvents returns a channel that receives NotificationClosed signals for
 // notifications sent on this connection. Reason 1 (expired) on an approval
 // notification means the server auto-dismissed it — the US-7 failure mode.
+//
+// Only the e2e notifprobe consumes this; the daemon does not. A caller that
+// never drains it will NOT stall the notifier — processSignals drops closed
+// events when the buffer is full rather than blocking (see processSignals).
 func (n *DBusNotifier) ClosedEvents() <-chan Closed {
 	return n.closed
 }
@@ -162,6 +166,13 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 			if len(sig.Body) != 2 {
 				continue
 			}
+			// The sends below must never block: this goroutine is the sole
+			// reader of the godbus signal channel, so blocking here stops ALL
+			// further ActionInvoked/NotificationClosed delivery for the life of
+			// the connection. A wedged loop silently kills every approval button
+			// (requests then hang until the client times out). Drop with a log
+			// instead — a full buffer means a downstream consumer stalled, and
+			// keeping the loop alive is more important than any single event.
 			switch sig.Name {
 			case notifyInterface + ".ActionInvoked":
 				id, ok1 := sig.Body[0].(uint32)
@@ -173,6 +184,8 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 				case n.actions <- Action{NotificationID: id, ActionKey: key}:
 				case <-n.done:
 					return
+				default:
+					slog.Warn("dropped notification action: buffer full", "notification_id", id, "action", key)
 				}
 			case notifyInterface + ".NotificationClosed":
 				id, ok1 := sig.Body[0].(uint32)
@@ -180,10 +193,15 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 				if !ok1 || !ok2 {
 					continue
 				}
+				// Only the e2e notifprobe drains ClosedEvents(); the daemon never
+				// calls it, so in the daemon this send fills the buffer and (before
+				// the default) wedged the loop after 16 closes. Dropping when full
+				// is safe — nothing in the daemon acts on these events.
 				select {
 				case n.closed <- Closed{NotificationID: id, Reason: reason}:
 				case <-n.done:
 					return
+				default:
 				}
 			}
 		}

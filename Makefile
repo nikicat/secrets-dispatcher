@@ -114,9 +114,19 @@ test-e2e-gnome-vm: backend-go notifprobe
 	e2e/gnome/vm/run.sh destroy
 
 # Screen-recorded product demos from the Tier-2 GNOME VM (same cached desktop
-# base as test-e2e-gnome-vm). Output: .build/demos/*.webm (+ .mp4 when ffmpeg
-# is installed) — throwaway artifacts, never committed; demos.yml uploads
-# them from CI. GO_REF picks what the on-camera `go install` fetches.
+# base as test-e2e-gnome-vm). Output: .build/demos/*.mp4 + *.webp (locally the
+# hardware path records mp4 directly; CI's software path records webm then
+# transcodes) — throwaway artifacts, never committed; demos.yml uploads them from
+# CI. GO_REF picks what the on-camera `go install` fetches.
+#
+# VNC_DISP (target-scoped, not on the e2e path): boots the VM with a VNC display
+# so record.sh can capture the framebuffer host-side — the only way to record
+# continuously across the demo_install relogin. Needs gstreamer on the host
+# (rfbsrc); demos.yml installs it. Set VM_GL=1 locally (GPU) for animations.
+# RECORD_HW=1 (target-scoped): use the host GPU's VA-API H.264 encoder so the
+# capture keeps up at 30 fps; record.sh falls back to software VP8 if unavailable.
+demo: export VNC_DISP := 41
+demo: export RECORD_HW := 1
 demo: backend-go
 	e2e/gnome/vm/run.sh provision
 	e2e/gnome/vm/run.sh destroy

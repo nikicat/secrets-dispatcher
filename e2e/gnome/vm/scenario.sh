@@ -26,8 +26,8 @@
 #   function names below) runs just those — handy when iterating — but each
 #   leg assumes the end state of the ones before it: legs up to leg_trial
 #   start AND end with stock gnome-keyring in front; leg_takeover leaves the
-#   dispatcher in front for leg_prompt/leg_reboot, and leg_uninstall returns
-#   to stock.
+#   dispatcher in front for leg_prompt/leg_approval/leg_reboot, and
+#   leg_uninstall returns to stock.
 #
 # shellcheck disable=SC2016,SC2088  # single-quoted $… and ~ are deliberate:
 # they are remote scripts, expanded by the VM's shell, not this one.
@@ -260,6 +260,51 @@ leg_prompt() {
     echo "   Unlock returned a prompt path and Dismiss was forwarded"
 }
 
+leg_approval() {
+    log "US-8: a blocked GetSecret is APPROVED via the CLI (leg_prompt only Dismisses)"
+    # Assumes leg_takeover's end-state: the dispatcher is installed and in front.
+    # Only GetSecret/GetSecrets are approval-gated (SearchItems/OpenSession are
+    # not), and approval runs BEFORE the session is validated — so a GetSecret on
+    # the real (locked) login item with a dummy session "/" blocks pending
+    # approval without needing an unlocked keyring (impossible non-interactively
+    # post-takeover; the value-returning path is shown in the demo, which unlocks
+    # interactively). The pre-seeded rule auto-approves /usr/bin/busctl, so the
+    # request is driven from a copy at another path that no rule matches.
+    vmssh "timeout 10 busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
+        org.freedesktop.Secret.Service SearchItems 'a{ss}' 2 $ITEM_ATTRS \
+        | grep -o '/org/freedesktop/secrets/collection/login/[[:alnum:]_/]*' | head -1 > /tmp/fa.item
+        [ -s /tmp/fa.item ]"
+    vmssh '
+        cp /usr/bin/busctl /tmp/fake-agent
+        cat > /tmp/fa-run.sh <<EOF
+item=\$(cat /tmp/fa.item)
+/tmp/fake-agent --user call org.freedesktop.secrets "\$item" \
+    org.freedesktop.Secret.Item GetSecret o / >/tmp/fa.out 2>&1
+echo done > /tmp/fa.exit
+EOF
+        rm -f /tmp/fa.exit /tmp/fa.out
+        setsid sh /tmp/fa-run.sh >/dev/null 2>&1 &'
+
+    local id
+    id=$(vmssh 'for i in $(seq 15); do
+            id=$(~/.local/bin/secrets-dispatcher list --json 2>/dev/null \
+                | python3 -c "import sys,json; r=json.load(sys.stdin); print(r[0][\"id\"] if r else \"\")" 2>/dev/null)
+            [ -n "$id" ] && { echo "$id"; exit 0; }
+            sleep 1
+        done; exit 1') || { echo "error: blocked GetSecret never became a pending request" >&2; exit 1; }
+    echo "   pending request: $id"
+    vmssh '[ ! -e /tmp/fa.exit ]' || { echo "error: request did not block pending approval" >&2; exit 1; }
+
+    vmssh "~/.local/bin/secrets-dispatcher approve $id"
+    vmssh 'for i in $(seq 15); do [ -e /tmp/fa.exit ] && exit 0; sleep 1; done
+        echo "GetSecret still blocked after approve" >&2; exit 1' \
+        || { echo "error: approved request did not unblock the client" >&2; exit 1; }
+    vmssh '[ "$(~/.local/bin/secrets-dispatcher list --json 2>/dev/null \
+        | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" = 0 ]' \
+        || { echo "error: pending queue not empty after approve" >&2; exit 1; }
+    echo "   CLI approve resolved the request, client unblocked (US-8)"
+}
+
 leg_reboot() {
     log "STEP 3 (US-5): reboot — gnome-keyring must NOT re-grab"
     reboot_and_wait
@@ -307,9 +352,10 @@ main() {
     leg_trial
     leg_takeover
     leg_prompt
+    leg_approval
     leg_reboot
     leg_uninstall
-    log "PASS: takeover, trial reversibility, notification persistence, re-grab resistance, and full reversal all verified"
+    log "PASS: takeover, trial reversibility, notification persistence, CLI approval, re-grab resistance, and full reversal all verified"
 }
 
 main "${@:2}"

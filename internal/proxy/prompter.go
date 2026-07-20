@@ -53,18 +53,26 @@ type prompterBridge struct {
 	mu        sync.Mutex
 	callbacks map[dbus.ObjectPath]bool // callback proxies exported on frontConn
 	owned     bool                     // claimed the name on the backend bus
+	active    bool                     // claimed + exported (idempotency guard)
+	closed    bool                     // close() called; block late activation
 }
 
-// newPrompterBridge sets up the bridge when the topology needs one: the front
-// bus must have a real prompter (gnome-shell) to forward to, and the backend
-// must be a distinct bus without one (the local-takeover case). In every other
-// topology (remote mode, or a backend that shares the session bus) there is
-// nothing to bridge and it returns (nil, nil).
+// newPrompterBridge sets up the bridge when the topology needs one: the backend
+// must be a distinct bus without its own prompter (the local-takeover case). It
+// claims org.gnome.keyring.SystemPrompter on the backend bus immediately and
+// unconditionally — it does NOT wait for gnome-shell's front prompter to appear
+// first. That ownership is what pre-empts the gcr-prompter fallback: the backend
+// bus can D-Bus-activate that fallback the instant gnome-keyring asks to unlock,
+// and in the local-takeover topology the backend runs inside the graphical
+// session, so the fallback actually draws its own (GTK) dialog instead of just
+// hanging. Claiming the name from birth denies it that window. Forwarding to the
+// real prompter resolves gnome-shell by name at prompt time (by which point the
+// interactive session — and thus gnome-shell — is up), so it also survives a
+// relogin/gnome-shell restart without re-arming anything.
+//
+// In topologies where the backend already shares a bus with a real prompter
+// (remote mode, or same-bus), there is nothing to bridge and it returns (nil, nil).
 func newPrompterBridge(frontConn, backendConn *dbus.Conn, logger *logging.Logger) (*prompterBridge, error) {
-	if !nameHasOwner(frontConn, systemPrompterName) {
-		logger.Info("no session unlock prompter present; keyring unlock dialogs will be unavailable")
-		return nil, nil
-	}
 	if nameHasOwner(backendConn, systemPrompterName) {
 		// Same-bus / remote topology: the backend already reaches a real
 		// prompter, so inserting the bridge would only fight for the name.
@@ -79,26 +87,41 @@ func newPrompterBridge(frontConn, backendConn *dbus.Conn, logger *logging.Logger
 		callbacks:   make(map[dbus.ObjectPath]bool),
 	}
 
-	// Claim the name on the backend bus BEFORE any client triggers an unlock,
-	// so gnome-keyring's prompter calls land on us and the gcr-prompter
-	// fallback is never activated. DoNotQueue: if something already owns it,
-	// don't bridge (we'd only conflict).
-	reply, err := backendConn.RequestName(systemPrompterName, dbus.NameFlagDoNotQueue)
+	if err := b.activate(); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+// activate claims org.gnome.keyring.SystemPrompter on the backend bus BEFORE any
+// client triggers an unlock, so gnome-keyring's prompter calls land on us and
+// the gcr-prompter fallback is never activated, then exports the bridge.
+// Idempotent, and a no-op after close(). DoNotQueue: if something already owns
+// the name (a gcr-prompter that an unlock somehow activated first), we can't
+// take over — leave it be.
+func (b *prompterBridge) activate() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed || b.active {
+		return nil
+	}
+	reply, err := b.backendConn.RequestName(systemPrompterName, dbus.NameFlagDoNotQueue)
 	if err != nil {
-		return nil, fmt.Errorf("claim %s on backend bus: %w", systemPrompterName, err)
+		return fmt.Errorf("claim %s on backend bus: %w", systemPrompterName, err)
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		logger.Info("could not claim system prompter on backend bus; unlock dialogs unavailable", "reply", reply)
-		return nil, nil
+		b.logger.Info("could not claim system prompter on backend bus; unlock dialogs use the fallback", "reply", reply)
+		return nil
 	}
 	b.owned = true
-
-	if err := backendConn.Export(b, dbus.ObjectPath(systemPrompterPath), prompterInterface); err != nil {
-		b.close()
-		return nil, fmt.Errorf("export prompter bridge: %w", err)
+	if err := b.backendConn.Export(b, dbus.ObjectPath(systemPrompterPath), prompterInterface); err != nil {
+		_, _ = b.backendConn.ReleaseName(systemPrompterName)
+		b.owned = false
+		return fmt.Errorf("export prompter bridge: %w", err)
 	}
-	logger.Info("prompter bridge active: keyring unlock prompts forwarded to the session prompter")
-	return b, nil
+	b.active = true
+	b.logger.Info("prompter bridge active: keyring unlock prompts forwarded to the session prompter")
+	return nil
 }
 
 // --- Prompter interface (received from gnome-keyring on the backend bus) ---
@@ -157,14 +180,16 @@ func (b *prompterBridge) unexportCallback(path dbus.ObjectPath) {
 
 func (b *prompterBridge) close() {
 	b.mu.Lock()
+	b.closed = true
 	for path := range b.callbacks {
 		_ = b.frontConn.Export(nil, path, prompterCallbackInterface)
 		delete(b.callbacks, path)
 	}
+	owned := b.owned
+	b.owned = false
 	b.mu.Unlock()
-	if b.owned {
-		_, _ = b.backendConn.ReleaseName(systemPrompterName)
-		b.owned = false
+	if owned {
+		_, _ = b.backendConn.ReleaseName(systemPrompterName) // not under mu (network call)
 	}
 }
 

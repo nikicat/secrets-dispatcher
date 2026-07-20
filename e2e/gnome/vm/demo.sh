@@ -25,13 +25,16 @@
 #
 # demo_install is the *permanent* counterpart (US-10): go install ->
 #   `service install --mode local --start` -> status -> a relogin (the recording
-#   spans it) -> still in front -> unlock + APPROVE -> uninstall. The relogin is
-#   why recording is host-side (record.sh/VNC): the in-guest screencast would
-#   die with the session.
+#   spans it) -> still in front -> unlock + APPROVE. The relogin is why recording
+#   is host-side (record.sh/VNC): the in-guest screencast would die with the
+#   session. It leaves the service installed.
+# demo_uninstall is the deliberate reversal, split out as its own clip: service
+#   uninstall -> stock gnome-keyring restored. Runs after demo_install (or
+#   reinstalls off-camera when run standalone).
 #
 # The in-VM halves live in real, lintable files scp'd into the guest:
 # demo-stage.sh (desktop look), demo-driver.sh (the try arc) and
-# demo-driver-install.sh (the permanent-install arc).
+# demo-driver-install.sh (the install + uninstall arcs).
 #
 # Videos are throwaway build artifacts, never committed: locally in the output
 # dir (Makefile: .build/demos), in CI demos.yml uploads them.
@@ -52,7 +55,7 @@ RECORD=$SCRIPT_DIR/record.sh
 EXT_UUID=secrets-demo-locator@secrets-dispatcher.nikicat
 DOCK_UUID=ubuntu-dock@ubuntu.com
 KEYRING_PW=opensesame
-SECRET_VALUE=ghp_demo_classic_pat_00
+SECRET_VALUE='ghp_super_secret_key_123##@!'
 SSH_PORT=${SSH_PORT:-2222}
 CACHE_DIR=${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/secrets-dispatcher/e2e}
 
@@ -147,6 +150,16 @@ prep_common() {
     vmssh 'grep -q MUTTER_DEBUG_DISABLE_HW_CURSORS /etc/environment \
         || echo "MUTTER_DEBUG_DISABLE_HW_CURSORS=1" | sudo tee -a /etc/environment >/dev/null'
 
+    # Kernel console -> serial only (drop the default console=tty1), so the
+    # graphical framebuffer VT never carries the boot-log text. Otherwise the
+    # relogin's gdm restart briefly paints it while no compositor owns the
+    # display — a headless-VM artifact. Serial still reaches run.sh's log file.
+    # Takes effect on the reboot below.
+    vmssh 'sudo tee /etc/default/grub.d/99-demo-console.cfg >/dev/null <<EOF
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash console=ttyS0"
+EOF
+        sudo update-grub >/dev/null 2>&1'
+
     log "rebooting once: loads the extension and gives a clean notification stack"
     reboot_and_wait
     vmssh 'busctl --user call org.gnome.ScreenSaver /org/gnome/ScreenSaver \
@@ -190,7 +203,7 @@ demo_trial() {
 }
 
 demo_install() {
-    log "demo_install: install --start -> status -> RELOGIN -> still in front -> unlock+approve -> uninstall"
+    log "demo_install: install --start -> status -> RELOGIN -> still in front -> unlock+approve"
 
     vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
     sleep 1
@@ -207,8 +220,18 @@ demo_install() {
     fi
 
     # The permanence proof: relogin, on camera. Host-side capture keeps rolling
-    # across the session restart (the in-guest screencast never could).
-    log "relogin (systemctl restart gdm) — recording continues across it"
+    # across the session restart (the in-guest screencast never could). Restart
+    # gdm rather than log out — an autologin desktop won't re-autologin after a
+    # graceful logout (GDM loop-prevention leaves it at the greeter).
+    #
+    # Headless-VM cosmetics: when gdm stops, fbcon paints the boot-log text
+    # console onto the framebuffer until the greeter grabs KMS back. Unbind fbcon
+    # and quiet the kernel log first, so the brief handoff reads as a clean black
+    # screen instead of a wall of console text.
+    log "relogin (restart gdm) — recording continues across it"
+    "$RUN" ssh 'sudo sh -c "dmesg -n 1 2>/dev/null || true
+        for b in /sys/class/vtconsole/vtcon*/bind; do echo 0 > \"\$b\" 2>/dev/null || true; done
+        clear >/dev/tty1 2>/dev/null || true"' 2>/dev/null || true
     "$RUN" ssh 'sudo systemctl restart gdm' 2>/dev/null || true
     sleep 8
     "$RUN" wait-desktop
@@ -220,7 +243,8 @@ demo_install() {
         Dump >/dev/null 2>&1 && break; sleep 1; done'
     sleep 3
 
-    # Phase 2: still in front, a live unlock + approve, then uninstall.
+    # Phase 2: still in front, a live unlock + approve. Leaves the service
+    # installed — demo_uninstall records the deliberate reversal.
     if ! vmssh "KEYRING_PW=$KEYRING_PW bash ~/demo-driver-install.sh part2"; then
         "$RECORD" stop || true
         mv "$OUT/install.webm" "$OUT/install-failed.webm" 2>/dev/null || true
@@ -231,6 +255,35 @@ demo_install() {
         die "demo install part2 failed (partial recording kept for post-mortem)"
     fi
 
+    "$RECORD" stop
+    vmssh 'tmux kill-server 2>/dev/null || true; pkill -f "gnome-terminal-serve[r]" 2>/dev/null || true'
+}
+
+demo_uninstall() {
+    log "demo_uninstall: reverse the permanent install — back to stock"
+    # Off-camera: ensure the service is installed. It already is when this runs
+    # right after demo_install; install from the stashed fixed binary when the
+    # demo is run standalone.
+    vmssh 'export XDG_RUNTIME_DIR=/run/user/$(id -u)
+        export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+        owner=$(busctl --user call org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus GetConnectionUnixProcessID s org.freedesktop.secrets 2>/dev/null | sed "s/^u //")
+        case "$(readlink /proc/$owner/exe 2>/dev/null)" in
+            *secrets-dispatcher*) : ;;
+            *) cp ~/secrets-dispatcher-fixed ~/go/bin/secrets-dispatcher 2>/dev/null || true
+               ~/go/bin/secrets-dispatcher service install --mode local --start ;;
+        esac'
+
+    vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
+    sleep 1
+    "$RECORD" start "$OUT/uninstall.webm"
+    sleep 2
+    if ! vmssh "bash ~/demo-driver-install.sh uninstall"; then
+        "$RECORD" stop || true
+        mv "$OUT/uninstall.webm" "$OUT/uninstall-failed.webm" 2>/dev/null || true
+        vmssh 'tmux kill-server 2>/dev/null || true' || true
+        die "demo uninstall failed (partial recording kept for post-mortem)"
+    fi
     "$RECORD" stop
     vmssh 'tmux kill-server 2>/dev/null || true; pkill -f "gnome-terminal-serve[r]" 2>/dev/null || true'
 }
@@ -286,9 +339,11 @@ main() {
     mkdir -p "$OUT"
     # Drop artifacts from a previous run: a stale *-failed.webm would otherwise
     # linger and get re-encoded to .mp4 by finish(), making a good run look failed.
-    rm -f "$OUT"/trial*.webm "$OUT"/trial*.mp4 "$OUT"/install*.webm "$OUT"/install*.mp4
+    rm -f "$OUT"/*.webm "$OUT"/*.mp4
     local demos=("$@")
-    ((${#demos[@]})) || demos=(demo_trial demo_install)
+    # demo_uninstall must follow demo_install (it reverses install's end-state,
+    # or reinstalls off-camera if run standalone).
+    ((${#demos[@]})) || demos=(demo_trial demo_install demo_uninstall)
     prep_common
     local d
     for d in "${demos[@]}"; do "$d"; done

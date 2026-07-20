@@ -1,11 +1,11 @@
 name: Demos
 
 # Screen-recorded product demos from the Tier-2 GNOME VM (e2e/gnome/vm/
-# demo.sh): the reversible `try` arc and the permanent `service install` arc
-# (the latter recorded continuously across a relogin), typed live into
-# gnome-terminal windows on a real Ubuntu desktop. Captured host-side over VNC
-# with gstreamer (record.sh) — the in-guest screencast can't span the relogin.
-# One leg per supported Ubuntu series (24.04 + 26.04).
+# demo.sh): the reversible `try` arc, the permanent `service install` arc
+# (recorded continuously across a relogin) and its `service uninstall` reversal,
+# typed live into gnome-terminal windows on a real Ubuntu desktop. Captured
+# host-side over VNC with gstreamer (record.sh) — the in-guest screencast can't
+# span the relogin. One leg per supported Ubuntu series (24.04 + 26.04).
 #
 # Each leg uploads its webm/mp4/webp as a run artifact, publishes them to the
 # secrets-dispatcher-ci-media sidecar repo (pr-<N>/ for PRs, latest/ on master,
@@ -103,9 +103,10 @@ jobs:
         if: always()
         run: |
           mkdir -p out
-          # trial = reversible `try`; install = permanent `service install` (US-10).
-          # Tolerant copy so a partial run still uploads whatever recorded.
-          for demo in trial install; do
+          # trial = reversible `try`; install = permanent `service install`
+          # (US-10); uninstall = the deliberate reversal. Tolerant copy so a
+          # partial run still uploads whatever recorded.
+          for demo in trial install uninstall; do
             for ext in webm mp4 webp; do
               [ -f ".build/demos/$demo.$ext" ] \
                 && cp ".build/demos/$demo.$ext" "out/$demo-${{ matrix.series }}.$ext" || true
@@ -161,12 +162,12 @@ jobs:
           raw="https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/$DEST"
           pages="https://nikicat.github.io/secrets-dispatcher-ci-media/$DEST"
           declare -A label=( [noble]="Ubuntu 24.04 (noble)" [resolute]="Ubuntu 26.04 (resolute)" )
-          declare -A title=( [trial]="try — reversible trial" [install]="service install — make it permanent" )
+          declare -A title=( [trial]="try — reversible trial" [install]="service install — make it permanent" [uninstall]="service uninstall — back to stock" )
           s="${{ matrix.series }}"
           {
             echo "## 🎬 Demos — ${label[$s]}"
             # Only include a demo whose webp actually staged (a flaked leg is skipped).
-            for demo in trial install; do
+            for demo in trial install uninstall; do
               [ -f "out/$demo-$s.webp" ] || continue
               echo
               echo "### ${title[$demo]}"

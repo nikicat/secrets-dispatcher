@@ -5,6 +5,7 @@
 # between them (`systemctl restart gdm`) — the whole reason the recording is
 # host-side (VNC), so one continuous clip spans the session restart:
 #
+# demo_install (part1 + relogin + part2):
 #   part1 (before relogin):
 #     go install -> service install --mode local --start (permanent takeover)
 #     -> service status shows it enabled + in front.
@@ -12,8 +13,10 @@
 #   part2 (after relogin):
 #     service status STILL shows it in front (survived the restart — the payoff)
 #     -> a client asks for a secret -> the (re-locked) keyring unlock dialog ->
-#     type the password -> the approval notification -> click APPROVE (prints)
-#     -> service uninstall restores the stock provider.
+#     type the password -> the approval notification -> click APPROVE (prints).
+#     Leaves the service installed for demo_uninstall.
+# demo_uninstall (uninstall):
+#     service uninstall restores the stock provider — the deliberate reversal.
 #
 # Two windows are used the way a user would: an upper "admin" window for the
 # service commands, a lower "client" window for the secret request. Both are
@@ -130,26 +133,42 @@ part2() {
     place 140 420 1100 300
     sleep 1
     type_cmd client "secret-tool lookup service demo   # locked: unlock, then APPROVE"
-    # Post-relogin the unlock dialog is a gcr-prompter window, not part of the
-    # gnome-shell actor tree the locator walks — so waittext can't find its
-    # button. Drive it by keyboard focus instead: wait for it to grab focus,
-    # then type the password + Enter. The approval that follows IS a shell
-    # notification, so the locator can aim the Approve click by text.
-    sleep 4
-    rd "$(printf 'type %s\nkey enter' "$pw")"
-    rd $'waittext Approve\nclicktext Approve'
+    # The prompter bridge forwards the unlock to gnome-shell's modal (which the
+    # bridge now re-establishes after the relogin), so it's in the shell actor
+    # tree and the locator can aim at it by text — same as the try demo: type the
+    # password + Enter, then click Approve on the notification.
+    rd "$(printf 'waittext Unlock\ntype %s\nkey enter\nwaittext Approve\nclicktext Approve' "$pw")"
     sleep 4 # the secret value prints
-
-    # Undo it: uninstall restores the stock Secret Service.
-    type_cmd admin "secrets-dispatcher service uninstall   # stock provider restored"
-    wait_for 30 owner_is gnome-keyring-daemon
-    sleep 2
-    type_cmd admin "secrets-dispatcher service status"
+    # Call out the payoff (plain glyphs only — the mono terminal font has no
+    # colour-emoji, they render as tofu).
+    type_cmd client "# ✓ survived the relogin, still served the secret — it works!"
     sleep 5
 }
 
-case "${1:?usage: demo-driver-install.sh part1|part2}" in
+# uninstall is its own demo (demo_uninstall): the deliberate reversal, back to
+# stock. Runs after demo_install left the service in front (demo.sh reinstalls
+# off-camera first when this demo is run standalone). A single, focused window.
+uninstall() {
+    rd 'key esc'
+    gsettings set org.gnome.desktop.session idle-delay 0 2>/dev/null || true
+    busctl --user call org.gnome.ScreenSaver /org/gnome/ScreenSaver \
+        org.gnome.ScreenSaver SetActive b false 2>/dev/null || true
+    sleep 1
+    open_window admin
+    sleep 1
+    place 110 200 1100 320
+    type_cmd admin "secrets-dispatcher service status   # secrets-dispatcher in front"
+    sleep 4
+    type_cmd admin "secrets-dispatcher service uninstall   # reverse it — back to stock"
+    wait_for 30 owner_is gnome-keyring-daemon
+    sleep 2
+    type_cmd admin "secrets-dispatcher service status   # stock gnome-keyring restored"
+    sleep 5
+}
+
+case "${1:?usage: demo-driver-install.sh part1|part2|uninstall}" in
 part1) part1 ;;
 part2) part2 ;;
+uninstall) uninstall ;;
 *) echo "unknown phase: $1" >&2; exit 2 ;;
 esac

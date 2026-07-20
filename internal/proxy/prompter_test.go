@@ -140,14 +140,15 @@ func TestPrompterBridge(t *testing.T) {
 	assert.Equal(t, callbackPath, recvCall(t, shell.stop, "StopPrompting").callback)
 }
 
-// TestPrompterBridgeActivatesWhenPrompterAppears is the relogin regression: the
+// TestPrompterBridgeClaimsBackendBeforePrompter is the relogin regression: the
 // proxy can start (or restart) BEFORE gnome-shell re-registers its prompter —
-// both come up with the graphical session and the proxy often wins the race. A
-// one-shot check would give up and let the display-less gcr-prompter fallback
-// claim the backend name on the first unlock. The bridge must instead wait for
-// the front prompter to appear and claim the backend name then — while still not
-// claiming a name it cannot yet service.
-func TestPrompterBridgeActivatesWhenPrompterAppears(t *testing.T) {
+// both come up with the graphical session and the proxy often wins the race.
+// The bridge must claim the backend SystemPrompter name IMMEDIATELY regardless,
+// so the gcr-prompter fallback (which the backend bus would D-Bus-activate on
+// the first unlock, and which draws a GTK dialog because the backend shares the
+// graphical session) can never win that window. Forwarding to the real prompter
+// is resolved by name at prompt time, so it doesn't need gnome-shell present yet.
+func TestPrompterBridgeClaimsBackendBeforePrompter(t *testing.T) {
 	tmpDir := t.TempDir()
 	backendCmd, backendAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "backend.sock"))
 	t.Cleanup(func() { backendCmd.Process.Kill(); backendCmd.Wait() })
@@ -163,9 +164,11 @@ func TestPrompterBridgeActivatesWhenPrompterAppears(t *testing.T) {
 	require.NoError(t, p.ConnectWith(proxyFrontConn, proxyBackendConn))
 	t.Cleanup(func() { p.Close() })
 
-	// It must not claim the name it cannot yet service.
-	assert.False(t, nameHasOwner(proxyBackendConn, systemPrompterName),
-		"bridge must not claim the backend name before a front prompter exists")
+	// It must own the backend name straight away — before any front prompter —
+	// so the gcr-prompter fallback has no window to claim it.
+	require.NotNil(t, p.prompter, "bridge must be created in the local-takeover topology")
+	assert.True(t, nameHasOwner(proxyBackendConn, systemPrompterName),
+		"bridge must claim the backend name at startup, before a front prompter exists")
 
 	// gnome-shell's prompter appears on the front bus (as after a relogin).
 	shellConn, err := dbus.Connect(frontAddr)
@@ -181,12 +184,8 @@ func TestPrompterBridgeActivatesWhenPrompterAppears(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
 
-	// The bridge must notice and claim the backend name.
-	require.Eventually(t, func() bool { return nameHasOwner(proxyBackendConn, systemPrompterName) },
-		5*time.Second, 20*time.Millisecond,
-		"bridge must claim the backend name once the front prompter appears")
-
-	// ...and forwarding must then work end-to-end.
+	// Forwarding must work end-to-end once the front prompter is up — resolved
+	// by name at call time, no re-arming needed.
 	keyringConn, err := dbus.Connect(backendAddr)
 	require.NoError(t, err)
 	t.Cleanup(func() { keyringConn.Close() })

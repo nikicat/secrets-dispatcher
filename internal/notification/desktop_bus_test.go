@@ -134,6 +134,43 @@ func TestNotifyPersistentSendsNeverExpiringCritical(t *testing.T) {
 	assert.Empty(t, got.Actions)
 }
 
+// TestActionDeliverySurvivesUndrainedClosedBuffer reproduces the wedge that
+// made approval buttons stop working after ~1h of use. Only the e2e notifprobe
+// drains ClosedEvents(); the daemon never does, so a blocking send into the
+// closed buffer eventually fills it and freezes processSignals — after which
+// every ActionInvoked (every Approve click) is silently dropped and requests
+// hang until the client times out. Here we flood far more NotificationClosed
+// signals than the buffer holds WITHOUT draining ClosedEvents() (as the daemon
+// runs), then fire one ActionInvoked and require it to still arrive. Fails
+// (times out) against a blocking send; passes now that processSignals drops
+// instead of blocking.
+func TestActionDeliverySurvivesUndrainedClosedBuffer(t *testing.T) {
+	stub := newNotificationBus(t)
+
+	n, err := NewDBusNotifier()
+	require.NoError(t, err)
+	defer n.Stop()
+
+	// Overrun both the godbus signal buffer and the closed buffer (16 each) so
+	// a blocking closed-send would have parked processSignals for good. We never
+	// read ClosedEvents(), mirroring production where nothing consumes it.
+	for i := range 64 {
+		require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface+".NotificationClosed", uint32(i), uint32(2)))
+	}
+	// Give the (possibly wedged) loop a moment to process the flood.
+	time.Sleep(200 * time.Millisecond)
+
+	require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface+".ActionInvoked", uint32(999), "approve"))
+
+	select {
+	case a := <-n.Actions():
+		assert.Equal(t, uint32(999), a.NotificationID)
+		assert.Equal(t, "approve", a.ActionKey)
+	case <-time.After(5 * time.Second):
+		t.Fatal("ActionInvoked was not delivered — processSignals wedged on the undrained closed buffer")
+	}
+}
+
 func TestClosedEventsDeliversNotificationClosed(t *testing.T) {
 	newNotificationBus(t)
 

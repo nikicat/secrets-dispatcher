@@ -37,6 +37,10 @@ const IFACE = `
       <arg type="i" name="h" direction="in"/>
       <arg type="b" name="ok" direction="out"/>
     </method>
+    <method name="ClickButton">
+      <arg type="s" name="label" direction="in"/>
+      <arg type="b" name="ok" direction="out"/>
+    </method>
     <method name="Dump">
       <arg type="s" name="labels" direction="out"/>
     </method>
@@ -135,6 +139,30 @@ export default class LocatorExtension extends Extension {
             },
         });
         return true;
+    }
+
+    // ClickButton activates the clickable element whose visible label equals
+    // `label` (a notification's Approve/Deny) *in-process*, by emitting the
+    // St.Button 'clicked' signal that notification actions connect to. The demo
+    // still glides the real cursor onto the button first (over QMP) for the
+    // on-camera "click", but the activation itself runs here — so it doesn't
+    // depend on pointer-event routing or the banner's slide-in animation, which a
+    // synthesized pointer click raced on slower hosts (the banner sometimes never
+    // took the hover, so the click landed on nothing and the request timed out).
+    ClickButton(label) {
+        const target = this._matchByText(global.stage, label);
+        if (!target)
+            return false;
+        const btn = this._clickableAncestor(target);
+        try {
+            if (btn instanceof St.Button) {
+                btn.emit('clicked', 1); // 1 = primary; runs the action's handler
+                return true;
+            }
+        } catch (e) {
+            logError(e, 'SecretsDemoLocator.ClickButton');
+        }
+        return false;
     }
 
     // Dump lists every visible labelled actor with its rectangle — a debugging

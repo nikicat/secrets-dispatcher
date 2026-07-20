@@ -116,27 +116,27 @@ gui_unlock() { # [timeout] [soft]
     fi
 }
 
-# gui_click waits for a labelled button (Approve/Deny) and left-clicks its centre
-# host-side. A just-appeared notification banner is finicky: it slides in over a
-# few frames, and when it follows a keyring-unlock modal (the install arc) that
-# modal's input grab is still releasing — so a single immediate click lands on
-# nothing and the request sits unapproved until secret-tool times out. So: let
-# the banner settle, approach the button from just below it (a fresh pointer-enter
-# makes the action take the hover), click, then confirm the button is gone —
-# retrying if the click didn't register.
+# gui_click waits for a labelled notification button (Approve/Deny), glides the
+# visible cursor onto it (the on-camera "click"), then activates it in-process via
+# the locator extension. A synthesized QMP click on the banner was timing-fragile
+# — on a slower host the banner was still animating in (or the just-dismissed
+# keyring-unlock modal's grab was still releasing) and never took the hover, so
+# the click hit nothing and the request timed out. Emitting the button's action
+# in-process sidesteps pointer-event routing entirely; the glide is kept purely
+# for the visible cursor. Confirms the label is gone, retrying if not.
 gui_click() { # <label>
     local xy i
     for ((i = 0; i < 4; i++)); do
         xy=$(vmssh "$(wait_locate_snippet "$1" 15)") || return 1
         [[ -n "$xy" ]] || return 1
-        sleep 0.4 # let the banner finish animating / the modal grab release
-        # move below the banner, then glide up into the button (forces enter), click
-        printf 'move 640 260\nsleep 0.15\nglide %s\nsleep 0.25\nclick\n' "$xy" | qmp
-        sleep 0.7
+        printf 'glide %s\n' "$xy" | qmp # visible cursor movement onto the button
+        vmssh "busctl --user call org.gnome.Shell /org/gnome/Shell/SecretsDemoLocator \
+            org.gnome.Shell.SecretsDemoLocator ClickButton s '$1' >/dev/null 2>&1" || true
+        sleep 0.6
         # If the label is gone, the action fired; otherwise retry.
         vmssh "$(wait_locate_snippet "$1" 1)" >/dev/null 2>&1 || return 0
     done
-    echo "warning: '$1' still present after $i clicks" >&2
+    echo "warning: '$1' still present after $i activations" >&2
     return 1
 }
 

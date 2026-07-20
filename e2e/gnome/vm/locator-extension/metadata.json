@@ -1,7 +1,7 @@
 {
   "uuid": "secrets-demo-locator@secrets-dispatcher.nikicat",
   "name": "Secrets Dispatcher Demo Locator",
-  "description": "Test-only helper for the Tier-2 demo harness: exposes a D-Bus method that locates a gnome-shell UI element by its visible label and returns its on-screen rectangle. gnome-shell's own accessibility (Cally) does not report element geometry, and there is no supported external API for it (GNOME devs recommend exactly this: an extension exporting a D-Bus interface). demo.sh uses it to aim host-side QMP clicks at notification buttons by text instead of hardcoded pixels.",
+  "description": "Test-only helper for the Tier-2 demo harness: exposes a D-Bus method that locates a gnome-shell UI element by its visible label and returns its on-screen rectangle. gnome-shell's own accessibility (Cally) does not report element geometry, and there is no supported external API for it (GNOME devs recommend exactly this: an extension exporting a D-Bus interface). demo.sh uses it to place windows, glide the cursor onto notification buttons by text, and activate those buttons in-process (reliable across GNOME versions and slow hosts, where a synthesized click races the banner animation).",
   "shell-version": ["45", "46", "47", "48"],
   "session-modes": ["user"]
 }

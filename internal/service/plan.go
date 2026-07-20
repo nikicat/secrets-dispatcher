@@ -94,9 +94,11 @@ type Change struct {
 }
 
 func (c Change) String() string {
-	s := fmt.Sprintf("%-7s %s", c.Op, c.Target)
+	// Pad the plain verb to width first, then colorize — the escape bytes must
+	// not count toward the column width or the targets misalign.
+	s := cInfo(fmt.Sprintf("%-7s", c.Op)) + " " + c.Target
 	if c.Note != "" {
-		s += "  # " + c.Note
+		s += cDim("  # " + c.Note)
 	}
 	return s
 }

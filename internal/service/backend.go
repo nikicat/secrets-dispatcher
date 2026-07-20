@@ -32,16 +32,16 @@ func resolveBackendExec(value string, provider Provider) (string, error) {
 
 	switch value {
 	case "gopass":
-		path, err := lookPathFunc("gopass-secret-service")
+		// gopass ships the Secret Service daemon as `gopass-secret service`
+		// (subcommand). It takes the private bus via --bus-address; it does not
+		// read DBUS_SESSION_BUS_ADDRESS (which the backend unit sets for
+		// gnome-keyring-daemon), so without --bus-address it crash-loops on a
+		// built-in default. (%t is expanded by systemd to $XDG_RUNTIME_DIR.)
+		path, err := lookPathFunc("gopass-secret")
 		if err != nil {
-			return "", fmt.Errorf("find gopass-secret-service: %w", err)
+			return "", fmt.Errorf("find gopass-secret: %w", err)
 		}
-		// gopass-secret-service does NOT read DBUS_SESSION_BUS_ADDRESS (the env
-		// the backend unit sets, which gnome-keyring-daemon honors); it takes
-		// the private bus via --bus-address. Without this it falls back to a
-		// built-in default and crash-loops unable to reach the backend bus.
-		// (%t is expanded by systemd to $XDG_RUNTIME_DIR.)
-		return path + " --bus-address unix:path=%t/secrets-dispatcher/backend-bus.sock", nil
+		return path + " service --bus-address unix:path=%t/secrets-dispatcher/backend-bus.sock", nil
 	case "gnome-keyring":
 		path, err := lookPathFunc("gnome-keyring-daemon")
 		if err != nil {

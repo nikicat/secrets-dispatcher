@@ -22,19 +22,30 @@
 #
 # Fully hermetic: private XDG dirs and buses; never touches the invoking
 # user's keyrings or session bus.
+#
+# Structure (mirrors the Tier-2 scenario.sh leg layout): a set of setup helpers
+# bring the topology up, then gate_* functions run one acceptance gate each, and
+# main() wires them in order. The gates are stateful — gate_prompt needs the
+# login collection that gate_roundtrip creates, and gate_notification restarts
+# the dispatcher and restores it — so main runs them as a fixed sequence.
+#
 # Usage: fast.sh <secrets-dispatcher-binary> [notifstub-binary]
 set -euo pipefail
 
 BIN=$(readlink -f "${1:?usage: fast.sh <secrets-dispatcher-binary> [notifstub-binary]}")
 NOTIFSTUB=${2:+$(readlink -f "$2")}
 
-for tool in dbus-run-session dbus-daemon dbus-monitor gnome-keyring-daemon secret-tool busctl; do
-    command -v "$tool" >/dev/null || {
-        echo "error: required tool not found: $tool" >&2
-        echo "hint: on non-Ubuntu hosts run e2e/gnome/container.sh instead" >&2
-        exit 1
-    }
-done
+check_tools() {
+    local tool
+    for tool in dbus-run-session dbus-daemon dbus-monitor gnome-keyring-daemon secret-tool busctl; do
+        command -v "$tool" >/dev/null || {
+            echo "error: required tool not found: $tool" >&2
+            echo "hint: on non-Ubuntu hosts run e2e/gnome/container.sh instead" >&2
+            exit 1
+        }
+    done
+}
+check_tools
 
 # Re-exec under a private session bus (the front bus).
 if [[ "${E2E_GNOME_WRAPPED:-}" != 1 ]]; then
@@ -44,6 +55,9 @@ fi
 
 WORK=$(mktemp -d)
 PIDS=()
+DISPATCHER_PID=
+LOGIN_COLL=/org/freedesktop/secrets/collection/login
+
 cleanup() {
     local pid
     for pid in "${PIDS[@]}"; do
@@ -60,18 +74,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Hermetic environment: gnome-keyring stores keyrings under XDG_DATA_HOME and
-# its control socket under XDG_RUNTIME_DIR.
-export XDG_RUNTIME_DIR="$WORK/runtime"
-export XDG_DATA_HOME="$WORK/data"
-export XDG_CONFIG_HOME="$WORK/config"
-export XDG_CACHE_HOME="$WORK/cache"
-mkdir -m 700 "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
-
-FRONT_ADDR="$DBUS_SESSION_BUS_ADDRESS"
-BACKEND_SOCK="$WORK/backend.sock"
-BACKEND_ADDR="unix:path=$BACKEND_SOCK"
-
 log() { printf '\n== %s\n' "$*"; }
 
 # wait_for <description> <max-seconds> <command...>
@@ -86,25 +88,14 @@ wait_for() {
     return 1
 }
 
+# --- predicates (poll targets for wait_for) --------------------------------
+
 has_owner() {
     busctl --address="$1" call org.freedesktop.DBus /org/freedesktop/DBus \
         org.freedesktop.DBus GetNameOwner s org.freedesktop.secrets
 }
 
-log "starting private backend bus"
-dbus-daemon --session --nofork --address="$BACKEND_ADDR" &
-PIDS+=($!)
-wait_for "backend bus socket" 10 test -S "$BACKEND_SOCK"
-
-log "starting gnome-keyring (secrets only) with an unlocked login keyring"
-# Single-shot start: --unlock daemonizes gnome-keyring AND creates+unlocks the
-# login keyring in one go. A --foreground daemon with a separate --unlock call
-# never registers the default alias, which sends libsecret down a
-# CreateCollection fallback that hangs on a GUI prompt.
-printf 'tier1-password\n' | DBUS_SESSION_BUS_ADDRESS="$BACKEND_ADDR" \
-    gnome-keyring-daemon --unlock --components=secrets >/dev/null
-wait_for "gnome-keyring to own org.freedesktop.secrets on the backend bus" 10 \
-    has_owner "$BACKEND_ADDR"
+front_name_free() { ! has_owner "$FRONT_ADDR"; }
 
 # libsecret stores via the default alias (gnome-keyring serves no alias paths,
 # so it falls back to CreateCollection: harmless only once the alias resolves).
@@ -112,10 +103,58 @@ default_alias_ready() {
     busctl --address="$BACKEND_ADDR" call org.freedesktop.secrets /org/freedesktop/secrets \
         org.freedesktop.Secret.Service ReadAlias s default | grep -q /collection/login
 }
-wait_for "default alias to point at the login collection" 10 default_alias_ready
 
-log "starting secrets-dispatcher in front"
-cat >"$WORK/config.yaml" <<EOF
+# gnome-keyring exports the login collection object lazily — it appears on the
+# bus only after first use (the store in gate_roundtrip), so wait for it through
+# the proxy.
+login_ready() {
+    busctl --address="$FRONT_ADDR" get-property org.freedesktop.secrets "$LOGIN_COLL" \
+        org.freedesktop.Secret.Collection Locked
+}
+
+# --- topology setup --------------------------------------------------------
+
+# Hermetic environment: gnome-keyring stores keyrings under XDG_DATA_HOME and
+# its control socket under XDG_RUNTIME_DIR.
+setup_env() {
+    export XDG_RUNTIME_DIR="$WORK/runtime"
+    export XDG_DATA_HOME="$WORK/data"
+    export XDG_CONFIG_HOME="$WORK/config"
+    export XDG_CACHE_HOME="$WORK/cache"
+    mkdir -m 700 "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME"
+
+    FRONT_ADDR="$DBUS_SESSION_BUS_ADDRESS"
+    BACKEND_SOCK="$WORK/backend.sock"
+    BACKEND_ADDR="unix:path=$BACKEND_SOCK"
+}
+
+start_backend_bus() {
+    log "starting private backend bus"
+    dbus-daemon --session --nofork --address="$BACKEND_ADDR" &
+    PIDS+=($!)
+    wait_for "backend bus socket" 10 test -S "$BACKEND_SOCK"
+}
+
+start_gnome_keyring() {
+    log "starting gnome-keyring (secrets only) with an unlocked login keyring"
+    # Single-shot start: --unlock daemonizes gnome-keyring AND creates+unlocks
+    # the login keyring in one go. A --foreground daemon with a separate
+    # --unlock call never registers the default alias, which sends libsecret
+    # down a CreateCollection fallback that hangs on a GUI prompt.
+    printf 'tier1-password\n' | DBUS_SESSION_BUS_ADDRESS="$BACKEND_ADDR" \
+        gnome-keyring-daemon --unlock --components=secrets >/dev/null
+    wait_for "gnome-keyring to own org.freedesktop.secrets on the backend bus" 10 \
+        has_owner "$BACKEND_ADDR"
+    wait_for "default alias to point at the login collection" 10 default_alias_ready
+}
+
+# write_config <file> <notifications> [with_rules]: emit a serve config for the
+# front proxy. The rules block (approve the test tools) is included only when
+# with_rules is set — the US-7 gate needs a rule-less config so a lookup blocks
+# pending approval.
+write_config() {
+    local file=$1 notifications=$2 with_rules=${3:-}
+    cat >"$file" <<EOF
 listen: 127.0.0.1:18484
 state_dir: $WORK/state
 serve:
@@ -124,153 +163,174 @@ serve:
     path: $BACKEND_SOCK
   downstream:
     - type: session_bus
-  notifications: false
+  notifications: $notifications
+EOF
+    if [[ -n "$with_rules" ]]; then
+        cat >>"$file" <<EOF
   rules:
     - name: allow test tools
       action: approve
       process:
         exe: $(command -v secret-tool)
 EOF
-"$BIN" serve --config "$WORK/config.yaml" --log-level debug &>"$WORK/dispatcher.log" &
-DISPATCHER_PID=$!
-PIDS+=($!)
-if ! wait_for "secrets-dispatcher to own org.freedesktop.secrets on the front bus" 10 \
-    has_owner "$FRONT_ADDR"; then
-    sed 's/^/  dispatcher: /' "$WORK/dispatcher.log" >&2
-    exit 1
-fi
-
-log "secret round trip through the proxy (US-4 smoke)"
-printf 'tier1-secret' | secret-tool store --label="Tier1 Test" service tier1 user demo
-LOOKED_UP=$(secret-tool lookup service tier1 user demo)
-if [[ "$LOOKED_UP" != "tier1-secret" ]]; then
-    echo "error: lookup returned '$LOOKED_UP', want 'tier1-secret'" >&2
-    exit 1
-fi
-
-# gnome-keyring exports the login collection object lazily — it appears on the
-# bus only after first use (the store above), so wait for it through the proxy.
-LOGIN_COLL=/org/freedesktop/secrets/collection/login
-login_ready() {
-    busctl --address="$FRONT_ADDR" get-property org.freedesktop.secrets "$LOGIN_COLL" \
-        org.freedesktop.Secret.Collection Locked
+    fi
 }
-wait_for "login collection to be visible through the proxy" 10 login_ready
 
-if [[ -n "$NOTIFSTUB" ]]; then
+# start_dispatcher <config> <logfile>: bring the proxy up in front and wait for
+# it to own org.freedesktop.secrets on the front bus, dumping the log and
+# failing if it never does. Log is appended so a restart's output joins the
+# original run's for post-mortem.
+start_dispatcher() {
+    local config=$1 logfile=$2
+    "$BIN" serve --config "$config" --log-level debug &>>"$logfile" &
+    DISPATCHER_PID=$!
+    PIDS+=($!)
+    if ! wait_for "secrets-dispatcher to own org.freedesktop.secrets on the front bus" 10 \
+        has_owner "$FRONT_ADDR"; then
+        sed 's/^/  dispatcher: /' "$logfile" >&2
+        exit 1
+    fi
+}
+
+# stop_dispatcher: kill the running proxy and wait for the front name to be
+# released, so the next start_dispatcher can claim it cleanly.
+stop_dispatcher() {
+    kill "$DISPATCHER_PID" 2>/dev/null || true
+    wait "$DISPATCHER_PID" 2>/dev/null || true
+    wait_for "front bus name to be released" 10 front_name_free
+}
+
+# --- gates -----------------------------------------------------------------
+
+gate_roundtrip() {
+    log "secret round trip through the proxy (US-4 smoke)"
+    printf 'tier1-secret' | secret-tool store --label="Tier1 Test" service tier1 user demo
+    local looked_up
+    looked_up=$(secret-tool lookup service tier1 user demo)
+    if [[ "$looked_up" != "tier1-secret" ]]; then
+        echo "error: lookup returned '$looked_up', want 'tier1-secret'" >&2
+        exit 1
+    fi
+    wait_for "login collection to be visible through the proxy" 10 login_ready
+}
+
+gate_notification() {
     log "US-7 gate: a pending approval must notify with expire_timeout=0 + actions"
     # The stub must own org.freedesktop.Notifications BEFORE the dispatcher
-    # connects its notifier, so restart the dispatcher: once with rules
-    # removed and notifications enabled (a pending request is what notifies),
-    # then back to the original config for the prompt gates below.
+    # connects its notifier, so restart the dispatcher: once with rules removed
+    # and notifications enabled (a pending request is what notifies), then back
+    # to the original config for the prompt gates below.
     "$NOTIFSTUB" >"$WORK/notifstub.log" 2>&1 &
     PIDS+=($!)
     wait_for "notifstub to own org.freedesktop.Notifications" 10 \
         grep -q READY "$WORK/notifstub.log"
 
-    kill "$DISPATCHER_PID" 2>/dev/null || true
-    wait "$DISPATCHER_PID" 2>/dev/null || true
-    front_name_free() { ! has_owner "$FRONT_ADDR"; }
-    wait_for "front bus name to be released" 10 front_name_free
+    stop_dispatcher
+    write_config "$WORK/config-notif.yaml" true
+    start_dispatcher "$WORK/config-notif.yaml" "$WORK/dispatcher-notif.log"
 
-    cat >"$WORK/config-notif.yaml" <<EOF
-listen: 127.0.0.1:18484
-state_dir: $WORK/state
-serve:
-  upstream:
-    type: socket
-    path: $BACKEND_SOCK
-  downstream:
-    - type: session_bus
-  notifications: true
-EOF
-    "$BIN" serve --config "$WORK/config-notif.yaml" --log-level debug &>"$WORK/dispatcher-notif.log" &
-    DISPATCHER_PID=$!
-    PIDS+=($!)
-    wait_for "dispatcher (notif config) to own the front name" 10 has_owner "$FRONT_ADDR"
-
-    # No rules match, so this lookup blocks pending approval — exactly the
-    # state whose notification the stub captures. It dies on its own timeout.
+    # No rules match, so this lookup blocks pending approval — exactly the state
+    # whose notification the stub captures. It dies on its own timeout.
     timeout 10 secret-tool lookup service tier1 user demo >/dev/null 2>&1 &
-    LOOKUP_PID=$!
+    local lookup_pid=$!
 
     if ! wait_for "approval notification to reach notifstub" 10 \
         grep -q "^NOTIFY" "$WORK/notifstub.log"; then
         sed 's/^/  dispatcher: /' "$WORK/dispatcher-notif.log" >&2
         exit 1
     fi
-    NOTIFY_LINE=$(grep -m1 "^NOTIFY" "$WORK/notifstub.log")
-    echo "   $NOTIFY_LINE"
-    # The US-7 regression gate: -1 lets gnome-shell expire the notification
-    # ~2s after display; approvals must send 0 (never expire), critical
-    # urgency, and actionable Approve/Deny buttons.
-    grep -qE "expire_timeout=0( |$)" <<<"$NOTIFY_LINE" || {
+    local notify_line
+    notify_line=$(grep -m1 "^NOTIFY" "$WORK/notifstub.log")
+    echo "   $notify_line"
+    # The US-7 regression gate: -1 lets gnome-shell expire the notification ~2s
+    # after display; approvals must send 0 (never expire), critical urgency, and
+    # actionable Approve/Deny buttons.
+    grep -qE "expire_timeout=0( |$)" <<<"$notify_line" || {
         echo "error: approval notification does not send expire_timeout=0" >&2
         exit 1
     }
-    grep -q "urgency=2" <<<"$NOTIFY_LINE" || {
+    grep -q "urgency=2" <<<"$notify_line" || {
         echo "error: approval notification is not critical urgency" >&2
         exit 1
     }
-    if ! grep -q "approve,Approve" <<<"$NOTIFY_LINE" || ! grep -q "deny,Deny" <<<"$NOTIFY_LINE"; then
+    if ! grep -q "approve,Approve" <<<"$notify_line" || ! grep -q "deny,Deny" <<<"$notify_line"; then
         echo "error: approval notification is missing Approve/Deny actions" >&2
         exit 1
     fi
 
-    kill "$LOOKUP_PID" 2>/dev/null || true
-    wait "$LOOKUP_PID" 2>/dev/null || true
+    kill "$lookup_pid" 2>/dev/null || true
+    wait "$lookup_pid" 2>/dev/null || true
 
     # Back to the original config for the prompt-forwarding gates.
-    kill "$DISPATCHER_PID" 2>/dev/null || true
-    wait "$DISPATCHER_PID" 2>/dev/null || true
-    wait_for "front bus name to be released" 10 front_name_free
-    "$BIN" serve --config "$WORK/config.yaml" --log-level debug &>>"$WORK/dispatcher.log" &
-    DISPATCHER_PID=$!
+    stop_dispatcher
+    start_dispatcher "$WORK/config.yaml" "$WORK/dispatcher.log"
+}
+
+gate_prompt() {
+    log "locking the login collection"
+    busctl --address="$FRONT_ADDR" call org.freedesktop.secrets /org/freedesktop/secrets \
+        org.freedesktop.Secret.Service Lock ao 1 "$LOGIN_COLL"
+    local locked
+    locked=$(busctl --address="$FRONT_ADDR" get-property org.freedesktop.secrets "$LOGIN_COLL" \
+        org.freedesktop.Secret.Collection Locked)
+    if [[ "$locked" != "b true" ]]; then
+        echo "error: collection not locked after Lock (got: $locked)" >&2
+        exit 1
+    fi
+
+    log "Unlock on the locked collection must return a prompt path"
+    local unlock_out prompt_path
+    unlock_out=$(busctl --address="$FRONT_ADDR" call org.freedesktop.secrets /org/freedesktop/secrets \
+        org.freedesktop.Secret.Service Unlock ao 1 "$LOGIN_COLL")
+    prompt_path=$(grep -o '/org/freedesktop/secrets/prompt/[[:alnum:]_/]*' <<<"$unlock_out" | head -1 || true)
+    if [[ -z "$prompt_path" ]]; then
+        echo "error: Unlock returned no prompt path (got: $unlock_out)" >&2
+        exit 1
+    fi
+    echo "   prompt path: $prompt_path"
+
+    log "watching the front bus for Prompt.Completed"
+    dbus-monitor --address "$FRONT_ADDR" \
+        "type='signal',interface='org.freedesktop.Secret.Prompt',member='Completed'" \
+        >"$WORK/signals.log" &
     PIDS+=($!)
-    wait_for "dispatcher to re-own the front name" 10 has_owner "$FRONT_ADDR"
-fi
+    sleep 1 # let the monitor's match rule attach before triggering the signal
 
-log "locking the login collection"
-busctl --address="$FRONT_ADDR" call org.freedesktop.secrets /org/freedesktop/secrets \
-    org.freedesktop.Secret.Service Lock ao 1 "$LOGIN_COLL"
-LOCKED=$(busctl --address="$FRONT_ADDR" get-property org.freedesktop.secrets "$LOGIN_COLL" \
-    org.freedesktop.Secret.Collection Locked)
-if [[ "$LOCKED" != "b true" ]]; then
-    echo "error: collection not locked after Lock (got: $LOCKED)" >&2
-    exit 1
-fi
+    log "US-6 regression gate: Dismiss the prompt THROUGH the proxy"
+    # Pre-fix this failed with "Object does not implement org.freedesktop.Secret.Prompt".
+    busctl --address="$FRONT_ADDR" call org.freedesktop.secrets "$prompt_path" \
+        org.freedesktop.Secret.Prompt Dismiss
 
-log "Unlock on the locked collection must return a prompt path"
-UNLOCK_OUT=$(busctl --address="$FRONT_ADDR" call org.freedesktop.secrets /org/freedesktop/secrets \
-    org.freedesktop.Secret.Service Unlock ao 1 "$LOGIN_COLL")
-PROMPT_PATH=$(grep -o '/org/freedesktop/secrets/prompt/[[:alnum:]_/]*' <<<"$UNLOCK_OUT" | head -1 || true)
-if [[ -z "$PROMPT_PATH" ]]; then
-    echo "error: Unlock returned no prompt path (got: $UNLOCK_OUT)" >&2
-    exit 1
-fi
-echo "   prompt path: $PROMPT_PATH"
+    log "Completed signal must propagate to the front bus"
+    wait_for "Prompt.Completed on the front bus" 10 grep -q "member=Completed" "$WORK/signals.log"
 
-log "watching the front bus for Prompt.Completed"
-dbus-monitor --address "$FRONT_ADDR" \
-    "type='signal',interface='org.freedesktop.Secret.Prompt',member='Completed'" \
-    >"$WORK/signals.log" &
-PIDS+=($!)
-sleep 1 # let the monitor's match rule attach before triggering the signal
+    log "dismissed prompt must leave the collection locked"
+    locked=$(busctl --address="$FRONT_ADDR" get-property org.freedesktop.secrets "$LOGIN_COLL" \
+        org.freedesktop.Secret.Collection Locked)
+    if [[ "$locked" != "b true" ]]; then
+        echo "error: collection unlocked after dismissed prompt (got: $locked)" >&2
+        exit 1
+    fi
+}
 
-log "US-6 regression gate: Dismiss the prompt THROUGH the proxy"
-# Pre-fix this failed with "Object does not implement org.freedesktop.Secret.Prompt".
-busctl --address="$FRONT_ADDR" call org.freedesktop.secrets "$PROMPT_PATH" \
-    org.freedesktop.Secret.Prompt Dismiss
+# --- driver ----------------------------------------------------------------
 
-log "Completed signal must propagate to the front bus"
-wait_for "Prompt.Completed on the front bus" 10 grep -q "member=Completed" "$WORK/signals.log"
+main() {
+    setup_env
+    start_backend_bus
+    start_gnome_keyring
 
-log "dismissed prompt must leave the collection locked"
-LOCKED=$(busctl --address="$FRONT_ADDR" get-property org.freedesktop.secrets "$LOGIN_COLL" \
-    org.freedesktop.Secret.Collection Locked)
-if [[ "$LOCKED" != "b true" ]]; then
-    echo "error: collection unlocked after dismissed prompt (got: $LOCKED)" >&2
-    exit 1
-fi
+    log "starting secrets-dispatcher in front"
+    write_config "$WORK/config.yaml" false with_rules
+    start_dispatcher "$WORK/config.yaml" "$WORK/dispatcher.log"
 
-log "PASS: prompt forwarding works against real gnome-keyring"
+    gate_roundtrip
+    if [[ -n "$NOTIFSTUB" ]]; then
+        gate_notification
+    fi
+    gate_prompt
+
+    log "PASS: prompt forwarding works against real gnome-keyring"
+}
+
+main

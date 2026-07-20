@@ -66,13 +66,16 @@ cmd_start() {
 
     # incremental=false: request full framebuffers, so frames keep flowing even
     # while the screen is static (during a typed command's pauses or the relogin
-    # blank) — videorate then normalizes to a steady 15 fps and vp8 dedupes the
-    # unchanged frames to almost nothing. -e => a clean EOS on SIGINT so webmmux
-    # finalizes the file. nohup so it outlives this short `start` invocation.
+    # blank) — videorate then normalizes to a steady 30 fps (smooth cursor glides
+    # and animations) and vp8 dedupes the unchanged frames to almost nothing.
+    # Encoding is host-side (off the guest), so software vp8 at 30 fps is cheap;
+    # CI runners have no GPU, so a hardware encoder isn't an option for the
+    # published demos. -e => a clean EOS on SIGINT so webmmux finalizes the file.
+    # nohup so it outlives this short `start` invocation.
     nohup gst-launch-1.0 -e \
         rfbsrc host=127.0.0.1 port="$VNC_PORT" incremental=false \
-        ! videoconvert ! videorate ! video/x-raw,framerate=15/1 \
-        ! vp8enc deadline=1 cpu-used=4 target-bitrate=1500000 \
+        ! videoconvert ! videorate ! video/x-raw,framerate=30/1 \
+        ! vp8enc deadline=1 cpu-used=4 target-bitrate=2500000 \
         ! webmmux ! filesink location="$out" \
         >"$LOGFILE" 2>&1 &
     echo $! >"$PIDFILE"

@@ -210,7 +210,7 @@ demo_trial() {
     vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
     sleep 1
     "$RECORD" start "$OUT/trial.webm"
-    sleep 2
+    sleep 0.5
 
     # The driver opens and places its own terminal windows (via the locator
     # extension), so the terminals appear on camera as part of the story.
@@ -231,7 +231,7 @@ demo_install() {
     vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
     sleep 1
     "$RECORD" start "$OUT/install.webm"
-    sleep 2
+    sleep 0.5
 
     # Phase 1: the permanent takeover + status, before the relogin.
     if ! vmssh "bash ~/demo-driver-install.sh part1"; then
@@ -317,7 +317,7 @@ demo_uninstall() {
     vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
     sleep 1
     "$RECORD" start "$OUT/uninstall.webm"
-    sleep 2
+    sleep 0.5
     if ! vmssh "bash ~/demo-driver-install.sh uninstall"; then
         "$RECORD" stop || true
         mv "$OUT/uninstall.webm" "$OUT/uninstall-failed.webm" 2>/dev/null || true
@@ -345,13 +345,12 @@ finish() {
             esac
         fi
         command -v ffmpeg >/dev/null || continue
-        # mp4 for the click-through player. -crf 30 + a pinned 15 fps CFR keep
-        # it small: the screencast is variable-rate (undefined avg frame rate),
-        # which without -r lets some ffmpeg builds duplicate frames and balloon
-        # the bitrate (~20 MB in CI vs the ~120 kbps VP8 source). With these it
-        # tracks the webm's size.
+        # mp4 for the click-through player. -crf 30 + a pinned 30 fps CFR (matching
+        # record.sh's capture rate) keep it small: the source is variable-rate
+        # (undefined avg frame rate), which without -r lets some ffmpeg builds
+        # duplicate frames and balloon the bitrate. With these it tracks the webm.
         ffmpeg -y -v error -i "$f" -c:v libx264 -pix_fmt yuv420p \
-            -crf 30 -preset veryfast -r 15 -movflags +faststart "${f%.webm}.mp4"
+            -crf 30 -preset veryfast -r 30 -movflags +faststart "${f%.webm}.mp4"
         # webp preview: this is what embeds *inline* in the run summary (an image,
         # served through GitHub's proxy), where an external <video> is CSP-
         # blocked. Full colour AND smaller than a 256-colour GIF because

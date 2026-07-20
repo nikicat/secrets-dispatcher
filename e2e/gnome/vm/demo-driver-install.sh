@@ -87,11 +87,13 @@ open_window() { # open_window <tmux-session> — open a gnome-terminal on that s
 # --- phases ---
 
 part1() {
-    sleep 2
-    # Upper "admin" window: install from the README, then make it permanent.
+    sleep 0.5
+    # Upper "admin" window: install from the README, then make it permanent. Tall
+    # (~18 lines) so `service status`'s output doesn't scroll the typed command
+    # off the top.
     open_window admin
     sleep 1
-    place 110 84 1100 300
+    place 110 84 1100 440
     type_cmd admin "go install github.com/nikicat/secrets-dispatcher@latest"
     wait_for 180 test -x "$HOME/go/bin/secrets-dispatcher"
     # Off-camera: swap in the fixed build until the prompter-bridge fix ships in
@@ -123,14 +125,14 @@ part2() {
     # Upper "admin" window: prove it survived the relogin.
     open_window admin
     sleep 1
-    place 110 84 1100 260
+    place 110 84 1100 360
     type_cmd admin "secrets-dispatcher service status   # STILL in front after relogin"
     sleep 4
 
     # Lower "client" window: a real secret request, approved on camera.
     open_window client
     sleep 1
-    place 140 420 1100 300
+    place 140 470 1100 260
     sleep 1
     type_cmd client "secret-tool lookup service demo   # locked: unlock, then APPROVE"
     # The prompter bridge forwards the unlock to gnome-shell's modal (which the
@@ -161,7 +163,7 @@ uninstall() {
     sleep 1
     open_window admin
     sleep 1
-    place 110 200 1100 320
+    place 110 130 1100 460
     type_cmd admin "secrets-dispatcher service status   # secrets-dispatcher in front"
     sleep 4
     type_cmd admin "secrets-dispatcher service uninstall   # reverse it — back to stock"

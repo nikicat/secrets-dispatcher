@@ -73,8 +73,11 @@ jobs:
       # The provisioned desktop base is cached with a weekly-rotating key (no
       # restore-keys fallback, deliberately: on rollover the job re-provisions
       # from the series' current cloud image, so upstream drift is picked up
-      # at least weekly). Both files must travel together — the qcow2 overlay
-      # references the pristine image as its backing file.
+      # at least weekly). The user-data hash is part of the key: editing the
+      # provisioning input (e.g. its package list) must invalidate the base
+      # immediately, not at the next weekly rollover. Both files must travel
+      # together — the qcow2 overlay references the pristine image as its
+      # backing file.
       - name: Compute image cache key (rotates weekly)
         id: imgkey
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
@@ -92,7 +95,7 @@ jobs:
             ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ matrix.series }}.qcow2
             ~/.cache/secrets-dispatcher/e2e/id_ed25519
             ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
-          key: e2e-vm-images-${{ matrix.series }}-${{ steps.imgkey.outputs.week }}
+          key: e2e-vm-images-${{ matrix.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
 
       - run: make test-e2e-gnome-vm
 

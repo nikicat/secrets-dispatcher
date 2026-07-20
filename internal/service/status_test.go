@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -144,4 +145,23 @@ func TestStatusRemoteModeOwnerIsProvider(t *testing.T) {
 	f.writeUnits(t, unitFileName)
 
 	assert.NoError(t, Status())
+}
+
+func TestStatusRemoteModeWarnsOnUnowned(t *testing.T) {
+	// Remote topology, unit active — but org.freedesktop.secrets has no owner,
+	// so secret lookups hang while the unit still looks healthy. Regression for
+	// the doctor reporting "✓ no problems found" in exactly this state (the
+	// real incident that broke secret access after a stray remote-mode install).
+	f := newStatusFixture(t, "")
+	f.writeUnits(t, unitFileName)
+	// Override the exec fakes so busctl reports the name as unowned (the
+	// GetConnectionUnixProcessID call fails), while systemctl still says active.
+	mockExecOutput(t, func(name string, _ ...string) ([]byte, error) {
+		if name == "systemctl" {
+			return []byte("active\n"), nil
+		}
+		return nil, errors.New("The connection does not exist")
+	})
+
+	assert.ErrorContains(t, Status(), "problem")
 }

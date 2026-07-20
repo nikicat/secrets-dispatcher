@@ -86,7 +86,7 @@ func demoteGnomeKeyring() error {
 	if err := os.WriteFile(dropIn, fmt.Appendf(nil, gkDropInTemplate, gkDaemon), 0644); err != nil {
 		return fmt.Errorf("write drop-in: %w", err)
 	}
-	fmt.Printf("Wrote gnome-keyring drop-in: %s\n", dropIn)
+	verbosef("Wrote gnome-keyring drop-in: %s\n", dropIn)
 
 	asDir, err := autostartDir()
 	if err != nil {
@@ -103,12 +103,12 @@ func demoteGnomeKeyring() error {
 		if err := os.Rename(shadow, shadow+dbusBackupSuffix); err != nil {
 			return fmt.Errorf("backup %s: %w", gkAutostartName, err)
 		}
-		fmt.Printf("Backed up %s\n", shadow)
+		verbosef("Backed up %s\n", shadow)
 	}
 	if err := os.WriteFile(shadow, []byte(gkAutostartShadow), 0644); err != nil {
 		return fmt.Errorf("write autostart shadow: %w", err)
 	}
-	fmt.Printf("Hid gnome-keyring secrets autostart: %s\n", shadow)
+	verbosef("Hid gnome-keyring secrets autostart: %s\n", shadow)
 
 	if err := systemctlFunc("daemon-reload"); err != nil {
 		return err
@@ -137,7 +137,7 @@ func restoreGnomeKeyring() error {
 			return fmt.Errorf("remove drop-in: %w", err)
 		}
 		_ = os.Remove(filepath.Dir(dropIn)) // rmdir if now empty
-		fmt.Printf("Removed gnome-keyring drop-in: %s\n", dropIn)
+		verbosef("Removed gnome-keyring drop-in: %s\n", dropIn)
 		changed = true
 	}
 
@@ -150,13 +150,13 @@ func restoreGnomeKeyring() error {
 		if err := os.Remove(shadow); err != nil {
 			return fmt.Errorf("remove autostart shadow: %w", err)
 		}
-		fmt.Printf("Removed gnome-keyring autostart shadow: %s\n", shadow)
+		verbosef("Removed gnome-keyring autostart shadow: %s\n", shadow)
 		changed = true
 		if _, err := os.Stat(shadow + dbusBackupSuffix); err == nil {
 			if err := os.Rename(shadow+dbusBackupSuffix, shadow); err != nil {
 				return fmt.Errorf("restore %s: %w", gkAutostartName, err)
 			}
-			fmt.Printf("Restored %s from backup\n", shadow)
+			verbosef("Restored %s from backup\n", shadow)
 		}
 	}
 

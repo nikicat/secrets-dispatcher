@@ -30,6 +30,21 @@ packages:
   - dbus-user-session
   - libsecret-tools
   - seahorse
+  # gjs is a fidelity fix, not just a demo dep: on GNOME 46 the notification
+  # daemon (org.gnome.Shell.Notifications) and the screencast service
+  # (org.gnome.Shell.Screencast) are D-Bus-activated gjs processes. A stock
+  # Ubuntu desktop ships gjs; without it this VM has NO org.freedesktop.
+  # Notifications name at all, and demo.sh cannot record the screen.
+  - gjs
+  # demo.sh (screen-recorded product demos) additions: a visible terminal to
+  # type into, tmux to drive it, and a desktop wallpaper so the recording
+  # reads as a real desktop. Go comes from an upstream tarball (runcmd
+  # below), NOT golang-go: the apt toolchain is older than go.mod's
+  # requirement, and the GOTOOLCHAIN auto-switch prints a distracting
+  # "requires go >= X; switching to goX.Y.Z" line on camera.
+  - gnome-terminal
+  - tmux
+  - ubuntu-wallpapers
 
 write_files:
   # gdm autologin for the e2e user — the realistic "stock desktop" case the
@@ -50,6 +65,11 @@ runcmd:
   # Linger so the e2e user's systemd user instance (and user bus) survives
   # SSH session churn during tests.
   - loginctl enable-linger e2e
+  # Current stable Go from upstream (see the packages comment). The weekly
+  # CI cache rotation re-provisions, so this tracks Go releases closely
+  # enough to stay >= go.mod's requirement.
+  - GOV=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1) && curl -fsSL "https://go.dev/dl/${GOV}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+  - printf 'export PATH=$PATH:/usr/local/go/bin\n' > /etc/profile.d/go-path.sh
   - touch /var/tmp/cloud-init-ready
 
 power_state:

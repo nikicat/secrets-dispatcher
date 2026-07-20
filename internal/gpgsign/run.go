@@ -28,6 +28,20 @@ import (
 func Run(args []string, stdin io.Reader) int {
 	debug := os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"
 
+	// 0. Delegate non-signing invocations to the real gpg. git also calls
+	// gpg.program to *verify* signatures (verify-commit, verify-tag, log
+	// --show-signature, merge/pull verification) and to list keys or probe
+	// --version; this proxy only knows how to create signatures via the daemon.
+	// Anything that is not a sign request goes straight to real gpg, so those
+	// operations work exactly as if gpg.program were plain gpg (see
+	// passThroughToGPG).
+	if !isSignRequest(args) {
+		if debug {
+			fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: non-signing invocation, delegating to real gpg: %v\n", args)
+		}
+		return passThroughToGPG(args, stdin)
+	}
+
 	// 1. Parse key ID from args.
 	keyID := extractKeyID(args)
 	if debug {
@@ -41,12 +55,20 @@ func Run(args []string, stdin io.Reader) int {
 		return 2
 	}
 
-	// 3. Parse commit object for display context (SIGN-02).
-	author, committer, message, parentHash := ParseCommitObject(commitBytes)
+	// 3. Parse the signed payload for display context (SIGN-02). git signs
+	// commits, annotated tags, and push certificates through this same path;
+	// detect which so the approval prompt shows the right fields.
+	payload := ParseSignedPayload(commitBytes)
 
-	// 4. Collect git context (SIGN-03, SIGN-04).
+	// 4. Collect git context (SIGN-03, SIGN-04). Changed files describe a
+	// commit's staged tree — they are meaningless for tag/push signing and
+	// could mislead both the prompt and trusted-signer matching, so gather them
+	// for commits only.
 	repoName := resolveRepoName(debug)
-	changedFiles := collectChangedFiles(debug)
+	var changedFiles []string
+	if payload.Kind == KindCommit {
+		changedFiles = collectChangedFiles(debug)
+	}
 
 	// 5. Load auth token (ERR-01 if missing).
 	token, err := loadAuthToken()
@@ -77,12 +99,16 @@ func Run(args []string, stdin io.Reader) int {
 	// 9. POST signing request to daemon (SIGN-05).
 	reqID, err := client.PostSigningRequest(ctx, repoName, &approval.GPGSignInfo{
 		RepoName:     repoName,
-		CommitMsg:    message,
-		Author:       author,
-		Committer:    committer,
+		Kind:         string(payload.Kind),
+		CommitMsg:    payload.Message,
+		Author:       payload.Signer,
+		Committer:    payload.Committer,
 		KeyID:        keyID,
 		ChangedFiles: changedFiles,
-		ParentHash:   parentHash,
+		ParentHash:   payload.ParentHash,
+		TagName:      payload.TagName,
+		Target:       payload.Target,
+		Pushee:       payload.Pushee,
 		CommitObject: string(commitBytes),
 	})
 	if err != nil {

@@ -99,6 +99,13 @@ func Status() error {
 			} else if state != "active" {
 				problems = append(problems, fmt.Sprintf("%s is %s", unitFileName, state))
 			}
+			// A running dispatcher in remote topology proxies to whatever owns
+			// org.freedesktop.secrets upstream; if nothing owns it, every secret
+			// lookup hangs with no visible error and the unit still looks
+			// "active" — so an active-but-serving-nothing state must be flagged.
+			if p.Kind == ProviderNone {
+				problems = append(problems, "org.freedesktop.secrets has no owner — no Secret Service provider is running upstream, so secret lookups will hang")
+			}
 		}
 	}
 

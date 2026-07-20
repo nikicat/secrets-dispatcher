@@ -77,12 +77,32 @@ start_qemu() {
     local disk=$1 pidfile=$2 log=$3
     shift 3
     # virtio-vga gives gdm/gnome-shell a virtual monitor with no host display;
-    # daemonize keeps qemu alive across the calling shell.
+    # daemonize keeps qemu alive across the calling shell. The QMP socket
+    # plus the virtio input devices are host-side input injection (demo.sh
+    # types keys and clicks notification buttons over QMP); mutter only
+    # consumes virtio-input, not the emulated PS/2 devices, so both the
+    # tablet (absolute-coordinate pointer) and keyboard must be explicit.
+    # All three are inert for the test path.
+    #
+    # By default the guest is software-rendered (llvmpipe), under which mutter
+    # disables all animations. VM_GL=1 instead exposes the host GPU to the guest
+    # via virgl (virtio-vga-gl + an EGL-headless context on a DRM render node),
+    # so the guest gets hardware GL and mutter re-enables animations — the demo's
+    # window glide only renders this way. Local-only: CI runners have no
+    # /dev/dri, so leave VM_GL unset there. Override the node with VM_GL_RENDERNODE.
+    local video=virtio-vga display=none
+    if [[ -n "${VM_GL:-}" ]]; then
+        video=virtio-vga-gl
+        display="egl-headless,rendernode=${VM_GL_RENDERNODE:-/dev/dri/renderD128}"
+    fi
     qemu-system-x86_64 \
         -enable-kvm -cpu host -m "$VM_MEM" -smp "$VM_CPUS" \
         -drive "file=$disk,format=qcow2,if=virtio" \
-        -device virtio-vga \
-        -display none \
+        -device "$video" \
+        -device virtio-tablet-pci \
+        -device virtio-keyboard-pci \
+        -display "$display" \
+        -qmp "unix:$VM_DIR/qmp.sock,server,nowait" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \
         -serial "file:$log" \
@@ -155,6 +175,19 @@ cmd_stop() {
         kill "$(cat "$VM_DIR/vm.pid")" 2>/dev/null || true
         rm -f "$VM_DIR/vm.pid"
     fi
+    # Belt and braces: a qemu that outlived its pidfile would still hold
+    # SSH_PORT and break the next boot. Match on this instance's overlay
+    # disk path (unique per instance; the provision VM runs off the base
+    # image, so it never matches). Then wait for the port to actually free —
+    # kill is async and boot may follow immediately.
+    pkill -f "$VM_DIR/disk.qcow2" 2>/dev/null || true
+    local i
+    for ((i = 0; i < 20; i++)); do
+        pgrep -f "$VM_DIR/disk.qcow2" >/dev/null || return 0
+        sleep 0.5
+    done
+    pkill -9 -f "$VM_DIR/disk.qcow2" 2>/dev/null || true
+    sleep 1
 }
 
 cmd_destroy() {

@@ -305,7 +305,14 @@ make build          # Build with embedded frontend
 make test-go        # Run Go tests
 make test-e2e       # Run Playwright E2E tests
 make pre-commit     # Lint + format + staticcheck
+make demo           # Record demo videos in the Tier-2 GNOME VM -> .build/demos/
 ```
+
+`make demo` boots the same Ubuntu desktop VM the e2e suite uses and screen-records
+the install/try arc being typed into a real GNOME terminal (see
+`e2e/gnome/vm/demo.sh`). Videos are build artifacts, never committed; the
+manual [Demos workflow](.github/workflows/demos.yml) records them in CI and
+uploads the result as a workflow artifact.
 
 ## Documentation
 

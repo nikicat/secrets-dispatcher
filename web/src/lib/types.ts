@@ -24,6 +24,11 @@ export interface SenderInfo {
 
 export interface GPGSignInfo {
   repo_name: string;
+  // What kind of object is being signed. git routes commits, annotated tags,
+  // and signed-push certificates through the same signer. author holds the
+  // author/tagger/pusher and commit_msg holds the commit message / tag message
+  // / pushed ref-updates; the kind-specific fields below carry the rest.
+  kind?: "commit" | "tag" | "push" | "unknown";
   commit_msg: string;
   author: string;
   committer: string;
@@ -31,6 +36,9 @@ export interface GPGSignInfo {
   fingerprint?: string;
   changed_files: string[];
   parent_hash?: string;
+  tag_name?: string; // tag only
+  target?: string; // tag only: the tagged object hash
+  pushee?: string; // push only: destination URL
 }
 
 export interface PendingRequest {

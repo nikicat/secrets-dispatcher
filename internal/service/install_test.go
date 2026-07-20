@@ -2,10 +2,14 @@ package service
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"gopkg.in/yaml.v3"
@@ -916,4 +920,72 @@ func TestUnmaskNoBackupRemovesMask(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dbusDir, dbusServiceFile)); !os.IsNotExist(err) {
 		t.Error("mask file should have been removed when no backup exists")
 	}
+}
+
+// --- output verbosity ---
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns
+// everything it printed.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+	fn()
+	require.NoError(t, w.Close())
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(out)
+}
+
+func TestInstallQuietByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	mockSystemctl(t)
+
+	out := captureStdout(t, func() {
+		require.NoError(t, Install(Options{}))
+	})
+
+	assert.NotContains(t, out, "Wrote unit file:")
+	assert.NotContains(t, out, "Wrote config:")
+	assert.NotContains(t, out, "Enabled ")
+}
+
+func TestInstallVerboseNarratesChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	mockSystemctl(t)
+	Verbose = true
+	t.Cleanup(func() { Verbose = false })
+
+	out := captureStdout(t, func() {
+		require.NoError(t, Install(Options{}))
+	})
+
+	assert.Contains(t, out, "Wrote unit file:")
+	assert.Contains(t, out, "Wrote config:")
+	assert.Contains(t, out, "Enabled "+unitFileName)
+}
+
+func TestUninstallQuietByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	mockSystemctl(t)
+	mockExecOutput(t, noopExecOutput)
+	require.NoError(t, Install(Options{}))
+
+	out := captureStdout(t, func() {
+		require.NoError(t, Uninstall())
+	})
+
+	assert.NotContains(t, out, "Removed ")
 }

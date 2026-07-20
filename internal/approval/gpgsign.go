@@ -10,11 +10,20 @@ import (
 // RequestTypeGPGSign is the request type for GPG commit signing approval requests.
 const RequestTypeGPGSign RequestType = "gpg_sign"
 
-// GPGSignInfo carries the commit context fields for a signing approval request.
-// All fields are supplied by the thin client; CommitObject is the raw commit object
+// GPGSignInfo carries the signing context for a gpg_sign approval request.
+// All fields are supplied by the thin client; CommitObject is the raw object
 // bytes (UTF-8 text) that the daemon feeds to real gpg's stdin on approval.
+//
+// git signs three kinds of object through the same invocation (see
+// gpgsign.PayloadKind): commits, annotated tags, and signed-push certificates.
+// The common fields are reused across kinds — Author holds the commit author /
+// tag tagger / push pusher, and CommitMsg holds the commit message / tag
+// message / pushed ref-update lines — while Kind and the kind-specific fields
+// below let the approval UI label them correctly. Committer and ParentHash are
+// commit-only; TagName/Target are tag-only; Pushee is push-only.
 type GPGSignInfo struct {
 	RepoName     string   `json:"repo_name"`
+	Kind         string   `json:"kind,omitempty"`
 	CommitMsg    string   `json:"commit_msg"`
 	Author       string   `json:"author"`
 	Committer    string   `json:"committer"`
@@ -22,7 +31,10 @@ type GPGSignInfo struct {
 	Fingerprint  string   `json:"fingerprint,omitempty"`
 	ChangedFiles []string `json:"changed_files"`
 	ParentHash   string   `json:"parent_hash,omitempty"`
-	// CommitObject is the raw commit object bytes (UTF-8 text) fed to gpg's stdin.
+	TagName      string   `json:"tag_name,omitempty"`
+	Target       string   `json:"target,omitempty"`
+	Pushee       string   `json:"pushee,omitempty"`
+	// CommitObject is the raw signed object bytes (UTF-8 text) fed to gpg's stdin.
 	CommitObject string `json:"commit_object,omitempty"`
 }
 

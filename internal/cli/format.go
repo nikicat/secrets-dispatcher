@@ -64,6 +64,15 @@ func truncate(s string, maxLen int) string {
 
 func requestSummary(req PendingRequest) string {
 	if req.GPGSignInfo != nil {
+		switch req.GPGSignInfo.Kind {
+		case "tag":
+			if req.GPGSignInfo.TagName != "" {
+				return "tag " + req.GPGSignInfo.TagName
+			}
+			return "tag"
+		case "push":
+			return "push"
+		}
 		n := len(req.GPGSignInfo.ChangedFiles)
 		if n == 1 {
 			return "1 file"
@@ -157,24 +166,49 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 	if req.GPGSignInfo != nil {
 		info := req.GPGSignInfo
 		fmt.Fprintf(f.w, "Repo:    %s\n", info.RepoName)
-		fmt.Fprintf(f.w, "Author:  %s\n", info.Author)
-		fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
-		fmt.Fprintf(f.w, "\n    %s\n", commitSubject(info.CommitMsg))
-		if body := commitBody(info.CommitMsg); body != "" {
-			for line := range strings.SplitSeq(body, "\n") {
-				fmt.Fprintf(f.w, "    %s\n", line)
+		// git signs commits, annotated tags, and push certificates through the
+		// same path; label each with its own fields so the human approving on
+		// the trusted VT sees exactly what kind of object they are signing.
+		switch info.Kind {
+		case "tag":
+			fmt.Fprintln(f.w, "Signing: annotated tag")
+			if info.TagName != "" {
+				fmt.Fprintf(f.w, "Tag:     %s\n", info.TagName)
 			}
-		}
-		fmt.Fprintln(f.w)
-		fmt.Fprintf(f.w, "Changed files (%d):\n", len(info.ChangedFiles))
-		for _, file := range info.ChangedFiles {
-			fmt.Fprintf(f.w, "  %s\n", file)
-		}
-		if info.Committer != "" && info.Committer != info.Author {
-			fmt.Fprintf(f.w, "\nCommitter: %s\n", info.Committer)
-		}
-		if info.ParentHash != "" {
-			fmt.Fprintf(f.w, "Parent:    %s\n", info.ParentHash)
+			fmt.Fprintf(f.w, "Tagger:  %s\n", info.Author)
+			fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
+			if info.Target != "" {
+				fmt.Fprintf(f.w, "Target:  %s\n", info.Target)
+			}
+			f.writeSignMessage(info.CommitMsg)
+		case "push":
+			fmt.Fprintln(f.w, "Signing: signed push")
+			fmt.Fprintf(f.w, "Pusher:  %s\n", info.Author)
+			if info.Pushee != "" {
+				fmt.Fprintf(f.w, "Pushee:  %s\n", info.Pushee)
+			}
+			fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
+			fmt.Fprintln(f.w, "\nRef updates:")
+			for line := range strings.SplitSeq(info.CommitMsg, "\n") {
+				if line != "" {
+					fmt.Fprintf(f.w, "  %s\n", line)
+				}
+			}
+		default: // commit — and the safe generic fallback for an empty/unknown kind
+			fmt.Fprintf(f.w, "Author:  %s\n", info.Author)
+			fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
+			f.writeSignMessage(info.CommitMsg)
+			fmt.Fprintln(f.w)
+			fmt.Fprintf(f.w, "Changed files (%d):\n", len(info.ChangedFiles))
+			for _, file := range info.ChangedFiles {
+				fmt.Fprintf(f.w, "  %s\n", file)
+			}
+			if info.Committer != "" && info.Committer != info.Author {
+				fmt.Fprintf(f.w, "\nCommitter: %s\n", info.Committer)
+			}
+			if info.ParentHash != "" {
+				fmt.Fprintf(f.w, "Parent:    %s\n", info.ParentHash)
+			}
 		}
 	} else {
 		if len(req.Items) == 1 {
@@ -223,6 +257,17 @@ func commitBody(msg string) string {
 	}
 	body := strings.TrimLeft(msg[i:], "\n")
 	return strings.TrimRight(body, "\n")
+}
+
+// writeSignMessage prints a signed object's message as an indented subject line
+// followed by its body — shared by the commit and tag renderers.
+func (f *Formatter) writeSignMessage(msg string) {
+	fmt.Fprintf(f.w, "\n    %s\n", commitSubject(msg))
+	if body := commitBody(msg); body != "" {
+		for line := range strings.SplitSeq(body, "\n") {
+			fmt.Fprintf(f.w, "    %s\n", line)
+		}
+	}
 }
 
 // FormatHistory outputs history entries as a table.

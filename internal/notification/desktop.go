@@ -45,6 +45,14 @@ type Action struct {
 	ActionKey      string // "approve" or "deny"
 }
 
+// Closed reports a NotificationClosed signal for a notification we sent.
+// The server directs these at the sending connection only, so this is the
+// one place they can be observed (third-party monitors never see them).
+type Closed struct {
+	NotificationID uint32
+	Reason         uint32 // 1=expired, 2=dismissed by user, 3=CloseNotification, 4=undefined
+}
+
 // DBusNotifier sends notifications via D-Bus and listens for action button clicks.
 // It automatically reconnects if the session bus connection drops.
 type DBusNotifier struct {
@@ -52,15 +60,17 @@ type DBusNotifier struct {
 	conn    *dbus.Conn
 	signals chan *dbus.Signal
 	actions chan Action
+	closed  chan Closed
 	done    chan struct{}
 }
 
 // NewDBusNotifier creates a notifier using a private session bus connection and
-// starts listening for ActionInvoked signals.
+// starts listening for ActionInvoked and NotificationClosed signals.
 func NewDBusNotifier() (*DBusNotifier, error) {
 	n := &DBusNotifier{
 		signals: make(chan *dbus.Signal, 16),
 		actions: make(chan Action, 16),
+		closed:  make(chan Closed, 16),
 		done:    make(chan struct{}),
 	}
 
@@ -87,6 +97,13 @@ func (n *DBusNotifier) connect() error {
 	); err != nil {
 		conn.Close()
 		return fmt.Errorf("subscribe to ActionInvoked: %w", err)
+	}
+	if err := conn.AddMatchSignal(
+		dbus.WithMatchInterface(notifyInterface),
+		dbus.WithMatchMember("NotificationClosed"),
+	); err != nil {
+		conn.Close()
+		return fmt.Errorf("subscribe to NotificationClosed: %w", err)
 	}
 
 	conn.Signal(n.signals)
@@ -116,6 +133,13 @@ func (n *DBusNotifier) Actions() <-chan Action {
 	return n.actions
 }
 
+// ClosedEvents returns a channel that receives NotificationClosed signals for
+// notifications sent on this connection. Reason 1 (expired) on an approval
+// notification means the server auto-dismissed it — the US-7 failure mode.
+func (n *DBusNotifier) ClosedEvents() <-chan Closed {
+	return n.closed
+}
+
 // Stop stops the signal listener goroutine and closes the D-Bus connection.
 func (n *DBusNotifier) Stop() {
 	close(n.done)
@@ -135,21 +159,32 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 			if !ok {
 				return // channel closed (connection died)
 			}
-			if sig.Name != notifyInterface+".ActionInvoked" {
-				continue
-			}
 			if len(sig.Body) != 2 {
 				continue
 			}
-			id, ok1 := sig.Body[0].(uint32)
-			key, ok2 := sig.Body[1].(string)
-			if !ok1 || !ok2 {
-				continue
-			}
-			select {
-			case n.actions <- Action{NotificationID: id, ActionKey: key}:
-			case <-n.done:
-				return
+			switch sig.Name {
+			case notifyInterface + ".ActionInvoked":
+				id, ok1 := sig.Body[0].(uint32)
+				key, ok2 := sig.Body[1].(string)
+				if !ok1 || !ok2 {
+					continue
+				}
+				select {
+				case n.actions <- Action{NotificationID: id, ActionKey: key}:
+				case <-n.done:
+					return
+				}
+			case notifyInterface + ".NotificationClosed":
+				id, ok1 := sig.Body[0].(uint32)
+				reason, ok2 := sig.Body[1].(uint32)
+				if !ok1 || !ok2 {
+					continue
+				}
+				select {
+				case n.closed <- Closed{NotificationID: id, Reason: reason}:
+				case <-n.done:
+					return
+				}
 			}
 		}
 	}
@@ -157,22 +192,26 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 
 // Notify sends a desktop notification with optional action buttons.
 // If the D-Bus connection is dead, it reconnects and retries once.
+//
+// expire_timeout must be 0 (never expire): spec-honoring daemons (dunst,
+// mako, KDE) close a -1 ("server default") notification after their default
+// timeout — the user would have to race the banner to approve anything
+// (US-7). gnome-shell ignores the field entirely; there it is critical
+// urgency + no transient hint that keep the notification alive (GNOME 46
+// sources, docs/plans/onboarding-and-e2e.md). Approvals are closed
+// explicitly via Close when resolved.
 func (n *DBusNotifier) Notify(summary, body, icon string, actions []string) (uint32, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	id, err := n.doNotify(summary, body, icon, actions, 2) // urgency: critical
+	id, err := n.doNotifyFull(summary, body, icon, actions, 2, 0) // critical, never expire
 	if err != nil && errors.Is(err, dbus.ErrClosed) {
 		if reconnErr := n.reconnect(); reconnErr != nil {
 			return 0, fmt.Errorf("notify call: %w (reconnect failed: %v)", err, reconnErr)
 		}
-		id, err = n.doNotify(summary, body, icon, actions, 2)
+		id, err = n.doNotifyFull(summary, body, icon, actions, 2, 0)
 	}
 	return id, err
-}
-
-func (n *DBusNotifier) doNotify(summary, body, icon string, actions []string, urgency byte) (uint32, error) {
-	return n.doNotifyFull(summary, body, icon, actions, urgency, -1)
 }
 
 func (n *DBusNotifier) doNotifyFull(summary, body, icon string, actions []string, urgency byte, expireTimeout int32) (uint32, error) {

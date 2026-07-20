@@ -36,7 +36,12 @@ func resolveBackendExec(value string, provider Provider) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("find gopass-secret-service: %w", err)
 		}
-		return path, nil
+		// gopass-secret-service does NOT read DBUS_SESSION_BUS_ADDRESS (the env
+		// the backend unit sets, which gnome-keyring-daemon honors); it takes
+		// the private bus via --bus-address. Without this it falls back to a
+		// built-in default and crash-loops unable to reach the backend bus.
+		// (%t is expanded by systemd to $XDG_RUNTIME_DIR.)
+		return path + " --bus-address unix:path=%t/secrets-dispatcher/backend-bus.sock", nil
 	case "gnome-keyring":
 		path, err := lookPathFunc("gnome-keyring-daemon")
 		if err != nil {

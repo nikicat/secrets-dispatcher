@@ -99,9 +99,12 @@ func TestResolveBackendExec(t *testing.T) {
 		wantErr  string
 	}{
 		{
+			// gopass carries --bus-address: it ignores DBUS_SESSION_BUS_ADDRESS
+			// (which the backend unit sets for gnome-keyring) and would otherwise
+			// crash-loop unable to reach the private backend bus.
 			name:  "default without gnome-keyring is gopass",
 			value: "", provider: none,
-			want: "/usr/bin/gopass-secret-service",
+			want: "/usr/bin/gopass-secret-service --bus-address unix:path=%t/secrets-dispatcher/backend-bus.sock",
 		},
 		{
 			name:  "default with gnome-keyring provider demotes it to private backend",
@@ -110,7 +113,7 @@ func TestResolveBackendExec(t *testing.T) {
 		},
 		{
 			name: "explicit gopass keyword", value: "gopass", provider: gk,
-			want: "/usr/bin/gopass-secret-service",
+			want: "/usr/bin/gopass-secret-service --bus-address unix:path=%t/secrets-dispatcher/backend-bus.sock",
 		},
 		{
 			name: "explicit gnome-keyring keyword", value: "gnome-keyring", provider: none,

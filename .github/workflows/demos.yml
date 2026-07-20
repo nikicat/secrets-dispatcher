@@ -5,11 +5,11 @@ name: Demos
 # real Ubuntu desktop, captured via GNOME Shell's screencast service. One leg
 # per supported Ubuntu series (24.04 + 26.04).
 #
-# Each leg uploads its webm/mp4/gif as a run artifact AND publishes them to the
-# secrets-dispatcher-ci-media sidecar repo (pr-<N>/ for PRs, latest/ on master),
-# which GitHub Pages serves. A single PR comment then embeds the GIF previews
-# (an external <video> is CSP-blocked in comments; a proxied image is not) and
-# links each to the full-quality Pages-hosted mp4.
+# Each leg uploads its webm/mp4/webp as a run artifact, publishes them to the
+# secrets-dispatcher-ci-media sidecar repo (pr-<N>/ for PRs, latest/ on master,
+# served by GitHub Pages), and embeds the webp preview + full-video links in its
+# own run summary — so the demo is viewable straight from the commit's checks,
+# with no PR comment.
 #
 # Runs on PRs and master pushes that touch the product CLI or the demo harness
 # — the only things that change what the demo shows — plus on demand. NOT a
@@ -137,57 +137,22 @@ jobs:
           done
           git push
 
-  # One comment for the whole PR, after both legs, embedding the GIF previews.
-  embed:
-    needs: record
-    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      pull-requests: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PR: ${{ github.event.pull_request.number }}
-      REPO: ${{ github.repository }}
-      MEDIA: nikicat/secrets-dispatcher-ci-media
-    steps:
-      - name: Upsert the demo-recordings comment
+      # Surface the recording in THIS leg's run summary, so the demo is viewable
+      # from the commit's checks (Demos / record (<series>)) — no PR comment. The
+      # webp is embedded via its sidecar raw URL (GitHub's image proxy fetches it
+      # when the summary is viewed, well after the publish above); the full mp4
+      # and webm link to GitHub Pages.
+      - name: Add the recording to the run summary
         run: |
           set -euo pipefail
-          raw="https://raw.githubusercontent.com/$MEDIA/main/pr-$PR"
-          pages="https://nikicat.github.io/secrets-dispatcher-ci-media/pr-$PR"
-
-          marker='<!-- demos-embed -->'
-          body="$marker"$'\n'"## 🎬 Demo recordings"$'\n\n'
-          body+="Recorded from this PR by the Demos workflow. Click a preview for the full-quality video."$'\n\n'
-
+          raw="https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/$DEST"
+          pages="https://nikicat.github.io/secrets-dispatcher-ci-media/$DEST"
           declare -A label=( [noble]="Ubuntu 24.04 (noble)" [resolute]="Ubuntu 26.04 (resolute)" )
-          for s in noble resolute; do
-            body+="### ${label[$s]}"$'\n\n'
-            # Wait for raw to actually serve the just-pushed webp: GitHub's image
-            # proxy caches a 404 for a while if it fetches too early.
-            # Successful legs serve within seconds; cap the wait so a failed
-            # leg (webp never published) can't burn the job timeout.
-            served=""
-            for _ in $(seq 1 20); do
-              if curl -fsS -o /dev/null "$raw/trial-$s.webp"; then served=1; break; fi
-              sleep 4
-            done
-            if [ -n "$served" ]; then
-              body+="[![demo — $s]($raw/trial-$s.webp)]($pages/trial-$s.mp4)"$'\n\n'
-              body+="▶ [full video]($pages/trial-$s.mp4) · [webm]($pages/trial-$s.webm)"$'\n\n'
-            else
-              body+="_Recording unavailable — the \`$s\` leg didn't publish (see the Demos check)._"$'\n\n'
-            fi
-          done
-          body+="<sub>Videos live in [$MEDIA](https://github.com/$MEDIA) (throwaway; pruned periodically).</sub>"
-
-          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                 --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -1)
-          if [ -n "$id" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$id" -f body="$body" >/dev/null
-            echo "updated comment $id"
-          else
-            gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="$body" >/dev/null
-            echo "created comment"
-          fi
+          s="${{ matrix.series }}"
+          {
+            echo "## 🎬 Demo — ${label[$s]}"
+            echo
+            echo "[![demo — $s]($raw/trial-$s.webp)]($pages/trial-$s.mp4)"
+            echo
+            echo "▶ [full video]($pages/trial-$s.mp4) · [webm]($pages/trial-$s.webm)"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -248,7 +248,7 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	// Backend service.
 	content, _ = os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
 	s = string(content)
-	if !strings.Contains(s, "ExecStart=/usr/bin/gopass-secret-service") {
+	if !strings.Contains(s, "ExecStart=/usr/bin/gopass-secret service --bus-address") {
 		t.Error("backend service wrong ExecStart")
 	}
 	if !strings.Contains(s, "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/secrets-dispatcher/backend-bus.sock") {
@@ -545,8 +545,8 @@ func TestInstallLocalAutoDetectsBackend(t *testing.T) {
 		switch name {
 		case "dbus-daemon":
 			return "/usr/bin/dbus-daemon", nil
-		case "gopass-secret-service":
-			return "/opt/bin/gopass-secret-service", nil
+		case "gopass-secret":
+			return "/opt/bin/gopass-secret", nil
 		default:
 			return "", fmt.Errorf("not found: %s", name)
 		}
@@ -558,7 +558,7 @@ func TestInstallLocalAutoDetectsBackend(t *testing.T) {
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
-	if !strings.Contains(string(content), "ExecStart=/opt/bin/gopass-secret-service") {
+	if !strings.Contains(string(content), "ExecStart=/opt/bin/gopass-secret service") {
 		t.Error("should use auto-detected backend path")
 	}
 }
@@ -605,8 +605,8 @@ func TestInstallBackendNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when backend not found")
 	}
-	if !strings.Contains(err.Error(), "gopass-secret-service") {
-		t.Errorf("error should mention gopass-secret-service, got: %v", err)
+	if !strings.Contains(err.Error(), "gopass-secret") {
+		t.Errorf("error should mention gopass-secret, got: %v", err)
 	}
 }
 

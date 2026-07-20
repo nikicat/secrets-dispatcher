@@ -35,11 +35,11 @@ var readlinkFunc = os.Readlink
 // exeToKind maps a Secret Service daemon binary name to its provider kind.
 // Exact names, deliberately: matching on globs would misclassify wrappers.
 var exeToKind = map[string]ProviderKind{
-	"gnome-keyring-daemon":  ProviderGnomeKeyring,
-	"gopass-secret-service": ProviderGopass,
-	"kwalletd5":             ProviderKWallet,
-	"kwalletd6":             ProviderKWallet,
-	"secrets-dispatcher":    ProviderDispatcher,
+	"gnome-keyring-daemon": ProviderGnomeKeyring,
+	"gopass-secret":        ProviderGopass, // runs `gopass-secret service`
+	"kwalletd5":            ProviderKWallet,
+	"kwalletd6":            ProviderKWallet,
+	"secrets-dispatcher":   ProviderDispatcher,
 }
 
 // DetectProvider resolves who currently owns org.freedesktop.secrets on the

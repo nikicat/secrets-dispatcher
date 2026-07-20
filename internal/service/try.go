@@ -61,13 +61,13 @@ func Try(ctx context.Context, opts TryOptions) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println("Dry run — the trial would:")
+		fmt.Println(cBold("Dry run — the trial would:"))
 		fmt.Printf("  %s\n", Change{"copy", baseConfig + " -> " + trialConfig, "trial config; your config is never modified"})
 		for _, c := range changes {
 			fmt.Println("  " + c.String())
 		}
-		fmt.Println("On Ctrl-C every change is reverted: units stopped and removed, D-Bus")
-		fmt.Println("activation and gnome-keyring restored, trial config deleted.")
+		fmt.Println(cDim("On Ctrl-C every change is reverted: units stopped and removed, D-Bus"))
+		fmt.Println(cDim("activation and gnome-keyring restored, trial config deleted."))
 		return nil
 	}
 
@@ -88,9 +88,9 @@ func Try(ctx context.Context, opts TryOptions) error {
 	}
 
 	if err := Install(installOpts); err != nil {
-		fmt.Println("Install failed — reverting partial changes…")
+		fmt.Println(cErr("Install failed — reverting partial changes…"))
 		if restoreErr := restoreTrial(trialConfig, orig); restoreErr != nil {
-			fmt.Printf("WARNING: restore after failed install: %v\n", restoreErr)
+			fmt.Printf("%s restore after failed install: %v\n", cWarn("WARNING:"), restoreErr)
 		}
 		return err
 	}
@@ -100,16 +100,16 @@ func Try(ctx context.Context, opts TryOptions) error {
 		listen = cfg.Listen
 	}
 	fmt.Println()
-	fmt.Printf("✓ Web UI: http://%s\n", listen)
-	fmt.Println("→ See it work (requests ask for approval in the web UI unless a rule matches):")
-	fmt.Println("    secret-tool store --label=demo service demo   # then:")
-	fmt.Println("    secret-tool lookup service demo")
-	fmt.Println("Ctrl-C stops the trial and fully restores the original setup.")
+	fmt.Printf("%s Web UI: %s\n", cOK("✓"), cBold("http://"+listen))
+	fmt.Printf("%s See it work (requests ask for approval in the web UI unless a rule matches):\n", cInfo("→"))
+	fmt.Printf("    %s   %s\n", cBold("secret-tool store --label=demo service demo"), cDim("# then:"))
+	fmt.Printf("    %s\n", cBold("secret-tool lookup service demo"))
+	fmt.Printf("%s stops the trial and fully restores the original setup.\n", cBold("Ctrl-C"))
 
 	watchOwnership(ctx)
 
 	fmt.Println()
-	fmt.Println("Stopping the trial — restoring the original Secret Service…")
+	fmt.Println(cDim("Stopping the trial — restoring the original Secret Service…"))
 	return restoreTrial(trialConfig, orig)
 }
 
@@ -128,9 +128,9 @@ func watchOwnership(ctx context.Context) {
 			if nowInFront := p.Kind == ProviderDispatcher; nowInFront != inFront {
 				inFront = nowInFront
 				if inFront {
-					fmt.Println("org.freedesktop.secrets is owned by secrets-dispatcher again")
+					fmt.Println(cOK("org.freedesktop.secrets is owned by secrets-dispatcher again"))
 				} else {
-					fmt.Printf("WARNING: lost org.freedesktop.secrets to %s — a provider re-grabbed it\n", p)
+					fmt.Printf("%s lost org.freedesktop.secrets to %s — a provider re-grabbed it\n", cWarn("WARNING:"), p)
 				}
 			}
 		}
@@ -147,13 +147,13 @@ func restoreTrial(trialConfig string, orig Provider) error {
 	pokeSecretsActivation()
 	if orig.Kind != ProviderNone && orig.Kind != ProviderDispatcher {
 		if p, ok := waitForOwner(orig.Kind, ownerWaitTimeout); ok {
-			fmt.Printf("✓ Restored: org.freedesktop.secrets is owned by %s again\n", p)
+			fmt.Printf("%s Restored: org.freedesktop.secrets is owned by %s again\n", cOK("✓"), p)
 			return err
 		}
-		fmt.Printf("note: %s has not re-taken org.freedesktop.secrets yet — it returns on next access or login\n", orig.Kind)
+		fmt.Printf("%s %s has not re-taken org.freedesktop.secrets yet — it returns on next access or login\n", cDim("note:"), orig.Kind)
 		return err
 	}
-	fmt.Println("✓ Restored: all trial state removed")
+	fmt.Println(cOK("✓") + " Restored: all trial state removed")
 	return err
 }
 

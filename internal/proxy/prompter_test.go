@@ -140,16 +140,21 @@ func TestPrompterBridge(t *testing.T) {
 	assert.Equal(t, callbackPath, recvCall(t, shell.stop, "StopPrompting").callback)
 }
 
-// TestPrompterBridgeInactiveWithoutShellPrompter verifies the bridge stays off
-// when the front bus has no prompter to forward to (e.g. remote mode), so it
-// never claims a name it can't service.
-func TestPrompterBridgeInactiveWithoutShellPrompter(t *testing.T) {
+// TestPrompterBridgeActivatesWhenPrompterAppears is the relogin regression: the
+// proxy can start (or restart) BEFORE gnome-shell re-registers its prompter —
+// both come up with the graphical session and the proxy often wins the race. A
+// one-shot check would give up and let the display-less gcr-prompter fallback
+// claim the backend name on the first unlock. The bridge must instead wait for
+// the front prompter to appear and claim the backend name then — while still not
+// claiming a name it cannot yet service.
+func TestPrompterBridgeActivatesWhenPrompterAppears(t *testing.T) {
 	tmpDir := t.TempDir()
 	backendCmd, backendAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "backend.sock"))
 	t.Cleanup(func() { backendCmd.Process.Kill(); backendCmd.Wait() })
 	frontCmd, frontAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "front.sock"))
 	t.Cleanup(func() { frontCmd.Process.Kill(); frontCmd.Wait() })
 
+	// Connect the proxy with NO front prompter present yet.
 	proxyBackendConn, err := dbus.Connect(backendAddr)
 	require.NoError(t, err)
 	proxyFrontConn, err := dbus.Connect(frontAddr)
@@ -158,8 +163,36 @@ func TestPrompterBridgeInactiveWithoutShellPrompter(t *testing.T) {
 	require.NoError(t, p.ConnectWith(proxyFrontConn, proxyBackendConn))
 	t.Cleanup(func() { p.Close() })
 
-	assert.Nil(t, p.prompter, "bridge must not activate without a front-bus prompter")
-	assert.False(t, nameHasOwner(proxyBackendConn, systemPrompterName), "bridge must not claim the prompter name it cannot service")
+	// It must not claim the name it cannot yet service.
+	assert.False(t, nameHasOwner(proxyBackendConn, systemPrompterName),
+		"bridge must not claim the backend name before a front prompter exists")
+
+	// gnome-shell's prompter appears on the front bus (as after a relogin).
+	shellConn, err := dbus.Connect(frontAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { shellConn.Close() })
+	shell := &mockShellPrompter{
+		begin:   make(chan promptCall, 1),
+		perform: make(chan promptCall, 1),
+		stop:    make(chan promptCall, 1),
+	}
+	require.NoError(t, shellConn.Export(shell, systemPrompterPath, prompterInterface))
+	reply, err := shellConn.RequestName(systemPrompterName, dbus.NameFlagDoNotQueue)
+	require.NoError(t, err)
+	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
+
+	// The bridge must notice and claim the backend name.
+	require.Eventually(t, func() bool { return nameHasOwner(proxyBackendConn, systemPrompterName) },
+		5*time.Second, 20*time.Millisecond,
+		"bridge must claim the backend name once the front prompter appears")
+
+	// ...and forwarding must then work end-to-end.
+	keyringConn, err := dbus.Connect(backendAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { keyringConn.Close() })
+	prompter := keyringConn.Object(systemPrompterName, dbus.ObjectPath(systemPrompterPath))
+	require.NoError(t, prompter.Call(prompterInterface+".BeginPrompting", 0, dbus.ObjectPath("/org/gnome/keyring/Prompt/x")).Err)
+	recvCall(t, shell.begin, "BeginPrompting")
 }
 
 func recvCall(t *testing.T, ch chan promptCall, what string) promptCall {

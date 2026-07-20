@@ -17,14 +17,21 @@
 #     glide the real cursor onto a located button and click it. Absolute
 #     coordinates are stage logical pixels, matching the locator's output 1:1.
 #
-# demo_trial is the install/try arc with two client-request beats:
+# demo_trial is the reversible-`try` arc with two client-request beats:
 #   go install -> try (live takeover) -> secret-tool lookup raises the GNOME
 #   unlock dialog (US-6/prompter-bridge) -> type the keyring password -> the
 #   GetSecret approval notification pops -> click DENY (blocked) -> a second
 #   lookup -> click APPROVE (secret prints) -> Ctrl-C restores.
 #
+# demo_install is the *permanent* counterpart (US-10): go install ->
+#   `service install --mode local --start` -> status -> a relogin (the recording
+#   spans it) -> still in front -> unlock + APPROVE -> uninstall. The relogin is
+#   why recording is host-side (record.sh/VNC): the in-guest screencast would
+#   die with the session.
+#
 # The in-VM halves live in real, lintable files scp'd into the guest:
-# demo-stage.sh (desktop look) and demo-driver.sh (the typed/clicked arc).
+# demo-stage.sh (desktop look), demo-driver.sh (the try arc) and
+# demo-driver-install.sh (the permanent-install arc).
 #
 # Videos are throwaway build artifacts, never committed: locally in the output
 # dir (Makefile: .build/demos), in CI demos.yml uploads them.
@@ -90,7 +97,7 @@ prep_common() {
     scp_in "$SCRIPT_DIR/locator-extension/metadata.json" "$SCRIPT_DIR/locator-extension/extension.js" \
         "e2e@127.0.0.1:.local/share/gnome-shell/extensions/$EXT_UUID/"
     scp_in "$SCRIPT_DIR/rd_agent.py" "$SCRIPT_DIR/demo-stage.sh" "$SCRIPT_DIR/demo-driver.sh" \
-        "e2e@127.0.0.1:"
+        "$SCRIPT_DIR/demo-driver-install.sh" "e2e@127.0.0.1:"
     vmssh "
         gsettings set org.gnome.shell disable-extension-version-validation true
         gsettings set org.gnome.shell enabled-extensions \"['$DOCK_UUID', '$EXT_UUID']\""
@@ -133,6 +140,13 @@ prep_common() {
     # fix ships in a release, drop the stash/swap and let `go install` stand.
     scp_in "$BIN" "e2e@127.0.0.1:secrets-dispatcher-fixed"
 
+    # Host-side VNC capture (record.sh) only sees the cursor if mutter renders
+    # it into the framebuffer instead of a virtio-gpu HW cursor plane (which VNC
+    # sends out-of-band and the grabber drops). Force a software cursor; it takes
+    # effect at the next login, which the reboot below provides.
+    vmssh 'grep -q MUTTER_DEBUG_DISABLE_HW_CURSORS /etc/environment \
+        || echo "MUTTER_DEBUG_DISABLE_HW_CURSORS=1" | sudo tee -a /etc/environment >/dev/null'
+
     log "rebooting once: loads the extension and gives a clean notification stack"
     reboot_and_wait
     vmssh 'busctl --user call org.gnome.ScreenSaver /org/gnome/ScreenSaver \
@@ -159,18 +173,65 @@ demo_trial() {
     # lands us on a normal desktop before the camera rolls.
     vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
     sleep 1
-    "$RECORD" start /home/e2e/demo-trial.webm
+    "$RECORD" start "$OUT/trial.webm"
     sleep 2
 
     # The driver opens and places its own terminal windows (via the locator
     # extension), so the terminals appear on camera as part of the story.
     if ! vmssh "KEYRING_PW=$KEYRING_PW bash ~/demo-driver.sh"; then
-        "$RECORD" stop /home/e2e/demo-trial.webm "$OUT/trial-failed.webm" || true
+        "$RECORD" stop || true
+        mv "$OUT/trial.webm" "$OUT/trial-failed.webm" 2>/dev/null || true
         vmssh 'tmux kill-server 2>/dev/null || true; pkill -x sd-local 2>/dev/null || true' || true
         die "demo driver failed (partial recording kept for post-mortem)"
     fi
 
-    "$RECORD" stop /home/e2e/demo-trial.webm "$OUT/trial.webm"
+    "$RECORD" stop
+    vmssh 'tmux kill-server 2>/dev/null || true; pkill -f "gnome-terminal-serve[r]" 2>/dev/null || true'
+}
+
+demo_install() {
+    log "demo_install: install --start -> status -> RELOGIN -> still in front -> unlock+approve -> uninstall"
+
+    vmssh 'printf "key esc\nquit\n" | python3 ~/rd_agent.py >/dev/null 2>&1 || true'
+    sleep 1
+    "$RECORD" start "$OUT/install.webm"
+    sleep 2
+
+    # Phase 1: the permanent takeover + status, before the relogin.
+    if ! vmssh "bash ~/demo-driver-install.sh part1"; then
+        "$RECORD" stop || true
+        mv "$OUT/install.webm" "$OUT/install-failed.webm" 2>/dev/null || true
+        vmssh 'tmux kill-server 2>/dev/null || true
+            ~/go/bin/secrets-dispatcher service uninstall 2>/dev/null || true' || true
+        die "demo install part1 failed (partial recording kept for post-mortem)"
+    fi
+
+    # The permanence proof: relogin, on camera. Host-side capture keeps rolling
+    # across the session restart (the in-guest screencast never could).
+    log "relogin (systemctl restart gdm) — recording continues across it"
+    "$RUN" ssh 'sudo systemctl restart gdm' 2>/dev/null || true
+    sleep 8
+    "$RUN" wait-desktop
+    # The shell (and the locator extension) restart with the session; wait for
+    # the locator D-Bus to answer before part2 drives the GUI, else the first
+    # waittext races a cold locator and dead-waits its full timeout.
+    vmssh 'for i in $(seq 40); do busctl --user call org.gnome.Shell \
+        /org/gnome/Shell/SecretsDemoLocator org.gnome.Shell.SecretsDemoLocator \
+        Dump >/dev/null 2>&1 && break; sleep 1; done'
+    sleep 3
+
+    # Phase 2: still in front, a live unlock + approve, then uninstall.
+    if ! vmssh "KEYRING_PW=$KEYRING_PW bash ~/demo-driver-install.sh part2"; then
+        "$RECORD" stop || true
+        mv "$OUT/install.webm" "$OUT/install-failed.webm" 2>/dev/null || true
+        vmssh 'tmux kill-server 2>/dev/null || true
+            export XDG_RUNTIME_DIR=/run/user/$(id -u)
+            export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+            ~/go/bin/secrets-dispatcher service uninstall 2>/dev/null || true' || true
+        die "demo install part2 failed (partial recording kept for post-mortem)"
+    fi
+
+    "$RECORD" stop
     vmssh 'tmux kill-server 2>/dev/null || true; pkill -f "gnome-terminal-serve[r]" 2>/dev/null || true'
 }
 
@@ -181,8 +242,14 @@ finish() {
     for f in "$OUT"/*.webm; do
         [[ -e "$f" ]] || continue
         if command -v ffprobe >/dev/null; then
-            local dur; dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f")
-            LC_ALL=C printf '%s: %.0fs\n' "$f" "$dur"
+            # gstreamer's live webmmux writes no container duration header, so
+            # format=duration is often "N/A" — don't feed that to printf %f (it
+            # errors, and under set -e would abort finish before the mp4/webp).
+            local dur; dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" 2>/dev/null)
+            case "$dur" in
+                '' | N/A) printf '%s: (duration n/a)\n' "$f" ;;
+                *) LC_ALL=C printf '%s: %.0fs\n' "$f" "$dur" ;;
+            esac
         fi
         command -v ffmpeg >/dev/null || continue
         # mp4 for the click-through player. -crf 30 + a pinned 15 fps CFR keep
@@ -192,22 +259,24 @@ finish() {
         # tracks the webm's size.
         ffmpeg -y -v error -i "$f" -c:v libx264 -pix_fmt yuv420p \
             -crf 30 -preset veryfast -r 15 -movflags +faststart "${f%.webm}.mp4"
-        # webp preview: this is what embeds *inline* in a PR comment (an image,
+        # webp preview: this is what embeds *inline* in the run summary (an image,
         # served through GitHub's proxy), where an external <video> is CSP-
         # blocked. Full colour AND smaller than a 256-colour GIF because
         # `img2webp -min_size` does changed-rectangle inter-frame diffing (only
         # the changed part of each frame is stored). ffmpeg's own webp muxer
         # can't do that — it re-encodes every full frame (~20 MB) — hence the
-        # frames -> img2webp two-step. -d 125 = the 8 fps sampling above.
-        # 15 fps matches record.sh's screencast cap, so every source frame —
-        # including the window-map and notification-slide animations — lands in
-        # the preview. img2webp dedupes the repeated static frames, so the higher
-        # rate barely grows the file (~420 KB vs ~390 KB at 8 fps). -d 67 ≈ 15 fps.
+        # frames -> img2webp two-step. Tuned for a small, fast inline preview
+        # (click through to the mp4 for full quality): 10 fps (-d 100), 720px
+        # wide, q60, -m 4. The VNC source sends full frames continuously (slight
+        # per-frame noise even when static), so img2webp's changed-rectangle
+        # dedup helps less than it did for the old screencast — dropping the
+        # scale/quality is what keeps a minute-plus install demo near ~0.5 MB
+        # instead of several MB. Terminal text stays legible at 720px.
         if command -v img2webp >/dev/null; then
             local fr
             fr=$(mktemp -d)
-            ffmpeg -y -v error -i "$f" -vf "fps=15,scale=900:-1:flags=lanczos" "$fr/f-%05d.png"
-            img2webp -min_size -lossy -q 80 -m 6 -d 67 "$fr"/f-*.png -o "${f%.webm}.webp" >/dev/null 2>&1
+            ffmpeg -y -v error -i "$f" -vf "fps=10,scale=720:-1:flags=lanczos" "$fr/f-%05d.png"
+            img2webp -min_size -lossy -q 60 -m 4 -d 100 "$fr"/f-*.png -o "${f%.webm}.webp" >/dev/null 2>&1
             rm -rf "$fr"
         fi
     done
@@ -215,12 +284,11 @@ finish() {
 
 main() {
     mkdir -p "$OUT"
-    # Drop artifacts from a previous run: a stale trial-failed.webm would
-    # otherwise linger and get re-encoded to .mp4 by finish(), making a good
-    # run look failed.
-    rm -f "$OUT"/trial*.webm "$OUT"/trial*.mp4
+    # Drop artifacts from a previous run: a stale *-failed.webm would otherwise
+    # linger and get re-encoded to .mp4 by finish(), making a good run look failed.
+    rm -f "$OUT"/trial*.webm "$OUT"/trial*.mp4 "$OUT"/install*.webm "$OUT"/install*.mp4
     local demos=("$@")
-    ((${#demos[@]})) || demos=(demo_trial)
+    ((${#demos[@]})) || demos=(demo_trial demo_install)
     prep_common
     local d
     for d in "${demos[@]}"; do "$d"; done

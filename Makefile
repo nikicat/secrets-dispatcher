@@ -117,6 +117,12 @@ test-e2e-gnome-vm: backend-go notifprobe
 # base as test-e2e-gnome-vm). Output: .build/demos/*.webm (+ .mp4 when ffmpeg
 # is installed) — throwaway artifacts, never committed; demos.yml uploads
 # them from CI. GO_REF picks what the on-camera `go install` fetches.
+#
+# VNC_DISP (target-scoped, not on the e2e path): boots the VM with a VNC display
+# so record.sh can capture the framebuffer host-side — the only way to record
+# continuously across the demo_install relogin. Needs gstreamer on the host
+# (rfbsrc); demos.yml installs it. Set VM_GL=1 locally (GPU) for animations.
+demo: export VNC_DISP := 41
 demo: backend-go
 	e2e/gnome/vm/run.sh provision
 	e2e/gnome/vm/run.sh destroy

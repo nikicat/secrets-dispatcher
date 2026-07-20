@@ -30,6 +30,12 @@ VM_DIR=${VM_DIR:-$CACHE_DIR/instance-$UBUNTU_SERIES}
 SSH_PORT=${SSH_PORT:-2222}
 VM_MEM=${VM_MEM:-4G}
 VM_CPUS=${VM_CPUS:-4}
+# VNC_DISP (env, optional): when set to a display number N, expose the guest
+# framebuffer over VNC on 127.0.0.1:590N — this is how demo.sh/record.sh grab
+# the screen host-side (the in-guest GNOME screencast can't span a session
+# restart). Empty means no VNC (the e2e path, which never records). Per-series
+# it must differ when running two VMs at once (like SSH_PORT).
+VNC_DISP=${VNC_DISP:-}
 IMG_URL=https://cloud-images.ubuntu.com/$UBUNTU_SERIES/current/$UBUNTU_SERIES-server-cloudimg-amd64.img
 PRISTINE=$CACHE_DIR/$UBUNTU_SERIES-server-cloudimg-amd64.img
 BASE=$CACHE_DIR/desktop-base-$UBUNTU_SERIES.qcow2
@@ -90,18 +96,28 @@ start_qemu() {
     # so the guest gets hardware GL and mutter re-enables animations — the demo's
     # window glide only renders this way. Local-only: CI runners have no
     # /dev/dri, so leave VM_GL unset there. Override the node with VM_GL_RENDERNODE.
+    #
+    # EDID xres/yres pins the guest to 1280x800; without it the connector's
+    # default mode is picked, which the recorder's fixed capture size relies on.
     local video=virtio-vga display=none
     if [[ -n "${VM_GL:-}" ]]; then
         video=virtio-vga-gl
         display="egl-headless,rendernode=${VM_GL_RENDERNODE:-/dev/dri/renderD128}"
     fi
+    # Recording path (VNC_DISP set): expose the framebuffer over VNC so the host
+    # can capture it (record.sh grabs 127.0.0.1:590$VNC_DISP with gstreamer).
+    # egl-headless and -vnc coexist — egl gives the guest hardware GL for
+    # animations, VNC reads back the composited framebuffer. 127.0.0.1 only.
+    local vnc=()
+    [[ -n "$VNC_DISP" ]] && vnc=(-vnc "127.0.0.1:$VNC_DISP")
     qemu-system-x86_64 \
         -enable-kvm -cpu host -m "$VM_MEM" -smp "$VM_CPUS" \
         -drive "file=$disk,format=qcow2,if=virtio" \
-        -device "$video" \
+        -device "$video,edid=on,xres=1280,yres=800" \
         -device virtio-tablet-pci \
         -device virtio-keyboard-pci \
         -display "$display" \
+        "${vnc[@]}" \
         -qmp "unix:$VM_DIR/qmp.sock,server,nowait" \
         -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" \
         -device virtio-net-pci,netdev=net0 \

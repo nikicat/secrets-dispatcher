@@ -1,9 +1,11 @@
 name: Demos
 
 # Screen-recorded product demos from the Tier-2 GNOME VM (e2e/gnome/vm/
-# demo.sh): the install/try arc typed live into two gnome-terminal windows on a
-# real Ubuntu desktop, captured via GNOME Shell's screencast service. One leg
-# per supported Ubuntu series (24.04 + 26.04).
+# demo.sh): the reversible `try` arc and the permanent `service install` arc
+# (the latter recorded continuously across a relogin), typed live into
+# gnome-terminal windows on a real Ubuntu desktop. Captured host-side over VNC
+# with gstreamer (record.sh) — the in-guest screencast can't span the relogin.
+# One leg per supported Ubuntu series (24.04 + 26.04).
 #
 # Each leg uploads its webm/mp4/webp as a run artifact, publishes them to the
 # secrets-dispatcher-ci-media sidecar repo (pr-<N>/ for PRs, latest/ on master,
@@ -65,11 +67,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install QEMU/KVM + cloud-image tooling + ffmpeg
+      - name: Install QEMU/KVM + cloud-image tooling + ffmpeg + gstreamer
         run: |
           sudo apt-get update -qq
+          # gstreamer (rfbsrc in -plugins-bad, vp8/webmmux in -plugins-good) is
+          # the host-side VNC recorder — see e2e/gnome/vm/record.sh.
           sudo apt-get install -y -qq --no-install-recommends \
-            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd ffmpeg webp
+            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd ffmpeg webp \
+            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
           # GitHub-hosted runners expose /dev/kvm but not to the runner user.
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -94,12 +99,19 @@ jobs:
 
       - run: make demo
 
-      - name: Stage the recording under the series name
+      - name: Stage the recordings under the series name
+        if: always()
         run: |
           mkdir -p out
-          for ext in webm mp4 webp; do
-            cp ".build/demos/trial.$ext" "out/trial-${{ matrix.series }}.$ext"
+          # trial = reversible `try`; install = permanent `service install` (US-10).
+          # Tolerant copy so a partial run still uploads whatever recorded.
+          for demo in trial install; do
+            for ext in webm mp4 webp; do
+              [ -f ".build/demos/$demo.$ext" ] \
+                && cp ".build/demos/$demo.$ext" "out/$demo-${{ matrix.series }}.$ext" || true
+            done
           done
+          ls -la out
 
       - name: Upload the recording artifact
         if: always()
@@ -120,7 +132,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "media/$DEST"
-          cp out/trial-${{ matrix.series }}.* "media/$DEST/"
+          cp out/*-${{ matrix.series }}.* "media/$DEST/"
           cd media
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -142,17 +154,25 @@ jobs:
       # webp is embedded via its sidecar raw URL (GitHub's image proxy fetches it
       # when the summary is viewed, well after the publish above); the full mp4
       # and webm link to GitHub Pages.
-      - name: Add the recording to the run summary
+      - name: Add the recordings to the run summary
+        if: always()
         run: |
           set -euo pipefail
           raw="https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/$DEST"
           pages="https://nikicat.github.io/secrets-dispatcher-ci-media/$DEST"
           declare -A label=( [noble]="Ubuntu 24.04 (noble)" [resolute]="Ubuntu 26.04 (resolute)" )
+          declare -A title=( [trial]="try — reversible trial" [install]="service install — make it permanent" )
           s="${{ matrix.series }}"
           {
-            echo "## 🎬 Demo — ${label[$s]}"
-            echo
-            echo "[![demo — $s]($raw/trial-$s.webp)]($pages/trial-$s.mp4)"
-            echo
-            echo "▶ [full video]($pages/trial-$s.mp4) · [webm]($pages/trial-$s.webm)"
+            echo "## 🎬 Demos — ${label[$s]}"
+            # Only include a demo whose webp actually staged (a flaked leg is skipped).
+            for demo in trial install; do
+              [ -f "out/$demo-$s.webp" ] || continue
+              echo
+              echo "### ${title[$demo]}"
+              echo
+              echo "[![$demo — $s]($raw/$demo-$s.webp)]($pages/$demo-$s.mp4)"
+              echo
+              echo "▶ [full video]($pages/$demo-$s.mp4) · [webm]($pages/$demo-$s.webm)"
+            done
           } >> "$GITHUB_STEP_SUMMARY"

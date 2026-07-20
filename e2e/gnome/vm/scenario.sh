@@ -37,6 +37,9 @@ BIN=$(readlink -f "${1:?usage: scenario.sh <secrets-dispatcher-binary> [leg...]}
 RUN=$(dirname "$0")/run.sh
 KEYRING_PW=tier2-keyring-password
 ITEM_ATTRS="service tier2 user demo"
+# NOTIFPROBE (env, optional): path to the notifprobe binary for
+# leg_notification — the US-7 no-auto-expire gate against real gnome-shell.
+NOTIFPROBE=${NOTIFPROBE:+$(readlink -f "$NOTIFPROBE")}
 
 # --- helpers ---
 
@@ -112,15 +115,39 @@ dump_try_log() { vmssh 'cat /tmp/try.log' >&2; }
 
 # --- legs ---
 
-leg_push_binary() {
-    log "pushing binary into the VM"
-    "$RUN" ssh 'mkdir -p ~/.local/bin'
+vmscp() { # <local-file> <remote-name-under-~/.local/bin>
     # scp to a temp name + mv: replaces the inode, so it works even when a
-    # previous scenario run left the service running from this path (ETXTBSY).
+    # previous scenario run left a process running from this path (ETXTBSY).
     scp -P "${SSH_PORT:-2222}" -i "${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/secrets-dispatcher/e2e}/id_ed25519" \
         -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        "$BIN" e2e@127.0.0.1:.local/bin/secrets-dispatcher.new
-    "$RUN" ssh 'mv ~/.local/bin/secrets-dispatcher.new ~/.local/bin/secrets-dispatcher'
+        "$1" "e2e@127.0.0.1:.local/bin/$2.new"
+    "$RUN" ssh "mv ~/.local/bin/$2.new ~/.local/bin/$2"
+}
+
+leg_push_binary() {
+    log "pushing binaries into the VM"
+    "$RUN" ssh 'mkdir -p ~/.local/bin'
+    vmscp "$BIN" secrets-dispatcher
+    if [[ -n "$NOTIFPROBE" ]]; then
+        vmscp "$NOTIFPROBE" notifprobe
+    fi
+}
+
+leg_notification() {
+    log "US-7: real gnome-shell must not auto-expire the approval notification"
+    [[ -n "$NOTIFPROBE" ]] || {
+        echo "error: leg_notification needs NOTIFPROBE=<path to notifprobe binary>" >&2
+        exit 1
+    }
+    # Banner display — and with it the expiry timer this gate depends on —
+    # needs an unblanked, unlocked screen (blanked sessions defer banners
+    # indefinitely). Same runtime settings demo.sh uses.
+    # Generous outer timeout: notifprobe retries its control for up to ~2 min
+    # while a freshly-booted session settles (see notifprobe/main.go).
+    vmssh '
+        gsettings set org.gnome.desktop.session idle-delay 0
+        gsettings set org.gnome.desktop.screensaver lock-enabled false
+        timeout 180 ~/.local/bin/notifprobe'
 }
 
 leg_baseline() {
@@ -275,13 +302,14 @@ main() {
     fi
     leg_push_binary
     leg_baseline
+    leg_notification
     leg_try_dry_run
     leg_trial
     leg_takeover
     leg_prompt
     leg_reboot
     leg_uninstall
-    log "PASS: takeover, trial reversibility, re-grab resistance, and full reversal all verified"
+    log "PASS: takeover, trial reversibility, notification persistence, re-grab resistance, and full reversal all verified"
 }
 
 main "${@:2}"

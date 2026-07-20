@@ -1,6 +1,6 @@
 MAKEFLAGS += -j
 
-.PHONY: all build install frontend backend backend-dev backend-go clean test test-go test-e2e test-e2e-all test-e2e-browser \
+.PHONY: all build install frontend backend backend-dev backend-go notifstub notifprobe clean test test-go test-e2e test-e2e-all test-e2e-browser \
 	test-e2e-gnome test-e2e-gnome-container demo playwright-install dev version release pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
@@ -78,15 +78,25 @@ backend-go:
 	@mkdir -p .build
 	CGO_ENABLED=0 go build -tags dev -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher-go .
 
+# US-7 e2e helpers: notifstub captures Notify args (Tier-1), notifprobe
+# asserts no expired-close against real gnome-shell (Tier-2, pushed into the VM).
+notifstub:
+	@mkdir -p .build
+	CGO_ENABLED=0 go build -o .build/notifstub ./e2e/gnome/notifstub
+
+notifprobe:
+	@mkdir -p .build
+	CGO_ENABLED=0 go build -o .build/notifprobe ./e2e/gnome/notifprobe
+
 # Tier-1 GNOME e2e: real gnome-keyring behind the proxy on private buses.
 # Needs gnome-keyring + libsecret installed (Ubuntu/CI); elsewhere use
 # test-e2e-gnome-container.
-test-e2e-gnome: backend-go
-	timeout 120 e2e/gnome/fast.sh .build/secrets-dispatcher-go
+test-e2e-gnome: backend-go notifstub
+	timeout 120 e2e/gnome/fast.sh .build/secrets-dispatcher-go .build/notifstub
 
 # Same, inside an ubuntu:24.04 container (podman or docker)
-test-e2e-gnome-container: backend-go
-	e2e/gnome/container.sh .build/secrets-dispatcher-go
+test-e2e-gnome-container: backend-go notifstub
+	e2e/gnome/container.sh .build/secrets-dispatcher-go .build/notifstub
 
 # Tier-2 GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init), covers the
 # takeover/re-grab/reversal acceptance gates. First run provisions a cached
@@ -95,12 +105,12 @@ test-e2e-gnome-container: backend-go
 #   make test-e2e-gnome-vm UBUNTU_SERIES=resolute
 UBUNTU_SERIES ?= noble
 export UBUNTU_SERIES
-test-e2e-gnome-vm: backend-go
+test-e2e-gnome-vm: backend-go notifprobe
 	e2e/gnome/vm/run.sh provision
 	e2e/gnome/vm/run.sh destroy
 	e2e/gnome/vm/run.sh boot
 	e2e/gnome/vm/run.sh wait-desktop
-	e2e/gnome/vm/scenario.sh .build/secrets-dispatcher-go
+	NOTIFPROBE=.build/notifprobe e2e/gnome/vm/scenario.sh .build/secrets-dispatcher-go
 	e2e/gnome/vm/run.sh destroy
 
 # Screen-recorded product demos from the Tier-2 GNOME VM (same cached desktop

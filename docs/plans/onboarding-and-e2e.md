@@ -220,33 +220,59 @@ Concrete CI pattern (confirmed working):
 - Runner packages: `qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd`.
 - Web-UI steps: existing Playwright against forwarded `:8484`.
 
-### Notification auto-dismiss — how to test it (mostly instrumentable, no pixels)
+### Notification auto-dismiss — PROBED + FIXED (US-7)
 
-`org.freedesktop.Notifications` broadcasts:
-- **`NotificationClosed(id, reason)`** — reason `1`=expired, `2`=user-dismissed,
-  `3`=CloseNotification, `4`=undefined.
-- **`ActionInvoked(id, action_key)`**.
+Probed 2026-07-18/19 on real gnome-shell 46 (Ubuntu 24.04 Tier-2 VM), then
+verified against the shell's own sources (`libshell-14.so` gresources —
+`messageTray.js`, `notificationDaemon.js`). The empirical model the shipped
+tests are anchored on:
 
-Strategy, layered:
-- **Fast tier:** a capture stub implementing `org.freedesktop.Notifications`
-  records `Notify()` args → assert we send `expire_timeout=0`, `urgency=2`,
-  actions present, body carries the process chain. (Tests *our* side only.)
-- **Fidelity tier (real gnome-shell):**
-  - bus monitor (`busctl --user monitor org.freedesktop.Notifications` or an
-    `AddMatch`) → assert **no `NotificationClosed(id, expired=1)`** within the
-    request window when `expire_timeout=0` (the deterministic core; the old `-1`
-    would emit it).
-  - **AT-SPI** (`org.a11y.Bus`, via `dogtail`/`pyatspi`) → assert the banner +
-    Approve/Deny buttons are still *presented*, **and drive Approve
-    programmatically** (`action.doAction`) — makes the notification approval
-    path fully automatable on real GNOME.
-  - GNOME Shell `Eval` (unsafe-mode, test-VM only) as a fallback to introspect
-    `Main.messageTray`.
-- **Probe first:** fire one notification with `-1` and with `0` on real
-  gnome-shell, capture what actually gets emitted (close reason? banner hidden
-  but still open?), so we anchor assertions on real behavior. The tool sends
-  `urgency=critical (2)`, so the failure is *likely* the expiry path
-  (D-Bus-observable) — but confirm, don't assume.
+- **gnome-shell IGNORES `expire_timeout`** — the fdo daemon discards the
+  field (`timeout_`, never read). What keeps a notification alive on GNOME is
+  **critical urgency + no `transient` hint**: such banners never time out and
+  the notification persists until acted on or explicitly closed.
+- **The real GNOME auto-dismiss hazards:** (a) `MAX_NOTIFICATIONS_PER_SOURCE
+  = 3` — a 4th open notification from one app destroys that app's oldest with
+  `reason=expired` (burst of approval requests ⇒ oldest pending approval
+  evicted — **open product follow-up**: coalesce or cap our own
+  notifications); (b) non-critical banners hide into the (invisible) tray
+  after ~4s of user activity; transient-hint ones are destroyed as expired.
+- **The `-1 → 0` fix targets spec-honoring daemons** (dunst, mako, KDE):
+  there `-1` means "close after server default timeout" — the reported
+  auto-dismiss — and `0` means never. On GNOME the field is inert either way.
+- **Observation caveat (cost a probe round):** `NotificationClosed`/
+  `ActionInvoked` are **unicast to the Notify caller** — dbus-monitor and
+  third-party match rules see nothing on dbus-broker. Only the sending
+  connection observes them (`DBusNotifier.ClosedEvents`).
+- **Measurement trap (cost a day):** batch-sending test notifications from
+  one app_name measures *source-cap eviction*, not expiry — an eviction is
+  indistinguishable from a timeout on the bus (same `reason=1`). Probe with
+  ≤3 open notifications per source.
+- **Environment prerequisites:** the `gjs` package (GNOME 46's notification
+  daemon is a D-Bus-activated gjs bridge; without it the name is unservable —
+  minimal installs!) and an unblanked screen for banner realism.
+
+Shipped tests, layered:
+- **In-package (every `go test`):** private dbus-daemon + recording stub →
+  `Notify` sends `expire_timeout=0`, `urgency=2`, actions
+  (`desktop_bus_test.go`).
+- **Fast tier (`fast.sh` + `e2e/gnome/notifstub`):** the stub owns
+  `org.freedesktop.Notifications` on the front bus; a real pending approval
+  through `serve` must produce `expire_timeout=0` + critical + Approve/Deny.
+- **Fidelity tier (`e2e/gnome/notifprobe`, Tier-2 scenario
+  `leg_notification`):** three-phase gate on real gnome-shell — close-echo
+  sanity (signals observable, bridge alive), server-identity check
+  (gnome-shell, not a stub), then the production `DBusNotifier` notification
+  must survive the window with no close of any kind (guards the
+  urgency/transient hints on GNOME, and expire_timeout on daemons that honor
+  it).
+
+Parked (spike later, not load-bearing): driving Approve *via the notification*
+programmatically. Cally/AT-SPI exposes the banner and its Approve/Deny
+buttons (assertable), but `nActions=0` everywhere — `doAction` cannot click on
+GNOME 46. Candidate mechanism: Mutter RemoteDesktop/QMP input injection aimed
+by AT-SPI extents (the demo harness already injects input via QMP). CLI + web
+approval paths are covered today.
 
 The only genuinely-fuzzy thing is subjective "is it visually prominent enough,"
 which isn't a regression test anyway.

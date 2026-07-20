@@ -12,3 +12,4 @@
 - [x] Implement CLI for approving/rejecting
 - [ ] Refactor
 - [ ] Proxy webserver mode for development - load webapp from vite webserver instead of embedded html
+- [ ] Notification burst eviction on GNOME: gnome-shell destroys an app's oldest notification (reason=expired) beyond MAX_NOTIFICATIONS_PER_SOURCE=3 — coalesce or cap concurrent approval notifications so a burst can't evict a pending approval (see docs/plans/onboarding-and-e2e.md US-7 model)

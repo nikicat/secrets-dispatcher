@@ -138,13 +138,18 @@ part2() {
     # tree and the locator can aim at it by text — same as the try demo: type the
     # password + Enter, then click Approve on the notification.
     rd "$(printf 'waittext Unlock\ntype %s\nkey enter\nwaittext Approve\nclicktext Approve' "$pw")"
-    sleep 4 # the secret value prints
+    sleep 2 # the secret value prints (it lands right after the Approve click)
     # Call out the payoff (plain glyphs only — the mono terminal font has no
     # colour-emoji, they render as tofu).
     type_cmd client "# ✓ survived the relogin, still served the secret — it works!"
     sleep 5
 }
 
+# logout drives a real, mouse-visible GNOME logout (demo.sh calls it between the
+# install and the post-relogin part, so it reads as a deliberate logout, not a
+# crash). GDM's TimedLogin then logs back in on its own — we don't drive the
+# greeter. The session ends mid-phase, which kills our RemoteDesktop session;
+# that's fine, the Log Out click has already landed.
 # uninstall is its own demo (demo_uninstall): the deliberate reversal, back to
 # stock. Runs after demo_install left the service in front (demo.sh reinstalls
 # off-camera first when this demo is run standalone). A single, focused window.

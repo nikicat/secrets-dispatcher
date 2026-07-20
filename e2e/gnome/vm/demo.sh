@@ -58,8 +58,17 @@ KEYRING_PW=opensesame
 SECRET_VALUE='ghp_super_secret_key_123##@!'
 SSH_PORT=${SSH_PORT:-2222}
 CACHE_DIR=${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/secrets-dispatcher/e2e}
+UBUNTU_SERIES=${UBUNTU_SERIES:-noble}
+# QEMU QMP socket (run.sh's start_qemu creates it per instance) — the demo drives
+# the pointer host-side through it for the logout menu; see qmpinput.py.
+QMP_SOCK=${VM_DIR:-$CACHE_DIR/instance-$UBUNTU_SERIES}/qmp.sock
 
 log() { printf '\n=== %s\n' "$*"; }
+
+# qmp_click_menu drives the real cursor host-side (via QMP, no in-guest session)
+# through a fixed sequence of guide-and-click points. Coordinates are for the
+# pinned 1280x800 guest.
+qmp_click_menu() { python3 "$SCRIPT_DIR/qmpinput.py" "$QMP_SOCK"; }
 
 vmssh() {
     "$RUN" ssh "
@@ -160,6 +169,20 @@ GRUB_CMDLINE_LINUX_DEFAULT="quiet splash console=ttyS0"
 EOF
         sudo update-grub >/dev/null 2>&1'
 
+    # Enable TimedLogin so GDM re-logs-in on its own after the demo's mouse-driven
+    # logout: an autologin desktop won't AutomaticLogin again after a manual
+    # logout (GDM loop-prevention leaves it at the greeter), but TimedLogin auto-
+    # logs-in after a short delay at the greeter. So the demo can show a real
+    # logout without also having to drive the greeter login.
+    vmssh 'sudo tee /etc/gdm3/custom.conf >/dev/null <<EOF
+[daemon]
+AutomaticLoginEnable=true
+AutomaticLogin=e2e
+TimedLoginEnable=true
+TimedLogin=e2e
+TimedLoginDelay=2
+EOF'
+
     log "rebooting once: loads the extension and gives a clean notification stack"
     reboot_and_wait
     vmssh 'busctl --user call org.gnome.ScreenSaver /org/gnome/ScreenSaver \
@@ -219,29 +242,46 @@ demo_install() {
         die "demo install part1 failed (partial recording kept for post-mortem)"
     fi
 
-    # The permanence proof: relogin, on camera. Host-side capture keeps rolling
-    # across the session restart (the in-guest screencast never could). Restart
-    # gdm rather than log out — an autologin desktop won't re-autologin after a
-    # graceful logout (GDM loop-prevention leaves it at the greeter).
-    #
-    # Headless-VM cosmetics: when gdm stops, fbcon paints the boot-log text
-    # console onto the framebuffer until the greeter grabs KMS back. Unbind fbcon
-    # and quiet the kernel log first, so the brief handoff reads as a clean black
-    # screen instead of a wall of console text.
-    log "relogin (restart gdm) — recording continues across it"
-    "$RUN" ssh 'sudo sh -c "dmesg -n 1 2>/dev/null || true
-        for b in /sys/class/vtconsole/vtcon*/bind; do echo 0 > \"\$b\" 2>/dev/null || true; done
-        clear >/dev/tty1 2>/dev/null || true"' 2>/dev/null || true
-    "$RUN" ssh 'sudo systemctl restart gdm' 2>/dev/null || true
-    sleep 8
+    # The permanence proof: a real, mouse-driven logout on camera (so it reads as
+    # a deliberate logout, not a crash), then GDM's TimedLogin logs back in. The
+    # cursor is driven host-side over QMP through the GNOME menu — quick settings
+    # -> power -> Log Out... -> Log Out — because in-guest RemoteDesktop can't
+    # open the panel menus and would flash the screen-share indicator. Host-side
+    # capture keeps rolling across the whole session cycle; the kernel console is
+    # already on serial (grub drop-in in prep), so the handoff shows clean black,
+    # not the boot-log console. An autologin desktop won't AutomaticLogin after a
+    # logout, so prep enabled TimedLogin to bring it back on its own.
+    log "mouse-driven logout (host-side QMP) — GDM's TimedLogin re-logs-in"
+    local oldshell
+    oldshell=$(vmssh 'pgrep -u e2e -x gnome-shell | head -1' 2>/dev/null || true)
+    qmp_click_menu <<'EOF' || true
+glide 1256 15
+click
+sleep 0.9
+glide 1236 76
+click
+sleep 0.9
+glide 946 322
+click
+sleep 1.3
+glide 749 472
+click
+EOF
+    # Wait for TimedLogin to bring up a NEW gnome-shell (a different pid — the old
+    # one lingers briefly while the session tears down).
+    local i newshell=
+    for ((i = 0; i < 60; i++)); do
+        newshell=$(vmssh 'pgrep -u e2e -x gnome-shell | head -1' 2>/dev/null || true)
+        [[ -n "$newshell" && "$newshell" != "$oldshell" ]] && break
+        sleep 1
+    done
     "$RUN" wait-desktop
-    # The shell (and the locator extension) restart with the session; wait for
-    # the locator D-Bus to answer before part2 drives the GUI, else the first
-    # waittext races a cold locator and dead-waits its full timeout.
+    # Wait for the locator D-Bus to answer (the extension restarts with the shell)
+    # before part2 drives the GUI, else the first waittext races a cold locator.
     vmssh 'for i in $(seq 40); do busctl --user call org.gnome.Shell \
         /org/gnome/Shell/SecretsDemoLocator org.gnome.Shell.SecretsDemoLocator \
         Dump >/dev/null 2>&1 && break; sleep 1; done'
-    sleep 3
+    sleep 1
 
     # Phase 2: still in front, a live unlock + approve. Leaves the service
     # installed — demo_uninstall records the deliberate reversal.
@@ -338,8 +378,10 @@ finish() {
 main() {
     mkdir -p "$OUT"
     # Drop artifacts from a previous run: a stale *-failed.webm would otherwise
-    # linger and get re-encoded to .mp4 by finish(), making a good run look failed.
-    rm -f "$OUT"/*.webm "$OUT"/*.mp4
+    # linger and get re-encoded to .mp4 by finish(), making a good run look
+    # failed; and a stale .webp (finish keeps webp, not just webm/mp4) would
+    # orphan a demo that didn't record this run.
+    rm -f "$OUT"/*.webm "$OUT"/*.mp4 "$OUT"/*.webp
     local demos=("$@")
     # demo_uninstall must follow demo_install (it reverses install's end-state,
     # or reinstalls off-camera if run standalone).

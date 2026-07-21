@@ -5,33 +5,18 @@
 [![Release](https://img.shields.io/github/v/release/nikicat/secrets-dispatcher)](https://github.com/nikicat/secrets-dispatcher/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Per-operation approval and audit logging for secret access and git commit signing on Linux.
+**Your AI coding agent runs as you — so it can read every secret in your keyring, silently.** Claude Code, Cursor, Codex, any script you launch: they call the Linux [Secret Service](https://specifications.freedesktop.org/secret-service/) and read any unlocked credential with no prompt and no log. Usually it isn't malice — just an agent taking a wrong path to a task — but you never see it happen.
 
-A D-Bus Secret Service proxy that adds per-app permissions and an audit log to your Linux keyring. Any process running as your user — including AI agents — can silently read your secrets, and `git commit -S` signs whatever GPG is given with no human review. secrets-dispatcher sits between requestors and your secrets/keys, showing you exactly what's being accessed and by whom — and letting you approve, deny, or auto-authorize.
+**secrets-dispatcher** is the checkpoint that makes it visible. When something reads a secret, you see *what* it touched and the full process chain (`claude-code → node → secret-tool`), and you approve, deny, or auto-allow — the tools you trust fade into rules, everything else has to ask. Every access is logged, and the same gate covers what gets committed and signed as you (`git commit -S`). A drop-in proxy: same keyring, same data, **[reversible in one command](#quick-start)** — Ctrl-C undoes everything.
 
-```
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-│  Browser    │ │  AI Agent   │ │  CLI tool   │ │  git sign   │
-│  (Firefox)  │ │(Claude Code)│ │(secret-tool)│ │ (git -S)    │
-└──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-       │               │               │               │
-       └───────────────┴───────┬───────┴───────────────┘
-                               │
-                ┌──────────────┴───────────────┐
-                │     secrets-dispatcher       │
-                │                              │
-                │  • per-request approval      │
-                │  • process chain detection   │
-                │  • trust rules engine        │
-                │  • audit logging             │
-                └──────┬───────────────┬───────┘
-                       │               │
-              ┌────────┴─────┐   ┌─────┴───────┐
-              │Secret Service│   │    GPG      │
-              │(gopass, GNOME│   │  (signing)  │
-              │ keyring, etc)│   │             │
-              └──────────────┘   └─────────────┘
-```
+![secrets-dispatcher sits between the apps that request secrets — browser, AI agents, CLI tools, git commit -S — and your keyring / GPG signing key, adding per-request approval, full process-chain detection, trust rules, and an audit log](docs/diagram/architecture.png)
+
+> **Honest scope.** This is visibility and control — *not* a sandbox or a privilege
+> boundary. It runs as your user, and it gates the **keyring** and **GPG signing**, not
+> `.env` files or arbitrary disk reads. A smoke detector, not a vault door: pair it with a
+> sandbox if you need to *contain* an agent; use this to *see and decide* when the agents,
+> apps, and scripts you run natively touch your secrets or signing key. [More on the security
+> model →](SECURITY.md)
 
 ## Why
 
@@ -47,9 +32,22 @@ secrets-dispatcher adds a controlled gateway with:
 - **Trust rules** — auto-approve known-safe patterns, prompt for everything else
 - **Audit logging** — JSON log of every access attempt with process info and decision
 
+## Verified on
+
+| Environment | Status |
+|---|---|
+| Ubuntu 24.04 & 26.04 LTS · GNOME on Wayland | ✅ Full-desktop end-to-end tested in CI on every PR |
+| Arch Linux | ✅ [AUR package](https://aur.archlinux.org/packages/secrets-dispatcher) · primary dev environment |
+| gnome-keyring (drop-in-place takeover) | ✅ Tested |
+| [gopass-secret-service](https://github.com/nikicat/gopass-secret-service) | ✅ Tested |
+| KeePassXC · KDE Wallet · other Secret Service backends | 🟡 Standard protocol — expected to work, not yet verified |
+| KDE Plasma · Sway / other wlroots · X11 sessions | 🟡 Expected to work, not yet verified |
+
+Running it somewhere that isn't listed? **[Tell us whether it worked](https://github.com/nikicat/secrets-dispatcher/issues)** — compatibility reports are exactly the kind of feedback that decides where this project goes next.
+
 ## Quick Start
 
-**Prerequisites:** A Secret Service provider (gnome-keyring, [gopass-secret-service](https://github.com/nikicat/gopass-secret-service), KeePassXC) and/or GPG configured.
+You need a running Secret Service keyring (gnome-keyring, KeePassXC, KDE Wallet, [gopass-secret-service](https://github.com/nikicat/gopass-secret-service)…) and/or GPG for signing — `try` and `service install` auto-detect what you already have.
 
 ### Install
 
@@ -84,14 +82,21 @@ no commitment:
 secrets-dispatcher try
 ```
 
-It detects your current Secret Service (e.g. gnome-keyring), puts the
+`try` detects your current Secret Service (e.g. gnome-keyring), slips the
 dispatcher in front of it (same keyring data, demoted to a private backend),
-and prints the web UI address. Ctrl-C stops the trial and restores the
-original setup exactly — every file it touched is reverted, and your config is
-never modified. `try --dry-run` lists the exact file and unit changes first.
+and prints the web UI address. Then make something ask for a secret and watch
+it surface:
 
-To check any time whether the dispatcher is really in front (and that
-takeover state is consistent): `secrets-dispatcher service status`.
+```bash
+secret-tool store --label=demo service demo   # store a throwaway secret
+secret-tool lookup service demo                # → an approval prompt appears
+```
+
+**Ctrl-C ends the trial and restores everything exactly** — every file and unit
+it touched is reverted, and your config is never modified. Run `secrets-dispatcher
+try --dry-run` first to see the precise file and unit changes, and `secrets-dispatcher
+service status` any time to confirm the dispatcher is really in front and the
+takeover state is consistent.
 
 ### Secret Access Control (local)
 
@@ -128,11 +133,11 @@ git commit -S -m "my signed commit"
 # → approve or deny before GPG signs
 ```
 
-## Web UI
-
-![Web UI showing pending secret access and GPG signing requests](docs/screenshots/webui-overview.png)
-
 ## Approval Interfaces
+
+When a request isn't already covered by a rule, you get the full picture before deciding — what's asking (the whole process chain), for which secret, and Approve / Deny:
+
+![secrets-dispatcher web UI: a pending secret-access request showing the full process chain, with Approve and Deny buttons](docs/screenshots/webui-overview.png)
 
 Approve or deny requests through any of:
 
@@ -316,6 +321,7 @@ uploads the result as a workflow artifact.
 
 ## Documentation
 
+- [Architecture](docs/ARCHITECTURE.md) — how a request is decided (with the flow diagram)
 - [Remote-proxy design & requirements](docs/REQUIREMENTS.md)
 - [Target Audience & User Personas](docs/TARGET-AUDIENCE.md)
 - [Contributing](CONTRIBUTING.md)

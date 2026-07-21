@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --ink:#0f172a; --muted:#64748b; --sub:#475569;
+    --line:#e2e8f0; --card:#ffffff;
+    --accent:#4f46e5; --accent-soft:#eef2ff; --accent-line:#c7d2fe;
+    --arrow:#94a3b8;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:1000px;height:400px}
+  body{
+    display:flex;align-items:center;justify-content:center;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue","Liberation Sans",Arial,sans-serif;
+    color:var(--ink);
+    background:linear-gradient(135deg,#f8fafc 0%,#eef2ff 100%);
+  }
+  .wrap{
+    width:1000px;height:400px;padding:34px 40px;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+  }
+  .col{display:flex;flex-direction:column;gap:12px;width:270px}
+  .col-label{
+    font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:2px;padding-left:2px;
+  }
+  .chip,.node{
+    background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:12px 15px;box-shadow:0 1px 2px rgba(15,23,42,.05),0 4px 12px rgba(15,23,42,.04);
+  }
+  .chip{border-left:4px solid var(--accent-line)}
+  .chip-title,.node-title{font-size:16px;font-weight:650;line-height:1.2}
+  .chip-sub,.node-sub{font-size:12.5px;color:var(--sub);margin-top:3px}
+  .mono{font-family:"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;font-size:12px}
+
+  .arrow{color:var(--arrow);font-size:30px;line-height:1;flex:0 0 auto;font-weight:400}
+
+  .hub{
+    width:250px;background:var(--card);
+    border:1.5px solid var(--accent);border-radius:16px;
+    box-shadow:0 8px 26px rgba(79,70,229,.18);
+    overflow:hidden;
+  }
+  .hub-head{background:var(--accent);color:#fff;padding:14px 18px}
+  .hub-title{font-size:19px;font-weight:750;letter-spacing:-.01em}
+  .hub-sub{font-size:12.5px;color:#e0e7ff;margin-top:3px}
+  .feats{list-style:none;padding:13px 18px;display:flex;flex-direction:column;gap:8px}
+  .feats li{font-size:13.5px;color:var(--sub);display:flex;align-items:center;gap:9px}
+  .feats li::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--accent);flex:0 0 auto}
+
+  .node{border-left:4px solid #a5b4fc}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="col">
+      <div class="col-label">something asks for a secret</div>
+      <div class="chip"><div class="chip-title">Browser</div><div class="chip-sub">saved logins, tokens</div></div>
+      <div class="chip"><div class="chip-title">AI agent</div><div class="chip-sub">Claude Code · Cursor · Codex</div></div>
+      <div class="chip"><div class="chip-title">CLI tool</div><div class="chip-sub mono">secret-tool lookup …</div></div>
+      <div class="chip"><div class="chip-title">git commit -S</div><div class="chip-sub">signing a commit as you</div></div>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="hub">
+      <div class="hub-head">
+        <div class="hub-title">secrets-dispatcher</div>
+        <div class="hub-sub">sees who's asking, and for what</div>
+      </div>
+      <ul class="feats">
+        <li>per-request approval</li>
+        <li>full process chain</li>
+        <li>trust rules &amp; auto-approve</li>
+        <li>audit log</li>
+      </ul>
+    </div>
+
+    <div class="arrow">&rarr;</div>
+
+    <div class="col">
+      <div class="col-label">your secrets stay put</div>
+      <div class="node"><div class="node-title">Secret Service</div><div class="node-sub">gnome-keyring · KeePassXC · gopass</div></div>
+      <div class="node"><div class="node-title">GPG signing key</div><div class="node-sub">git commit signatures</div></div>
+    </div>
+  </div>
+</body>
+</html>

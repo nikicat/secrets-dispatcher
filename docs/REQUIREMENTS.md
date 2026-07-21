@@ -260,7 +260,7 @@ secrets-dispatcher
 ├── try                      # Reversible trial: take over the Secret Service,
 │                            #   Ctrl-C restores everything (no config changes)
 ├── service                  # Manage the systemd user service
-│   ├── install [--start] [--mode remote|local|full] [--backend ...] [--dry-run]
+│   ├── install [--no-start] [--mode local|remote|full] [--backend ...] [--dry-run]
 │   ├── uninstall            # Restore stock behavior exactly
 │   └── status               # Doctor-style health report (name owner, units, takeover)
 │

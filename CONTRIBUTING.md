@@ -30,6 +30,19 @@ make pre-commit   # Lint + format + tests (run before submitting)
 
 The frontend (Svelte) live-reloads. The Go binary needs rebuilding on backend changes.
 
+## Demos
+
+```bash
+make demo   # record the install/try screencasts in the Tier-2 GNOME VM → .build/demos/
+```
+
+`make demo` boots the same Ubuntu desktop VM the e2e suite uses and
+screen-records the install/try arc typed into a real GNOME terminal (see
+`e2e/gnome/vm/demo.sh`). Videos are build artifacts, never committed; the manual
+[Demos workflow](.github/workflows/demos.yml) records them in CI and publishes
+them to the `secrets-dispatcher-ci-media` sidecar repo (the README screencasts
+come from there).
+
 ## Code Style
 
 - **Go:** `gofmt` (enforced by CI). Run `make fmt-go` to auto-format.

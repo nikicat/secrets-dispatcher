@@ -945,9 +945,10 @@ func runService(args []string) {
 
 func runServiceInstall(args []string) {
 	fs := flag.NewFlagSet("service install", flag.ExitOnError)
-	start := fs.Bool("start", false, "Start the service immediately after installing")
+	start := fs.Bool("start", true, "Start the service immediately after installing (default; use --no-start to skip)")
+	noStart := fs.Bool("no-start", false, "Install and enable only — don't start now (starts on next login)")
 	configPath := fs.String("config", "", "Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	mode := fs.String("mode", "remote", "Topology mode: remote, local, or full")
+	mode := fs.String("mode", "local", "Topology mode: local (gate this desktop), remote (serve secrets to remote hosts), or full")
 	backend := fs.String("backend", "", "Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
 	dryRun := fs.Bool("dry-run", false, "Print what the install would change, then exit without changing anything")
 	verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
@@ -956,7 +957,7 @@ func runServiceInstall(args []string) {
 
 	opts := service.Options{
 		ConfigPath:  *configPath,
-		Start:       *start,
+		Start:       *start && !*noStart,
 		Mode:        *mode,
 		BackendPath: *backend,
 	}
@@ -984,9 +985,10 @@ Commands:
   status        Doctor-style health report: name owner, unit states, mask/demotion consistency
 
 Install options:
-  --start       Start the service immediately after installing
+  --mode        Topology mode: local (default — gate this desktop), remote, or full
+  --no-start    Install and enable only — don't start now (starts on next login)
+  --start       Start immediately after installing (default)
   --config      Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
-  --mode        Topology mode: remote, local, or full (default: remote)
   --backend     Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects
   --dry-run     Print what the install would change, then exit without changing anything
   --verbose     Narrate every file and unit change (default: milestones only)

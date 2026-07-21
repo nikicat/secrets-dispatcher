@@ -95,7 +95,7 @@ type Options struct {
 	ConfigPath string
 	// Start the service immediately after enabling.
 	Start bool
-	// Mode selects the topology: "remote", "local", or "full" (default: "remote").
+	// Mode selects the topology: "local" (default), "remote", or "full".
 	Mode string
 	// BackendPath selects the private backend for local/full modes: a binary
 	// path, a keyword ("gopass", "gnome-keyring"), or empty for the

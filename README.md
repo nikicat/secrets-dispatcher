@@ -5,321 +5,145 @@
 [![Release](https://img.shields.io/github/v/release/nikicat/secrets-dispatcher)](https://github.com/nikicat/secrets-dispatcher/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Per-operation approval and audit logging for secret access and git commit signing on Linux.
+**Your AI coding agent runs as you — so it can read every secret in your keyring, silently.** Claude Code, Cursor, Codex, any script you launch: they call the Linux [Secret Service](https://specifications.freedesktop.org/secret-service/) and read any unlocked credential with no prompt and no log. Usually it isn't malice — just an agent taking a wrong path to a task — but you never see it happen.
 
-A D-Bus Secret Service proxy that adds per-app permissions and an audit log to your Linux keyring. Any process running as your user — including AI agents — can silently read your secrets, and `git commit -S` signs whatever GPG is given with no human review. secrets-dispatcher sits between requestors and your secrets/keys, showing you exactly what's being accessed and by whom — and letting you approve, deny, or auto-authorize.
+**secrets-dispatcher** is the checkpoint that makes it visible. When something reads a secret, you see *what* it touched and the full process chain (`claude-code → node → secret-tool`), and you approve, deny, or auto-allow — the tools you trust fade into rules, everything else has to ask. Every access is logged, and the same gate covers what gets committed and signed as you (`git commit -S`). It's a drop-in proxy in front of the keyring you already have — gnome-keyring, KeePassXC, KDE Wallet, or [gopass-secret-service](https://github.com/nikicat/gopass-secret-service) — same secrets, same data, and **[reversible in one command](#setup)**.
 
-```
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-│  Browser    │ │  AI Agent   │ │  CLI tool   │ │  git sign   │
-│  (Firefox)  │ │(Claude Code)│ │(secret-tool)│ │ (git -S)    │
-└──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-       │               │               │               │
-       └───────────────┴───────┬───────┴───────────────┘
-                               │
-                ┌──────────────┴───────────────┐
-                │     secrets-dispatcher       │
-                │                              │
-                │  • per-request approval      │
-                │  • process chain detection   │
-                │  • trust rules engine        │
-                │  • audit logging             │
-                └──────┬───────────────┬───────┘
-                       │               │
-              ┌────────┴─────┐   ┌─────┴───────┐
-              │Secret Service│   │    GPG      │
-              │(gopass, GNOME│   │  (signing)  │
-              │ keyring, etc)│   │             │
-              └──────────────┘   └─────────────┘
-```
+![secrets-dispatcher sits between the apps that request secrets — browser, AI agents, CLI tools, git commit -S — and your keyring / GPG signing key, adding per-request approval, full process-chain detection, trust rules, and an audit log](docs/diagram/architecture.png)
 
-## Why
+> **Honest scope.** This is visibility and control — *not* a sandbox or a privilege
+> boundary. It runs as your user, and it gates the **keyring** and **GPG signing**, not
+> `.env` files or arbitrary disk reads. A smoke detector, not a vault door: pair it with a
+> sandbox if you need to *contain* an agent; use this to *see and decide* when the agents,
+> apps, and scripts you run natively touch your secrets or signing key. [More on the security
+> model →](SECURITY.md)
 
-**No keyring access control.** Any process running as your user can call the Secret Service D-Bus API and read any unlocked secret — browsers, Electron apps, CLI tools, and AI coding agents (Claude Code, Codex, Cursor). There's no audit trail, no per-app permissions, and no way to know which process accessed what.
+## Why it exists
 
-**Git signing is blind.** `git commit -S` invokes GPG with no human-visible context. When AI agents or CI pipelines make commits, arbitrary content gets signed without review. There's no GPG signing approval step.
+- **The keyring has no per-app access control.** Once it's unlocked, any process running as you can read any secret over the Secret Service D-Bus API — no prompt, no audit trail, no way to know which process accessed what.
+- **`git commit -S` signs blindly.** GPG signs whatever it's handed, with no human-visible context — so an agent or CI step can produce a commit signed by *you* with content you never reviewed.
 
-**gpg-agent forwarding is all-or-nothing.** Forwarding a GPG agent over SSH gives the remote machine blanket access to decrypt *any* secret. No per-secret control.
+## Setup
 
-secrets-dispatcher adds a controlled gateway with:
-- **Full process chain visibility** — not just "dbus-daemon asked" but `claude-code → node → secret-tool`
-- **Per-operation approval** via web UI, desktop notifications, or CLI
-- **Trust rules** — auto-approve known-safe patterns, prompt for everything else
-- **Audit logging** — JSON log of every access attempt with process info and decision
-
-## Quick Start
-
-**Prerequisites:** A Secret Service provider (gnome-keyring, [gopass-secret-service](https://github.com/nikicat/gopass-secret-service), KeePassXC) and/or GPG configured.
-
-### Install
-
-**Prebuilt binary** — each [release](https://github.com/nikicat/secrets-dispatcher/releases) ships static Linux binaries (amd64/arm64):
+You need a running Secret Service keyring (gnome-keyring, KeePassXC, KDE Wallet, gopass…) and/or GPG for signing — the commands below auto-detect what you already have. First, get the binary:
 
 ```bash
+# Prebuilt static binary (amd64; arm64 also on the releases page)
 curl -Lo ~/.local/bin/secrets-dispatcher \
   https://github.com/nikicat/secrets-dispatcher/releases/latest/download/secrets-dispatcher-linux-amd64
 chmod +x ~/.local/bin/secrets-dispatcher
 ```
 
-**With Go** (full build, web UI included — the compiled frontend is committed):
+<details>
+<summary>Other install methods — <code>go install</code>, from source</summary>
 
 ```bash
+# With Go (web UI included — the compiled frontend is committed)
 go install github.com/nikicat/secrets-dispatcher@latest
-```
 
-**From source** (requires Go and npm for the embedded web UI):
-
-```bash
+# From source (needs Go + npm for the embedded web UI)
 git clone https://github.com/nikicat/secrets-dispatcher.git
-cd secrets-dispatcher
-make build && make install   # installs to ~/.local/bin
+cd secrets-dispatcher && make build && make install   # → ~/.local/bin
 ```
 
-### Try it (fully reversible)
+</details>
 
-The fastest way to see the approval flow on your real desktop — one command,
-no commitment:
+### Temporary — try it, fully reversible
+
+One command puts the dispatcher in front of your keyring (same data, demoted to a private backend) and prints a web UI address. **Ctrl-C restores everything exactly** — your config is never touched.
 
 ```bash
 secrets-dispatcher try
+# then, in another terminal, make something ask for a secret:
+secret-tool store --label=demo service demo
+secret-tool lookup service demo        # → an approval prompt appears
 ```
 
-It detects your current Secret Service (e.g. gnome-keyring), puts the
-dispatcher in front of it (same keyring data, demoted to a private backend),
-and prints the web UI address. Ctrl-C stops the trial and restores the
-original setup exactly — every file it touched is reverted, and your config is
-never modified. `try --dry-run` lists the exact file and unit changes first.
+`secrets-dispatcher try --dry-run` shows the exact file/unit changes first, and `secrets-dispatcher service status` confirms the takeover state any time.
 
-To check any time whether the dispatcher is really in front (and that
-takeover state is consistent): `secrets-dispatcher service status`.
+<details>
+<summary>Screencast — the reversible trial</summary>
 
-### Secret Access Control (local)
+[![secrets-dispatcher try — reversible trial](https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/latest/trial-noble.webp)](https://nikicat.github.io/secrets-dispatcher-ci-media/latest/trial-noble.mp4)
+
+*(click for the full video)*
+
+</details>
+
+### Permanent — run it as a service
+
+Install the systemd user service and put the dispatcher in front of your keyring on every login. `service uninstall` restores stock behavior exactly.
 
 ```bash
-# Start the daemon
-secrets-dispatcher serve &
-
-# Or install as a systemd user service (auto-start on login)
-secrets-dispatcher service install --start
-
-# On GNOME: put the dispatcher in front of your existing keyring. Detects
-# gnome-keyring, demotes only its secrets component to a private backend
-# (pkcs11/ssh/PAM unlock keep working), same keyring data. `service
-# uninstall` restores stock behavior exactly.
-secrets-dispatcher service install --mode local --start
-
-# Open the web UI
-secrets-dispatcher login
-
-# Now any secret access triggers an approval prompt
-secret-tool lookup service smtp   # → you'll see a notification
+secrets-dispatcher service install   # installs, starts, and takes over your keyring
+secrets-dispatcher service status    # confirm it's in front of your keyring
 ```
 
-### Git Commit Signing
+Now every secret access — and every signed commit — goes through approval, via a desktop notification, the CLI (`secrets-dispatcher list`), or the web UI (`secrets-dispatcher login`).
+
+<details>
+<summary>Screencasts — install &amp; uninstall</summary>
+
+**Install** (permanent, across a re-login):
+
+[![secrets-dispatcher service install](https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/latest/install-noble.webp)](https://nikicat.github.io/secrets-dispatcher-ci-media/latest/install-noble.mp4)
+
+**Uninstall** (back to stock):
+
+[![secrets-dispatcher service uninstall](https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/latest/uninstall-noble.webp)](https://nikicat.github.io/secrets-dispatcher-ci-media/latest/uninstall-noble.mp4)
+
+</details>
+
+### Gate git commit signing
+
+Route git's signing through the dispatcher, then **turn signing on globally** — that's what makes *every* commit (including the ones your agents make without `-S`) pause for your review before the key is used:
 
 ```bash
-# One-time setup
-secrets-dispatcher gpg-sign setup
-git config --global commit.gpgsign true
-
-# Now every signed commit requires approval
-git commit -S -m "my signed commit"
-# → desktop notification with repo, message, changed files
-# → approve or deny before GPG signs
+secrets-dispatcher gpg-sign setup           # point git's gpg.program at the dispatcher
+git config --global commit.gpgsign true      # sign — and therefore gate — every commit
 ```
 
-## Web UI
+Now any `git commit` shows you the repo, message, and changed files and waits for approve/deny before GPG signs. Without global signing, only an explicit `git commit -S` is gated — an agent that just runs `git commit` slips through.
 
-![Web UI showing pending secret access and GPG signing requests](docs/screenshots/webui-overview.png)
+<!-- TODO: record a commit-signing screencast (the trial/install/uninstall ones exist in the ci-media sidecar; signing doesn't yet). -->
 
-## Approval Interfaces
+## Approving requests
 
-Approve or deny requests through any of:
+When a request isn't already covered by a rule, you see the full picture — what's asking (the whole process chain), for which secret — and decide:
 
-- **Web UI** — real-time dashboard at `http://127.0.0.1:8484` (open with `secrets-dispatcher login`)
-- **Desktop notifications** — inline Approve/Deny action buttons
-- **CLI** — `secrets-dispatcher list`, `secrets-dispatcher approve <id>`, `secrets-dispatcher deny <id>`
+![secrets-dispatcher web UI: a pending secret-access request showing the full process chain, with Approve and Deny buttons](docs/screenshots/webui-overview.png)
 
-All three update in real-time — approve via notification and the web UI reflects it instantly.
+- **Web UI** — real-time dashboard at `http://127.0.0.1:8484` (`secrets-dispatcher login`)
+- **Desktop notifications** — inline Approve / Deny buttons
+- **CLI** — `secrets-dispatcher list` · `approve <id>` · `deny <id>`
 
-## Trust Rules
-
-Auto-approve known-safe patterns instead of prompting for every request. Add to `~/.config/secrets-dispatcher/config.yaml`:
-
-```yaml
-serve:
-  rules:
-    # Auto-approve Firefox accessing any secret
-    - name: firefox
-      action: approve
-      process:
-        exe: "/usr/lib/firefox/firefox"
-
-    # Auto-approve tools running from your project directory
-    - name: my-project
-      action: approve
-      process:
-        cwd: "/home/me/src/my-project/*"
-
-    # Auto-approve a shell-script wrapper (exe is the interpreter, so
-    # identify the script via its argv)
-    - name: logcli-wrapper
-      action: approve
-      process:
-        exe: "/usr/bin/bash"
-        args: "/home/me/.local/bin/logcli"
-
-    # Ignore Chrome's dummy secret probe
-    - name: chrome-probe
-      action: ignore
-      request_types: [write]
-      process:
-        exe: "*chrome*"
-
-    # Auto-approve deploy script accessing deploy secrets
-    - name: deploy
-      action: approve
-      process:
-        exe: "/usr/bin/ansible-playbook"
-      secret:
-        collection: "deploy"
-
-  # Auto-approve GPG signing from specific editors
-  trusted_signers:
-    - exe_path: /usr/bin/nvim
-```
-
-Rules match on process attributes (exe, name, args, CWD, systemd unit) and secret attributes (collection, label, custom attributes). All patterns support globs. Process matching checks the full process chain, not just the immediate caller. `args` is matched against each individual cmdline argument of each process in the chain — useful for interpreter-run scripts, whose exe is the interpreter (`/usr/bin/bash`) while the script path only appears in argv.
-
-For security-relevant rules — especially `deny` — match on **`exe`**: it compares the kernel-resolved `/proc/PID/exe` and cannot be spoofed. **`name`** matches the process `comm`, which any process can set freely (`prctl(PR_SET_NAME)`); treat it as advisory only and never rely on it to block an application. **`args`** is likewise self-reported — a process can rewrite its argv after exec — so it is advisory only too. **`unit`** matches the caller's real systemd unit (resolved via `GetUnitByPID`), which is authoritative for systemd-managed services.
-
-## Process Chain Detection
-
-When a request comes in, secrets-dispatcher resolves the full process ancestry:
-
-```
-Request: GetSecrets → collection/login/github-token
-Process chain: claude-code → node → dbus-send
-Unit: user@1000.service
-```
-
-This means you can write rules that match on the actual originating process, not just the D-Bus sender. Useful for distinguishing "Firefox wants my GitHub token" from "unknown-script → curl → dbus-send wants my GitHub token."
-
-## Secret Service Proxy (Remote Servers)
-
-For accessing secrets on remote servers without forwarding your GPG agent:
-
-```
-SERVER (untrusted)                         LAPTOP (trusted)
-┌─────────────────────────┐               ┌─────────────────────────────────┐
-│                         │               │                                 │
-│  App ──► local D-Bus ───┼── SSH ───────►│ secrets-dispatcher              │
-│          (libsecret)    │   tunnel      │        │                        │
-│                         │               │        ▼                        │
-│  No secrets stored here │               │  Local Secret Service           │
-│                         │               │  (gopass/gnome-keyring/etc)     │
-└─────────────────────────┘               └─────────────────────────────────┘
-```
-
-```bash
-# SSH with tunnel (laptop)
-ssh -L /run/user/1000/secrets-dispatcher/myserver.sock:/run/user/1001/bus user@server
-
-# Start secrets-dispatcher (laptop)
-secrets-dispatcher serve --downstream socket:/run/user/1000/secrets-dispatcher/myserver.sock
-
-# Use secrets on server — no changes needed, apps use standard D-Bus
-secret-tool lookup service myapp
-```
-
-See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the remote-proxy design and requirements (threat model, access-control rules, transport security).
-
-## Audit Logging
-
-All secret access is logged to stderr in structured JSON:
-
-```json
-{"time":"2025-03-09T14:22:01Z","level":"INFO","msg":"dbus_call","method":"GetSecrets","items":["collection/login/github-token"],"process_chain":["claude-code","node","dbus-send"],"result":"approved"}
-```
+All three stay in sync in real time.
 
 ## Configuration
 
-Config file: `~/.config/secrets-dispatcher/config.yaml`
+Config lives at `~/.config/secrets-dispatcher/config.yaml`:
 
 ```yaml
-listen: "127.0.0.1:8484"          # Web UI address
-state_dir: "~/.local/state/secrets-dispatcher"
-
+listen: "127.0.0.1:8484"           # web UI address
 serve:
-  log_level: info                  # debug, info, warn, error
   timeout: 5m                      # approval request timeout
-  approval_window: 2s              # batch concurrent requests
-  notification_delay: 1s           # suppress short-lived requests
+  approval_window: 2s              # batch concurrent requests into one prompt
   notifications: true              # desktop notifications
   ignore_chrome_dummy_secret: true # suppress Chrome's probe
-  rules: []                        # trust rules (see above)
-  trusted_signers: []              # GPG signing auto-approve
+  rules: []                        # trust rules — see docs/TRUST-RULES.md
+  trusted_signers: []              # auto-approve GPG signing from these tools
 ```
 
-## Compatibility
+**Trust rules** auto-approve known-safe patterns so the dispatcher stays quiet. The easiest way to add or adjust one is the bundled **`secrets-rule` agent skill**: with [Claude Code](https://claude.com/claude-code), hand it a request ID from `secrets-dispatcher list` — `/secrets-rule b260def` — and it reads that request's full context (process chain, `exe`, attributes) to compose an accurate rule; or just say *"always allow Firefox"*. Either way it picks a spoof-proof `exe` match, writes the rule, and offers to restart. See **[docs/TRUST-RULES.md](docs/TRUST-RULES.md)** for the format and how to install the skill.
 
-**Works with** any Secret Service backend — adds audit logging and access control regardless of which keyring you use:
-- [gopass-secret-service](https://github.com/nikicat/gopass-secret-service)
-- GNOME Keyring
-- KDE Wallet
-- KeePassXC
+## Learn more
 
-**Works with** any Secret Service client:
-- Firefox, Chromium/Chrome, Electron apps
-- `secret-tool`, Python `secretstorage`
-- AI coding agents (Claude Code, Codex, etc.)
-- Any application using libsecret
-
-### Works great with [gopass-secret-service](https://github.com/nikicat/gopass-secret-service)
-
-Together they form a complete stack: gopass-secret-service provides the Secret Service backend (storing secrets in GPG-encrypted, git-synced GoPass), and secrets-dispatcher adds per-operation approval and audit logging on top.
-
-```
-App → secrets-dispatcher → gopass-secret-service → GoPass → GPG
-       (access control)     (Secret Service API)    (store)  (encryption)
-```
-
-## Status
-
-| Feature | Status |
-|---------|--------|
-| Secret Service proxy (local & remote) | Working — proxy, audit logging, trust rules |
-| Git GPG commit signing | Working — setup, signing flow, approval UI, auto-approve |
-| Web UI | Working — real-time updates, approve/deny, history, trust rules |
-| Desktop notifications | Working — inline approve/deny actions |
-| CLI | Working — list, approve, deny, history |
-| Process chain detection | Working — full ancestry with exe, CWD, systemd unit |
-| Trust rules engine | Working — process + secret matching with globs |
-| Client pairing (remote) | Planned |
-| DH encryption for secrets in transit | Planned |
-
-## Development
-
-```bash
-make build          # Build with embedded frontend
-make test-go        # Run Go tests
-make test-e2e       # Run Playwright E2E tests
-make pre-commit     # Lint + format + staticcheck
-make demo           # Record demo videos in the Tier-2 GNOME VM -> .build/demos/
-```
-
-`make demo` boots the same Ubuntu desktop VM the e2e suite uses and screen-records
-the install/try arc being typed into a real GNOME terminal (see
-`e2e/gnome/vm/demo.sh`). Videos are build artifacts, never committed; the
-manual [Demos workflow](.github/workflows/demos.yml) records them in CI and
-uploads the result as a workflow artifact.
-
-## Documentation
-
-- [Remote-proxy design & requirements](docs/REQUIREMENTS.md)
-- [Target Audience & User Personas](docs/TARGET-AUDIENCE.md)
-- [Contributing](CONTRIBUTING.md)
+- **[Architecture](docs/ARCHITECTURE.md)** — how a request is decided, process-chain detection, audit log
+- **[Trust rules](docs/TRUST-RULES.md)** — rule format, spoof-proofing, and the `secrets-rule` agent skill
+- **[Remote secret access over SSH](docs/REMOTE-PROXY.md)** — use laptop secrets from a server without forwarding gpg-agent
+- **[Compatibility & status](docs/COMPATIBILITY.md)** — tested environments, supported backends/clients, feature status
+- **[Security model](SECURITY.md)** · **[Target audience & personas](docs/TARGET-AUDIENCE.md)** · **[Contributing & development](CONTRIBUTING.md)**
 
 ## License
 
-MIT License
+MIT — see [LICENSE](LICENSE).

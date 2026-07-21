@@ -7,7 +7,7 @@
 #
 # demo_install (part1 + relogin + part2):
 #   part1 (before relogin):
-#     go install -> service install --mode local --start (permanent takeover)
+#     go install -> service install (permanent takeover; local + start are now defaults)
 #     -> service status shows it enabled + in front.
 #   << demo.sh relogs in here; the recording keeps rolling >>
 #   part2 (after relogin):
@@ -126,7 +126,7 @@ part1() {
     type_cmd admin 'export PATH="$HOME/go/bin:$PATH"'
     sleep 1
     # The permanent install: enable + start the user service (US-10).
-    type_cmd admin "secrets-dispatcher service install --mode local --start"
+    type_cmd admin "secrets-dispatcher service install"
     wait_for 30 owner_is secrets-dispatcher
     sleep 2
     type_cmd admin "secrets-dispatcher service status   # enabled + in front"

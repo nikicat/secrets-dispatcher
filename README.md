@@ -75,8 +75,8 @@ secret-tool lookup service demo        # → an approval prompt appears
 Install the systemd user service and put the dispatcher in front of your keyring on every login. `service uninstall` restores stock behavior exactly.
 
 ```bash
-secrets-dispatcher service install --mode local --start
-secrets-dispatcher service status   # confirm it's in front of your keyring
+secrets-dispatcher service install   # installs, starts, and takes over your keyring
+secrets-dispatcher service status    # confirm it's in front of your keyring
 ```
 
 Now every secret access — and every signed commit — goes through approval, via a desktop notification, the CLI (`secrets-dispatcher list`), or the web UI (`secrets-dispatcher login`).

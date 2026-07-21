@@ -48,18 +48,34 @@ The frontend (Svelte) live-reloads. The Go binary needs rebuilding on backend ch
 
 ```
 .
-├── main.go                 # CLI entrypoint (stdlib flag)
+├── main.go                 # CLI entrypoint (stdlib flag switch)
 ├── internal/
-│   ├── api/                # HTTP API + embedded frontend
+│   ├── api/                # HTTP API + embedded frontend + WebSocket
 │   ├── approval/           # Approval engine + trust rules
-│   ├── cli/                # CLI commands
+│   ├── cli/                # CLI commands (list, approve, deny, login, ...)
+│   ├── companion/          # Companion-user provisioning (privsep, exploratory)
 │   ├── config/             # Configuration loading
+│   ├── daemon/             # System D-Bus daemon path (privsep, exploratory)
 │   ├── dbus/               # D-Bus Secret Service proxy
+│   ├── dhcrypto/           # Diffie-Hellman session encryption (Secret Service)
 │   ├── gpgsign/            # GPG signing proxy
+│   ├── logging/            # Structured audit logging
 │   ├── notification/       # Desktop notifications
 │   ├── procutil/           # Process chain detection
 │   ├── proxy/              # Proxy core logic
-│   └── service/            # systemd service management
+│   ├── service/            # systemd service management + keyring takeover
+│   ├── sshagent/           # SSH agent proxy — gates key signing through approval
+│   └── testutil/           # Test helpers
+├── cmd/mock-secret-service/ # Test fixture Secret Service backend
 ├── web/                    # Svelte frontend (Deno + Vite)
+├── e2e/                    # Playwright + Tier-2 GNOME VM end-to-end suite
+├── packaging/              # AUR PKGBUILD and packaging assets
+├── scripts/                # Build / release / CI helper scripts
 └── docs/                   # Documentation
 ```
+
+> The `companion`/`daemon` packages back an exploratory privilege-separation
+> path: secrets under a dedicated companion user reached over the **system** bus,
+> with a dedicated VT for approvals as the intended trusted-I/O surface (the VT
+> TUI is not implemented yet). It runs in parallel with the shipped session-bus
+> proxy — neither path is legacy.

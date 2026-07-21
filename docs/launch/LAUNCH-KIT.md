@@ -11,8 +11,11 @@ deliverable.
 >    Lead instead with what has **no competitor**: per-commit **GPG signing approval**
 >    and the **backend-agnostic audit log + process-chain visibility**. Keep the AI angle
 >    (the problem is hot and well-timed), but claim *visibility + control*, never *security boundary*.
-> 2. **State the `.env` gap up front.** The most common way agents actually grab secrets
->    is reading `.env`/dotfiles off disk — which this never sees. Say so; pair with a sandbox.
+> 2. **`.env` is addressable — via direnv (lead with this).** Agents commonly read plaintext
+>    `.env` off disk (which the keyring gate doesn't see). The fix: a keyring lookup in `.envrc`
+>    — `export API_KEY=$(secret-tool lookup …)` — so there's no plaintext on disk and every fetch
+>    is gated + logged. This bridges to the hottest agent-secrets discourse. (Honest: once
+>    exported it's an env var — not a boundary against a process already in that shell.)
 > 3. **Ammo for openers** (cited): GitGuardian 2026 — AI-assisted commits leak secrets
 >    ~2× the human rate; Sophos — AI agents decrypting OS credential stores (credential
 >    access = largest flagged category); 2025 worms Shai-Hulud (npm) / GlassWorm (VS Code).
@@ -33,11 +36,14 @@ agent-agnostic. Say plainly it doesn't cover `.env`/on-disk secrets. Remote-prox
 stays "also does."
 
 **Sequencing — warm up before the one-shot:**
-1. **Days 1–3, soft launch** → a friendly AI-dev Discord + the gopass community.
-   Shake out "breaks on KDE/X11" bugs, sharpen the pitch from real reactions.
-2. **Day ~7, main launch** → publish the [blog post](blog-post.md), then Show HN
-   + Lobsters the *same morning* (~8–10am US Eastern, a weekday). Cross-post the
-   writeup to r/linux and r/netsec. Be present all day to answer.
+1. **Days 1–3, soft launch** → Linux/GNOME + agent pockets where self-posts are welcome
+   (r/gnome, an AI-dev Discord's public `#show-your-project`, your Mastodon) *and* answer the
+   two live existing threads (KeePassXC #9024; the r/ClaudeAI `.env` thread). No cold DMs; don't
+   ad-board other projects' issue boards. Shake out compat bugs, sharpen the pitch.
+2. **Day ~7, main launch** → publish the [blog post](blog-post.md), then Show HN + Lobsters
+   the *same morning* (~8–10am US Eastern, weekday) + an r/archlinux or r/gnome `[OC]`. Treat
+   **HN + blog as a *concept* play** (Mac-heavy, most can't run it) — measure discourse, not
+   installs. Be present all day to answer. (See §0b for why.)
 
 **The one line that matters most**, appended to every post:
 > **Would you actually run this? If not, what's the blocker?**
@@ -55,6 +61,62 @@ stays "also does."
 **Do not add telemetry.** For a keyring/privacy tool it would poison trust with
 exactly this audience. Live with coarse signal: release download counts, AUR
 votes, stars — and mainly the comments.
+
+---
+
+## 0b. Reach reality — applicability & retargeting
+
+**The audience is capped by applicability.** Linux-only (freedesktop Secret Service); the
+smooth one-command setup works on **GNOME (gnome-keyring)** or **gopass-secret-service** —
+KDE/KWallet/KeePassXC/other desktops need manual setup, and Mac/Windows can't run it at all.
+So the addressable slice is **Linux ∩ (gnome-keyring | gopass-secret-service) ∩ runs-agents ∩
+security-conscious** — narrow, with a permanent OS ceiling. Own this in every post so nobody
+feels baited.
+
+**Reweight reach → hit-rate.** Most of HN's reach is non-addressable (Mac users). Treat **HN +
+the blog as a *concept* play** — the *problem* is cross-OS (a Mac dev's agent reads their
+Keychain/`.env` too), so the writeup travels even if the tool doesn't; measure discourse, not
+installs. Put the *validation* posts where the addressable users actually are:
+
+| Venue | Why |
+|---|---|
+| **r/gnome** | GNOME users can run the one-command setup — the sweet spot |
+| **r/archlinux** | power users; AUR package exists |
+| **aider / r/LocalLLaMA** | Linux-heavy agent users who feel the `.env`/keyring pain |
+| **r/selfhosted**, NixOS/Arch forums | Linux, security-conscious tinkerers |
+| **r/linux `[OC]`** | broad, but budget for a "not for me" fraction (KDE/Sway, non-agent) |
+
+**Lead angle everywhere:** the **direnv technique** — *"how I keep secrets out of `.env` on
+Linux"* — not "gate your keyring." It's useful even to non-installers and sidesteps the
+"keyring theater" critique.
+
+**Expectation reset:** success = an *engaged* response from that concentrated GNOME-Linux-agent
+niche; near-silence *from that niche* is a clean freeze signal. Broad numbers aren't the bar.
+
+### Retargeted post drafts (direnv angle, scope owned)
+
+**r/gnome / r/archlinux `[OC]`:**
+> **[OC] A per-app approval + audit gate for the GNOME keyring — and a way to keep secrets out of `.env`**
+>
+> gnome-keyring is all-or-nothing: locked (nothing readable) or unlocked (every process you run
+> — coding agents included — reads every secret over the Secret Service, silently, no log). I
+> wanted a middle state, so I built a proxy that sits in front of the keyring and prompts per-app
+> (auto-approve the tools you trust, get asked about the rest), with an audit log of who read what.
+>
+> The bit I use most: with direnv, `export API_KEY=$(secret-tool lookup …)` in `.envrc` keeps the
+> secret in the keyring, never in a plaintext `.env` — so an agent can't `cat .env`, and each fetch
+> is gated + logged. ~5 months in.
+>
+> MIT/open source — please read the code before trusting it with your keyring; that's the point.
+> Reversible in one command (Ctrl-C restores everything), same-user (visibility + control, not a
+> sandbox). Verified on GNOME/gnome-keyring + gopass-secret-service; KDE/others need manual setup.
+> **Would you run this? If not, what's the blocker?** <repo>
+
+**Show HN opener** — rework §1's first line to lead with the direnv/`.env` hook and state the
+scope: *"On Linux, your coding agent runs as you — it can read every secret in your keyring
+(`secret-tool lookup …`) and any plaintext `.env`, silently. Here's a setup I've run ~5 months
+that closes the keyring path and keeps secrets out of `.env` (direnv + a gating proxy)…"* — then
+keep §1's honest-scope + the ask, and add "Linux-only; verified on GNOME/gopass-secret-service."
 
 ---
 

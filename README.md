@@ -119,6 +119,27 @@ When a request isn't already covered by a rule, you see the full picture — wha
 
 All three stay in sync in real time.
 
+## Keep secrets out of `.env`
+
+The most common way an agent grabs a credential is reading a plaintext `.env` off
+disk — which no keyring gate can see. The fix is to not keep the secret in the file
+at all: fetch it from the keyring at runtime with [direnv](https://direnv.net/), so
+the value only ever lives in the shell's memory (never on disk) and every fetch goes
+through secrets-dispatcher:
+
+```bash
+# .envrc — the secret is fetched from the keyring, never written to the file
+export API_KEY=$(secret-tool lookup url https://alchemy.com xdg:schema io.github.nikicat.ApiKey)
+export SCAN_API_KEY=$(gopass-secret get api-key etherscan.io)   # with gopass-secret-service
+```
+
+Now entering the project fetches the secret through the Secret Service — so the first
+lookup prompts for approval and every lookup is logged, instead of a plaintext secret
+sitting on disk for anything to read. Auto-approve the tools you trust so it stays
+quiet. (Once exported, the value is a normal env var in that shell — this removes the
+on-disk copy and gates/audits the fetch; it isn't a boundary against a process already
+running in the same shell.)
+
 ## Configuration
 
 Config lives at `~/.config/secrets-dispatcher/config.yaml`:

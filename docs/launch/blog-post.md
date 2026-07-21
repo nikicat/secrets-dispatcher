@@ -173,5 +173,12 @@ Repo, issues, and a longer README: **[github.com/nikicat/secrets-dispatcher](htt
 - The "Why not just X" section may be sharpened by the landscape-scan findings
   (real incidents of agents/extensions exfiltrating secrets make a strong opener).
 - Consider a one-line lede incident if the research surfaces a concrete case.
+- **Add a "how I stopped keeping secrets in .env" beat** — the direnv + `.envrc`
+  recipe (`export API_KEY=$(secret-tool lookup …)` / `$(gopass-secret get …)`), my
+  real 5-month workflow. This is the *bridge* from the hottest agent-secrets
+  discourse (.env leaks) to what the tool does: answers "Claude reads my .env" with
+  a concrete fix (no plaintext on disk + gated/audited fetch), not "out of scope."
+  Be honest that once exported it's a normal env var — it removes the disk copy and
+  gates the fetch, not the in-shell read.
 - Publish on: personal blog first (canonical), then dev.to / lobste.rs / HN.
 -->

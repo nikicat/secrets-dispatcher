@@ -62,7 +62,7 @@ secret-tool lookup service demo        # → an approval prompt appears
 `secrets-dispatcher try --dry-run` shows the exact file/unit changes first, and `secrets-dispatcher service status` confirms the takeover state any time.
 
 <details>
-<summary>▶ Screencast — the reversible trial</summary>
+<summary>Screencast — the reversible trial</summary>
 
 [![secrets-dispatcher try — reversible trial](https://raw.githubusercontent.com/nikicat/secrets-dispatcher-ci-media/main/latest/trial-noble.webp)](https://nikicat.github.io/secrets-dispatcher-ci-media/latest/trial-noble.mp4)
 
@@ -76,11 +76,13 @@ Install the systemd user service and put the dispatcher in front of your keyring
 
 ```bash
 secrets-dispatcher service install --mode local --start
-secrets-dispatcher login        # open the web UI
+secrets-dispatcher service status   # confirm it's in front of your keyring
 ```
 
+Now every secret access — and every signed commit — goes through approval, via a desktop notification, the CLI (`secrets-dispatcher list`), or the web UI (`secrets-dispatcher login`).
+
 <details>
-<summary>▶ Screencasts — install &amp; uninstall</summary>
+<summary>Screencasts — install &amp; uninstall</summary>
 
 **Install** (permanent, across a re-login):
 
@@ -132,7 +134,7 @@ serve:
   trusted_signers: []              # auto-approve GPG signing from these tools
 ```
 
-**Trust rules** auto-approve known-safe patterns so the dispatcher stays quiet. The easiest way to add one is the bundled **`secrets-rule` agent skill**: with [Claude Code](https://claude.com/claude-code), just say *"block evolution from reading my secrets"* or *"always allow Firefox"* — it inspects the request history, picks a spoof-proof `exe` match, writes the rule, and offers to restart. See **[docs/TRUST-RULES.md](docs/TRUST-RULES.md)** for the rule format and how to install/use the skill.
+**Trust rules** auto-approve known-safe patterns so the dispatcher stays quiet. The easiest way to add or adjust one is the bundled **`secrets-rule` agent skill**: with [Claude Code](https://claude.com/claude-code), hand it a request ID from `secrets-dispatcher list` — `/secrets-rule b260def` — and it reads that request's full context (process chain, `exe`, attributes) to compose an accurate rule; or just say *"always allow Firefox"*. Either way it picks a spoof-proof `exe` match, writes the rule, and offers to restart. See **[docs/TRUST-RULES.md](docs/TRUST-RULES.md)** for the format and how to install the skill.
 
 ## Learn more
 

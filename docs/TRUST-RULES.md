@@ -12,14 +12,26 @@ take effect on restart.
 
 This repo ships a [Claude Code](https://claude.com/claude-code) skill —
 [`.claude/skills/secrets-rule/`](../.claude/skills/secrets-rule/SKILL.md) — that
-writes rules for you from plain language. Just describe what you want:
+writes and edits rules for you.
+
+**The intended way is to point it at a specific request.** When something shows
+up in the web UI, a desktop notification, or `secrets-dispatcher list` /
+`history`, hand its ID prefix to the skill:
+
+> `/secrets-rule b260def`
+
+Because it pulls that exact request from history, the agent has the whole
+context — the full process chain, `exe` paths, the secret attributes accessed —
+and composes an accurate rule (or adjusts the existing rule that matched) with no
+guessing. This is both the easiest and the most reliable path.
+
+You can also just describe what you want in plain language:
 
 > - *"block evolution from reading my secrets"*
 > - *"always allow Firefox"*
 > - *"ignore Chrome's dummy write probe"*
 
-or point it at a request from history by its ID prefix (`/secrets-rule b260def`).
-The skill then:
+Either way, the skill:
 
 1. inspects your request history (`secrets-dispatcher history -json`) and the
    journal to pin down the exact process,

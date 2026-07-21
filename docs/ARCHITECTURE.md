@@ -51,14 +51,31 @@ flowchart LR
 The intent is that after the first-week setup — auto-approve rules for the tools
 you trust — the dispatcher goes quiet, prompting only for the unknown.
 
-## Trust rules & the process chain
+## Process chain detection
 
-Rules match on the **caller's full process ancestry** (e.g.
-`claude-code → node → secret-tool`), not just the immediate D-Bus sender, plus
-secret attributes (collection, label). For security-relevant rules match on
-`exe` (kernel-resolved `/proc/PID/exe`) or the systemd `unit` — `name`/`args`
-are self-reported and advisory. See the [README](../README.md#trust-rules) for
-the rule syntax.
+When a request arrives, secrets-dispatcher resolves the **full process
+ancestry** of the caller, not just the immediate D-Bus sender:
+
+```
+Request: GetSecrets → collection/login/github-token
+Process chain: claude-code → node → dbus-send
+Unit: user@1000.service
+```
+
+That's what lets a rule match on the process that actually initiated the
+request — distinguishing "Firefox wants my GitHub token" from
+"unknown-script → curl → dbus-send wants my GitHub token." Trust rules match
+anywhere in this chain; see [TRUST-RULES.md](TRUST-RULES.md) for the rule syntax
+and which identifiers can and can't be spoofed.
+
+## Audit logging
+
+Every access attempt — approved, denied, or auto-ruled — is written to stderr as
+structured JSON (captured by systemd-journald when run as the user service):
+
+```json
+{"time":"2025-03-09T14:22:01Z","level":"INFO","msg":"dbus_call","method":"GetSecrets","items":["collection/login/github-token"],"process_chain":["claude-code","node","dbus-send"],"result":"approved"}
+```
 
 ## Scope
 

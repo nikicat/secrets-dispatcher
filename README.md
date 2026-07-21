@@ -232,7 +232,7 @@ secrets-dispatcher serve --downstream socket:/run/user/1000/secrets-dispatcher/m
 secret-tool lookup service myapp
 ```
 
-See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for SSH config examples, automation scripts, and server-side setup.
+See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for the remote-proxy design and requirements (threat model, access-control rules, transport security).
 
 ## Audit Logging
 
@@ -316,8 +316,9 @@ uploads the result as a workflow artifact.
 
 ## Documentation
 
-- [Requirements & Roadmap](docs/REQUIREMENTS.md)
+- [Remote-proxy design & requirements](docs/REQUIREMENTS.md)
 - [Target Audience & User Personas](docs/TARGET-AUDIENCE.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## License
 

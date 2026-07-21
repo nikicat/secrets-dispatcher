@@ -100,11 +100,11 @@ Checklist for increasing project visibility and adoption.
 
 ### Features That Drive Adoption
 
-- [ ] **Migration / onboarding wizard** — `secrets-dispatcher setup` interactive command that:
-  - Detects running Secret Service provider
-  - Configures itself as proxy
-  - Installs systemd service
-  - Suggests initial trust rules based on running processes
+- [~] **Migration / onboarding wizard** — largely shipped as `secrets-dispatcher try`
+  (detects the running Secret Service provider, puts the dispatcher in front of it
+  reversibly, prints the web UI URL) plus `service install --mode local` (detects,
+  configures, installs the systemd unit). Still open: automatic trust-rule
+  suggestions based on running processes.
 
 - [ ] **Trust rule suggestions** — When a new process accesses a secret, suggest a rule in the web UI: "Firefox accessed 'login/github'. [Create auto-approve rule]"
 

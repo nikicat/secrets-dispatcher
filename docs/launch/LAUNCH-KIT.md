@@ -46,7 +46,12 @@ stays "also does."
    installs. Be present all day to answer. (See §0b for why.)
 
 **The one line that matters most**, appended to every post:
-> **Would you actually run this? If not, what's the blocker?**
+> **Does this bother you too, or am I overthinking it?**
+
+Probe **resonance** — whether people are bothered by the problem *at all* — not adoption
+friction. The real risk here isn't "people are too scared to run it," it's "nobody's
+bothered enough to want it." Keep *"would you run it / what's the blocker?"* only as a
+follow-up, once someone signals the problem is real for them.
 
 **Kill / continue criteria (write these down now, decide *after*):**
 - **Continue** if, within ~2 weeks: ≥1 "I installed it and it caught something / I'll
@@ -67,9 +72,10 @@ votes, stars — and mainly the comments.
 ## 0b. Reach reality — applicability & retargeting
 
 **The audience is capped by applicability.** Linux-only (freedesktop Secret Service); the
-smooth one-command setup works on **GNOME (gnome-keyring)** or **gopass-secret-service** —
+smooth one-command setup is verified on **GNOME with the stock gnome-keyring** (and works with
+**gopass-secret-service** too, but that's an optional complement, not a requirement) —
 KDE/KWallet/KeePassXC/other desktops need manual setup, and Mac/Windows can't run it at all.
-So the addressable slice is **Linux ∩ (gnome-keyring | gopass-secret-service) ∩ runs-agents ∩
+So the addressable slice is **Linux ∩ gnome-keyring (or another Secret Service backend) ∩ runs-agents ∩
 security-conscious** — narrow, with a permanent OS ceiling. Own this in every post so nobody
 feels baited.
 
@@ -93,30 +99,43 @@ Linux"* — not "gate your keyring." It's useful even to non-installers and side
 **Expectation reset:** success = an *engaged* response from that concentrated GNOME-Linux-agent
 niche; near-silence *from that niche* is a clean freeze signal. Broad numbers aren't the bar.
 
-### Retargeted post drafts (direnv angle, scope owned)
+### Short-form post — shipped copy (scope owned)
 
-**r/gnome / r/archlinux `[OC]`:**
-> **[OC] A per-app approval + audit gate for the GNOME keyring — and a way to keep secrets out of `.env`**
+**Posted to r/gnome 2026-07-22** → <https://www.reddit.com/r/gnome/comments/1v3gdev/i_built_a_perapp_approval_audit_layer_for/>
+(flair **Apps**; no `[OC]` — that sub doesn't use it; architecture diagram attached as the image).
+This is the canonical short form — reuse/adapt it for r/archlinux, r/selfhosted, etc. (check each
+sub's flair / `[OC]` convention first). Personal intro up front; direnv kept light (answer in
+comments); honest scope; resonance ask to close.
+
+> **Title:** I built a per-app approval + audit layer for gnome-keyring — because my coding agents can read everything
 >
-> gnome-keyring is all-or-nothing: locked (nothing readable) or unlocked (every process you run
-> — coding agents included — reads every secret over the Secret Service, silently, no log). I
-> wanted a middle state, so I built a proxy that sits in front of the keyring and prompts per-app
-> (auto-approve the tools you trust, get asked about the rest), with an audit log of who read what.
+> I'm a developer, I daily-drive GNOME, and I lean on coding agents a lot — mainly Claude Code.
+> At some point it started bugging me that these agents run *as me*, so they can read anything in
+> my unlocked keyring over the Secret Service (`secret-tool lookup …`) with no prompt and no log.
+> gnome-keyring is basically all-or-nothing: locked (nothing works) or unlocked (every process I
+> run can read every secret). I wanted a middle setting.
 >
-> The bit I use most: with direnv, `export API_KEY=$(secret-tool lookup …)` in `.envrc` keeps the
-> secret in the keyring, never in a plaintext `.env` — so an agent can't `cat .env`, and each fetch
-> is gated + logged. ~5 months in.
+> So I built **secrets-dispatcher** — a proxy that sits in front of the keyring (registers as
+> `org.freedesktop.secrets`, forwards to your real gnome-keyring behind it) and prompts per-app:
+> auto-approve the tools you trust, get asked about the rest, with an audit log of who read what
+> and via which process chain (`claude-code → node → secret-tool`). It also gates `git commit -S`,
+> and I use it to keep secrets out of `.env` files.
 >
-> MIT/open source — please read the code before trusting it with your keyring; that's the point.
-> Reversible in one command (Ctrl-C restores everything), same-user (visibility + control, not a
-> sandbox). Verified on GNOME/gnome-keyring + gopass-secret-service; KDE/others need manual setup.
-> **Would you run this? If not, what's the blocker?** <repo>
+> Honest about what it is: same-user, so it's **visibility + control, not a sandbox**. It's open
+> source (MIT), runs as you (no new privilege), and stores no secrets of its own. Verified on GNOME
+> with the stock gnome-keyring; other desktops need manual setup for now.
+>
+> Mostly I want a gut-check: **does this actually bother you too, or am I overthinking what my
+> agents can read?** <repo> *(happy to answer setup / direnv questions in the comments)*
+
+**Image:** attach the architecture diagram (`docs/diagram/architecture.png`) — it also becomes the
+feed-card preview.
 
 **Show HN opener** — rework §1's first line to lead with the direnv/`.env` hook and state the
 scope: *"On Linux, your coding agent runs as you — it can read every secret in your keyring
 (`secret-tool lookup …`) and any plaintext `.env`, silently. Here's a setup I've run ~5 months
 that closes the keyring path and keeps secrets out of `.env` (direnv + a gating proxy)…"* — then
-keep §1's honest-scope + the ask, and add "Linux-only; verified on GNOME/gopass-secret-service."
+keep §1's honest-scope + the ask, and add "Linux-only; verified on GNOME with the stock gnome-keyring (gopass-secret-service also works)."
 
 ---
 
@@ -162,8 +181,9 @@ the comment below. HN rewards concreteness and honesty; no adjectives, no "revol
 > `secrets-dispatcher try` puts it in front of your keyring and Ctrl-C restores
 > everything exactly — nothing permanent, no root.
 >
-> I genuinely don't know yet if this is broadly useful or a niche of one. **Would
-> you run it? If not, what's the blocker?** Repo: <link>
+> I genuinely don't know yet if this is broadly useful or a niche of one. **Does this
+> bother you too, or am I overthinking what my agents can read?** (And if it's real for
+> you — would you run something like this, or what's the blocker?) Repo: <link>
 
 ---
 
@@ -194,8 +214,8 @@ Mind each sub's self-promotion rules; be present in comments; disclose you're th
 > per-app control, no audit trail. secrets-dispatcher proxies the Secret Service so
 > each access pauses for approval and gets logged, with full process-chain
 > detection. Works with gnome-keyring/KeePassXC/gopass; reversible trial. It's
-> visibility + control, not isolation (same-user). Would this fit your setup —
-> and if not, why not?
+> visibility + control, not isolation (same-user). Is this a real worry in your
+> setup, or a non-issue?
 
 **r/netsec** — link the **blog post**, not the repo (this sub wants a writeup):
 `Your AI coding agent can read every secret in your Linux keyring — here's how to see it`
@@ -219,7 +239,8 @@ security jargon, lead with the agent angle:
 > On Linux, your AI coding agent runs as you — so it can read every secret in your
 > unlocked keyring (`secret-tool lookup …`), silently, no log. I built a proxy that
 > puts an approval prompt + audit trail in front of the keyring (and `git -S`
-> signing). Not a sandbox — visibility + a choice. Reversible one-command trial: <link>
+> signing). Not a sandbox — visibility + a choice. Does this bother anyone else, or is it
+> just me? Reversible one-command trial: <link>
 
 ---
 

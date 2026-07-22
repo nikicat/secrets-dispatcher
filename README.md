@@ -1,15 +1,25 @@
-# secrets-dispatcher
+# Secrets Dispatcher
 
 [![CI](https://github.com/nikicat/secrets-dispatcher/actions/workflows/check.yml/badge.svg)](https://github.com/nikicat/secrets-dispatcher/actions/workflows/check.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/nikicat/secrets-dispatcher)](https://goreportcard.com/report/github.com/nikicat/secrets-dispatcher)
 [![Release](https://img.shields.io/github/v/release/nikicat/secrets-dispatcher)](https://github.com/nikicat/secrets-dispatcher/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**Your AI coding agent runs as you — so it can read every secret in your keyring, silently.** Claude Code, Cursor, Codex, any script you launch: they call the Linux [Secret Service](https://specifications.freedesktop.org/secret-service/) and read any unlocked credential with no prompt and no log. Usually it isn't malice — just an agent taking a wrong path to a task — but you never see it happen.
+## What it is
 
-**secrets-dispatcher** is the checkpoint that makes it visible. When something reads a secret, you see *what* it touched and the full process chain (`claude-code → node → secret-tool`), and you approve, deny, or auto-allow — the tools you trust fade into rules, everything else has to ask. Every access is logged, and the same gate covers what gets committed and signed as you (`git commit -S`). It's a drop-in proxy in front of the keyring you already have — gnome-keyring, KeePassXC, KDE Wallet, or [gopass-secret-service](https://github.com/nikicat/gopass-secret-service) — same secrets, same data, and **[reversible in one command](#setup)**.
+**Secrets Dispatcher** is a per-operation approval gate and audit log for the **Linux keyring and git commit signing** — a drop-in [Secret Service](https://specifications.freedesktop.org/secret-service/) proxy that sits in front of the keyring you already have (gnome-keyring, [gopass-secret-service](https://github.com/nikicat/gopass-secret-service), KeePassXC…). Same secrets, same data, and **[reversible in one command](#setup)**.
 
 ![secrets-dispatcher sits between the apps that request secrets — browser, AI agents, CLI tools, git commit -S — and your keyring / GPG signing key, adding per-request approval, full process-chain detection, trust rules, and an audit log](docs/diagram/architecture.png)
+
+## What it does
+
+When something reads a secret, you see *what* it touched and the full process chain (`claude-code → node → secret-tool`), and you approve, deny, or auto-allow — the tools you trust fade into rules, everything else has to ask. Every access is logged, and the same gate covers what gets committed and signed as you (`git commit -S`).
+
+## Why it's needed
+
+**Your AI coding agent runs as you — so it can read every secret in your keyring, silently.** Claude Code, Cursor, Codex, any script you launch call the Linux Secret Service and read any unlocked credential with no prompt and no log. Usually it isn't malice — just an agent taking a wrong path to a task — but you never see it happen. Underneath that:
+
+- **The keyring has no per-app access control.** Once it's unlocked, any process running as you can read any secret over the Secret Service D-Bus API — no prompt, no audit trail, no way to know which process accessed what.
+- **`git commit -S` signs blindly.** GPG signs whatever it's handed, with no human-visible context — so an agent or CI step can produce a commit signed by *you* with content you never reviewed.
 
 > **Honest scope.** This is visibility and control — *not* a sandbox or a privilege
 > boundary. It runs as your user, and it gates the **keyring** and **GPG signing**, not
@@ -18,14 +28,16 @@
 > apps, and scripts you run natively touch your secrets or signing key. [More on the security
 > model →](SECURITY.md)
 
-## Why it exists
-
-- **The keyring has no per-app access control.** Once it's unlocked, any process running as you can read any secret over the Secret Service D-Bus API — no prompt, no audit trail, no way to know which process accessed what.
-- **`git commit -S` signs blindly.** GPG signs whatever it's handed, with no human-visible context — so an agent or CI step can produce a commit signed by *you* with content you never reviewed.
+> **Applies to:** **Linux desktops** with a Secret Service keyring on the session bus.
+> The reversible one-command setup is verified on **GNOME** (gnome-keyring) and
+> **[gopass-secret-service](https://github.com/nikicat/gopass-secret-service)**; KDE/KWallet,
+> KeePassXC, and other desktops aren't verified yet and may need manual setup. **Not macOS
+> or Windows** — those use different keyring APIs (gopass the CLI runs there, but the
+> Secret Service this gates does not). [Details →](docs/COMPATIBILITY.md)
 
 ## Setup
 
-You need a running Secret Service keyring (gnome-keyring, KeePassXC, KDE Wallet, gopass…) and/or GPG for signing — the commands below auto-detect what you already have. First, get the binary:
+You need Linux with a running Secret Service keyring and/or GPG for signing — the commands auto-detect your provider (see [Applies to](#) above for which desktops are verified). First, get the binary:
 
 ```bash
 # Prebuilt static binary (amd64; arm64 also on the releases page)
@@ -118,6 +130,27 @@ When a request isn't already covered by a rule, you see the full picture — wha
 - **CLI** — `secrets-dispatcher list` · `approve <id>` · `deny <id>`
 
 All three stay in sync in real time.
+
+## Keep secrets out of `.env`
+
+The most common way an agent grabs a credential is reading a plaintext `.env` off
+disk — which no keyring gate can see. The fix is to not keep the secret in the file
+at all: fetch it from the keyring at runtime with [direnv](https://direnv.net/), so
+the value only ever lives in the shell's memory (never on disk) and every fetch goes
+through secrets-dispatcher:
+
+```bash
+# .envrc — the secret is fetched from the keyring, never written to the file
+export API_KEY=$(secret-tool lookup url https://alchemy.com xdg:schema io.github.nikicat.ApiKey)
+export SCAN_API_KEY=$(gopass-secret get api-key etherscan.io)   # with gopass-secret-service
+```
+
+Now entering the project fetches the secret through the Secret Service — so the first
+lookup prompts for approval and every lookup is logged, instead of a plaintext secret
+sitting on disk for anything to read. Auto-approve the tools you trust so it stays
+quiet. (Once exported, the value is a normal env var in that shell — this removes the
+on-disk copy and gates/audits the fetch; it isn't a boundary against a process already
+running in the same shell.)
 
 ## Configuration
 

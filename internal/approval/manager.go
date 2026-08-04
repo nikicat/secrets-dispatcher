@@ -4,6 +4,7 @@ package approval
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"path"
 	"slices"
@@ -43,13 +44,16 @@ const (
 	EventRequestIgnored
 	EventAutoApproveRuleAdded
 	EventAutoApproveRuleRemoved
+	EventManagedTrustRuleAdded
+	EventManagedTrustRuleRemoved
 )
 
 // Event represents an approval event for observers.
 type Event struct {
-	Type    EventType
-	Request *Request
-	Rule    *AutoApproveRule // For EventAutoApproveRuleAdded/Removed
+	Type        EventType
+	Request     *Request
+	Rule        *AutoApproveRule  // For EventAutoApproveRuleAdded/Removed
+	ManagedRule *ManagedTrustRule // For EventManagedTrustRuleAdded/Removed
 }
 
 // Observer receives notifications about approval events.
@@ -94,6 +98,9 @@ type Request struct {
 	// SenderInfo contains information about the requesting process.
 	SenderInfo SenderInfo `json:"sender_info"`
 
+	// Attribution identifies a managed rule that silently resolved this request.
+	Attribution *DecisionAttribution `json:"attribution,omitempty"`
+
 	// GPGSignInfo contains signing context for gpg_sign requests; nil for other types.
 	GPGSignInfo *GPGSignInfo `json:"gpg_sign_info,omitempty"`
 
@@ -110,6 +117,14 @@ type Request struct {
 	// Internal: channel signaled when request is approved/denied
 	done   chan struct{}
 	result bool // true = approved, false = denied
+}
+
+// DecisionAttribution identifies the persistent rule behind an automatic decision.
+type DecisionAttribution struct {
+	Source   string `json:"source"`
+	RuleID   string `json:"rule_id,omitempty"`
+	RuleName string `json:"rule_name,omitempty"`
+	Action   string `json:"action,omitempty"`
 }
 
 // Resolution represents how a request was resolved.
@@ -179,6 +194,10 @@ type Manager struct {
 	trustedSigners      []TrustedSigner // exe+repo combos auto-approved for gpg_sign
 	ignoreChromeDummy   bool
 	trustRules          []TrustRule // persistent config-defined trust rules
+
+	managedRulesMu sync.RWMutex
+	managedRules   []ManagedTrustRule
+	managedStore   ManagedTrustRuleStore
 }
 
 // ManagerConfig holds configuration for the approval Manager.
@@ -199,6 +218,10 @@ type ManagerConfig struct {
 	IgnoreChromeDummy bool
 	// TrustRules are persistent config-defined rules for auto-approve/ignore.
 	TrustRules []TrustRule
+	// ManagedTrustRules are user-managed, state-file-backed approve rules.
+	ManagedTrustRules []ManagedTrustRule
+	// ManagedRuleStore persists user-managed rules. Nil keeps mutations in memory.
+	ManagedRuleStore ManagedTrustRuleStore
 }
 
 // NewManager creates a new approval manager.
@@ -214,6 +237,8 @@ func NewManager(cfg ManagerConfig) *Manager {
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
 		trustRules:          cfg.TrustRules,
+		managedRules:        cloneManagedTrustRules(cfg.ManagedTrustRules),
+		managedStore:        cfg.ManagedRuleStore,
 	}
 }
 
@@ -252,7 +277,9 @@ func (m *Manager) notify(event Event) {
 	// Record history for terminal request events (not rule-management events)
 	if event.Type != EventRequestCreated &&
 		event.Type != EventAutoApproveRuleAdded &&
-		event.Type != EventAutoApproveRuleRemoved {
+		event.Type != EventAutoApproveRuleRemoved &&
+		event.Type != EventManagedTrustRuleAdded &&
+		event.Type != EventManagedTrustRuleRemoved {
 		m.addHistory(event)
 	}
 }
@@ -338,6 +365,35 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		return true, nil
 	}
 
+	newResolvedRequest := func(attribution *DecisionAttribution) *Request {
+		now := time.Now()
+		return &Request{
+			ID:               uuid.New().String(),
+			Client:           client,
+			Items:            items,
+			Session:          session,
+			CreatedAt:        now,
+			ExpiresAt:        now,
+			Type:             reqType,
+			SearchAttributes: searchAttrs,
+			SenderInfo:       senderInfo,
+			Attribution:      attribution,
+		}
+	}
+
+	// Config deny and ignore rules are hard policy and cannot be bypassed by
+	// caches or user-managed approval rules. Deny wins over ignore.
+	if rule := m.CheckTrustRulesByAction(senderInfo, items, reqType, searchAttrs, "deny"); rule != nil {
+		slog.Info("trust rule matched", "rule_name", rule.Name, "action", "deny")
+		m.notify(Event{Type: EventRequestDenied, Request: newResolvedRequest(nil)})
+		return true, ErrDeniedByRule
+	}
+	if rule := m.CheckTrustRulesByAction(senderInfo, items, reqType, searchAttrs, "ignore"); rule != nil {
+		slog.Info("trust rule matched", "rule_name", rule.Name, "action", "ignore")
+		m.notify(Event{Type: EventRequestIgnored, Request: newResolvedRequest(nil)})
+		return true, ErrIgnored
+	}
+
 	// Check approval cache: if all items were recently approved for this sender, skip.
 	// Delete and write requests always require explicit approval — never use cached approvals.
 	if reqType != RequestTypeDelete && reqType != RequestTypeWrite && m.approvalWindow > 0 && len(items) > 0 {
@@ -352,52 +408,25 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 			"rule_id", rule.ID,
 			"invoker", rule.InvokerName,
 			"type", rule.RequestType)
-		now := time.Now()
-		req := &Request{
-			ID:               uuid.New().String(),
-			Client:           client,
-			Items:            items,
-			Session:          session,
-			CreatedAt:        now,
-			ExpiresAt:        now,
-			Type:             reqType,
-			SearchAttributes: searchAttrs,
-			SenderInfo:       senderInfo,
-		}
-		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+		m.notify(Event{Type: EventRequestAutoApproved, Request: newResolvedRequest(nil)})
 		return true, nil
 	}
 
-	// Check persistent trust rules from config.
-	if rule := m.CheckTrustRules(senderInfo, items, reqType, searchAttrs); rule != nil {
-		action := rule.Action
-		if action == "" {
-			action = "approve"
-		}
+	// Check user-managed persistent approval rules.
+	if rule := m.checkManagedTrustRules(senderInfo, items, reqType, searchAttrs); rule != nil {
+		slog.Info("managed trust rule matched", "rule_id", rule.ID, "rule_name", rule.Name)
+		m.notify(Event{Type: EventRequestAutoApproved, Request: newResolvedRequest(&DecisionAttribution{
+			Source: "managed_rule", RuleID: rule.ID, RuleName: rule.Name, Action: "approve",
+		})})
+		return true, nil
+	}
+
+	// Config approve rules are softer than hard config policy and managed rules.
+	if rule := m.CheckTrustRulesByAction(senderInfo, items, reqType, searchAttrs, "approve"); rule != nil {
 		slog.Info("trust rule matched",
 			"rule_name", rule.Name,
-			"action", action)
-		now := time.Now()
-		req := &Request{
-			ID:               uuid.New().String(),
-			Client:           client,
-			Items:            items,
-			Session:          session,
-			CreatedAt:        now,
-			ExpiresAt:        now,
-			Type:             reqType,
-			SearchAttributes: searchAttrs,
-			SenderInfo:       senderInfo,
-		}
-		if action == "ignore" {
-			m.notify(Event{Type: EventRequestIgnored, Request: req})
-			return true, ErrIgnored
-		}
-		if action == "deny" {
-			m.notify(Event{Type: EventRequestDenied, Request: req})
-			return true, ErrDeniedByRule
-		}
-		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+			"action", "approve")
+		m.notify(Event{Type: EventRequestAutoApproved, Request: newResolvedRequest(nil)})
 		return true, nil
 	}
 
@@ -948,6 +977,25 @@ func (m *Manager) CheckTrustRules(senderInfo SenderInfo, items []ItemInfo, reqTy
 	return nil
 }
 
+// CheckTrustRulesByAction returns the first matching config rule with one of the
+// requested actions. An omitted action is treated as approve.
+func (m *Manager) CheckTrustRulesByAction(senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string, actions ...string) *TrustRule {
+	for i := range m.trustRules {
+		rule := &m.trustRules[i]
+		action := rule.Action
+		if action == "" {
+			action = "approve"
+		}
+		if !slices.Contains(actions, action) {
+			continue
+		}
+		if matchTrustRule(rule, senderInfo, items, reqType, searchAttrs) {
+			return rule
+		}
+	}
+	return nil
+}
+
 // matchTrustRule returns true if the request matches a single trust rule.
 func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) bool {
 	// Check request_types filter
@@ -987,6 +1035,21 @@ func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, re
 // matchProcess checks if the sender matches the process matcher.
 // At least one non-empty field must be set, and all non-empty fields must match.
 func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
+	if pm.Direct {
+		hasProcessFields := pm.Exe != "" || pm.Name != "" || pm.Args != "" || pm.CWD != ""
+		if hasProcessFields {
+			if len(senderInfo.ProcessChain) == 0 || !matchProcessEntry(pm, senderInfo.ProcessChain[0]) {
+				return false
+			}
+		}
+		if pm.Unit != "" {
+			if ok, _ := path.Match(pm.Unit, senderInfo.SystemdUnit); !ok {
+				return false
+			}
+		}
+		return true
+	}
+
 	if pm.Exe != "" {
 		matched := false
 		for _, proc := range senderInfo.ProcessChain {
@@ -1058,6 +1121,34 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 	return true
 }
 
+func matchProcessEntry(pm *ProcessMatcher, proc ProcessInfo) bool {
+	if pm.Exe != "" {
+		if ok, _ := path.Match(pm.Exe, proc.Exe); !ok {
+			return false
+		}
+	}
+	if pm.Name != "" {
+		if ok, _ := path.Match(pm.Name, proc.Name); !ok {
+			return false
+		}
+	}
+	if pm.Args != "" {
+		matched := slices.ContainsFunc(proc.Args, func(arg string) bool {
+			ok, _ := path.Match(pm.Args, arg)
+			return ok
+		})
+		if !matched {
+			return false
+		}
+	}
+	if pm.CWD != "" {
+		if ok, _ := path.Match(pm.CWD, proc.CWD); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // matchSecret checks whether a batch of items matches the secret matcher.
 //
 // A single approval decision covers the whole batch, so every item must be
@@ -1118,6 +1209,108 @@ func matchSecretItem(sm *SecretMatcher, item ItemInfo) bool {
 // ListTrustRules returns the configured trust rules.
 func (m *Manager) ListTrustRules() []TrustRule {
 	return m.trustRules
+}
+
+// ListManagedTrustRules returns a deep copy of all user-managed rules.
+func (m *Manager) ListManagedTrustRules() []ManagedTrustRule {
+	m.managedRulesMu.RLock()
+	defer m.managedRulesMu.RUnlock()
+	return cloneManagedTrustRules(m.managedRules)
+}
+
+// CreateManagedTrustRuleFromRequest creates an exact rule from a manually
+// approved get_secret history entry. The bool reports whether a new rule was
+// persisted; equivalent rules are returned unchanged with false.
+func (m *Manager) CreateManagedTrustRuleFromRequest(requestID string) (ManagedTrustRule, bool, error) {
+	m.historyMu.RLock()
+	var generated ManagedTrustRule
+	var err error
+	found := false
+	for i := range m.history {
+		entry := &m.history[i]
+		if entry.Request == nil || entry.Request.ID != requestID {
+			continue
+		}
+		found = true
+		if entry.Resolution != ResolutionApproved {
+			err = fmt.Errorf("%w: request was not manually approved", ErrInvalidManagedRule)
+		} else {
+			generated, err = managedTrustRuleFromRequest(entry.Request)
+		}
+		break
+	}
+	m.historyMu.RUnlock()
+	if !found {
+		return ManagedTrustRule{}, false, ErrNotFound
+	}
+	if err != nil {
+		return ManagedTrustRule{}, false, err
+	}
+
+	m.managedRulesMu.Lock()
+	for _, existing := range m.managedRules {
+		if managedTrustRulesEqual(existing, generated) {
+			m.managedRulesMu.Unlock()
+			return cloneManagedTrustRule(existing), false, nil
+		}
+	}
+	updated := cloneManagedTrustRules(m.managedRules)
+	updated = append(updated, generated)
+	if m.managedStore != nil {
+		if err := m.managedStore.Save(updated); err != nil {
+			m.managedRulesMu.Unlock()
+			return ManagedTrustRule{}, false, err
+		}
+	}
+	m.managedRules = updated
+	m.managedRulesMu.Unlock()
+
+	result := cloneManagedTrustRule(generated)
+	m.notify(Event{Type: EventManagedTrustRuleAdded, ManagedRule: &result})
+	slog.Info("managed trust rule added", "rule_id", result.ID, "rule_name", result.Name)
+	return result, true, nil
+}
+
+// RemoveManagedTrustRule deletes a managed rule after successfully persisting the change.
+func (m *Manager) RemoveManagedTrustRule(id string) error {
+	m.managedRulesMu.Lock()
+	updated := cloneManagedTrustRules(m.managedRules)
+	index := slices.IndexFunc(updated, func(rule ManagedTrustRule) bool { return rule.ID == id })
+	if index < 0 {
+		m.managedRulesMu.Unlock()
+		return ErrNotFound
+	}
+	removed := updated[index]
+	updated = append(updated[:index], updated[index+1:]...)
+	if m.managedStore != nil {
+		if err := m.managedStore.Save(updated); err != nil {
+			m.managedRulesMu.Unlock()
+			return err
+		}
+	}
+	m.managedRules = updated
+	m.managedRulesMu.Unlock()
+
+	removed = cloneManagedTrustRule(removed)
+	m.notify(Event{Type: EventManagedTrustRuleRemoved, ManagedRule: &removed})
+	slog.Info("managed trust rule removed", "rule_id", id)
+	return nil
+}
+
+func (m *Manager) checkManagedTrustRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) *ManagedTrustRule {
+	m.managedRulesMu.RLock()
+	defer m.managedRulesMu.RUnlock()
+	for i := range m.managedRules {
+		rule := &m.managedRules[i]
+		if ValidateManagedTrustRule(rule) != nil {
+			continue
+		}
+		if matchTrustRule(&rule.TrustRule, senderInfo, items, reqType, searchAttrs) {
+			matched := cloneManagedTrustRule(*rule)
+			return &matched
+		}
+	}
+	return nil
 }
 
 // chromeDummySchema is the xdg:schema Chrome uses for dummy keyring-unlock probes.

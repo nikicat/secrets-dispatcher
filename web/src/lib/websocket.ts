@@ -2,6 +2,7 @@ import type {
   AutoApproveRule,
   ClientInfo,
   HistoryEntry,
+  ManagedTrustRule,
   PendingRequest,
   TrustedSigner,
   TrustRule,
@@ -17,6 +18,7 @@ export interface ApprovalWebSocketCallbacks {
     autoApproveRules: AutoApproveRule[],
     trustedSigners: TrustedSigner[],
     trustRules: TrustRule[],
+    approvalRules: ManagedTrustRule[],
     autoApproveDurationSeconds: number,
     notificationDelayMS: number,
   ) => void;
@@ -29,6 +31,8 @@ export interface ApprovalWebSocketCallbacks {
   onHistoryEntry?: (entry: HistoryEntry) => void;
   onAutoApproveRuleAdded?: (rule: AutoApproveRule) => void;
   onAutoApproveRuleRemoved?: (id: string) => void;
+  onApprovalRuleAdded?: (rule: ManagedTrustRule) => void;
+  onApprovalRuleRemoved?: (id: string) => void;
   onConnectionChange?: (isConnected: boolean) => void;
   onAuthError?: () => void;
   onVersionMismatch?: () => void;
@@ -157,6 +161,7 @@ export class ApprovalWebSocket {
           msg.auto_approve_rules ?? [],
           msg.trusted_signers ?? [],
           msg.trust_rules ?? [],
+          msg.approval_rules ?? [],
           msg.auto_approve_duration_seconds ?? 120,
           msg.notification_delay_ms ?? 0,
         );
@@ -187,6 +192,12 @@ export class ApprovalWebSocket {
         break;
       case "auto_approve_rule_removed":
         this.callbacks.onAutoApproveRuleRemoved?.(msg.id);
+        break;
+      case "approval_rule_added":
+        this.callbacks.onApprovalRuleAdded?.(msg.approval_rule);
+        break;
+      case "approval_rule_removed":
+        this.callbacks.onApprovalRuleRemoved?.(msg.id);
         break;
       case "ping":
         // Server ping, no action needed

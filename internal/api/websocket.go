@@ -34,14 +34,15 @@ type WSMessage struct {
 	Version string `json:"version,omitempty"`
 
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
-	Requests                   []PendingRequest           `json:"requests"`
-	Clients                    []proxy.ClientInfo         `json:"clients"`
-	History                    []HistoryEntry             `json:"history"`
-	AutoApproveRules           []approval.AutoApproveRule `json:"auto_approve_rules"`
-	TrustedSigners             []approval.TrustedSigner   `json:"trusted_signers"`
-	TrustRules                 []approval.TrustRule       `json:"trust_rules"`
-	AutoApproveDurationSeconds int                        `json:"auto_approve_duration_seconds,omitempty"`
-	NotificationDelayMS        int                        `json:"notification_delay_ms,omitempty"`
+	Requests                   []PendingRequest            `json:"requests"`
+	Clients                    []proxy.ClientInfo          `json:"clients"`
+	History                    []HistoryEntry              `json:"history"`
+	AutoApproveRules           []approval.AutoApproveRule  `json:"auto_approve_rules"`
+	ManagedTrustRules          []approval.ManagedTrustRule `json:"approval_rules"`
+	TrustedSigners             []approval.TrustedSigner    `json:"trusted_signers"`
+	TrustRules                 []approval.TrustRule        `json:"trust_rules"`
+	AutoApproveDurationSeconds int                         `json:"auto_approve_duration_seconds,omitempty"`
+	NotificationDelayMS        int                         `json:"notification_delay_ms,omitempty"`
 
 	// For request_created
 	Request *PendingRequest `json:"request,omitempty"`
@@ -67,6 +68,9 @@ type WSMessage struct {
 
 	// For auto_approve_rule_added / auto_approve_rule_removed
 	AutoApproveRule *approval.AutoApproveRule `json:"auto_approve_rule,omitempty"`
+
+	// For approval_rule_added / approval_rule_removed
+	ManagedTrustRule *approval.ManagedTrustRule `json:"approval_rule,omitempty"`
 }
 
 // WSHandler handles WebSocket connections for real-time updates.
@@ -249,6 +253,16 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Type: "auto_approve_rule_removed",
 			ID:   event.Rule.ID,
 		})
+	case approval.EventManagedTrustRuleAdded:
+		msgs = append(msgs, WSMessage{
+			Type:             "approval_rule_added",
+			ManagedTrustRule: event.ManagedRule,
+		})
+	case approval.EventManagedTrustRuleRemoved:
+		msgs = append(msgs, WSMessage{
+			Type: "approval_rule_removed",
+			ID:   event.ManagedRule.ID,
+		})
 	default:
 		return
 	}
@@ -291,6 +305,7 @@ func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
 			Type:             string(req.Type),
 			SearchAttributes: req.SearchAttributes,
 			SenderInfo:       convertSenderInfo(req.SenderInfo),
+			Attribution:      req.Attribution,
 			GPGSignInfo:      req.GPGSignInfo,
 		},
 		Resolution: resolution,
@@ -331,6 +346,10 @@ func (wsc *wsConnection) sendSnapshot() error {
 	if autoApproveRules == nil {
 		autoApproveRules = []approval.AutoApproveRule{}
 	}
+	managedTrustRules := h.manager.ListManagedTrustRules()
+	if managedTrustRules == nil {
+		managedTrustRules = []approval.ManagedTrustRule{}
+	}
 
 	// Get trusted signers
 	trustedSigners := h.manager.ListTrustedSigners()
@@ -351,6 +370,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		Clients:                    clients,
 		History:                    history,
 		AutoApproveRules:           autoApproveRules,
+		ManagedTrustRules:          managedTrustRules,
 		TrustedSigners:             trustedSigners,
 		TrustRules:                 trustRules,
 		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
@@ -463,6 +483,7 @@ func convertRequest(req *approval.Request) *PendingRequest {
 		Type:             string(req.Type),
 		SearchAttributes: req.SearchAttributes,
 		SenderInfo:       convertSenderInfo(req.SenderInfo),
+		Attribution:      req.Attribution,
 		GPGSignInfo:      req.GPGSignInfo,
 	}
 }

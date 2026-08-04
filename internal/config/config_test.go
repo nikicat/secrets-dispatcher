@@ -109,6 +109,27 @@ serve:
 	}
 }
 
+func TestLoadProcessMatcherDirect(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+serve:
+  rules:
+    - name: direct-gh
+      process:
+        exe: /usr/bin/gh
+        direct: true
+`), 0o600)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Serve.Rules) != 1 || cfg.Serve.Rules[0].Process == nil || !cfg.Serve.Rules[0].Process.Direct {
+		t.Fatalf("direct process matcher not loaded: %#v", cfg.Serve.Rules)
+	}
+}
+
 func TestLoadMissingFile(t *testing.T) {
 	cfg, err := Load("/nonexistent/path/config.yaml")
 	if err != nil {

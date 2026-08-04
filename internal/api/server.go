@@ -70,6 +70,9 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 		}
 	})
 	apiMux.HandleFunc("/api/v1/auto-approve/", handlers.HandleAutoApproveDelete)
+	apiMux.HandleFunc("/api/v1/approval-rules/from-request", handlers.HandleManagedTrustRuleCreateFromRequest)
+	apiMux.HandleFunc("/api/v1/approval-rules", handlers.HandleManagedTrustRuleList)
+	apiMux.HandleFunc("/api/v1/approval-rules/", handlers.HandleManagedTrustRuleDelete)
 
 	// Routes with path parameters need pattern matching
 	apiMux.HandleFunc("/api/v1/pending/", func(w http.ResponseWriter, r *http.Request) {

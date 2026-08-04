@@ -103,6 +103,9 @@ func TestWSHandler_Snapshot(t *testing.T) {
 	if len(msg.Requests) != 0 {
 		t.Errorf("expected 0 requests, got %d", len(msg.Requests))
 	}
+	if msg.ManagedTrustRules == nil {
+		t.Error("expected approval_rules to be an empty array, got null")
+	}
 	// Version should match BuildVersion (may be empty in dev mode)
 	if msg.Version != BuildVersion {
 		t.Errorf("expected version %q, got %q", BuildVersion, msg.Version)
@@ -671,5 +674,125 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 		if msg.Type != "client_connected" {
 			t.Errorf("client %d expected client_connected, got %s", i, msg.Type)
 		}
+	}
+}
+
+func openManagedRuleWebSocket(t *testing.T, mgr *approval.Manager) (*websocket.Conn, context.Context) {
+	t.Helper()
+	auth, err := NewAuth(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAuth: %v", err)
+	}
+	handler := NewWSHandler(mgr, nil, auth, "", "")
+	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Cookie": []string{mintSession(t, auth)}},
+	})
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+	return conn, ctx
+}
+
+func readWSMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) WSMessage {
+	t.Helper()
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read websocket message: %v", err)
+	}
+	var msg WSMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("decode websocket message: %v", err)
+	}
+	return msg
+}
+
+func TestWSHandler_SnapshotIncludesManagedTrustRules(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "snapshot" {
+		t.Fatalf("expected snapshot, got %s", msg.Type)
+	}
+	if len(msg.ManagedTrustRules) != 1 {
+		t.Fatalf("expected one managed rule, got %d", len(msg.ManagedTrustRules))
+	}
+	if msg.ManagedTrustRules[0].ID != rule.ID {
+		t.Errorf("rule ID = %q, want %q", msg.ManagedTrustRules[0].ID, rule.ID)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleAdded(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10})
+	mgr.AddHistoryEntry(apiApprovedHistory("approved-1"))
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	rule, created, err := mgr.CreateManagedTrustRuleFromRequest("approved-1")
+	if err != nil {
+		t.Fatalf("CreateManagedTrustRuleFromRequest: %v", err)
+	}
+	if !created {
+		t.Fatal("expected a new rule")
+	}
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "approval_rule_added" {
+		t.Fatalf("expected approval_rule_added, got %s", msg.Type)
+	}
+	if msg.ManagedTrustRule == nil || msg.ManagedTrustRule.ID != rule.ID {
+		t.Fatalf("unexpected managed rule payload: %#v", msg.ManagedTrustRule)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleRemoved(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	if err := mgr.RemoveManagedTrustRule(rule.ID); err != nil {
+		t.Fatalf("RemoveManagedTrustRule: %v", err)
+	}
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "approval_rule_removed" {
+		t.Fatalf("expected approval_rule_removed, got %s", msg.Type)
+	}
+	if msg.ID != rule.ID {
+		t.Errorf("removed ID = %q, want %q", msg.ID, rule.ID)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleAttributionInHistory(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	request := apiApprovedHistory("future-request").Request
+	autoApproved, err := mgr.RequireApproval(context.Background(), "client", request.Items, "", request.Type, nil, request.SenderInfo)
+	if err != nil {
+		t.Fatalf("RequireApproval: %v", err)
+	}
+	if !autoApproved {
+		t.Fatal("expected managed rule auto-approval")
+	}
+
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "history_entry" || msg.HistoryEntry == nil {
+		t.Fatalf("expected history_entry, got %#v", msg)
+	}
+	attribution := msg.HistoryEntry.Request.Attribution
+	if attribution == nil {
+		t.Fatal("expected managed-rule attribution")
+	}
+	if attribution.Source != "managed_rule" || attribution.RuleID != rule.ID || attribution.Action != "approve" {
+		t.Errorf("unexpected attribution: %#v", attribution)
 	}
 }

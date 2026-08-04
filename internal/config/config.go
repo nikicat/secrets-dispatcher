@@ -291,11 +291,12 @@ type TrustRule struct {
 // are equally self-reported (a process can rewrite its argv after exec) — also
 // advisory only. Unit matches the caller's real systemd unit.
 type ProcessMatcher struct {
-	Exe  string `yaml:"exe,omitempty"`  // glob, matches any process's /proc/exe in the chain (non-spoofable)
-	Name string `yaml:"name,omitempty"` // glob, matches any process comm in the chain — ADVISORY: comm is spoofable
-	Args string `yaml:"args,omitempty"` // glob, matches any single cmdline arg of any process in the chain — ADVISORY: argv is spoofable
-	CWD  string `yaml:"cwd,omitempty"`  // glob, matches any process's CWD in the chain
-	Unit string `yaml:"unit,omitempty"` // glob, matches the caller's real systemd unit (from GetUnitByPID)
+	Exe    string `yaml:"exe,omitempty"`    // glob, matches any process's /proc/exe in the chain (non-spoofable)
+	Name   string `yaml:"name,omitempty"`   // glob, matches any process comm in the chain — ADVISORY: comm is spoofable
+	Args   string `yaml:"args,omitempty"`   // glob, matches any single cmdline arg of any process in the chain — ADVISORY: argv is spoofable
+	CWD    string `yaml:"cwd,omitempty"`    // glob, matches any process's CWD in the chain
+	Unit   string `yaml:"unit,omitempty"`   // glob, matches the caller's real systemd unit (from GetUnitByPID)
+	Direct bool   `yaml:"direct,omitempty"` // bind process fields to the direct D-Bus caller instead of any ancestor
 }
 
 // SecretMatcher matches against secret/item attributes.

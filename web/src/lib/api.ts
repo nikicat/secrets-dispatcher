@@ -2,6 +2,7 @@ import type {
   ActionResponse,
   AutoApproveRule,
   ErrorResponse,
+  ManagedTrustRule,
   PendingListResponse,
   StatusResponse,
 } from "./types";
@@ -162,6 +163,51 @@ export async function deleteAutoApproveRule(
   id: string,
 ): Promise<ActionResponse> {
   const result = await request<ActionResponse>(`/auto-approve/${id}`, {
+    method: "DELETE",
+  });
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
+ * Create an exact persistent approval rule from a manually approved request.
+ */
+export async function createApprovalRuleFromRequest(
+  requestId: string,
+): Promise<ManagedTrustRule> {
+  const result = await request<ManagedTrustRule>(
+    "/approval-rules/from-request",
+    {
+      method: "POST",
+      body: JSON.stringify({ request_id: requestId }),
+    },
+  );
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
+ * List persistent approval rules.
+ */
+export async function listApprovalRules(): Promise<ManagedTrustRule[]> {
+  const result = await request<ManagedTrustRule[]>("/approval-rules");
+  if (result === null) {
+    throw new ApiError(401, "Unauthenticated");
+  }
+  return result;
+}
+
+/**
+ * Delete a persistent approval rule by ID.
+ */
+export async function deleteApprovalRule(
+  id: string,
+): Promise<ActionResponse> {
+  const result = await request<ActionResponse>(`/approval-rules/${id}`, {
     method: "DELETE",
   });
   if (result === null) {

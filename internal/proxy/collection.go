@@ -187,7 +187,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	senderInfo := c.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
-	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == "deny" {
+	if rule := c.approval.CheckTrustRulesByAction(senderInfo, infos, approval.RequestTypeSearch, attributes, "deny"); rule != nil {
 		c.approval.RecordDenied(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
@@ -237,6 +237,13 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 
 	// Short-circuit Chrome dummy secret writes
 	items := []approval.ItemInfo{itemInfo}
+	if rule := c.approval.CheckTrustRulesByAction(senderInfo, items, approval.RequestTypeWrite, nil, "deny"); rule != nil {
+		c.approval.RecordDenied(c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo)
+		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
+			"collection": string(path), "rule": rule.Name,
+		}, "denied", approval.ErrDeniedByRule)
+		return "/", "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	}
 	if c.approval.ShouldIgnore(items, approval.RequestTypeWrite) {
 		c.approval.RecordIgnored(c.clientName, items, string(secret.Session), senderInfo)
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{

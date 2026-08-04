@@ -359,6 +359,19 @@ func runServe(args []string) {
 	}
 	slog.SetDefault(slog.New(handler))
 
+	// Resolve state before constructing components that persist into it.
+	var stateDir string
+	if *stateDirFlag != "" {
+		stateDir = *stateDirFlag
+	} else {
+		var sdErr error
+		stateDir, sdErr = getStateDir()
+		if sdErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", sdErr)
+			os.Exit(1)
+		}
+	}
+
 	// Create approval manager
 	var trustedSigners []approval.TrustedSigner
 	for _, ts := range cfg.Serve.TrustedSigners {
@@ -378,11 +391,12 @@ func runServe(args []string) {
 		}
 		if r.Process != nil {
 			tr.Process = &approval.ProcessMatcher{
-				Exe:  r.Process.Exe,
-				Name: r.Process.Name,
-				Args: r.Process.Args,
-				CWD:  r.Process.CWD,
-				Unit: r.Process.Unit,
+				Exe:    r.Process.Exe,
+				Name:   r.Process.Name,
+				Args:   r.Process.Args,
+				CWD:    r.Process.CWD,
+				Unit:   r.Process.Unit,
+				Direct: r.Process.Direct,
 			}
 		}
 		if r.Secret != nil {
@@ -394,6 +408,12 @@ func runServe(args []string) {
 		}
 		trustRules = append(trustRules, tr)
 	}
+	managedRuleStore := approval.NewFileManagedTrustRuleStore(stateDir)
+	managedRules, err := managedRuleStore.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading approval rules: %v\n", err)
+		os.Exit(1)
+	}
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
 		Timeout:             *timeout,
 		HistoryMax:          *historyLimit,
@@ -402,6 +422,8 @@ func runServe(args []string) {
 		TrustedSigners:      trustedSigners,
 		IgnoreChromeDummy:   *cfg.Serve.IgnoreChromeDummySecret,
 		TrustRules:          trustRules,
+		ManagedTrustRules:   managedRules,
+		ManagedRuleStore:    managedRuleStore,
 	})
 
 	// Set up desktop notifications
@@ -422,19 +444,6 @@ func runServe(args []string) {
 	if desktopNotifier != nil {
 		notifHandler = notification.NewHandler(desktopNotifier, api.NewResolver(approvalMgr, slowUpstreamNotifier, upstreamSlowThreshold), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), time.Duration(cfg.Serve.NotificationDelay))
 		approvalMgr.Subscribe(notifHandler)
-	}
-
-	// Set up state directory for cookie
-	var stateDir string
-	if *stateDirFlag != "" {
-		stateDir = *stateDirFlag
-	} else {
-		var sdErr error
-		stateDir, sdErr = getStateDir()
-		if sdErr != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", sdErr)
-			os.Exit(1)
-		}
 	}
 
 	// Create auth with cookie file

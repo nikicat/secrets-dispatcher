@@ -5,8 +5,9 @@ secrets-dispatcher only prompts you for the unexpected. After a first pass of
 adding rules for the tools you trust, the dispatcher goes quiet — that's the
 intended steady state.
 
-Rules live under `serve.rules` in `~/.config/secrets-dispatcher/config.yaml` and
-take effect on restart.
+Config rules live under `serve.rules` in
+`~/.config/secrets-dispatcher/config.yaml` and take effect on restart. The web
+UI can also create narrowly scoped saved approvals without editing the config.
 
 ## The easy way: the `secrets-rule` agent skill
 
@@ -48,6 +49,39 @@ cp -r .claude/skills/secrets-rule ~/.claude/skills/
 ```
 
 ## Writing rules by hand
+
+### Saved approvals from the web UI
+
+After manually approving an eligible secret read, expand **Recent Activity**
+and select **Always approve exact access**. The confirmation shows the complete
+scope before anything is saved. Saved approvals require all of the following to
+match exactly:
+
+- a `get_secret` request for one item,
+- the direct requester's kernel-resolved absolute executable path,
+- the secret collection and every recorded secret attribute,
+- for an interpreter, the script argument and, when the script is relative, the
+  absolute working directory.
+
+Interpreter argv matching is advisory because a process can rewrite its argv.
+The direct executable match remains authoritative. Requests without enough
+information to build this scope do not offer the action. Search, write, delete,
+unlock, signing, denied, expired, cancelled, ignored, and automatically approved
+requests cannot be used to create a saved approval.
+
+Saved approvals are listed under **Saved Approvals** in the web UI and can be
+removed there. They cannot be edited, broadened, disabled, or created from
+arbitrary values. They are stored separately from config rules in
+`<state_dir>/approval-rules.json`; the directory and file are owner-only
+(`0700` and `0600`) and the file is validated when the daemon starts. Changes
+take effect immediately and persist across restarts.
+
+Config `deny` and `ignore` rules are hard policy and are evaluated before all
+approval caches and saved approvals. After those, the order is the recent
+approval cache, temporary auto-approve rules, saved approvals, then config
+`approve` rules. A config `deny` or `ignore` rule therefore cannot be bypassed
+by a saved approval. Activity approved by a saved approval identifies the
+managed rule that made the decision.
 
 ```yaml
 serve:
@@ -99,6 +133,9 @@ Process matching checks the **full process chain**, not just the immediate D-Bus
 caller — `args` is matched against each individual cmdline argument of each
 process in the chain, which is how you identify interpreter-run scripts (whose
 `exe` is the interpreter, `/usr/bin/bash`, with the script path only in argv).
+Set `direct: true` to apply all process fields only to the immediate requester
+(`process_chain[0]`) instead. Saved approvals always use `direct: true`, so a
+matching executable elsewhere in the ancestry is not sufficient.
 
 ### Match on what can't be spoofed
 
@@ -122,6 +159,7 @@ systemd-managed services.
 | `process.args` | glob; matched per cmdline arg — for interpreter-run scripts |
 | `process.cwd` | glob; working directory of any process in the chain |
 | `process.unit` | glob; systemd unit name |
+| `process.direct` | if true, process fields must match the immediate requester instead of any process in the chain |
 | `secret.collection` / `secret.label` | glob (for `get_secret` / `delete` / `write`) |
 | `secret.attributes` | subset match; values are globs |
 | `search_attributes` | glob map, for `search` requests |

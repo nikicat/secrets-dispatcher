@@ -13,15 +13,19 @@ serve:
   ignore_chrome_dummy_secret: true # suppress Chrome's dummy secret probe
 
   # Trust rules — auto-approve known-safe patterns instead of prompting.
-  # Rules match on process attributes (exe, name, cwd, unit) and secret
+  # Rules match on process attributes (exe, name, args, cwd, unit) and secret
   # attributes (collection, label, custom attributes). All patterns support globs.
   # Process matching checks the full process chain, not just the immediate caller.
+  # Set process.direct: true to match only the immediate requester's process.
+  # These config rules are separate from exact approvals saved in the web UI,
+  # which are stored under state_dir in approval-rules.json.
   rules: []
     # Example: auto-approve Firefox accessing any secret
     # - name: firefox
     #   action: approve
     #   process:
     #     exe: "/usr/lib/firefox/firefox"
+    #     direct: true
 
     # Example: auto-approve tools running from your project directory
     # - name: my-project

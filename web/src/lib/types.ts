@@ -12,6 +12,13 @@ export interface ProcessInfo {
   cwd?: string;
 }
 
+export interface DecisionAttribution {
+  source: string;
+  rule_id?: string;
+  rule_name?: string;
+  action?: string;
+}
+
 export interface SenderInfo {
   sender: string;
   pid: number;
@@ -51,6 +58,7 @@ export interface PendingRequest {
   type: "get_secret" | "search" | "gpg_sign" | "delete" | "write" | "unlock" | "ssh_sign";
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
+  attribution?: DecisionAttribution;
   gpg_sign_info?: GPGSignInfo;
 }
 
@@ -117,6 +125,7 @@ export interface ProcessMatcher {
   args?: string;
   cwd?: string;
   unit?: string;
+  direct?: boolean;
 }
 
 export interface SecretMatcher {
@@ -134,6 +143,11 @@ export interface TrustRule {
   search_attributes?: Record<string, string>;
 }
 
+export interface ManagedTrustRule extends TrustRule {
+  id: string;
+  created_at: string;
+}
+
 // WebSocket message types
 export type WSMessage =
   | WSSnapshotMessage
@@ -146,6 +160,8 @@ export type WSMessage =
   | WSHistoryEntryMessage
   | WSAutoApproveRuleAddedMessage
   | WSAutoApproveRuleRemovedMessage
+  | WSApprovalRuleAddedMessage
+  | WSApprovalRuleRemovedMessage
   | WSPingMessage;
 
 export interface WSSnapshotMessage {
@@ -155,6 +171,7 @@ export interface WSSnapshotMessage {
   clients: ClientInfo[];
   history: HistoryEntry[];
   auto_approve_rules: AutoApproveRule[];
+  approval_rules: ManagedTrustRule[];
   trusted_signers: TrustedSigner[];
   trust_rules: TrustRule[];
   auto_approve_duration_seconds?: number;
@@ -204,6 +221,16 @@ export interface WSAutoApproveRuleAddedMessage {
 
 export interface WSAutoApproveRuleRemovedMessage {
   type: "auto_approve_rule_removed";
+  id: string;
+}
+
+export interface WSApprovalRuleAddedMessage {
+  type: "approval_rule_added";
+  approval_rule: ManagedTrustRule;
+}
+
+export interface WSApprovalRuleRemovedMessage {
+  type: "approval_rule_removed";
   id: string;
 }
 

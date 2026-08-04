@@ -93,7 +93,7 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	senderInfo := s.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
-	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == "deny" {
+	if rule := s.approval.CheckTrustRulesByAction(senderInfo, infos, approval.RequestTypeSearch, attributes, "deny"); rule != nil {
 		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 		return nil, nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
@@ -199,7 +199,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	senderInfo := s.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
-	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeUnlock, nil); rule != nil && rule.Action == "deny" {
+	if rule := s.approval.CheckTrustRulesByAction(senderInfo, infos, approval.RequestTypeUnlock, nil, "deny"); rule != nil {
 		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 		return nil, "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}

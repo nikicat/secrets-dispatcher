@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule, TrustedSigner, TrustRule } from "./lib/types";
-  import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
+  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule, ManagedTrustRule, TrustedSigner, TrustRule } from "./lib/types";
+  import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule, createApprovalRuleFromRequest, deleteApprovalRule } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
   import HistoryEntryCard from "./lib/HistoryEntry.svelte";
@@ -13,10 +13,13 @@
   let clients = $state<ClientInfo[]>([]);
   let history = $state<HistoryEntry[]>([]);
   let autoApproveRules = $state<AutoApproveRule[]>([]);
+  let approvalRules = $state<ManagedTrustRule[]>([]);
   let trustedSigners = $state<TrustedSigner[]>([]);
   let trustRules = $state<TrustRule[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let approvalRuleError = $state<string | null>(null);
+  let deletingApprovalRule = $state<string | null>(null);
   let connected = $state(false);
   let sidebarOpen = $state(false);
   let historyOpen = $state(true);
@@ -73,7 +76,7 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver, rules, signers, tRules, aaDuration, notifDelay) => {
+      onSnapshot: (reqs, cls, hist, ver, rules, signers, tRules, savedRules, aaDuration, notifDelay) => {
         requests = reqs;
         clients = cls;
         history = hist;
@@ -81,6 +84,7 @@
         autoApproveRules = rules;
         trustedSigners = signers;
         trustRules = tRules;
+        approvalRules = savedRules;
         autoApproveDurationSeconds = aaDuration;
         notificationDelayMS = notifDelay;
         loading = false;
@@ -139,6 +143,12 @@
       },
       onAutoApproveRuleRemoved: (id) => {
         autoApproveRules = autoApproveRules.filter(r => r.id !== id);
+      },
+      onApprovalRuleAdded: (rule) => {
+        upsertApprovalRule(rule);
+      },
+      onApprovalRuleRemoved: (id) => {
+        approvalRules = approvalRules.filter(r => r.id !== id);
       },
       onConnectionChange: (isConnected) => {
         connected = isConnected;
@@ -279,6 +289,34 @@
       autoApproveRules = autoApproveRules.filter(r => r.id !== ruleId);
     } catch {
       // Ignore
+    }
+  }
+
+  function upsertApprovalRule(rule: ManagedTrustRule) {
+    const existing = approvalRules.findIndex(r => r.id === rule.id);
+    if (existing === -1) {
+      approvalRules = [...approvalRules, rule];
+      return;
+    }
+    approvalRules = approvalRules.map((existingRule, index) => index === existing ? rule : existingRule);
+  }
+
+  async function handleSaveApproval(requestId: string) {
+    const rule = await createApprovalRuleFromRequest(requestId);
+    upsertApprovalRule(rule);
+    approvalRuleError = null;
+  }
+
+  async function handleDeleteApprovalRule(ruleId: string) {
+    approvalRuleError = null;
+    deletingApprovalRule = ruleId;
+    try {
+      await deleteApprovalRule(ruleId);
+      approvalRules = approvalRules.filter(r => r.id !== ruleId);
+    } catch (err) {
+      approvalRuleError = err instanceof Error ? err.message : "Could not remove saved approval";
+    } finally {
+      deletingApprovalRule = null;
     }
   }
 
@@ -531,7 +569,7 @@
             {#if historyOpen}
               <ul class="history-list">
                 {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
-                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {approvalRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} onSaveApproval={handleSaveApproval} />
                 {/each}
               </ul>
             {/if}
@@ -556,12 +594,65 @@
             {#if historyOpen}
               <ul class="history-list">
                 {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
-                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {approvalRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} onSaveApproval={handleSaveApproval} />
                 {/each}
               </ul>
             {/if}
           </section>
         {/if}
+      {/if}
+
+      {#if authState === "authenticated" && !loading && !focusRequestId}
+        <section class="approval-rules-section" aria-labelledby="saved-approvals-heading">
+          <div class="section-heading">
+            <div>
+              <h2 id="saved-approvals-heading">Saved Approvals ({approvalRules.length})</h2>
+              <p>Exact secret access scopes saved from manually approved activity.</p>
+            </div>
+          </div>
+          {#if approvalRuleError}
+            <p class="error-message" role="alert">{approvalRuleError}</p>
+          {/if}
+          {#if approvalRules.length === 0}
+            <p class="rules-empty">No saved approvals. Create one after manually approving an eligible secret access.</p>
+          {:else}
+            <ul class="rules-list approval-rules-list">
+              {#each approvalRules as rule (rule.id)}
+                <li class="rule-entry">
+                  <div class="rule-header">
+                    <span class="history-type">Secret</span>
+                    <div class="rule-header-right">
+                      <span class="rule-permanent">saved</span>
+                      <button
+                        class="rule-delete"
+                        onclick={() => handleDeleteApprovalRule(rule.id)}
+                        disabled={deletingApprovalRule === rule.id}
+                        title="Remove saved approval"
+                        aria-label={`Remove saved approval ${rule.name ?? rule.id}`}
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                      </button>
+                    </div>
+                  </div>
+                  {#if rule.name}
+                    <div class="saved-rule-name">{rule.name}</div>
+                  {/if}
+                  <PropsTable
+                    process={rule.process?.exe}
+                    collection={rule.secret?.collection}
+                    attributes={rule.secret?.attributes}
+                  />
+                  {#if rule.process?.args}
+                    <div class="rule-scope"><span>script</span><code>{rule.process.args}</code></div>
+                  {/if}
+                  {#if rule.process?.cwd}
+                    <div class="rule-scope"><span>cwd</span><code>{rule.process.cwd}</code></div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </section>
       {/if}
 
       {#if authState === "authenticated" && !loading && !focusRequestId && trustRules.length > 0}
@@ -970,6 +1061,46 @@
     margin-top: 32px;
   }
 
+  .approval-rules-section {
+    margin-top: 32px;
+  }
+
+  .section-heading h2 {
+    margin-bottom: 4px;
+  }
+
+  .section-heading p,
+  .rules-empty {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: 13px;
+  }
+
+  .approval-rules-list {
+    margin-top: 12px;
+  }
+
+  .saved-rule-name {
+    margin-top: 4px;
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 500;
+  }
+
+  .rule-scope {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 8px;
+    margin-top: 3px;
+    color: var(--color-text-muted);
+    font-size: 11px;
+  }
+
+  .rule-scope code {
+    overflow-wrap: anywhere;
+    color: var(--color-text);
+  }
+
   .trust-rules-section .rules-list {
     margin-top: 16px;
   }
@@ -1031,6 +1162,11 @@
 
   .rule-delete:hover {
     color: var(--color-danger);
+  }
+
+  .rule-delete:disabled {
+    cursor: wait;
+    opacity: 0.4;
   }
 
   .rule-expiry {

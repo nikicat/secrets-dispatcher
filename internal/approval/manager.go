@@ -94,6 +94,9 @@ type Request struct {
 	// SenderInfo contains information about the requesting process.
 	SenderInfo SenderInfo `json:"sender_info"`
 
+	// Attribution describes the rule or trusted source that resolved the request.
+	Attribution *DecisionAttribution `json:"attribution,omitempty"`
+
 	// GPGSignInfo contains signing context for gpg_sign requests; nil for other types.
 	GPGSignInfo *GPGSignInfo `json:"gpg_sign_info,omitempty"`
 
@@ -110,6 +113,18 @@ type Request struct {
 	// Internal: channel signaled when request is approved/denied
 	done   chan struct{}
 	result bool // true = approved, false = denied
+}
+
+// DecisionAttribution describes the rule or trusted source that resolved a request.
+type DecisionAttribution struct {
+	Source           string            `json:"source"`
+	Action           string            `json:"action,omitempty"`
+	RuleID           string            `json:"rule_id,omitempty"`
+	RuleName         string            `json:"rule_name,omitempty"`
+	RuleRequestTypes []string          `json:"rule_request_types,omitempty"`
+	Process          *ProcessMatcher   `json:"process,omitempty"`
+	Secret           *SecretMatcher    `json:"secret,omitempty"`
+	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
 }
 
 // Resolution represents how a request was resolved.
@@ -338,6 +353,22 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		return true, nil
 	}
 
+	newResolvedRequest := func(attribution *DecisionAttribution) *Request {
+		now := time.Now()
+		return &Request{
+			ID:               uuid.New().String(),
+			Client:           client,
+			Items:            items,
+			Session:          session,
+			CreatedAt:        now,
+			ExpiresAt:        now,
+			Type:             reqType,
+			SearchAttributes: searchAttrs,
+			SenderInfo:       senderInfo,
+			Attribution:      cloneDecisionAttribution(attribution),
+		}
+	}
+
 	// Check approval cache: if all items were recently approved for this sender, skip.
 	// Delete and write requests always require explicit approval — never use cached approvals.
 	if reqType != RequestTypeDelete && reqType != RequestTypeWrite && m.approvalWindow > 0 && len(items) > 0 {
@@ -352,43 +383,16 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 			"rule_id", rule.ID,
 			"invoker", rule.InvokerName,
 			"type", rule.RequestType)
-		now := time.Now()
-		req := &Request{
-			ID:               uuid.New().String(),
-			Client:           client,
-			Items:            items,
-			Session:          session,
-			CreatedAt:        now,
-			ExpiresAt:        now,
-			Type:             reqType,
-			SearchAttributes: searchAttrs,
-			SenderInfo:       senderInfo,
-		}
-		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+		m.notify(Event{Type: EventRequestAutoApproved, Request: newResolvedRequest(NewTemporaryDecisionAttribution(rule))})
 		return true, nil
 	}
 
 	// Check persistent trust rules from config.
 	if rule := m.CheckTrustRules(senderInfo, items, reqType, searchAttrs); rule != nil {
-		action := rule.Action
-		if action == "" {
-			action = "approve"
-		}
-		slog.Info("trust rule matched",
-			"rule_name", rule.Name,
-			"action", action)
-		now := time.Now()
-		req := &Request{
-			ID:               uuid.New().String(),
-			Client:           client,
-			Items:            items,
-			Session:          session,
-			CreatedAt:        now,
-			ExpiresAt:        now,
-			Type:             reqType,
-			SearchAttributes: searchAttrs,
-			SenderInfo:       senderInfo,
-		}
+		action := ruleAction(rule)
+		attribution := NewTrustDecisionAttribution(rule)
+		LogTrustRuleMatch(rule, senderInfo, items, reqType, searchAttrs, client)
+		req := newResolvedRequest(attribution)
 		if action == "ignore" {
 			m.notify(Event{Type: EventRequestIgnored, Request: req})
 			return true, ErrIgnored
@@ -727,6 +731,133 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 // notification. Same matching semantics as RequireApproval's auto-approve check.
 func (m *Manager) CheckAutoApproveRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType) *AutoApproveRule {
 	return m.checkAutoApproveRules(senderInfo, items, reqType)
+}
+
+// NewTemporaryDecisionAttribution returns history attribution for a temporary rule match.
+func NewTemporaryDecisionAttribution(rule *AutoApproveRule) *DecisionAttribution {
+	if rule == nil {
+		return nil
+	}
+	info := &DecisionAttribution{
+		Source:           "temporary_rule",
+		Action:           "approve",
+		RuleID:           rule.ID,
+		RuleRequestTypes: []string{string(rule.RequestType)},
+		Process:          &ProcessMatcher{Unit: rule.InvokerName},
+	}
+	if rule.RequestType == RequestTypeSearch {
+		info.SearchAttributes = cloneStringMap(rule.Attributes)
+	} else if rule.Collection != "" || len(rule.Attributes) > 0 {
+		info.Secret = &SecretMatcher{
+			Collection: rule.Collection,
+			Attributes: cloneStringMap(rule.Attributes),
+		}
+	}
+	return info
+}
+
+// NewTrustDecisionAttribution returns history attribution for a config trust-rule match.
+func NewTrustDecisionAttribution(rule *TrustRule) *DecisionAttribution {
+	if rule == nil {
+		return nil
+	}
+	info := &DecisionAttribution{
+		Source:           "config_rule",
+		Action:           ruleAction(rule),
+		RuleName:         rule.Name,
+		RuleRequestTypes: slices.Clone(rule.RequestTypes),
+		SearchAttributes: cloneStringMap(rule.SearchAttributes),
+	}
+	if rule.Process != nil {
+		proc := *rule.Process
+		info.Process = &proc
+	}
+	if rule.Secret != nil {
+		secret := *rule.Secret
+		secret.Attributes = cloneStringMap(rule.Secret.Attributes)
+		info.Secret = &secret
+	}
+	return info
+}
+
+// NewTrustedSignerDecisionAttribution returns history attribution for trusted GPG signer matches.
+func NewTrustedSignerDecisionAttribution() *DecisionAttribution {
+	return &DecisionAttribution{Source: "trusted_signer", Action: "approve"}
+}
+
+func cloneDecisionAttribution(info *DecisionAttribution) *DecisionAttribution {
+	if info == nil {
+		return nil
+	}
+	out := *info
+	out.RuleRequestTypes = slices.Clone(info.RuleRequestTypes)
+	out.SearchAttributes = cloneStringMap(info.SearchAttributes)
+	if info.Process != nil {
+		proc := *info.Process
+		out.Process = &proc
+	}
+	if info.Secret != nil {
+		secret := *info.Secret
+		secret.Attributes = cloneStringMap(info.Secret.Attributes)
+		out.Secret = &secret
+	}
+	return &out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func ruleAction(rule *TrustRule) string {
+	if rule == nil || rule.Action == "" {
+		return "approve"
+	}
+	return rule.Action
+}
+
+// LogTrustRuleMatch logs the config rule and request fields that matched.
+func LogTrustRuleMatch(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string, client string) {
+	if rule == nil {
+		return
+	}
+	attrs := map[string]string{}
+	label := ""
+	pathValue := ""
+	collection := ""
+	if len(items) > 0 {
+		attrs = items[0].Attributes
+		label = items[0].Label
+		pathValue = items[0].Path
+		collection = extractCollection(items[0].Path)
+	}
+	slog.Info("trust rule matched",
+		"rule_name", rule.Name,
+		"rule_action", ruleAction(rule),
+		"rule_request_types", rule.RequestTypes,
+		"rule_process", rule.Process,
+		"rule_secret", rule.Secret,
+		"rule_search_attributes", rule.SearchAttributes,
+		"request_client", client,
+		"request_type", reqType,
+		"request_sender", senderInfo.Sender,
+		"request_pid", senderInfo.PID,
+		"request_uid", senderInfo.UID,
+		"request_invoker", senderInfo.InvokerName,
+		"request_systemd_unit", senderInfo.SystemdUnit,
+		"request_process_chain", senderInfo.ProcessChain,
+		"request_collection", collection,
+		"request_label", label,
+		"request_path", pathValue,
+		"request_attributes", attrs,
+		"request_search_attributes", searchAttrs,
+	)
 }
 
 // checkAutoApproveRules checks if the request matches any active auto-approve rule.
@@ -1175,6 +1306,18 @@ func (m *Manager) RecordIgnored(client string, items []ItemInfo, session string,
 // RecordDenied creates a history entry for a request denied by a trust rule.
 func (m *Manager) RecordDenied(client string, items []ItemInfo, session string,
 	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
+	m.recordDenied(client, items, session, reqType, searchAttrs, senderInfo, nil)
+}
+
+// RecordDeniedByRule creates a history entry for a request denied by a trust rule.
+func (m *Manager) RecordDeniedByRule(client string, items []ItemInfo, session string,
+	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo, rule *TrustRule) {
+	LogTrustRuleMatch(rule, senderInfo, items, reqType, searchAttrs, client)
+	m.recordDenied(client, items, session, reqType, searchAttrs, senderInfo, NewTrustDecisionAttribution(rule))
+}
+
+func (m *Manager) recordDenied(client string, items []ItemInfo, session string,
+	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo, attribution *DecisionAttribution) {
 	now := time.Now()
 	req := &Request{
 		ID:               uuid.New().String(),
@@ -1186,6 +1329,7 @@ func (m *Manager) RecordDenied(client string, items []ItemInfo, session string,
 		Type:             reqType,
 		SearchAttributes: searchAttrs,
 		SenderInfo:       senderInfo,
+		Attribution:      cloneDecisionAttribution(attribution),
 	}
 	m.notify(Event{Type: EventRequestDenied, Request: req})
 }

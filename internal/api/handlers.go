@@ -113,6 +113,7 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 			Type:             string(req.Type),
 			SearchAttributes: req.SearchAttributes,
 			SenderInfo:       convertSenderInfo(req.SenderInfo),
+			Attribution:      req.Attribution,
 			GPGSignInfo:      req.GPGSignInfo,
 		}
 	}
@@ -350,6 +351,7 @@ func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 			Type:             string(entry.Request.Type),
 			SearchAttributes: entry.Request.SearchAttributes,
 			SenderInfo:       convertSenderInfo(entry.Request.SenderInfo),
+			Attribution:      entry.Request.Attribution,
 			GPGSignInfo:      entry.Request.GPGSignInfo,
 		},
 		Resolution: string(entry.Resolution),
@@ -485,6 +487,7 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 			Type:             approval.RequestType(entry.Request.Type),
 			SearchAttributes: entry.Request.SearchAttributes,
 			SenderInfo:       approvalSender,
+			Attribution:      entry.Request.Attribution,
 		},
 		Resolution: approval.Resolution(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,

@@ -334,6 +334,56 @@ func TestFormatHistory_CollectionColumn(t *testing.T) {
 	mustContain(t, buf.String(), "login")
 }
 
+func TestFormatHistory_SourceColumn(t *testing.T) {
+	entries := []HistoryEntry{
+		{
+			Request: PendingRequest{
+				ID: "abc",
+				Attribution: &DecisionAttribution{
+					Source:   "config_rule",
+					Action:   "deny",
+					RuleName: "deny-app",
+				},
+			},
+			Resolution: "denied",
+			ResolvedAt: time.Now(),
+		},
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatHistory(entries); err != nil {
+		t.Fatalf("FormatHistory failed: %v", err)
+	}
+
+	out := buf.String()
+	mustContain(t, out, "SOURCE")
+	mustContain(t, out, "config_rule:deny-app")
+}
+
+func TestFormatShowResult_DecisionAttribution(t *testing.T) {
+	resolvedAt := time.Now()
+	result := &ShowResult{
+		Request: PendingRequest{
+			ID: "abc",
+			Attribution: &DecisionAttribution{
+				Source: "temporary_rule",
+				RuleID: "1234567",
+			},
+		},
+		Resolution: "auto_approved",
+		ResolvedAt: resolvedAt,
+	}
+
+	var buf strings.Builder
+	f := NewFormatter(&buf, false)
+	if err := f.FormatShowResult(result); err != nil {
+		t.Fatalf("FormatShowResult failed: %v", err)
+	}
+
+	mustContain(t, buf.String(), "Source:  temporary_rule:temporary_rule (1234567)")
+}
+
 func TestCommitSubject(t *testing.T) {
 	tests := []struct {
 		msg  string

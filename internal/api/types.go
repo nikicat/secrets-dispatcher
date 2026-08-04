@@ -52,16 +52,17 @@ type SenderInfo struct {
 
 // PendingRequest represents a pending approval request in API responses.
 type PendingRequest struct {
-	ID               string                `json:"id"`
-	Client           string                `json:"client"`
-	Items            []ItemInfo            `json:"items"`
-	Session          string                `json:"session"`
-	CreatedAt        time.Time             `json:"created_at"`
-	ExpiresAt        time.Time             `json:"expires_at"`
-	Type             string                `json:"type"`
-	SearchAttributes map[string]string     `json:"search_attributes,omitempty"`
-	SenderInfo       SenderInfo            `json:"sender_info"`
-	GPGSignInfo      *approval.GPGSignInfo `json:"gpg_sign_info,omitempty"`
+	ID               string                        `json:"id"`
+	Client           string                        `json:"client"`
+	Items            []ItemInfo                    `json:"items"`
+	Session          string                        `json:"session"`
+	CreatedAt        time.Time                     `json:"created_at"`
+	ExpiresAt        time.Time                     `json:"expires_at"`
+	Type             string                        `json:"type"`
+	SearchAttributes map[string]string             `json:"search_attributes,omitempty"`
+	SenderInfo       SenderInfo                    `json:"sender_info"`
+	Attribution      *approval.DecisionAttribution `json:"attribution,omitempty"`
+	GPGSignInfo      *approval.GPGSignInfo         `json:"gpg_sign_info,omitempty"`
 }
 
 // ActionResponse is returned by approve/deny endpoints.

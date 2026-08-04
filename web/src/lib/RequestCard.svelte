@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { PendingRequest } from "./types";
   import { approve, approveAndAutoApprove, deny, ApiError } from "./api";
-  import ProcessChain from "./ProcessChain.svelte";
+  import RequestOverview from "./RequestOverview.svelte";
 
   interface Props {
     request: PendingRequest;
@@ -23,34 +23,6 @@
   let error = $state<string | null>(null);
   let timeLeft = $state("");
   let copiedPath = $state<string | null>(null);
-
-  // Format sender info for display
-  function formatSenderInfo(): string {
-    const info = request.sender_info;
-    if (!info) {
-      return request.client;
-    }
-
-    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
-
-    // If we have a unit name, show that with username
-    if (info.invoker_name) {
-      return user ? `${info.invoker_name} (${user})` : info.invoker_name;
-    }
-
-    // Fall back to username with PID
-    if (info.pid && user) {
-      return `${user} (PID ${info.pid})`;
-    }
-
-    // Fall back to just PID
-    if (info.pid) {
-      return `PID ${info.pid}`;
-    }
-
-    // Fall back to client name
-    return request.client;
-  }
 
   function commitSubject(msg: string): string {
     return msg.split('\n')[0];
@@ -170,14 +142,7 @@
           {/if}
         </span>
       </div>
-      <span class="item-summary">
-        {#if request.type === "gpg_sign" && request.gpg_sign_info}
-          {commitSubject(request.gpg_sign_info.commit_msg)}
-        {:else}
-          {request.items.map(i => i.label || i.path).join(", ") || "Secret request"}
-        {/if}
-      </span>
-      <ProcessChain chain={request.sender_info?.process_chain ?? []} fallbackText={formatSenderInfo()} />
+      <RequestOverview {request} itemSummaryHook />
     </div>
     <span class="expires">Expires: {timeLeft}</span>
   </div>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { HistoryEntry as HistoryEntryType, PendingRequest, AutoApproveRule } from "./types";
-  import ProcessChain from "./ProcessChain.svelte";
+  import RequestOverview from "./RequestOverview.svelte";
   import PropsTable from "./PropsTable.svelte";
 
   interface Props {
@@ -30,45 +30,6 @@
     }
   }
 
-  function formatSenderInfo(entry: HistoryEntryType): string {
-    const info = entry.request.sender_info;
-    if (!info) {
-      return entry.request.client;
-    }
-
-    // Prefix with repo for gpg_sign
-    const repoPrefix = entry.request.type === "gpg_sign" && entry.request.gpg_sign_info
-      ? entry.request.gpg_sign_info.repo_name + " · "
-      : "";
-
-    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
-
-    // If we have a unit name, show that with user
-    if (info.invoker_name) {
-      return repoPrefix + (user ? `${info.invoker_name} (${user})` : info.invoker_name);
-    }
-
-    // Fall back to user with PID
-    if (info.pid && user) {
-      return repoPrefix + `${user} (PID ${info.pid})`;
-    }
-
-    // Fall back to just PID
-    if (info.pid) {
-      return repoPrefix + `PID ${info.pid}`;
-    }
-
-    // Fall back to client name
-    return repoPrefix + entry.request.client;
-  }
-
-  function historyItemsSummary(request: PendingRequest): string {
-    if (request.type === "gpg_sign" && request.gpg_sign_info) {
-      return request.gpg_sign_info.commit_msg.split('\n')[0];
-    }
-    return request.items.map(i => i.label || i.path).join(", ");
-  }
-
   function extractCollection(itemPath: string): string {
     for (const prefix of [
       "/org/freedesktop/secrets/collection/",
@@ -83,8 +44,7 @@
     return "";
   }
 
-  function historyEntryProps(req: PendingRequest): { process?: string; collection?: string; attributes?: Record<string, string> } {
-    const process = req.sender_info?.invoker_name || undefined;
+  function historyEntryProps(req: PendingRequest): { collection?: string; attributes?: Record<string, string> } {
     const collection = req.items.length > 0 ? extractCollection(req.items[0].path) || undefined : undefined;
     let attributes: Record<string, string> | undefined;
     if (req.type === "search" && req.search_attributes && Object.keys(req.search_attributes).length > 0) {
@@ -92,7 +52,7 @@
     } else if (req.type !== "gpg_sign" && req.items.length > 0 && req.items[0].attributes && Object.keys(req.items[0].attributes).length > 0) {
       attributes = req.items[0].attributes;
     }
-    return { process, collection, attributes };
+    return { collection, attributes };
   }
 
   function attributesEqual(a: Record<string, string> | undefined, b: Record<string, string> | undefined): boolean {
@@ -146,10 +106,7 @@
     </div>
     <button class="history-time clickable" onclick={toggleTimeFormat}>{void tick, formatTime(entry.resolved_at)}</button>
   </div>
-  <div class="history-entry-details">
-    <span class="history-items">{historyItemsSummary(entry.request)}</span>
-    <ProcessChain chain={entry.request.sender_info?.process_chain ?? []} fallbackText={formatSenderInfo(entry)} />
-  </div>
+  <RequestOverview request={entry.request} />
   <PropsTable {...historyEntryProps(entry.request)} />
   {#if entry.resolution === "cancelled"}
     <button class="btn-auto-approve" onclick={() => onAutoApprove(entry.request.id)}>{hasMatchingRule(entry) ? "Reset auto-approve timer" : "Auto-approve similar"}</button>

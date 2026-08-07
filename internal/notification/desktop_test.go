@@ -171,11 +171,11 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 	if call.summary != "Secret requested" {
 		t.Errorf("unexpected summary: %s", call.summary)
 	}
-	if !contains(call.body, "<b>ssh-agent.service</b>@user@remote[1234]") {
-		t.Errorf("body should contain proc@client[pid] header: %s", call.body)
+	if !contains(call.body, "<b>Application:</b> ssh-agent") {
+		t.Errorf("body should contain the application summary: %s", call.body)
 	}
-	if !contains(call.body, "<i>GitHub Token</i>") {
-		t.Errorf("body should contain italic secret label: %s", call.body)
+	if !contains(call.body, "<b>Secret:</b> GitHub Token") {
+		t.Errorf("body should contain the secret summary: %s", call.body)
 	}
 }
 
@@ -192,7 +192,7 @@ func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	wantActions := []string{"default", "", "approve", "Approve", "approve_and_auto_approve", "Approve 2m", "deny", "Deny"}
+	wantActions := []string{"default", "", "approve", "Approve once", "approve_and_auto_approve", "Approve 2m", "deny", "Deny", "details", "Details"}
 	if len(call.actions) != len(wantActions) {
 		t.Fatalf("expected %d actions, got %d: %v", len(wantActions), len(call.actions), call.actions)
 	}
@@ -296,8 +296,8 @@ func TestHandler_FormatBody_Search(t *testing.T) {
 	if call.summary != "Secrets searched" {
 		t.Errorf("expected summary 'Secrets searched', got %q", call.summary)
 	}
-	if !contains(call.body, "<i>service=github</i>") {
-		t.Errorf("body should contain italic search attributes: %s", call.body)
+	if !contains(call.body, "<b>Secret:</b> service=github") {
+		t.Errorf("body should contain sorted search attributes: %s", call.body)
 	}
 }
 
@@ -318,8 +318,8 @@ func TestHandler_FormatBody_MultipleItems(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<i>3 items</i>") {
-		t.Errorf("body should show italic item count: %s", call.body)
+	if !contains(call.body, "<b>Secret:</b> 3 secrets") {
+		t.Errorf("body should show the item count: %s", call.body)
 	}
 }
 
@@ -340,7 +340,7 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<b>user@host</b>[5678]") {
+	if !contains(call.body, "<b>Process:</b> user@host[5678]") {
 		t.Errorf("body should show client[pid]: %s", call.body)
 	}
 }
@@ -538,12 +538,63 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<b>My Secret</b>") {
+	if !contains(call.body, "<b>Secret:</b> My Secret") {
 		t.Errorf("body should contain bold item label: %s", call.body)
 	}
 	if !contains(call.body, "secret-tool") {
 		t.Errorf("body should contain process chain: %s", call.body)
 	}
+}
+
+func TestHandler_FormatBody_TruncatesLongProcessChain(t *testing.T) {
+	h, _, _ := newTestHandler()
+	req := &approval.Request{
+		Type:  approval.RequestTypeGetSecret,
+		Items: []approval.ItemInfo{{Label: "Secret"}},
+		SenderInfo: approval.SenderInfo{ProcessChain: []approval.ProcessInfo{
+			{Name: "secret-tool"},
+			{Name: "bash"},
+			{Name: "terminal"},
+			{Name: "gnome-shell"},
+			{Name: "systemd"},
+		}},
+	}
+
+	body := h.formatBody(req)
+	assert.Contains(t, body, "secret-tool ← bash ← … (+2) ← systemd")
+	assert.NotContains(t, body, "terminal")
+	assert.NotContains(t, body, "gnome-shell")
+}
+
+func TestHandler_FormatBody_GenericSecretUsesAttributes(t *testing.T) {
+	h, _, _ := newTestHandler()
+	req := &approval.Request{
+		Type: approval.RequestTypeGetSecret,
+		Items: []approval.ItemInfo{{
+			Label: "org.freedesktop.Secret.Generic",
+			Attributes: map[string]string{
+				"service": "Bitwarden",
+				"account": "573d16e3-f086_accessTokenKey",
+			},
+		}},
+	}
+
+	body := h.formatBody(req)
+	assert.Contains(t, body, "<b>Secret:</b> Bitwarden — access token (account 573d16e3…)")
+	assert.NotContains(t, body, "org.freedesktop.Secret.Generic")
+}
+
+func TestHandler_FormatBody_UsesReadableSeparators(t *testing.T) {
+	h, _, _ := newTestHandler()
+	req := &approval.Request{
+		Client: "client",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	body := h.formatBody(req)
+	assert.NotContains(t, body, "\n")
+	assert.Contains(t, body, "Application:</b> client • <b>Request:")
 }
 
 func TestHandler_OnEvent_WriteRequest(t *testing.T) {
@@ -678,7 +729,7 @@ func TestHandler_ListenActions_Deny(t *testing.T) {
 }
 
 func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
-	h, _, approver := newTestHandler()
+	h, mock, approver := newTestHandler()
 
 	var opened string
 	h.openURL = func(u string) { opened = u }
@@ -713,12 +764,96 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 	if opened != "http://127.0.0.1:8484?request=action-default-1" {
 		t.Errorf("expected openURL called with request URL, got %q", opened)
 	}
+	assert.Eventually(t, func() bool { return mock.notifyCount() == 2 }, time.Second, 10*time.Millisecond)
+	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
 
 	approver.mu.Lock()
 	defer approver.mu.Unlock()
 	if len(approver.approved) != 0 || len(approver.denied) != 0 {
 		t.Errorf("default action should not call approve/deny")
 	}
+}
+
+func TestHandler_DetailsOpensAndReissuesPendingNotification(t *testing.T) {
+	h, mock, approver := newTestHandler()
+	opened := make(chan string, 1)
+	h.openURL = func(u string) { opened <- u }
+	req := &approval.Request{
+		ID:     "details-1",
+		Client: "client",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.handleAction(Action{NotificationID: 1, ActionKey: "details"})
+
+	select {
+	case url := <-opened:
+		assert.Equal(t, "http://127.0.0.1:8484?request=details-1", url)
+	case <-time.After(time.Second):
+		t.Fatal("details did not open the focused request")
+	}
+	assert.Eventually(t, func() bool { return mock.notifyCount() == 2 }, time.Second, 10*time.Millisecond)
+
+	h.mu.Lock()
+	assert.Equal(t, uint32(2), h.notifications[req.ID])
+	_, oldMapped := h.requests[1]
+	_, newMapped := h.requests[2]
+	h.mu.Unlock()
+	assert.False(t, oldMapped)
+	assert.True(t, newMapped)
+
+	approver.mu.Lock()
+	assert.Empty(t, approver.approved)
+	assert.Empty(t, approver.denied)
+	approver.mu.Unlock()
+}
+
+func TestHandler_DetailsResolutionRaceClosesStaleReissue(t *testing.T) {
+	h, mock, _ := newTestHandler()
+	h.openURL = func(string) {}
+	req := &approval.Request{
+		ID:     "details-race",
+		Client: "client",
+		Type:   approval.RequestTypeGetSecret,
+		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.handleAction(Action{NotificationID: 1, ActionKey: "details"})
+	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
+
+	assert.Eventually(t, func() bool { return mock.notifyCount() == 2 }, time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool { return mock.closeCount() == 2 }, time.Second, 10*time.Millisecond)
+	mock.mu.Lock()
+	assert.ElementsMatch(t, []uint32{1, 2}, mock.closed)
+	mock.mu.Unlock()
+}
+
+func TestHandler_EquivalentRequestsRemainIndependent(t *testing.T) {
+	h, mock, approver := newTestHandler()
+	req1 := &approval.Request{ID: "equivalent-1", Client: "client", Type: approval.RequestTypeGetSecret, Items: []approval.ItemInfo{{Label: "Secret"}}}
+	req2 := &approval.Request{ID: "equivalent-2", Client: "client", Type: approval.RequestTypeGetSecret, Items: []approval.ItemInfo{{Label: "Secret"}}}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req1})
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req2})
+	assert.Equal(t, 2, mock.notifyCount())
+
+	h.mu.Lock()
+	firstID := h.notifications[req1.ID]
+	secondID := h.notifications[req2.ID]
+	h.mu.Unlock()
+	assert.NotEqual(t, firstID, secondID)
+
+	h.handleAction(Action{NotificationID: firstID, ActionKey: "approve"})
+	approver.mu.Lock()
+	assert.Equal(t, []string{req1.ID}, approver.approved)
+	approver.mu.Unlock()
+	h.mu.Lock()
+	_, secondPending := h.notifications[req2.ID]
+	h.mu.Unlock()
+	assert.True(t, secondPending)
 }
 
 func TestHandler_ListenActions_UnknownNotification(t *testing.T) {

@@ -73,18 +73,46 @@ type GPGSignInfo struct {
 	Pushee       string   `json:"pushee,omitempty"`
 }
 
+// DecisionAttribution describes the rule or trusted source that resolved a request.
+type DecisionAttribution struct {
+	Source           string            `json:"source"`
+	Action           string            `json:"action,omitempty"`
+	RuleID           string            `json:"rule_id,omitempty"`
+	RuleName         string            `json:"rule_name,omitempty"`
+	RuleRequestTypes []string          `json:"rule_request_types,omitempty"`
+	Process          *ProcessMatcher   `json:"process,omitempty"`
+	Secret           *SecretMatcher    `json:"secret,omitempty"`
+	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
+}
+
+// ProcessMatcher mirrors approval.ProcessMatcher for CLI JSON decoding.
+type ProcessMatcher struct {
+	Exe  string `json:"exe,omitempty"`
+	Name string `json:"name,omitempty"`
+	CWD  string `json:"cwd,omitempty"`
+	Unit string `json:"unit,omitempty"`
+}
+
+// SecretMatcher mirrors approval.SecretMatcher for CLI JSON decoding.
+type SecretMatcher struct {
+	Collection string            `json:"collection,omitempty"`
+	Label      string            `json:"label,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
 // PendingRequest represents a pending approval request.
 type PendingRequest struct {
-	ID               string            `json:"id"`
-	Client           string            `json:"client"`
-	Items            []ItemInfo        `json:"items"`
-	Session          string            `json:"session"`
-	CreatedAt        time.Time         `json:"created_at"`
-	ExpiresAt        time.Time         `json:"expires_at"`
-	Type             string            `json:"type"`
-	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
-	GPGSignInfo      *GPGSignInfo      `json:"gpg_sign_info,omitempty"`
-	SenderInfo       SenderInfo        `json:"sender_info"`
+	ID               string               `json:"id"`
+	Client           string               `json:"client"`
+	Items            []ItemInfo           `json:"items"`
+	Session          string               `json:"session"`
+	CreatedAt        time.Time            `json:"created_at"`
+	ExpiresAt        time.Time            `json:"expires_at"`
+	Type             string               `json:"type"`
+	SearchAttributes map[string]string    `json:"search_attributes,omitempty"`
+	GPGSignInfo      *GPGSignInfo         `json:"gpg_sign_info,omitempty"`
+	Attribution      *DecisionAttribution `json:"attribution,omitempty"`
+	SenderInfo       SenderInfo           `json:"sender_info"`
 }
 
 // HistoryEntry represents a resolved approval request.

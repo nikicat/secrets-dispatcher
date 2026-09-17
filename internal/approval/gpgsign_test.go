@@ -308,7 +308,7 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.RecordAutoApprovedGPGSign("test-client", sampleGPGSignInfo(), SenderInfo{}, []byte("sig"), []byte("status"))
+	id, err := mgr.RecordAutoApprovedGPGSign("test-client", sampleGPGSignInfo(), SenderInfo{}, []byte("sig"), []byte("status"), NewTrustedSignerDecisionAttribution())
 	if err != nil {
 		t.Fatalf("RecordAutoApprovedGPGSign returned unexpected error: %v", err)
 	}

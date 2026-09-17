@@ -61,6 +61,21 @@ func (r *Resolver) AutoApprove(requestID string) error {
 	return nil
 }
 
+// CreateManagedTrustRule creates a durable approval rule.
+func (r *Resolver) CreateManagedTrustRule(rule approval.ManagedTrustRule) (approval.ManagedTrustRule, error) {
+	return r.Manager.CreateManagedTrustRule(rule)
+}
+
+// UpdateManagedTrustRule updates a durable approval rule.
+func (r *Resolver) UpdateManagedTrustRule(id string, rule approval.ManagedTrustRule) (approval.ManagedTrustRule, error) {
+	return r.Manager.UpdateManagedTrustRule(id, rule)
+}
+
+// PersistAutoApproveRule promotes a temporary rule to durable storage.
+func (r *Resolver) PersistAutoApproveRule(id string) (approval.ManagedTrustRule, error) {
+	return r.Manager.PersistAutoApproveRule(id)
+}
+
 // ApproveAndAutoApprove approves a pending request and creates an auto-approve
 // rule for similar future requests. For GPG signing requests, it runs the real
 // gpg binary to produce the signature before approving.

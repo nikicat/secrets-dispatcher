@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,6 +103,9 @@ func TestWSHandler_Snapshot(t *testing.T) {
 	}
 	if len(msg.Requests) != 0 {
 		t.Errorf("expected 0 requests, got %d", len(msg.Requests))
+	}
+	if msg.ManagedTrustRules == nil {
+		t.Error("expected approval_rules to be an empty array, got null")
 	}
 	// Version should match BuildVersion (may be empty in dev mode)
 	if msg.Version != BuildVersion {
@@ -434,7 +438,7 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 	req := &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
+		SenderInfo: approval.SenderInfo{PID: 42, InvokerName: "gh", ProcessChain: []approval.ProcessInfo{{PID: 42, Exe: "/usr/bin/gh"}}},
 	}
 	mgr.AddAutoApproveRule(req)
 
@@ -476,6 +480,9 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 	if msg.AutoApproveRules[0].InvokerName != "gh" {
 		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRules[0].InvokerName)
 	}
+	if msg.AutoApproveRules[0].InvokerExe != "/usr/bin/gh" {
+		t.Errorf("expected authoritative invoker exe, got %q", msg.AutoApproveRules[0].InvokerExe)
+	}
 	if msg.AutoApproveRules[0].RequestType != approval.RequestTypeGetSecret {
 		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRules[0].RequestType)
 	}
@@ -513,7 +520,7 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 	req := &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
-		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
+		SenderInfo: approval.SenderInfo{PID: 42, InvokerName: "gh", ProcessChain: []approval.ProcessInfo{{PID: 42, Exe: "/usr/bin/gh"}}},
 	}
 	mgr.AddAutoApproveRule(req)
 
@@ -536,6 +543,9 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 	}
 	if msg.AutoApproveRule.InvokerName != "gh" {
 		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRule.InvokerName)
+	}
+	if msg.AutoApproveRule.InvokerExe != "/usr/bin/gh" {
+		t.Errorf("expected authoritative invoker exe, got %q", msg.AutoApproveRule.InvokerExe)
 	}
 	if msg.AutoApproveRule.RequestType != approval.RequestTypeGetSecret {
 		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRule.RequestType)
@@ -671,5 +681,186 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 		if msg.Type != "client_connected" {
 			t.Errorf("client %d expected client_connected, got %s", i, msg.Type)
 		}
+	}
+}
+
+func openManagedRuleWebSocket(t *testing.T, mgr *approval.Manager) (*websocket.Conn, context.Context) {
+	t.Helper()
+	auth, err := NewAuth(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAuth: %v", err)
+	}
+	handler := NewWSHandler(mgr, nil, auth, "", "")
+	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Cookie": []string{mintSession(t, auth)}},
+	})
+	if err != nil {
+		t.Fatalf("websocket.Dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+	return conn, ctx
+}
+
+func readWSMessage(t *testing.T, ctx context.Context, conn *websocket.Conn) WSMessage {
+	t.Helper()
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read websocket message: %v", err)
+	}
+	var msg WSMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("decode websocket message: %v", err)
+	}
+	return msg
+}
+
+func TestWSHandler_SnapshotIncludesManagedTrustRules(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "snapshot" {
+		t.Fatalf("expected snapshot, got %s", msg.Type)
+	}
+	if len(msg.ManagedTrustRules) != 1 {
+		t.Fatalf("expected one managed rule, got %d", len(msg.ManagedTrustRules))
+	}
+	if msg.ManagedTrustRules[0].ID != rule.ID {
+		t.Errorf("rule ID = %q, want %q", msg.ManagedTrustRules[0].ID, rule.ID)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleAdded(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10})
+	mgr.AddHistoryEntry(apiApprovedHistory("approved-1"))
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	rule, created, err := mgr.CreateManagedTrustRuleFromRequest("approved-1")
+	if err != nil {
+		t.Fatalf("CreateManagedTrustRuleFromRequest: %v", err)
+	}
+	if !created {
+		t.Fatal("expected a new rule")
+	}
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "approval_rule_added" {
+		t.Fatalf("expected approval_rule_added, got %s", msg.Type)
+	}
+	if msg.ManagedTrustRule == nil || msg.ManagedTrustRule.ID != rule.ID {
+		t.Fatalf("unexpected managed rule payload: %#v", msg.ManagedTrustRule)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleRemoved(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	if err := mgr.RemoveManagedTrustRule(rule.ID); err != nil {
+		t.Fatalf("RemoveManagedTrustRule: %v", err)
+	}
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "approval_rule_removed" {
+		t.Fatalf("expected approval_rule_removed, got %s", msg.Type)
+	}
+	if msg.ID != rule.ID {
+		t.Errorf("removed ID = %q, want %q", msg.ID, rule.ID)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleUpdated(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	rule.Enabled = false
+	updated, err := mgr.UpdateManagedTrustRule(rule.ID, rule)
+	if err != nil {
+		t.Fatalf("UpdateManagedTrustRule: %v", err)
+	}
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "approval_rule_updated" {
+		t.Fatalf("expected approval_rule_updated, got %s", msg.Type)
+	}
+	if msg.ManagedTrustRule == nil || msg.ManagedTrustRule.ID != updated.ID || msg.ManagedTrustRule.Enabled {
+		t.Fatalf("unexpected managed rule payload: %#v", msg.ManagedTrustRule)
+	}
+}
+
+func TestWSHandler_ManagedTrustRuleAttributionInHistory(t *testing.T) {
+	rule := apiManagedRule()
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, ManagedTrustRules: []approval.ManagedTrustRule{rule}})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	request := apiApprovedHistory("future-request").Request
+	autoApproved, err := mgr.RequireApproval(context.Background(), "client", request.Items, "", request.Type, nil, request.SenderInfo)
+	if err != nil {
+		t.Fatalf("RequireApproval: %v", err)
+	}
+	if !autoApproved {
+		t.Fatal("expected managed rule auto-approval")
+	}
+
+	msg := readWSMessage(t, ctx, conn)
+	if msg.Type != "history_entry" || msg.HistoryEntry == nil {
+		t.Fatalf("expected history_entry, got %#v", msg)
+	}
+	attribution := msg.HistoryEntry.Request.Attribution
+	if attribution == nil {
+		t.Fatal("expected managed-rule attribution")
+	}
+	if attribution.Source != "managed_rule" || attribution.RuleID != rule.ID || attribution.Action != "approve" {
+		t.Errorf("unexpected attribution: %#v", attribution)
+	}
+}
+
+func TestWSHandler_TemporaryRuleRecallResolvesPendingLifecycleOnce(t *testing.T) {
+	mgr := approval.NewManager(approval.ManagerConfig{Timeout: time.Second, HistoryMax: 10, AutoApproveDuration: time.Minute})
+	conn, ctx := openManagedRuleWebSocket(t, mgr)
+	_ = readWSMessage(t, ctx, conn) // snapshot
+
+	request := apiApprovedHistory("recalled").Request
+	result := make(chan error, 1)
+	go func() {
+		autoApproved, err := mgr.RequireApproval(context.Background(), "client", request.Items, "", request.Type, request.SearchAttributes, request.SenderInfo)
+		if err == nil && !autoApproved {
+			err = errors.New("recalled request was not reported as auto-approved")
+		}
+		result <- err
+	}()
+	created := readWSMessage(t, ctx, conn)
+	if created.Type != "request_created" || created.Request == nil {
+		t.Fatalf("expected request_created, got %#v", created)
+	}
+
+	mgr.AddAutoApproveRule(&approval.Request{Type: request.Type, Items: request.Items, SearchAttributes: request.SearchAttributes, SenderInfo: request.SenderInfo})
+	added := readWSMessage(t, ctx, conn)
+	if added.Type != "auto_approve_rule_added" {
+		t.Fatalf("expected auto_approve_rule_added, got %#v", added)
+	}
+	resolved := readWSMessage(t, ctx, conn)
+	if resolved.Type != "request_resolved" || resolved.ID != created.Request.ID || resolved.Result != "auto_approved" {
+		t.Fatalf("unexpected recalled resolution: %#v", resolved)
+	}
+	history := readWSMessage(t, ctx, conn)
+	if history.Type != "history_entry" || history.HistoryEntry == nil || history.HistoryEntry.Request.ID != created.Request.ID {
+		t.Fatalf("unexpected recalled history: %#v", history)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	entries := mgr.History()
+	if len(entries) != 1 || entries[0].Request.ID != created.Request.ID {
+		t.Fatalf("expected exactly one recalled history entry, got %#v", entries)
 	}
 }

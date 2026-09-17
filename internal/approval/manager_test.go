@@ -1697,6 +1697,12 @@ func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 	if len(history) != 1 || history[0].Resolution != ResolutionAutoApproved {
 		t.Errorf("expected auto_approved in history, got %v", history)
 	}
+	if history[0].Request.Attribution == nil {
+		t.Fatal("expected decision attribution")
+	}
+	if got := history[0].Request.Attribution; got.Source != "config_rule" || got.Action != "approve" || got.RuleName != "approve-gh" {
+		t.Fatalf("unexpected decision attribution: %+v", got)
+	}
 
 	mgr.Unsubscribe(obs)
 }
@@ -1743,6 +1749,12 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 	if len(history) != 1 || history[0].Resolution != ResolutionIgnored {
 		t.Errorf("expected ignored in history, got %v", history)
 	}
+	if history[0].Request.Attribution == nil {
+		t.Fatal("expected decision attribution")
+	}
+	if got := history[0].Request.Attribution; got.Source != "config_rule" || got.Action != "ignore" || got.RuleName != "ignore-chrome" {
+		t.Fatalf("unexpected decision attribution: %+v", got)
+	}
 
 	mgr.Unsubscribe(obs)
 }
@@ -1783,6 +1795,12 @@ func TestTrustRules_RequireApproval_Deny(t *testing.T) {
 	history := mgr.History()
 	if len(history) != 1 || history[0].Resolution != ResolutionDenied {
 		t.Errorf("expected denied in history, got %v", history)
+	}
+	if history[0].Request.Attribution == nil {
+		t.Fatal("expected decision attribution")
+	}
+	if got := history[0].Request.Attribution; got.Source != "config_rule" || got.Action != "deny" || got.RuleName != "deny-epiphany" {
+		t.Fatalf("unexpected decision attribution: %+v", got)
 	}
 
 	mgr.Unsubscribe(obs)

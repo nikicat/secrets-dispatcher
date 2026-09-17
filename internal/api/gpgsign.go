@@ -107,7 +107,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	// Trusted signer: run gpg and record the result directly, bypassing the
 	// pending request flow so no desktop notification appears.
 	if h.manager.CheckTrustedSigner(senderInfo, req.GPGSignInfo.RepoName, req.GPGSignInfo.ChangedFiles) {
-		h.signAndRecordAutoApproved(w, &req, senderInfo, commitSubject, "trusted signer")
+		h.signAndRecordAutoApproved(w, &req, senderInfo, commitSubject, "trusted signer", approval.NewTrustedSignerDecisionAttribution())
 		return
 	}
 
@@ -115,7 +115,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	// prior notification). Same effect as trusted signer for the rule's TTL.
 	if rule := h.manager.CheckAutoApproveRules(senderInfo, nil, approval.RequestTypeGPGSign); rule != nil {
 		h.signAndRecordAutoApproved(w, &req, senderInfo, commitSubject,
-			fmt.Sprintf("auto-approve rule %s", rule.ID))
+			fmt.Sprintf("auto-approve rule %s", rule.ID), approval.NewTemporaryDecisionAttribution(rule))
 		return
 	}
 
@@ -172,7 +172,7 @@ func bindDisplayToSignedPayload(info *approval.GPGSignInfo, senderInfo approval.
 // request. Shared by the trusted-signer and ephemeral-auto-approve-rule paths;
 // both want the same outcome — sign without showing a notification — and differ
 // only in the log line.
-func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSignRequest, senderInfo approval.SenderInfo, commitSubject, reason string) {
+func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSignRequest, senderInfo approval.SenderInfo, commitSubject, reason string, attribution *approval.DecisionAttribution) {
 	gpgPath, findErr := h.resolver.GPGRunner.FindGPG()
 	if findErr != nil {
 		writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
@@ -187,7 +187,7 @@ func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSign
 		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.exitCode)
 	}
 
-	id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, res.sig, res.status)
+	id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, res.sig, res.status, attribution)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return

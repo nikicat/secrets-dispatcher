@@ -9,9 +9,25 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
+// senderFrom returns the unique D-Bus name of the sender of an incoming
+// message. The bool is false for malformed synthetic messages; messages from a
+// D-Bus connection normally always carry this header.
+func senderFrom(msg dbus.Message) (senderName, bool) {
+	v, ok := msg.Headers[dbus.FieldSender]
+	if !ok {
+		return "", false
+	}
+	sender, ok := v.Value().(string)
+	if !ok || sender == "" {
+		return "", false
+	}
+	return senderName(sender), true
+}
+
 // senderOf returns the unique D-Bus name of the sender of an incoming message.
 func senderOf(msg dbus.Message) senderName {
-	return senderName(msg.Headers[dbus.FieldSender].Value().(string))
+	sender, _ := senderFrom(msg)
+	return sender
 }
 
 // pathOf returns the object path an incoming message is addressed to.

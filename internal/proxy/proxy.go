@@ -30,6 +30,7 @@ type Proxy struct {
 	approval *approval.Manager
 	tracker  *clientTracker
 	resolver *SenderInfoResolver
+	prompts  *promptRegistry
 
 	service           *Service
 	collection        *CollectionHandler
@@ -90,12 +91,13 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 
 	// Create sender info resolver
 	p.resolver = NewSenderInfoResolver(p.frontConn, p.trimProcessChain)
+	p.prompts = newPromptRegistry(p.tracker)
 
 	// Create handlers — they talk to the backend
-	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.prompt = NewPromptHandler(p.backendConn, p.logger)
+	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold, p.prompts)
+	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold, p.prompts)
+	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold, p.prompts)
+	p.prompt = NewPromptHandler(p.backendConn, p.logger, p.prompts)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 
 	// Export interfaces on the front connection (where clients call us)
@@ -155,7 +157,7 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 	}
 
 	// Forward signals from backend to frontend so clients see live updates
-	p.signals, err = newSignalForwarder(p.backendConn, p.frontConn, p.logger)
+	p.signals, err = newSignalForwarder(p.backendConn, p.frontConn, p.logger, p.prompts)
 	if err != nil {
 		p.Close()
 		return fmt.Errorf("start signal forwarder: %w", err)
@@ -206,6 +208,10 @@ func (p *Proxy) Close() error {
 
 	if p.signals != nil {
 		p.signals.close()
+	}
+
+	if p.prompts != nil {
+		p.prompts.close()
 	}
 
 	if p.tracker != nil {

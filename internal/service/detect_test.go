@@ -110,7 +110,7 @@ func TestResolveBackendExec(t *testing.T) {
 		{
 			name:  "default with gnome-keyring provider demotes it to private backend",
 			value: "", provider: gk,
-			want: "/usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%t/secrets-dispatcher/keyring",
+			want: "/usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%t/keyring",
 		},
 		{
 			name: "explicit gopass keyword", value: "gopass", provider: gk,
@@ -118,7 +118,7 @@ func TestResolveBackendExec(t *testing.T) {
 		},
 		{
 			name: "explicit gnome-keyring keyword", value: "gnome-keyring", provider: none,
-			want: "/usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%t/secrets-dispatcher/keyring",
+			want: "/usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%t/keyring",
 		},
 		{
 			name: "raw path passes through verbatim", value: "/opt/custom/backend --flag", provider: gk,

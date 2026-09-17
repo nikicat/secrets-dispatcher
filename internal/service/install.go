@@ -56,6 +56,10 @@ Type=simple
 ExecStart=%s --session --nofork --nopidfile --address=systemd:
 `
 
+// The backend is bound to default.target (not graphical-session.target) so it
+// runs from boot under linger: pam_gnome_keyring starts the PAM session
+// BEFORE the graphical session, and the login password can only be delivered
+// to a daemon that is already listening on the standard control socket.
 const backendServiceTemplate = `[Unit]
 Description=Secrets Dispatcher - Secret Service backend
 Requires=secrets-dispatcher-bus.socket
@@ -65,6 +69,9 @@ After=secrets-dispatcher-bus.socket
 Type=simple
 ExecStart=%s
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%%t/secrets-dispatcher/backend-bus.sock
+
+[Install]
+WantedBy=default.target
 `
 
 const localProxyTemplate = `[Unit]
@@ -236,6 +243,12 @@ func Install(opts Options) error {
 			return err
 		}
 		verbosef("Enabled secrets-dispatcher-bus.socket\n")
+		// The backend carries its own [Install] (default.target) so PAM finds
+		// it alive at login; enabling is what makes that happen at boot.
+		if err := systemctlFunc("enable", "secrets-dispatcher-backend.service"); err != nil {
+			return err
+		}
+		verbosef("Enabled secrets-dispatcher-backend.service\n")
 	}
 	if err := systemctlFunc("enable", unitFileName); err != nil {
 		return err
@@ -248,6 +261,10 @@ func Install(opts Options) error {
 				return err
 			}
 			verbosef("Started secrets-dispatcher-bus.socket\n")
+			if err := systemctlFunc("start", "secrets-dispatcher-backend.service"); err != nil {
+				return err
+			}
+			verbosef("Started secrets-dispatcher-backend.service\n")
 		}
 		if err := systemctlFunc("start", unitFileName); err != nil {
 			return err

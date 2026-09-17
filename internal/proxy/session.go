@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"crypto/rand"
 	"fmt"
 	"maps"
 	"sync"
@@ -28,16 +29,23 @@ type sessionEntry struct {
 // no security; keeping it plain lets the proxy transcode secrets for clients
 // that require DH even when the backend is queried in plain.
 type SessionManager struct {
-	mu       sync.RWMutex
-	sessions map[dbus.ObjectPath]sessionEntry // remote -> entry
-	counter  atomic.Uint64
+	mu        sync.RWMutex
+	sessions  map[dbus.ObjectPath]sessionEntry // remote -> entry
+	namespace string
+	counter   atomic.Uint64
 }
 
 // NewSessionManager creates a new session manager.
 func NewSessionManager() *SessionManager {
 	return &SessionManager{
-		sessions: make(map[dbus.ObjectPath]sessionEntry),
+		sessions:  make(map[dbus.ObjectPath]sessionEntry),
+		namespace: rand.Text(),
 	}
+}
+
+func (m *SessionManager) nextRemotePath() dbus.ObjectPath {
+	id := m.counter.Add(1)
+	return dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/session/s_%s_%d", m.namespace, id))
 }
 
 // CreateSession negotiates a client session for the given algorithm, opens a
@@ -86,9 +94,9 @@ func (m *SessionManager) CreateSession(localConn *dbus.Conn, algorithm string, i
 		return dbus.Variant{}, "", err
 	}
 
-	// Generate remote session path
-	id := m.counter.Add(1)
-	remotePath = dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/session/%d", id))
+	// Include a per-instance namespace so a stale client session cannot collide
+	// with a different cipher after the proxy restarts.
+	remotePath = m.nextRemotePath()
 
 	m.mu.Lock()
 	m.sessions[remotePath] = sessionEntry{local: localPath, cipher: cipher}

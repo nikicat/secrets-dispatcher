@@ -194,6 +194,149 @@ func TestPrompterBridgeClaimsBackendBeforePrompter(t *testing.T) {
 	recvCall(t, shell.begin, "BeginPrompting")
 }
 
+// TestPrompterBridgePinsOwnerAcrossTakeover is the orphaned-dialog regression:
+// during login a D-Bus-activated gcr-prompter can take the SystemPrompter
+// well-known name from gnome-shell MID-CONVERSATION. Forwarding by well-known
+// name then delivers StopPrompting to the new owner — which never saw the
+// BeginPrompting, answers "couldn't find the callback", and never sends
+// PromptDone — leaving the dialog the OLD owner drew on screen forever, with
+// the desktop dimmed, even though the unlock itself already succeeded. The
+// bridge must pin the conversation to the unique name that accepted the Begin
+// and keep addressing it for the rest of the exchange.
+func TestPrompterBridgePinsOwnerAcrossTakeover(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	backendCmd, backendAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "backend.sock"))
+	t.Cleanup(func() { backendCmd.Process.Kill(); backendCmd.Wait() })
+	frontCmd, frontAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "front.sock"))
+	t.Cleanup(func() { frontCmd.Process.Kill(); frontCmd.Wait() })
+
+	// gnome-shell's prompter owns the name when the prompt begins.
+	shellA, err := dbus.Connect(frontAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { shellA.Close() })
+	prompterA := &mockShellPrompter{
+		begin:   make(chan promptCall, 1),
+		perform: make(chan promptCall, 1),
+		stop:    make(chan promptCall, 1),
+	}
+	require.NoError(t, shellA.Export(prompterA, systemPrompterPath, prompterInterface))
+	reply, err := shellA.RequestName(systemPrompterName, dbus.NameFlagDoNotQueue|dbus.NameFlagAllowReplacement)
+	require.NoError(t, err)
+	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
+
+	proxyBackendConn, err := dbus.Connect(backendAddr)
+	require.NoError(t, err)
+	proxyFrontConn, err := dbus.Connect(frontAddr)
+	require.NoError(t, err)
+	p := New(Config{ClientName: "prompter-test", LogLevel: slog.LevelDebug})
+	require.NoError(t, p.ConnectWith(proxyFrontConn, proxyBackendConn))
+	t.Cleanup(func() { p.Close() })
+	require.NotNil(t, p.prompter)
+
+	keyringConn, err := dbus.Connect(backendAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { keyringConn.Close() })
+	cb := &mockKeyringCallback{ready: make(chan string, 2), done: make(chan struct{})}
+	const callbackPath = dbus.ObjectPath("/org/gnome/keyring/Prompt/takeover")
+	require.NoError(t, keyringConn.Export(cb, callbackPath, prompterCallbackInterface))
+	prompter := keyringConn.Object(systemPrompterName, dbus.ObjectPath(systemPrompterPath))
+
+	// Begin goes to the current owner (gnome-shell).
+	require.NoError(t, prompter.Call(prompterInterface+".BeginPrompting", 0, callbackPath).Err)
+	begin := recvCall(t, prompterA.begin, "BeginPrompting")
+	assert.Equal(t, callbackPath, begin.callback)
+	// The user answers; the keyring proceeds.
+	bridgeFront := shellA.Object(begin.sender, callbackPath)
+	require.NoError(t, bridgeFront.Call(prompterCallbackInterface+".PromptReady", 0, "yes", map[string]dbus.Variant{}, "exchange").Err)
+	assert.Equal(t, "yes", recvReply(t, cb.ready))
+	require.NoError(t, prompter.Call(prompterInterface+".PerformPrompt", 0,
+		callbackPath, "password", map[string]dbus.Variant{}, "exchange-2").Err)
+	assert.Equal(t, callbackPath, recvCall(t, prompterA.perform, "PerformPrompt").callback)
+
+	// Mid-prompt, a gcr-prompter steals the well-known name (as D-Bus
+	// activation did during login). It must receive NOTHING from this
+	// conversation.
+	shellB, err := dbus.Connect(frontAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { shellB.Close() })
+	prompterB := &mockShellPrompter{
+		begin:   make(chan promptCall, 1),
+		perform: make(chan promptCall, 1),
+		stop:    make(chan promptCall, 1),
+	}
+	require.NoError(t, shellB.Export(prompterB, systemPrompterPath, prompterInterface))
+	reply, err = shellB.RequestName(systemPrompterName, dbus.NameFlagReplaceExisting|dbus.NameFlagDoNotQueue)
+	require.NoError(t, err)
+	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
+
+	// StopPrompting must still reach the prompter that drew the dialog.
+	require.NoError(t, prompter.Call(prompterInterface+".StopPrompting", 0, callbackPath).Err)
+	assert.Equal(t, callbackPath, recvCall(t, prompterA.stop, "StopPrompting at the pinned owner").callback)
+	select {
+	case c := <-prompterB.stop:
+		t.Fatalf("StopPrompting was misrouted to the name-taking prompter: %+v", c)
+	default:
+	}
+}
+
+// TestPrompterBridgeFailsPromptWhenPrompterVanishes covers the other half of
+// the pin: if the pinned prompter disappears entirely (gnome-shell crash,
+// session end) mid-prompt, no prompter knows the callback, so nobody will ever
+// send PromptDone — the backend would wait forever. The bridge must synthesize
+// PromptDone itself so gnome-keyring can tear the prompt down.
+func TestPrompterBridgeFailsPromptWhenPrompterVanishes(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	backendCmd, backendAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "backend.sock"))
+	t.Cleanup(func() { backendCmd.Process.Kill(); backendCmd.Wait() })
+	frontCmd, frontAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "front.sock"))
+	t.Cleanup(func() { frontCmd.Process.Kill(); frontCmd.Wait() })
+
+	shellConn, err := dbus.Connect(frontAddr)
+	require.NoError(t, err)
+	shell := &mockShellPrompter{
+		begin:   make(chan promptCall, 1),
+		perform: make(chan promptCall, 1),
+		stop:    make(chan promptCall, 1),
+	}
+	require.NoError(t, shellConn.Export(shell, systemPrompterPath, prompterInterface))
+	reply, err := shellConn.RequestName(systemPrompterName, dbus.NameFlagDoNotQueue)
+	require.NoError(t, err)
+	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
+
+	proxyBackendConn, err := dbus.Connect(backendAddr)
+	require.NoError(t, err)
+	proxyFrontConn, err := dbus.Connect(frontAddr)
+	require.NoError(t, err)
+	p := New(Config{ClientName: "prompter-test", LogLevel: slog.LevelDebug})
+	require.NoError(t, p.ConnectWith(proxyFrontConn, proxyBackendConn))
+	t.Cleanup(func() { p.Close() })
+	require.NotNil(t, p.prompter)
+
+	keyringConn, err := dbus.Connect(backendAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { keyringConn.Close() })
+	cb := &mockKeyringCallback{ready: make(chan string, 2), done: make(chan struct{})}
+	const callbackPath = dbus.ObjectPath("/org/gnome/keyring/Prompt/vanish")
+	require.NoError(t, keyringConn.Export(cb, callbackPath, prompterCallbackInterface))
+	prompter := keyringConn.Object(systemPrompterName, dbus.ObjectPath(systemPrompterPath))
+
+	require.NoError(t, prompter.Call(prompterInterface+".BeginPrompting", 0, callbackPath).Err)
+	recvCall(t, shell.begin, "BeginPrompting")
+
+	// The prompter vanishes mid-prompt (do NOT restore it via cleanup — it
+	// is already dead; Closing twice is fine for dbus.Conn).
+	require.NoError(t, shellConn.Close())
+
+	// The bridge must synthesize PromptDone so the backend stops waiting.
+	select {
+	case <-cb.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no synthesized PromptDone after the session prompter vanished mid-prompt")
+	}
+}
+
 func recvCall(t *testing.T, ch chan promptCall, what string) promptCall {
 	t.Helper()
 	select {

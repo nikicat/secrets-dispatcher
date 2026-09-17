@@ -14,15 +14,14 @@ type senderName string
 // requestID identifies a single in-flight request within a sender's set.
 type requestID uint64
 
-// clientTracker tracks D-Bus clients and provides contexts that get cancelled
-// when the client disconnects.
+// clientTracker tracks D-Bus client lifetimes and provides contexts that get
+// cancelled when the client disconnects.
 type clientTracker struct {
 	conn *dbus.Conn
 	mu   sync.Mutex
-	// clients maps a sender unique name to the set of its in-flight requests,
+	// clients maps a sender unique name to the set of its tracked lifetimes,
 	// each keyed by a tracker-assigned id. A single sender can have several
-	// approval requests pending at once — a client may issue overlapping Secret
-	// Service calls on one connection — and each is tracked and cancelled
+	// approval requests or prompt objects at once, and each is tracked and cancelled
 	// independently. All of a sender's requests are cancelled together only when
 	// that sender actually disconnects.
 	clients map[senderName]map[requestID]context.CancelFunc
@@ -109,14 +108,14 @@ func (t *clientTracker) clientDisconnected(sender senderName) {
 	delete(t.clients, sender)
 }
 
-// contextForSender registers a single request for the given sender and returns
+// contextForSender registers a single lifetime for the given sender and returns
 // its context together with a release function. The context is cancelled when
 // the sender disconnects (or when release is called); release cancels and
-// forgets only this one request, leaving the sender's other in-flight requests
+// forgets only this one lifetime, leaving the sender's other tracked lifetimes
 // untouched. Each call registers an independent request, so overlapping
 // requests from the same sender never cancel one another.
 //
-// The context should be used for the duration of a single request, and release
+// The context should be used for one request or prompt lifetime, and release
 // called (typically deferred) when it completes. If the client has already
 // disconnected, the returned context is already cancelled.
 func (t *clientTracker) contextForSender(parent context.Context, sender senderName) (context.Context, func()) {

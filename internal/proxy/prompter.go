@@ -39,22 +39,51 @@ const (
 //   - Prompter (BeginPrompting/PerformPrompt/StopPrompting): the bridge
 //     receives these from gnome-keyring on the backend bus and forwards them
 //     to gnome-shell on the front bus.
-//   - Callback (PromptReady): gnome-shell calls this back on the callback
-//     object path. Because the bridge issued the call, gnome-shell addresses
-//     the bridge's front connection, so the bridge exports a callback proxy
-//     there and forwards PromptReady to gnome-keyring's real callback object
-//     on the backend bus.
+//   - Callback (PromptReady/PromptDone): gnome-shell calls these back on the
+//     callback object path. Because the bridge issued the Begin call,
+//     gnome-shell addresses the bridge's front connection, so the bridge
+//     exports a callback proxy there and forwards them to gnome-keyring's real
+//     callback object on the backend bus.
+//
+// # Owner pinning
+//
+// Ownership of org.gnome.keyring.SystemPrompter on the front (session) bus is
+// NOT stable during login: gnome-shell registers around startup, and a
+// D-Bus-activated gcr-prompter can take the well-known name over mid-
+// conversation. Forwarding by well-known name can then split one conversation
+// across two prompters — observed in the wild as: shell draws the dialog and
+// the unlock succeeds, gcr-prompter (which never saw BeginPrompting) receives
+// StopPrompting, answers "couldn't find the callback", and never delivers
+// PromptDone — leaving an orphaned dialog on a dimmed desktop. The bridge
+// therefore resolves the name to a UNIQUE bus name at BeginPrompting time and
+// pins the whole conversation to it; a later name takeover cannot redirect
+// Perform/Stop to a prompter that knows nothing of the prompt.
+//
+// Forwarded calls carry FlagNoAutoStart: forwarding must never D-Bus-activate
+// a prompter as a side effect (the activation race above is exactly how a
+// second prompter appeared mid-login in the first place).
 type prompterBridge struct {
 	frontConn   *dbus.Conn    // session bus: gnome-shell owns the real prompter
 	backendConn *dbus.Conn    // private bus: backend gnome-keyring lives here
-	toShell     callForwarder // forwards Prompter calls to gnome-shell
+	toShell     callForwarder // fallback forward: by well-known name, no auto-start
 	logger      *logging.Logger
 
 	mu        sync.Mutex
-	callbacks map[dbus.ObjectPath]bool // callback proxies exported on frontConn
-	owned     bool                     // claimed the name on the backend bus
-	active    bool                     // claimed + exported (idempotency guard)
-	closed    bool                     // close() called; block late activation
+	callbacks map[dbus.ObjectPath]*promptSession // live conversations by callback path
+	owned     bool                               // claimed the name on the backend bus
+	active    bool                               // claimed + exported (idempotency guard)
+	closed    bool                               // close() called; block late activation
+
+	sigStop chan struct{} // closed to stop the owner-watch goroutine
+	sigDone chan struct{} // closed by the owner-watch goroutine on exit
+	sigCh   chan *dbus.Signal
+}
+
+// promptSession is one prompter conversation. shellOwner is the unique name
+// the conversation is pinned to ("" until resolved).
+type promptSession struct {
+	shellOwner string     // unique front-bus name of the prompter that accepted Begin
+	keyring    senderName // unique backend-bus name of gnome-keyring (callback owner)
 }
 
 // newPrompterBridge sets up the bridge when the topology needs one: the backend
@@ -82,14 +111,17 @@ func newPrompterBridge(frontConn, backendConn *dbus.Conn, logger *logging.Logger
 	b := &prompterBridge{
 		frontConn:   frontConn,
 		backendConn: backendConn,
-		toShell:     callForwarder{dst: frontConn, dstName: systemPrompterName},
+		toShell:     callForwarder{dst: frontConn, dstName: systemPrompterName, noAutoStart: true},
 		logger:      logger,
-		callbacks:   make(map[dbus.ObjectPath]bool),
+		callbacks:   make(map[dbus.ObjectPath]*promptSession),
+		sigStop:     make(chan struct{}),
+		sigDone:     make(chan struct{}),
 	}
 
 	if err := b.activate(); err != nil {
 		return nil, err
 	}
+	b.watchPrompterOwner()
 	return b, nil
 }
 
@@ -124,36 +156,170 @@ func (b *prompterBridge) activate() error {
 	return nil
 }
 
+// watchPrompterOwner tracks org.gnome.keyring.SystemPrompter ownership on the
+// front bus. When the name loses its owner entirely (gnome-shell crashed or the
+// session ended mid-prompt), the pinned prompter can never finish the
+// conversation, and no replacement prompter knows the callback — gcr's
+// StopPrompting handler even refuses unknown callbacks. The bridge therefore
+// synthesizes PromptDone to the backend for every pinned conversation, which is
+// exactly what a prompter tearing down its prompts sends, so gnome-keyring
+// stops waiting instead of hanging. Name handovers to a NEW owner are ignored:
+// pinning already keeps the conversation with the old owner, which is still
+// connected and can still finish it.
+func (b *prompterBridge) watchPrompterOwner() {
+	b.sigCh = make(chan *dbus.Signal, 16)
+	if err := b.frontConn.AddMatchSignal(
+		dbus.WithMatchInterface("org.freedesktop.DBus"),
+		dbus.WithMatchMember("NameOwnerChanged"),
+		dbus.WithMatchSender("org.freedesktop.DBus"),
+	); err != nil {
+		b.logger.Warn("prompter bridge cannot watch prompter owner", "error", err.Error())
+		close(b.sigDone)
+		return
+	}
+	b.frontConn.Signal(b.sigCh)
+	go func() {
+		defer close(b.sigDone)
+		for {
+			select {
+			case <-b.sigStop:
+				return
+			case sig, ok := <-b.sigCh:
+				if !ok {
+					return
+				}
+				if len(sig.Body) != 3 {
+					continue
+				}
+				name, _ := sig.Body[0].(string)
+				newOwner, _ := sig.Body[2].(string)
+				if name != systemPrompterName || newOwner != "" {
+					continue
+				}
+				b.prompterVanished()
+			}
+		}
+	}()
+}
+
+// prompterVanished fails every conversation pinned to an owner that no longer
+// exists, with a synthesized PromptDone to the backend.
+func (b *prompterBridge) prompterVanished() {
+	type stale struct {
+		path    dbus.ObjectPath
+		keyring senderName
+	}
+	var staleSessions []stale
+
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return
+	}
+	for path, s := range b.callbacks {
+		if s.shellOwner == "" || nameHasOwner(b.frontConn, s.shellOwner) {
+			continue
+		}
+		staleSessions = append(staleSessions, stale{path: path, keyring: s.keyring})
+		_ = b.frontConn.Export(nil, path, prompterCallbackInterface) // best-effort unexport
+		delete(b.callbacks, path)
+	}
+	b.mu.Unlock()
+
+	for _, s := range staleSessions {
+		b.logger.Info("session prompter vanished mid-prompt; failing the prompt", "callback", string(s.path))
+		b.sendPromptDone(s.path, s.keyring)
+	}
+}
+
+// sendPromptDone delivers a synthesized PromptDone to the backend gnome-keyring
+// callback at path. Best-effort: if the backend is gone nobody is waiting.
+func (b *prompterBridge) sendPromptDone(path dbus.ObjectPath, keyring senderName) {
+	if keyring == "" {
+		return
+	}
+	obj := b.backendConn.Object(string(keyring), path)
+	if err := obj.Call(prompterCallbackInterface+".PromptDone", dbus.FlagNoAutoStart).Err; err != nil {
+		b.logger.Debug("synthesized PromptDone failed", "callback", string(path), "error", err.Error())
+	}
+}
+
 // --- Prompter interface (received from gnome-keyring on the backend bus) ---
 
 // BeginPrompting starts a prompt. The callback object lives on gnome-keyring's
 // backend connection; before forwarding to gnome-shell we export a proxy for it
-// on the front connection so gnome-shell's PromptReady callbacks reach us.
+// on the front connection so gnome-shell's PromptReady/PromptDone callbacks
+// reach us. The forward is addressed to the prompter's UNIQUE name, resolved
+// here and pinned: whoever accepts the Begin is who the rest of the
+// conversation stays with, immune to later flips of the well-known name. With
+// no prompter on the front bus the call fails outright (never auto-starts one)
+// and gnome-keyring treats the prompt as dismissed.
 func (b *prompterBridge) BeginPrompting(msg dbus.Message, callback dbus.ObjectPath) *dbus.Error {
+	owner, err := getNameOwner(b.frontConn, systemPrompterName)
+	if err != nil {
+		return dbustypes.ErrFailed(fmt.Errorf("no session prompter available: %w", err))
+	}
 	if err := b.exportCallback(callback, senderOf(msg)); err != nil {
 		return dbustypes.ErrFailed(err)
 	}
-	b.logger.Info("forwarding keyring unlock prompt to the session prompter", "callback", callback)
-	return b.toShell.forwardVoid(msg)
+	f := callForwarder{dst: b.frontConn, dstName: owner, noAutoStart: true}
+	if err := f.forwardVoid(msg); err != nil {
+		b.unexportCallback(callback)
+		return err
+	}
+	b.mu.Lock()
+	if s, ok := b.callbacks[callback]; ok && !b.closed {
+		s.shellOwner = owner
+	}
+	b.mu.Unlock()
+	b.logger.Info("forwarding keyring unlock prompt to the session prompter", "callback", string(callback), "prompter", owner)
+	return nil
 }
 
 // PerformPrompt drives one round of the prompt (shows the dialog, collects the
-// reply). Pure pass-through; the exchange payload is opaque to us.
+// reply). Pass-through apart from owner pinning; the exchange payload is
+// opaque to us.
 func (b *prompterBridge) PerformPrompt(msg dbus.Message, callback dbus.ObjectPath, promptType string, properties map[string]dbus.Variant, exchange string) *dbus.Error {
-	return b.toShell.forwardVoid(msg)
+	return b.forwardPinned(msg, callback)
 }
 
-// StopPrompting ends the prompt; tear down the callback proxy afterward.
+// StopPrompting ends the prompt; tear down the callback proxy and pin after.
 func (b *prompterBridge) StopPrompting(msg dbus.Message, callback dbus.ObjectPath) *dbus.Error {
-	err := b.toShell.forwardVoid(msg)
+	err := b.forwardPinned(msg, callback)
 	b.unexportCallback(callback)
 	return err
 }
 
+// forwardPinned re-issues msg on the front bus addressed to the pinned owner
+// of its conversation. Unpinned conversations (never begun, or already torn
+// down) fall back to the well-known name — never auto-starting a prompter.
+func (b *prompterBridge) forwardPinned(msg dbus.Message, callback dbus.ObjectPath) *dbus.Error {
+	b.mu.Lock()
+	s, ok := b.callbacks[callback]
+	owner := ""
+	if ok {
+		owner = s.shellOwner
+	}
+	b.mu.Unlock()
+	if owner == "" {
+		return b.toShell.forwardVoid(msg)
+	}
+	f := callForwarder{dst: b.frontConn, dstName: owner, noAutoStart: true}
+	return f.forwardVoid(msg)
+}
+
+// Owner pinning happens inline in BeginPrompting, where the destination
+// unique name is known exactly (resolved before the send).
+
+// exportCallback exports the front-bus proxy for a backend callback object so
+// the prompter's PromptReady/PromptDone calls reach the bridge.
 func (b *prompterBridge) exportCallback(path dbus.ObjectPath, keyring senderName) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.callbacks[path] {
+	if b.closed {
+		return fmt.Errorf("prompter bridge is closed")
+	}
+	if _, ok := b.callbacks[path]; ok {
 		return nil
 	}
 	cb := &prompterCallback{
@@ -163,14 +329,14 @@ func (b *prompterBridge) exportCallback(path dbus.ObjectPath, keyring senderName
 	if err := b.frontConn.Export(cb, path, prompterCallbackInterface); err != nil {
 		return err
 	}
-	b.callbacks[path] = true
+	b.callbacks[path] = &promptSession{keyring: keyring}
 	return nil
 }
 
 func (b *prompterBridge) unexportCallback(path dbus.ObjectPath) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if !b.callbacks[path] {
+	if _, ok := b.callbacks[path]; !ok {
 		return
 	}
 	// Unexport by clearing the object; ignore the error (best-effort teardown).
@@ -190,6 +356,11 @@ func (b *prompterBridge) close() {
 	b.mu.Unlock()
 	if owned {
 		_, _ = b.backendConn.ReleaseName(systemPrompterName) // not under mu (network call)
+	}
+	if b.sigCh != nil {
+		close(b.sigStop)
+		b.frontConn.RemoveSignal(b.sigCh)
+		<-b.sigDone
 	}
 }
 

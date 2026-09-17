@@ -1,17 +1,20 @@
 <script lang="ts">
   import type { PendingRequest } from "./types";
   import { approve, approveAndAutoApprove, deny, ApiError } from "./api";
-  import ProcessChain from "./ProcessChain.svelte";
+  import { deriveRequestApprovalScope } from "./approvalRules";
+  import ApprovalScopePreview from "./ApprovalScopePreview.svelte";
+  import RequestOverview from "./RequestOverview.svelte";
 
   interface Props {
     request: PendingRequest;
     onAction: () => void;
     autoApproveDurationSeconds: number;
+    onSaveRule: (requestId: string) => Promise<void>;
   }
 
-  let { request, onAction, autoApproveDurationSeconds }: Props = $props();
+  let { request, onAction, autoApproveDurationSeconds, onSaveRule }: Props = $props();
 
-  let loading = $state<"approve" | "approve_auto" | "deny" | null>(null);
+  let loading = $state<"approve" | "approve_auto" | "save_rule" | "deny" | null>(null);
 
   function formatDurationShort(seconds: number): string {
     const m = Math.floor(seconds / 60);
@@ -21,36 +24,9 @@
     return `${s}s`;
   }
   let error = $state<string | null>(null);
+  let confirmingSaveRule = $state(false);
   let timeLeft = $state("");
   let copiedPath = $state<string | null>(null);
-
-  // Format sender info for display
-  function formatSenderInfo(): string {
-    const info = request.sender_info;
-    if (!info) {
-      return request.client;
-    }
-
-    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
-
-    // If we have a unit name, show that with username
-    if (info.invoker_name) {
-      return user ? `${info.invoker_name} (${user})` : info.invoker_name;
-    }
-
-    // Fall back to username with PID
-    if (info.pid && user) {
-      return `${user} (PID ${info.pid})`;
-    }
-
-    // Fall back to just PID
-    if (info.pid) {
-      return `PID ${info.pid}`;
-    }
-
-    // Fall back to client name
-    return request.client;
-  }
 
   function commitSubject(msg: string): string {
     return msg.split('\n')[0];
@@ -152,6 +128,23 @@
       loading = null;
     }
   }
+
+  async function handleSaveRule() {
+    loading = "save_rule";
+    error = null;
+    try {
+      await onSaveRule(request.id);
+      confirmingSaveRule = false;
+    } catch (e) {
+      error = e instanceof ApiError || e instanceof Error
+        ? e.message
+        : "Failed to save rule";
+    } finally {
+      loading = null;
+    }
+  }
+
+  let saveRuleScope = $derived(deriveRequestApprovalScope(request));
 </script>
 
 <div class="card card--{request.type}">
@@ -170,14 +163,7 @@
           {/if}
         </span>
       </div>
-      <span class="item-summary">
-        {#if request.type === "gpg_sign" && request.gpg_sign_info}
-          {commitSubject(request.gpg_sign_info.commit_msg)}
-        {:else}
-          {request.items.map(i => i.label || i.path).join(", ") || "Secret request"}
-        {/if}
-      </span>
-      <ProcessChain chain={request.sender_info?.process_chain ?? []} fallbackText={formatSenderInfo()} />
+      <RequestOverview {request} itemSummaryHook />
     </div>
     <span class="expires">Expires: {timeLeft}</span>
   </div>
@@ -363,7 +349,7 @@
       {#if loading === "approve"}
         Approving...
       {:else}
-        Approve
+        Approve once
       {/if}
     </button>
     <button
@@ -375,9 +361,21 @@
       {#if loading === "approve_auto"}
         Approving...
       {:else}
-        Approve {formatDurationShort(autoApproveDurationSeconds)}
+        Approve similar ({formatDurationShort(autoApproveDurationSeconds)})
       {/if}
     </button>
+    {#if request.type !== "gpg_sign"}
+      <button
+        class="btn-save-rule"
+        onclick={() => confirmingSaveRule = true}
+        disabled={loading !== null || !saveRuleScope}
+        title={saveRuleScope
+          ? "Preview a permanent approval rule without resolving this request"
+          : "This request lacks an eligible direct executable or interpreter scope"}
+      >
+        Save rule
+      </button>
+    {/if}
     <button class="btn-deny" onclick={handleDeny} disabled={loading !== null}>
       {#if loading === "deny"}
         Denying...
@@ -386,6 +384,25 @@
       {/if}
     </button>
   </div>
+  {#if confirmingSaveRule && saveRuleScope}
+    <div class="save-rule-confirmation">
+      <h4>Save approval rule?</h4>
+      <p>The pending request remains unresolved. Future requests must match this scope.</p>
+      <ApprovalScopePreview
+        requestTypes={[saveRuleScope.requestType]}
+        process={saveRuleScope.process}
+        secret={saveRuleScope.secret}
+        searchAttributes={saveRuleScope.searchAttributes}
+        allItems={saveRuleScope.allItems}
+      />
+      <div class="confirmation-actions">
+        <button class="btn-save-rule-confirm" onclick={handleSaveRule} disabled={loading !== null}>
+          {loading === "save_rule" ? "Saving rule..." : "Create saved rule"}
+        </button>
+        <button class="btn-save-rule-cancel" onclick={() => confirmingSaveRule = false} disabled={loading !== null}>Cancel</button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -593,7 +610,61 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 12px;
+  }
+
+  .btn-save-rule {
+    color: var(--color-text);
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+  }
+
+  .btn-save-rule:hover:not(:disabled) {
+    background-color: var(--color-surface-hover);
+  }
+
+  .save-rule-confirmation {
+    margin-top: 12px;
+    padding: 12px;
+    background: color-mix(in srgb, var(--color-success) 5%, var(--color-bg));
+    border: 1px solid var(--color-success);
+    border-radius: var(--radius-sm);
+  }
+
+  .save-rule-confirmation h4,
+  .save-rule-confirmation p {
+    margin: 0 0 4px;
+  }
+
+  .save-rule-confirmation p {
+    color: var(--color-text-muted);
+    font-size: 12px;
+  }
+
+  .confirmation-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .btn-save-rule-confirm,
+  .btn-save-rule-cancel {
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  .btn-save-rule-confirm {
+    color: white;
+    background: var(--color-success);
+    border: 1px solid var(--color-success);
+  }
+
+  .btn-save-rule-cancel {
+    color: var(--color-text-muted);
+    background: transparent;
+    border: 1px solid var(--color-border);
   }
 
   /* GPG sign card styles */

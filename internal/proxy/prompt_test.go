@@ -8,6 +8,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/logging"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,8 +46,10 @@ const testCollectionPath = dbus.ObjectPath("/org/freedesktop/secrets/collection/
 // proxy in front of it on a private front bus, mirroring the production
 // topology (client -> front bus -> proxy -> backend bus -> real service).
 type promptTestEnv struct {
-	client *dbus.Conn
-	mock   *testutil.MockSecretService
+	client    *dbus.Conn
+	mock      *testutil.MockSecretService
+	proxy     *Proxy
+	frontAddr string
 }
 
 func newPromptTestEnv(t *testing.T) *promptTestEnv {
@@ -85,7 +88,7 @@ func newPromptTestEnv(t *testing.T) *promptTestEnv {
 	require.NoError(t, err, "connect client to front bus")
 	t.Cleanup(func() { client.Close() })
 
-	return &promptTestEnv{client: client, mock: mock}
+	return &promptTestEnv{client: client, mock: mock, proxy: p, frontAddr: frontAddr}
 }
 
 // subscribeCompleted subscribes the client to Prompt.Completed signals on the
@@ -150,6 +153,8 @@ func TestPromptForwardingUnlockFlow(t *testing.T) {
 	require.NoError(t, err, "Prompt call must be forwarded to the backend")
 
 	sig := waitCompleted(t, completed, promptPath)
+	_, registered := env.proxy.prompts.lookup(promptPath)
+	assert.False(t, registered, "Completed must remove prompt ownership before forwarding the signal")
 	require.Len(t, sig.Body, 2)
 	assert.Equal(t, false, sig.Body[0], "dismissed flag")
 	result, ok := sig.Body[1].(dbus.Variant)
@@ -192,6 +197,8 @@ func TestPromptDismiss(t *testing.T) {
 	sig := waitCompleted(t, completed, promptPath)
 	require.Len(t, sig.Body, 2)
 	assert.Equal(t, true, sig.Body[0], "dismissed flag")
+	_, registered := env.proxy.prompts.lookup(promptPath)
+	assert.False(t, registered, "dismissal Completed must remove prompt ownership")
 
 	assert.True(t, env.mock.Locked(), "collection must stay locked after dismissal")
 }
@@ -207,4 +214,73 @@ func TestPromptOnNonPromptPath(t *testing.T) {
 	var dbusErr dbus.Error
 	require.ErrorAs(t, err, &dbusErr)
 	assert.Equal(t, dbustypes.ErrNoSuchObject, dbusErr.Name)
+}
+
+func TestPromptRejectsUnknownPromptPath(t *testing.T) {
+	env := newPromptTestEnv(t)
+
+	err := env.client.Object(dbustypes.BusName, "/org/freedesktop/secrets/prompt/unknown").
+		Call(dbustypes.PromptInterface+".Prompt", 0, "").Err
+	requireDBusErrorName(t, err, dbustypes.ErrNoSuchObject)
+}
+
+func TestPromptRejectsDifferentSender(t *testing.T) {
+	env := newPromptTestEnv(t)
+	env.mock.SetLocked(true)
+	completed := env.subscribeCompleted(t)
+	promptPath := env.unlockViaPrompt(t)
+
+	attacker, err := dbus.Connect(env.frontAddr)
+	require.NoError(t, err)
+	defer attacker.Close()
+
+	err = attacker.Object(dbustypes.BusName, promptPath).
+		Call(dbustypes.PromptInterface+".Prompt", 0, "attacker-window").Err
+	requireDBusErrorName(t, err, "org.freedesktop.DBus.Error.AccessDenied")
+	err = attacker.Object(dbustypes.BusName, promptPath).
+		Call(dbustypes.PromptInterface+".Dismiss", 0).Err
+	requireDBusErrorName(t, err, "org.freedesktop.DBus.Error.AccessDenied")
+	assert.True(t, env.mock.Locked())
+	assert.Empty(t, env.mock.LastWindowID())
+
+	require.NoError(t, env.client.Object(dbustypes.BusName, promptPath).
+		Call(dbustypes.PromptInterface+".Prompt", 0, "owner-window").Err)
+	waitCompleted(t, completed, promptPath)
+}
+
+func TestPromptOwnershipRemovedOnDisconnect(t *testing.T) {
+	env := newPromptTestEnv(t)
+	env.mock.SetLocked(true)
+	promptPath := env.unlockViaPrompt(t)
+	require.NoError(t, env.client.Close())
+
+	require.Eventually(t, func() bool {
+		_, ok := env.proxy.prompts.lookup(promptPath)
+		return !ok
+	}, 2*time.Second, 10*time.Millisecond)
+
+	other, err := dbus.Connect(env.frontAddr)
+	require.NoError(t, err)
+	defer other.Close()
+	err = other.Object(dbustypes.BusName, promptPath).
+		Call(dbustypes.PromptInterface+".Prompt", 0, "").Err
+	requireDBusErrorName(t, err, dbustypes.ErrNoSuchObject)
+}
+
+func TestPromptMissingSenderIsDenied(t *testing.T) {
+	h := NewPromptHandler(nil, logging.New(slog.LevelError, "test"), nil)
+	msg := dbus.Message{Headers: map[dbus.HeaderField]dbus.Variant{
+		dbus.FieldPath: dbus.MakeVariant(dbus.ObjectPath("/org/freedesktop/secrets/prompt/1")),
+	}}
+	err := h.Prompt(msg, "")
+	require.NotNil(t, err)
+	assert.Equal(t, "org.freedesktop.DBus.Error.AccessDenied", err.Name)
+}
+
+func requireDBusErrorName(t *testing.T, err error, name string) {
+	t.Helper()
+	require.Error(t, err)
+	var dbusErr dbus.Error
+	require.ErrorAs(t, err, &dbusErr)
+	assert.Equal(t, name, dbusErr.Name)
 }

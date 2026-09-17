@@ -24,10 +24,11 @@ type ItemHandler struct {
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
 	slowThreshold    time.Duration
+	prompts          *promptRegistry
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration, prompts *promptRegistry) *ItemHandler {
 	return &ItemHandler{
 		localConn:        localConn,
 		sessions:         sessions,
@@ -38,6 +39,7 @@ func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logg
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
 		slowThreshold:    slowThreshold,
+		prompts:          prompts,
 	}
 }
 
@@ -131,6 +133,9 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		"item": string(path),
 	}, "ok", nil)
 
+	if err := i.prompts.register(prompt, sender); err != nil {
+		return "/", dbustypes.ErrFailed(err)
+	}
 	return prompt, nil
 }
 
@@ -140,6 +145,12 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	path := pathOf(msg)
 	if !isItemPath(path) {
 		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(path))
+	}
+	localSession, ok := i.sessions.GetLocalSession(session)
+	if !ok {
+		err := dbustypes.ErrSessionNotFound(string(session))
+		i.logger.LogItemGetSecret(context.Background(), string(path), "error", err)
+		return dbustypes.Secret{}, err
 	}
 
 	// Fetch item info (label + attributes)
@@ -162,13 +173,6 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	if err != nil {
 		i.logger.LogItemGetSecret(ctx, string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
-	}
-
-	// Map remote session to local session
-	localSession, ok := i.sessions.GetLocalSession(session)
-	if !ok {
-		i.logger.LogItemGetSecret(context.Background(), string(path), "error", dbustypes.ErrSessionNotFound(string(session)))
-		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
 	}
 
 	obj := i.upstream(path)
@@ -206,6 +210,11 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	if !isItemPath(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
+	if _, ok := i.sessions.GetLocalSession(secret.Session); !ok {
+		err := dbustypes.ErrSessionNotFound(string(secret.Session))
+		i.logger.LogMethod(context.Background(), "Item.SetSecret", map[string]any{"item": string(path)}, "error", err)
+		return err
+	}
 
 	// Fetch item info (label + attributes)
 	sender := senderOf(msg)
@@ -238,7 +247,9 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 	// DH sessions before forwarding it to the (plain) upstream service.
 	localSecret, ok, err := i.sessions.ForUpstream(secret)
 	if !ok {
-		return dbustypes.ErrSessionNotFound(string(secret.Session))
+		err := dbustypes.ErrSessionNotFound(string(secret.Session))
+		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "error", err)
+		return err
 	}
 	if err != nil {
 		i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{"item": string(path)}, "error", err)

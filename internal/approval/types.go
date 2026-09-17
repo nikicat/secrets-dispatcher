@@ -22,11 +22,12 @@ type TrustRule struct {
 
 // ProcessMatcher matches against sender process attributes.
 type ProcessMatcher struct {
-	Exe  string `json:"exe,omitempty"`
-	Name string `json:"name,omitempty"`
-	Args string `json:"args,omitempty"`
-	CWD  string `json:"cwd,omitempty"`
-	Unit string `json:"unit,omitempty"`
+	Exe    string `json:"exe,omitempty"`
+	Name   string `json:"name,omitempty"`
+	Args   string `json:"args,omitempty"`
+	CWD    string `json:"cwd,omitempty"`
+	Unit   string `json:"unit,omitempty"`
+	Direct bool   `json:"direct,omitempty"`
 }
 
 // SecretMatcher matches against secret/item attributes.

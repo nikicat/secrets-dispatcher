@@ -47,7 +47,15 @@ func resolveBackendExec(value string, provider Provider) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("find gnome-keyring-daemon: %w", err)
 		}
-		return path + " --foreground --components=secrets --control-directory=%t/secrets-dispatcher/keyring", nil
+		// The control directory MUST stay at the standard %t/keyring path (not a
+		// private one): pam_gnome_keyring only ever probes
+		// $XDG_RUNTIME_DIR/keyring/control, and feeds the login password to
+		// whichever daemon answers there. With a private control directory the
+		// backend never heard from PAM, began every session with a locked login
+		// keyring, and forced an unlock prompt at login (which then raced the
+		// session prompter — see the prompter owner-pinning fix). The backend is
+		// the only secrets-capable daemon left, so PAM must reach it directly.
+		return path + " --foreground --components=secrets --control-directory=%t/keyring", nil
 	default:
 		return "", fmt.Errorf("unknown backend %q (use a path, or one of: gopass, gnome-keyring)", value)
 	}

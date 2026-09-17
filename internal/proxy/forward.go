@@ -41,13 +41,22 @@ func interfaceOf(msg dbus.Message) string {
 type callForwarder struct {
 	dst     *dbus.Conn
 	dstName string
+	// noAutoStart sets FlagNoAutoStart on forwarded calls. Forwarding a
+	// prompter call must never D-Bus-activate a destination as a side
+	// effect — activation is exactly how a second (display-less) prompter
+	// appeared mid-login and split one unlock conversation in two.
+	noAutoStart bool
 }
 
 // forward re-issues msg on the destination connection and returns the reply
 // body, propagating a remote D-Bus error faithfully.
 func (f callForwarder) forward(msg dbus.Message) ([]any, *dbus.Error) {
 	obj := f.dst.Object(f.dstName, pathOf(msg))
-	call := obj.Call(interfaceOf(msg)+"."+memberOf(msg), 0, msg.Body...)
+	flags := dbus.Flags(0)
+	if f.noAutoStart {
+		flags |= dbus.FlagNoAutoStart
+	}
+	call := obj.Call(interfaceOf(msg)+"."+memberOf(msg), flags, msg.Body...)
 	if call.Err != nil {
 		if derr, ok := errors.AsType[dbus.Error](call.Err); ok {
 			return nil, &derr
@@ -75,4 +84,14 @@ func nameHasOwner(conn *dbus.Conn, name string) bool {
 		return false
 	}
 	return has
+}
+
+// getNameOwner returns the unique bus name currently owning name on conn.
+// The error is the raw D-Bus error (e.g. org.freedesktop.DBus.Error.NameHasNoOwner).
+func getNameOwner(conn *dbus.Conn, name string) (string, error) {
+	var owner string
+	if err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, name).Store(&owner); err != nil {
+		return "", err
+	}
+	return owner, nil
 }

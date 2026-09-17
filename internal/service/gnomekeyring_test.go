@@ -27,7 +27,7 @@ func TestDemoteGnomeKeyringWritesDropInAndShadow(t *testing.T) {
 
 	dropInContent, err := os.ReadFile(dropIn)
 	require.NoError(t, err)
-	assert.Contains(t, string(dropInContent), "ExecStart=\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=pkcs11 --control-directory=%t/keyring")
+	assert.Contains(t, string(dropInContent), "ExecStart=\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=pkcs11 --control-directory=%t/keyring-session")
 	assert.Contains(t, string(dropInContent), "Managed by secrets-dispatcher")
 
 	shadowContent, err := os.ReadFile(shadow)

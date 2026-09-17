@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -156,11 +157,26 @@ func LoadAuth(configDir string) (*Auth, error) {
 
 // GenerateLoginURL creates a login URL with an embedded JWT.
 func (a *Auth) GenerateLoginURL(addr string) (string, error) {
+	return a.generateLoginURL(addr, "")
+}
+
+// GenerateRequestURL creates a single-use login URL focused on one approval
+// request. It is suitable for trusted local launch surfaces such as a desktop
+// notification action.
+func (a *Auth) GenerateRequestURL(addr, requestID string) (string, error) {
+	return a.generateLoginURL(addr, requestID)
+}
+
+func (a *Auth) generateLoginURL(addr, requestID string) (string, error) {
 	jwt, err := a.GenerateJWT()
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("http://%s/?token=%s", addr, jwt), nil
+	query := url.Values{"token": {jwt}}
+	if requestID != "" {
+		query.Set("request", requestID)
+	}
+	return (&url.URL{Scheme: "http", Host: addr, Path: "/", RawQuery: query.Encode()}).String(), nil
 }
 
 // ValidateSession checks if the session cookie names a live server-side session.

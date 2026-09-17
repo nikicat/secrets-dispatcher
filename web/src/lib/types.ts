@@ -12,6 +12,13 @@ export interface ProcessInfo {
   cwd?: string;
 }
 
+export interface DecisionAttribution {
+  source: string;
+  rule_id?: string;
+  rule_name?: string;
+  action?: string;
+}
+
 export interface SenderInfo {
   sender: string;
   pid: number;
@@ -41,6 +48,17 @@ export interface GPGSignInfo {
   pushee?: string; // push only: destination URL
 }
 
+export interface DecisionAttribution {
+  source: string;
+  action?: string;
+  rule_id?: string;
+  rule_name?: string;
+  rule_request_types?: string[];
+  process?: ProcessMatcher;
+  secret?: SecretMatcher;
+  search_attributes?: Record<string, string>;
+}
+
 export interface PendingRequest {
   id: string;
   client: string;
@@ -51,6 +69,7 @@ export interface PendingRequest {
   type: "get_secret" | "search" | "gpg_sign" | "delete" | "write" | "unlock" | "ssh_sign";
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
+  attribution?: DecisionAttribution;
   gpg_sign_info?: GPGSignInfo;
 }
 
@@ -99,6 +118,7 @@ export interface HistoryEntry {
 export interface AutoApproveRule {
   id: string;
   invoker_name: string;
+  invoker_exe: string;
   request_type: string;
   collection: string;
   attributes?: Record<string, string>;
@@ -117,6 +137,7 @@ export interface ProcessMatcher {
   args?: string;
   cwd?: string;
   unit?: string;
+  direct?: boolean;
 }
 
 export interface SecretMatcher {
@@ -134,6 +155,22 @@ export interface TrustRule {
   search_attributes?: Record<string, string>;
 }
 
+export interface ManagedTrustRule extends TrustRule {
+  id: string;
+  enabled?: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface ApprovalRuleInput {
+  name: string;
+  enabled: boolean;
+  request_types: string[];
+  process?: ProcessMatcher;
+  secret?: SecretMatcher;
+  search_attributes?: Record<string, string>;
+}
+
 // WebSocket message types
 export type WSMessage =
   | WSSnapshotMessage
@@ -146,6 +183,9 @@ export type WSMessage =
   | WSHistoryEntryMessage
   | WSAutoApproveRuleAddedMessage
   | WSAutoApproveRuleRemovedMessage
+  | WSApprovalRuleAddedMessage
+  | WSApprovalRuleUpdatedMessage
+  | WSApprovalRuleRemovedMessage
   | WSPingMessage;
 
 export interface WSSnapshotMessage {
@@ -155,6 +195,7 @@ export interface WSSnapshotMessage {
   clients: ClientInfo[];
   history: HistoryEntry[];
   auto_approve_rules: AutoApproveRule[];
+  approval_rules: ManagedTrustRule[];
   trusted_signers: TrustedSigner[];
   trust_rules: TrustRule[];
   auto_approve_duration_seconds?: number;
@@ -204,6 +245,21 @@ export interface WSAutoApproveRuleAddedMessage {
 
 export interface WSAutoApproveRuleRemovedMessage {
   type: "auto_approve_rule_removed";
+  id: string;
+}
+
+export interface WSApprovalRuleAddedMessage {
+  type: "approval_rule_added";
+  approval_rule: ManagedTrustRule;
+}
+
+export interface WSApprovalRuleUpdatedMessage {
+  type: "approval_rule_updated";
+  approval_rule: ManagedTrustRule;
+}
+
+export interface WSApprovalRuleRemovedMessage {
+  type: "approval_rule_removed";
   id: string;
 }
 

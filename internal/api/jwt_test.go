@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,6 +196,35 @@ func TestGenerateLoginURL(t *testing.T) {
 	_, err = auth.ValidateJWT(token)
 	if err != nil {
 		t.Errorf("Token from login URL should be valid: %v", err)
+	}
+}
+
+func TestGenerateRequestURL(t *testing.T) {
+	auth, err := NewAuth(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewAuth failed: %v", err)
+	}
+
+	generatedURL, err := auth.GenerateRequestURL("127.0.0.1:8484", "request/id with spaces")
+	if err != nil {
+		t.Fatalf("GenerateRequestURL failed: %v", err)
+	}
+	parsed, err := url.Parse(generatedURL)
+	if err != nil {
+		t.Fatalf("parse request URL: %v", err)
+	}
+	if parsed.Scheme != "http" || parsed.Host != "127.0.0.1:8484" || parsed.Path != "/" {
+		t.Fatalf("unexpected request URL: %s", generatedURL)
+	}
+	if got := parsed.Query().Get("request"); got != "request/id with spaces" {
+		t.Errorf("request = %q", got)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatal("request URL has no login token")
+	}
+	if _, err := auth.ValidateJWT(token); err != nil {
+		t.Errorf("request URL token should be valid: %v", err)
 	}
 }
 

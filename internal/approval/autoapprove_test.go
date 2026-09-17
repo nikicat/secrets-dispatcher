@@ -160,6 +160,21 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected auto-approved, got: %v", err)
 	}
+
+	history := mgr.History()
+	if len(history) != 1 {
+		t.Fatalf("expected 1 history entry, got %d", len(history))
+	}
+	attr := history[0].Request.Attribution
+	if attr == nil {
+		t.Fatal("expected decision attribution")
+	}
+	if attr.Source != "temporary_rule" || attr.Action != "approve" {
+		t.Fatalf("unexpected attribution: %+v", attr)
+	}
+	if attr.RuleID == "" {
+		t.Fatal("expected temporary rule ID in attribution")
+	}
 }
 
 func TestAutoApproveRule_ListAndRemove(t *testing.T) {

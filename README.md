@@ -12,7 +12,7 @@
 
 ## What it does
 
-When something reads a secret, you see *what* it touched and the full process chain (`claude-code → node → secret-tool`), and you approve, deny, or auto-allow — the tools you trust fade into rules, everything else has to ask. Every access is logged, and the same gate covers what gets committed and signed as you (`git commit -S`).
+When something reads a secret, you see *what* it touched and the full process chain (`claude-code → node → secret-tool`), and you approve, deny, or auto-allow — the tools you trust fade into rules, everything else has to ask. Every access is logged, including the deciding rule when policy resolves it, and the same gate covers what gets committed and signed as you (`git commit -S`).
 
 ## Why it's needed
 

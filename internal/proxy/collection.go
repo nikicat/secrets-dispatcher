@@ -24,10 +24,11 @@ type CollectionHandler struct {
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
 	slowThreshold    time.Duration
+	prompts          *promptRegistry
 }
 
 // NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *CollectionHandler {
+func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration, prompts *promptRegistry) *CollectionHandler {
 	return &CollectionHandler{
 		localConn:        localConn,
 		sessions:         sessions,
@@ -38,6 +39,7 @@ func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
 		slowThreshold:    slowThreshold,
+		prompts:          prompts,
 	}
 }
 
@@ -136,6 +138,9 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 		"collection": string(path),
 	}, "ok", nil)
 
+	if err := c.prompts.register(prompt, sender); err != nil {
+		return "/", dbustypes.ErrFailed(err)
+	}
 	return prompt, nil
 }
 
@@ -187,8 +192,8 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	senderInfo := c.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
-	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == "deny" {
-		c.approval.RecordDenied(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+	if rule := c.approval.CheckTrustRulesByAction(senderInfo, infos, approval.RequestTypeSearch, attributes, "deny"); rule != nil {
+		c.approval.RecordDeniedByRule(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo, rule)
 		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
 
@@ -223,6 +228,11 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	if !isCollectionPath(path) {
 		return "/", "/", dbustypes.ErrObjectNotFound(string(path))
 	}
+	if _, ok := c.sessions.GetLocalSession(secret.Session); !ok {
+		err := dbustypes.ErrSessionNotFound(string(secret.Session))
+		c.logger.LogMethod(context.Background(), "Collection.CreateItem", map[string]any{"collection": string(path)}, "error", err)
+		return "/", "/", err
+	}
 
 	// Extract item info from properties for the approval prompt
 	itemInfo := extractItemInfo(string(path), properties)
@@ -237,6 +247,13 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 
 	// Short-circuit Chrome dummy secret writes
 	items := []approval.ItemInfo{itemInfo}
+	if rule := c.approval.CheckTrustRulesByAction(senderInfo, items, approval.RequestTypeWrite, nil, "deny"); rule != nil {
+		c.approval.RecordDeniedByRule(c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo, rule)
+		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
+			"collection": string(path), "rule": rule.Name,
+		}, "denied", approval.ErrDeniedByRule)
+		return "/", "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	}
 	if c.approval.ShouldIgnore(items, approval.RequestTypeWrite) {
 		c.approval.RecordIgnored(c.clientName, items, string(secret.Session), senderInfo)
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
@@ -261,7 +278,9 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	// DH sessions before forwarding it to the (plain) upstream service.
 	localSecret, ok, err := c.sessions.ForUpstream(secret)
 	if !ok {
-		return "/", "/", dbustypes.ErrSessionNotFound(string(secret.Session))
+		err := dbustypes.ErrSessionNotFound(string(secret.Session))
+		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "error", err)
+		return "/", "/", err
 	}
 	if err != nil {
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "error", err)
@@ -293,6 +312,9 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		"item":       string(item),
 	}, "ok", nil)
 
+	if err := c.prompts.register(prompt, sender); err != nil {
+		return "/", "/", dbustypes.ErrFailed(err)
+	}
 	return item, prompt, nil
 }
 

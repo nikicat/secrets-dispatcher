@@ -1,6 +1,7 @@
 package notification
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +34,18 @@ type stubNotificationServer struct {
 	mu     sync.Mutex
 	calls  []notifyArgs
 	nextID uint32
+}
+
+type stubOpenURIPortal struct {
+	mu  sync.Mutex
+	uri string
+}
+
+func (s *stubOpenURIPortal) OpenURI(_ string, uri string, _ map[string]dbus.Variant) (dbus.ObjectPath, *dbus.Error) {
+	s.mu.Lock()
+	s.uri = uri
+	s.mu.Unlock()
+	return dbus.ObjectPath("/org/freedesktop/portal/desktop/request/test"), nil
 }
 
 func (s *stubNotificationServer) Notify(appName string, replacesID uint32, icon, summary, body string,
@@ -132,6 +145,42 @@ func TestNotifyPersistentSendsNeverExpiringCritical(t *testing.T) {
 	assert.Equal(t, int32(0), got.ExpireTimeout)
 	assert.Equal(t, dbus.MakeVariant(byte(2)), got.Hints["urgency"])
 	assert.Empty(t, got.Actions)
+}
+
+func TestOpenDesktopURLPrefersXDGOpen(t *testing.T) {
+	originalStartDesktopURL := startDesktopURL
+	var opened string
+	startDesktopURL = func(rawURL string) error {
+		opened = rawURL
+		return nil
+	}
+	t.Cleanup(func() { startDesktopURL = originalStartDesktopURL })
+
+	const target = "http://127.0.0.1:8484/?request=test&token=single-use"
+	require.NoError(t, openDesktopURL(target))
+	assert.Equal(t, target, opened)
+}
+
+func TestOpenDesktopURLFallsBackToPortal(t *testing.T) {
+	originalStartDesktopURL := startDesktopURL
+	startDesktopURL = func(string) error { return errors.New("xdg-open unavailable") }
+	t.Cleanup(func() { startDesktopURL = originalStartDesktopURL })
+
+	stub := newNotificationBus(t)
+	portal := &stubOpenURIPortal{}
+	require.NoError(t, stub.conn.Export(portal, dbus.ObjectPath(portalPath), "org.freedesktop.portal.OpenURI"))
+	reply, err := stub.conn.RequestName(portalDest, dbus.NameFlagDoNotQueue)
+	require.NoError(t, err)
+	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+
+	const target = "http://127.0.0.1:8484/?request=test&token=single-use"
+	require.NoError(t, openDesktopURL(target))
+
+	portal.mu.Lock()
+	assert.Equal(t, target, portal.uri)
+	portal.mu.Unlock()
 }
 
 // TestActionDeliverySurvivesUndrainedClosedBuffer reproduces the wedge that

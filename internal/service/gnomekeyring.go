@@ -14,13 +14,18 @@ import (
 // that re-grabs org.freedesktop.secrets anyway, and pkcs11 dies with the
 // daemon. Closing that hole would require root-level PAM edits — far too
 // invasive. Instead we demote only the *secrets component*, keeping the
-// daemon, its control socket (PAM keeps feeding it the login password), and
-// pkcs11 intact:
+// daemon and pkcs11 intact:
 //
 //  1. a systemd user drop-in removes `secrets` from --components;
 //  2. a user-level autostart shadow hides the gnome-keyring-secrets.desktop
 //     kicker (systemd's xdg-autostart-generator honors Hidden=true);
 //  3. the D-Bus activation mask (maskDBusActivation) covers on-demand starts.
+//
+// The demoted daemon also moves OFF the standard control directory
+// (%t/keyring): pam_gnome_keyring feeds the login password to whichever
+// daemon owns $XDG_RUNTIME_DIR/keyring/control, and that must be the
+// secrets-dispatcher backend (the only secrets-capable daemon left) —
+// not this secrets-less one.
 //
 // All three are plain user-level files carrying a managed-by marker; reversal
 // removes exactly what we wrote and restores any backed-up user file. This is
@@ -36,10 +41,12 @@ const (
 
 const gkDropInTemplate = gkManagedComment +
 	`# Demotes gnome-keyring to non-secrets components so secrets-dispatcher can
-# own org.freedesktop.secrets while pkcs11 and PAM unlock keep working.
+# own org.freedesktop.secrets while pkcs11 keeps working. The private control
+# directory vacates the standard %%t/keyring path for the secrets-dispatcher
+# backend, which pam_gnome_keyring must reach to unlock the login keyring.
 [Service]
 ExecStart=
-ExecStart=%s --foreground --components=pkcs11 --control-directory=%%t/keyring
+ExecStart=%s --foreground --components=pkcs11 --control-directory=%%t/keyring-session
 `
 
 const gkAutostartShadow = gkManagedComment +

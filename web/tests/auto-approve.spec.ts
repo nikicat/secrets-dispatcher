@@ -1,9 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify auto-approve rule WebSocket notifications and timer display.
 
 let backend: TestBackend;
+
+function temporaryRules(page: Page) {
+  return page.locator(".rules-subsection").filter({
+    has: page.getByRole("heading", { name: "Temporary Rules" }),
+  });
+}
 
 test.beforeAll(async () => {
   backend = await startTestBackend();
@@ -59,7 +65,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     expect(Array.isArray(snapshotMsg!.auto_approve_rules)).toBe(true);
   });
 
-  test("rules from snapshot appear in sidebar", async ({ page }) => {
+  test("rules from snapshot appear once in the management panel", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     // Intercept real server snapshot and inject rules into it
@@ -74,6 +80,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
                 {
                   id: "test-rule-1",
                   invoker_name: "test-invoker",
+                  invoker_exe: "/usr/bin/test-invoker",
                   request_type: "get_secret",
                   collection: "default",
                   expires_at: expiresAt,
@@ -91,15 +98,23 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({
+    const rules = temporaryRules(page);
+    await expect(rules.getByText("Temporary Rules")).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByText("test-invoker")).toBeVisible();
-    await expect(page.getByText("Secret", { exact: true })).toBeVisible();
-    await expect(page.getByText("default")).toBeVisible();
+    await expect(rules.getByText("/usr/bin/test-invoker"))
+      .toBeVisible();
+    await expect(rules.getByText("Process name: test-invoker")).toBeVisible();
+    await expect(
+      rules.getByText("Secret", { exact: true }),
+    ).toBeVisible();
+    await expect(rules.getByText("default"))
+      .toBeVisible();
+    await expect(page.getByRole("complementary").getByText("test-invoker"))
+      .not.toBeVisible();
   });
 
-  test("rule_added message via WS adds rule to sidebar", async ({ page }) => {
+  test("rule_added message via WS adds rule to the management panel", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     // Forward real WS but inject a rule_added message after snapshot
@@ -118,6 +133,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
                   auto_approve_rule: {
                     id: "ws-rule-1",
                     invoker_name: "ws-invoker",
+                    invoker_exe: "/usr/bin/ws-invoker",
                     request_type: "search",
                     collection: "login",
                     expires_at: expiresAt,
@@ -135,15 +151,19 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({
+    const rules = temporaryRules(page);
+    await expect(rules.getByText("Temporary Rules")).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByText("ws-invoker")).toBeVisible();
-    await expect(page.getByText("Search")).toBeVisible();
-    await expect(page.getByText("login")).toBeVisible();
+    await expect(rules.getByText("/usr/bin/ws-invoker"))
+      .toBeVisible();
+    await expect(rules.getByText("Search"))
+      .toBeVisible();
+    await expect(rules.getByText("login"))
+      .toBeVisible();
   });
 
-  test("rule_removed message via WS removes rule from sidebar", async ({ page }) => {
+  test("rule_removed message via WS removes rule from management", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
 
     let sendToPage: ((msg: string) => void) | null = null;
@@ -160,6 +180,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
                 {
                   id: "rule-to-remove",
                   invoker_name: "remove-me",
+                  invoker_exe: "/usr/bin/remove-me",
                   request_type: "search",
                   collection: "login",
                   expires_at: expiresAt,
@@ -178,7 +199,8 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     await page.goto(loginURL);
 
     // Rule should be visible
-    await expect(page.getByText("remove-me")).toBeVisible({ timeout: 10000 });
+    await expect(temporaryRules(page).getByText("Process name: remove-me"))
+      .toBeVisible({ timeout: 10000 });
 
     // Send rule_removed
     sendToPage!(
@@ -190,7 +212,10 @@ test.describe("Auto-Approve Rules WebSocket", () => {
 
     // Rule should disappear
     await expect(page.getByText("remove-me")).not.toBeVisible();
-    await expect(page.getByText("Auto-Approve Rules")).not.toBeVisible();
+    await expect(
+      temporaryRules(page).getByText("No temporary approval rules active."),
+    )
+      .toBeVisible();
   });
 });
 
@@ -213,6 +238,7 @@ test.describe("Auto-Approve Rule Reset", () => {
                 {
                   id: "reset-rule",
                   invoker_name: "reset-invoker",
+                  invoker_exe: "/usr/bin/reset-invoker",
                   request_type: "get_secret",
                   collection: "default",
                   expires_at: initialExpiry,
@@ -230,12 +256,13 @@ test.describe("Auto-Approve Rule Reset", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("reset-invoker")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(temporaryRules(page).getByText("Process name: reset-invoker"))
+      .toBeVisible({
+        timeout: 10000,
+      });
 
     // Should show ~30s remaining
-    const timerEl = page.locator(".rule-expiry");
+    const timerEl = temporaryRules(page).locator(".rule-expiry");
     await expect(timerEl).toHaveText(/^\d+s$/);
 
     // Simulate timer reset: backend sends rule_added with same ID, new expiry
@@ -244,6 +271,7 @@ test.describe("Auto-Approve Rule Reset", () => {
       auto_approve_rule: {
         id: "reset-rule",
         invoker_name: "reset-invoker",
+        invoker_exe: "/usr/bin/reset-invoker",
         request_type: "get_secret",
         collection: "default",
         expires_at: resetExpiry,
@@ -254,7 +282,7 @@ test.describe("Auto-Approve Rule Reset", () => {
     await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
 
     // Should still be exactly one rule, not two
-    const ruleEntries = page.locator(".rule-entry");
+    const ruleEntries = temporaryRules(page).locator(".rule-entry");
     await expect(ruleEntries).toHaveCount(1);
   });
 
@@ -276,6 +304,7 @@ test.describe("Auto-Approve Rule Reset", () => {
                 {
                   id: "tick-rule",
                   invoker_name: "tick-invoker",
+                  invoker_exe: "/usr/bin/tick-invoker",
                   request_type: "search",
                   collection: "",
                   expires_at: initialExpiry,
@@ -293,9 +322,10 @@ test.describe("Auto-Approve Rule Reset", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("tick-invoker")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(temporaryRules(page).getByText("Process name: tick-invoker"))
+      .toBeVisible({
+        timeout: 10000,
+      });
 
     // Reset the timer with a longer expiry
     sendToPage!(JSON.stringify({
@@ -303,13 +333,14 @@ test.describe("Auto-Approve Rule Reset", () => {
       auto_approve_rule: {
         id: "tick-rule",
         invoker_name: "tick-invoker",
+        invoker_exe: "/usr/bin/tick-invoker",
         request_type: "search",
         collection: "",
         expires_at: resetExpiry,
       },
     }));
 
-    const timerEl = page.locator(".rule-expiry");
+    const timerEl = temporaryRules(page).locator(".rule-expiry");
     await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
 
     const textBefore = await timerEl.textContent();
@@ -338,6 +369,7 @@ test.describe("Auto-Approve Rule Timer", () => {
                 {
                   id: "timer-rule",
                   invoker_name: "timer-test",
+                  invoker_exe: "/usr/bin/timer-test",
                   request_type: "get_secret",
                   collection: "",
                   expires_at: expiresAt,
@@ -355,9 +387,10 @@ test.describe("Auto-Approve Rule Timer", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("timer-test")).toBeVisible({ timeout: 10000 });
+    await expect(temporaryRules(page).getByText("Process name: timer-test"))
+      .toBeVisible({ timeout: 10000 });
 
-    const timerEl = page.locator(".rule-expiry");
+    const timerEl = temporaryRules(page).locator(".rule-expiry");
     const initialText = await timerEl.textContent();
     expect(initialText).toMatch(/^\d+m \d+s$/);
 
@@ -383,6 +416,7 @@ test.describe("Auto-Approve Rule Timer", () => {
                 {
                   id: "expiring-rule",
                   invoker_name: "expiring-test",
+                  invoker_exe: "/usr/bin/expiring-test",
                   request_type: "get_secret",
                   collection: "",
                   expires_at: expiresAt,
@@ -400,13 +434,16 @@ test.describe("Auto-Approve Rule Timer", () => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
-    await expect(page.getByText("expiring-test")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(temporaryRules(page).getByText("Process name: expiring-test"))
+      .toBeVisible({
+        timeout: 10000,
+      });
 
     // Wait for expiry cleanup (rule expires in ~2s, cleanup runs every 1s)
-    await expect(page.getByText("expiring-test")).not.toBeVisible({
-      timeout: 5000,
-    });
+    await expect(temporaryRules(page).getByText("Process name: expiring-test"))
+      .not
+      .toBeVisible({
+        timeout: 5000,
+      });
   });
 });

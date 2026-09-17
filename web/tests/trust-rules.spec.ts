@@ -137,7 +137,7 @@ test.describe("Trust Rules WebSocket", () => {
                 },
                 {
                   name: "Rule Two",
-                  action: "ignore",
+                  action: "deny",
                   request_types: ["write"],
                   process: { exe: "/opt/google/chrome/chrome" },
                 },
@@ -160,6 +160,7 @@ test.describe("Trust Rules WebSocket", () => {
 
     await expect(page.getByText("Rule One")).toBeVisible();
     await expect(page.getByText("Rule Two")).toBeVisible();
+    await expect(page.getByText("Deny Write")).toBeVisible();
   });
 
   test("trust rules section hidden when no rules", async ({ page }) => {
@@ -189,7 +190,7 @@ test.describe("Trust Rules WebSocket", () => {
     await expect(page.getByText("Trust Rules")).not.toBeVisible();
   });
 
-  test("trust rules in main content coexist with auto-approve rules in sidebar", async ({ page }) => {
+  test("trust rules coexist with temporary rules in management", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
@@ -211,6 +212,7 @@ test.describe("Trust Rules WebSocket", () => {
                 {
                   id: "temp-rule-1",
                   invoker_name: "temp-invoker",
+                  invoker_exe: "/usr/bin/temp-invoker",
                   request_type: "get_secret",
                   collection: "default",
                   expires_at: expiresAt,
@@ -235,8 +237,9 @@ test.describe("Trust Rules WebSocket", () => {
     await toggle.click();
     await expect(page.getByText("Config rule")).toBeVisible();
 
-    // Auto-approve rules in sidebar
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible();
-    await expect(page.getByText("temp-invoker")).toBeVisible();
+    const temporary = page.locator(".rules-subsection").filter({
+      has: page.getByRole("heading", { name: "Temporary Rules" }),
+    });
+    await expect(temporary.getByText("/usr/bin/temp-invoker")).toBeVisible();
   });
 });

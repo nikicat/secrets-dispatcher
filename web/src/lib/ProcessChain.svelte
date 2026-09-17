@@ -12,8 +12,11 @@
 {#if chain.length > 0}
   <details class="process-chain-details">
     <summary class="process-chain">
-      {#each chain as proc}
+      {#each chain as proc, index}
         <span class="chain-entry">{proc.name}</span>
+        {#if index < chain.length - 1}
+          <span class="chain-arrow" aria-hidden="true">←</span>
+        {/if}
       {/each}
     </summary>
     <div class="chain-detail-list">
@@ -65,6 +68,12 @@
     padding: 1px 5px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--color-border);
+  }
+
+  .chain-arrow {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    opacity: 0.7;
   }
 
   .chain-detail-list {

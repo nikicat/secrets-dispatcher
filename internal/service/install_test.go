@@ -323,6 +323,7 @@ func TestInstallLocalSystemctlCalls(t *testing.T) {
 	expected := []string{
 		"daemon-reload",
 		"enable secrets-dispatcher-bus.socket",
+		"enable secrets-dispatcher-backend.service",
 		"enable " + unitFileName,
 	}
 	if len(*calls) != len(expected) {
@@ -353,8 +354,10 @@ func TestInstallLocalWithStart(t *testing.T) {
 	expected := []string{
 		"daemon-reload",
 		"enable secrets-dispatcher-bus.socket",
+		"enable secrets-dispatcher-backend.service",
 		"enable " + unitFileName,
 		"start secrets-dispatcher-bus.socket",
+		"start secrets-dispatcher-backend.service",
 		"start " + unitFileName,
 	}
 	if len(*calls) != len(expected) {

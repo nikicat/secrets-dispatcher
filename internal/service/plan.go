@@ -211,11 +211,13 @@ func Plan(opts Options) ([]Change, error) {
 	changes = append(changes, Change{"run", "systemctl --user daemon-reload", ""})
 	if in.mode != "remote" {
 		changes = append(changes, Change{"run", "systemctl --user enable secrets-dispatcher-bus.socket", ""})
+		changes = append(changes, Change{"run", "systemctl --user enable secrets-dispatcher-backend.service", "boot-time start; PAM unlocks the login keyring at login"})
 	}
 	changes = append(changes, Change{"run", "systemctl --user enable " + unitFileName, ""})
 	if opts.Start {
 		if in.mode != "remote" {
 			changes = append(changes, Change{"run", "systemctl --user start secrets-dispatcher-bus.socket", ""})
+			changes = append(changes, Change{"run", "systemctl --user start secrets-dispatcher-backend.service", ""})
 		}
 		changes = append(changes, Change{"run", "systemctl --user start " + unitFileName, ""})
 	}

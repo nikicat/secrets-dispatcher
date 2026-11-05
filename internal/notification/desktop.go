@@ -216,7 +216,7 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 // timeout — the user would have to race the banner to approve anything
 // (US-7). gnome-shell ignores the field entirely; there it is critical
 // urgency + no transient hint that keep the notification alive (GNOME 46
-// sources, docs/plans/onboarding-and-e2e.md). Approvals are closed
+// sources, docs/adr/0007-approval-surfaces.md). Approvals are closed
 // explicitly via Close when resolved.
 func (n *DBusNotifier) Notify(summary, body, icon string, actions []string) (uint32, error) {
 	n.mu.Lock()

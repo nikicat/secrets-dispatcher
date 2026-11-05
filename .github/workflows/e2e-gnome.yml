@@ -12,7 +12,7 @@ name: E2E GNOME
 # weekly cache key forces a fresh provision so Ubuntu package drift in each
 # series' /current image still gets caught. The "full" job is the aggregate
 # gate over the legs — branch protection requires a check named exactly
-# "full", so that name must stay stable. See docs/plans/onboarding-and-e2e.md.
+# "full", so that name must stay stable. See docs/adr/0010-e2e-on-a-real-desktop-vm.md.
 
 on:
   push:

@@ -7,7 +7,7 @@ import (
 )
 
 // Secrets-only demotion of gnome-keyring (spike-validated on Ubuntu 24.04
-// GNOME, see docs/plans/onboarding-and-e2e.md).
+// GNOME, see docs/adr/0009-gnome-keyring-secrets-only-demotion.md).
 //
 // Masking gnome-keyring's systemd units outright does NOT work: at the next
 // login pam_gnome_keyring spawns an unmanaged daemon (--daemonize --login)

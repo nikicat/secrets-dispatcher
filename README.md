@@ -175,6 +175,7 @@ serve:
 - **[Trust rules](docs/TRUST-RULES.md)** — rule format, spoof-proofing, and the `secrets-rule` agent skill
 - **[Remote secret access over SSH](docs/REMOTE-PROXY.md)** — use laptop secrets from a server without forwarding gpg-agent
 - **[Compatibility & status](docs/COMPATIBILITY.md)** — tested environments, supported backends/clients, feature status
+- **[Design decisions](docs/adr/)** — the ADRs: why it is built the way it is
 - **[Security model](SECURITY.md)** · **[Target audience & personas](docs/TARGET-AUDIENCE.md)** · **[Contributing & development](CONTRIBUTING.md)**
 
 ## License

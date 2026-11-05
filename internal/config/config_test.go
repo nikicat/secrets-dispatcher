@@ -144,6 +144,21 @@ serve:
 	}
 }
 
+func TestLoadInvalidRemoteName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte(`
+serve:
+  remotes:
+    - name: ../api
+`), 0o644)
+
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), `invalid remote name "../api"`) {
+		t.Fatalf("expected invalid remote name error, got %v", err)
+	}
+}
+
 func TestNotificationsFalseVsUnset(t *testing.T) {
 	dir := t.TempDir()
 
@@ -236,6 +251,23 @@ func TestValidate(t *testing.T) {
 				Upstream:   BusConfig{Type: "socket", Path: "/run/up.sock"},
 				Downstream: []BusConfig{{Type: "session_bus"}},
 			}},
+		},
+		{
+			name: "valid remotes",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Remotes:    []RemoteConfig{{Name: "nb-home"}, {Name: "ci-2"}},
+			}},
+		},
+		{
+			name: "duplicate remote",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Remotes:    []RemoteConfig{{Name: "nb-home"}, {Name: "nb-home"}},
+			}},
+			wantErr: `remotes[1]: duplicate name "nb-home"`,
 		},
 		{
 			name: "invalid upstream type",

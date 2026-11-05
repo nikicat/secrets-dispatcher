@@ -5,10 +5,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // SetupGitConfig writes a shell wrapper script and configures git's gpg.program.
-// scope is "global" (default) or "local" (per-repo).
+// scope is "global" (default) or "local" (per-repo). A non-empty remoteSocket
+// makes the wrapper sign through that forwarded socket (remoteSocketEnv).
 //
 // A wrapper script is required because git does NOT shell-split gpg.program —
 // it uses execvp, so "secrets-dispatcher gpg-sign" (with a space) would fail.
@@ -17,7 +19,7 @@ import (
 // Per CONTEXT.md locked decisions:
 //   - Setup only sets gpg.program; does NOT enable commit.gpgsign=true
 //   - Defaults to --global; caller can pass "local" for per-repo config
-func SetupGitConfig(scope string) error {
+func SetupGitConfig(scope, remoteSocket string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("find executable: %w", err)
@@ -26,6 +28,11 @@ func SetupGitConfig(scope string) error {
 	self, err = filepath.EvalSymlinks(self)
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
+	}
+	if remoteSocket != "" {
+		if remoteSocket, err = filepath.Abs(remoteSocket); err != nil {
+			return fmt.Errorf("resolve remote socket: %w", err)
+		}
 	}
 
 	// Write shell wrapper to ~/.local/bin/secrets-dispatcher-gpg.
@@ -40,8 +47,7 @@ func SetupGitConfig(scope string) error {
 		return fmt.Errorf("create wrapper dir: %w", err)
 	}
 
-	content := fmt.Sprintf("#!/bin/sh\nexec %s gpg-sign \"$@\"\n", self)
-	if err := os.WriteFile(wrapperPath, []byte(content), 0755); err != nil {
+	if err := os.WriteFile(wrapperPath, []byte(wrapperScript(self, remoteSocket)), 0755); err != nil {
 		return fmt.Errorf("write wrapper: %w", err)
 	}
 
@@ -62,4 +68,19 @@ func SetupGitConfig(scope string) error {
 	fmt.Println("\nNote: Ensure ~/.local/bin is in your PATH.")
 	fmt.Println("This does NOT enable commit.gpgsign — use 'git config --global commit.gpgsign true' to auto-sign all commits.")
 	return nil
+}
+
+// Returns the gpg.program wrapper that execs bin, exporting
+// remoteSocketEnv first when remoteSocket is non-empty.
+func wrapperScript(bin, remoteSocket string) string {
+	env := ""
+	if remoteSocket != "" {
+		env = fmt.Sprintf("export %s=%s\n", remoteSocketEnv, shellQuote(remoteSocket))
+	}
+	return fmt.Sprintf("#!/bin/sh\n%sexec %s gpg-sign \"$@\"\n", env, shellQuote(bin))
+}
+
+// Returns s as one single-quoted sh word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

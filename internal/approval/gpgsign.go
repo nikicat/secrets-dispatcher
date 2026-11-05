@@ -1,6 +1,7 @@
 package approval
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -38,14 +39,31 @@ type GPGSignInfo struct {
 	CommitObject string `json:"commit_object,omitempty"`
 }
 
+// Errors for a sign request with no bytes to sign.
+var (
+	ErrNoGPGSignInfo  = errors.New("gpg sign info is required")
+	ErrNoCommitObject = errors.New("gpg sign info has no commit object")
+)
+
+// Errors when there is nothing to sign and nothing to bind the approval display to.
+func (i *GPGSignInfo) RequireSignedBytes() error {
+	if i == nil {
+		return ErrNoGPGSignInfo
+	}
+	if i.CommitObject == "" {
+		return ErrNoCommitObject
+	}
+	return nil
+}
+
 // RecordAutoApprovedGPGSign creates a resolved gpg_sign request for history and
 // WebSocket delivery WITHOUT firing EventRequestCreated (so no desktop notification
 // appears). Fires EventRequestAutoApproved so the history entry shows "auto_approved".
 // The request is never added to pending and no timeout goroutine is started.
 // sig and status are the gpg output to deliver to the thin client via WebSocket.
 func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, senderInfo SenderInfo, sig, status []byte) (string, error) {
-	if info == nil {
-		return "", errors.New("gpg sign info is required")
+	if err := info.RequireSignedBytes(); err != nil {
+		return "", err
 	}
 
 	now := time.Now()
@@ -60,6 +78,7 @@ func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, se
 		Signature:   sig,
 		GPGStatus:   status,
 		done:        make(chan struct{}),
+		resolution:  ResolutionAutoApproved,
 	}
 	close(req.done)
 	m.notify(Event{Type: EventRequestAutoApproved, Request: req})
@@ -72,8 +91,32 @@ func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, se
 // Uses context.Background() for the timeout goroutine so a dropped HTTP connection does
 // not cancel a request the user is actively reviewing in the web UI.
 func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderInfo SenderInfo) (string, error) {
-	if info == nil {
-		return "", errors.New("gpg sign info is required")
+	req, err := m.createGPGSignRequest(client, info, senderInfo)
+	if err != nil {
+		return "", err
+	}
+	return req.ID, nil
+}
+
+// Creates a gpg_sign request and returns it with its resolution once it is
+// resolved. Ending ctx cancels the request.
+func (m *Manager) AwaitGPGSign(ctx context.Context, client string, info *GPGSignInfo, senderInfo SenderInfo) (*Request, Resolution, error) {
+	req, err := m.createGPGSignRequest(client, info, senderInfo)
+	if err != nil {
+		return nil, "", err
+	}
+	select {
+	case <-req.done:
+	case <-ctx.Done():
+		m.Cancel(req.ID) //nolint:errcheck // resolved meanwhile is fine
+		<-req.done
+	}
+	return req, req.resolution, nil
+}
+
+func (m *Manager) createGPGSignRequest(client string, info *GPGSignInfo, senderInfo SenderInfo) (*Request, error) {
+	if err := info.RequireSignedBytes(); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
@@ -100,10 +143,16 @@ func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderI
 			// resolved by Approve or Deny — no action needed
 		case <-time.After(m.timeout):
 			m.mu.Lock()
+			if _, ok := m.pending[req.ID]; !ok {
+				m.mu.Unlock()
+				return // resolved as the timer fired
+			}
 			delete(m.pending, req.ID)
+			req.resolution = ResolutionExpired
+			close(req.done)
 			m.mu.Unlock()
 			m.notify(Event{Type: EventRequestExpired, Request: req})
 		}
 	}()
-	return req.ID, nil
+	return req, nil
 }

@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,23 +65,8 @@ type GPGSignResponse struct {
 // It creates a non-blocking gpg_sign approval request and returns the request ID.
 // The result (signature or denial) is delivered via the WebSocket request_resolved event.
 func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	var req GPGSignRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if req.GPGSignInfo == nil {
-		writeError(w, "gpg_sign_info is required", http.StatusBadRequest)
-		return
-	}
-	// Without commit bytes there is nothing to sign and nothing to bind the
-	// approval display to — every downstream field would silently render blank.
-	if req.GPGSignInfo.CommitObject == "" {
-		writeError(w, "gpg_sign_info.commit_object is required", http.StatusBadRequest)
+	if !decodePost(w, r, &req) || !requireSignedBytes(w, req.GPGSignInfo) {
 		return
 	}
 	if req.Client == "" {
@@ -134,6 +118,19 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	)
 
 	writeJSON(w, GPGSignResponse{RequestID: id})
+}
+
+// Writes a 400 and returns false when info has no bytes to sign.
+func requireSignedBytes(w http.ResponseWriter, info *approval.GPGSignInfo) bool {
+	switch err := info.RequireSignedBytes(); {
+	case err == nil:
+		return true
+	case errors.Is(err, approval.ErrNoGPGSignInfo):
+		writeError(w, "gpg_sign_info is required", http.StatusBadRequest)
+	case errors.Is(err, approval.ErrNoCommitObject):
+		writeError(w, "gpg_sign_info.commit_object is required", http.StatusBadRequest)
+	}
+	return false
 }
 
 // bindDisplayToSignedPayload re-derives the human-visible metadata (kind,

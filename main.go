@@ -661,6 +661,11 @@ func runServe(args []string) {
 		return
 	}
 
+	if err := serveRemotes(apiServer, cfg.Serve.Remotes); err != nil {
+		fmt.Fprintf(os.Stderr, "error opening remote socket: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Subscribe WebSocket handler to Manager observers
 	for _, p := range providers {
 		if mgr, ok := p.(*proxy.Manager); ok {
@@ -684,6 +689,18 @@ func runServe(args []string) {
 		}(i, run)
 	}
 	wg.Wait()
+}
+
+// Opens the signing socket of every configured remote.
+func serveRemotes(apiServer *api.Server, remotes []config.RemoteConfig) error {
+	for _, remote := range remotes {
+		rs, err := apiServer.ServeRemote(remote.Name)
+		if err != nil {
+			return err
+		}
+		slog.Info("remote signing socket ready", "remote", remote.Name, "socket", rs.SocketPath)
+	}
+	return nil
 }
 
 // staticProvider wraps a single client info for the API ClientProvider interface.
@@ -1011,6 +1028,7 @@ func runGPGSign(args []string) {
 func runGPGSignSetup(args []string) {
 	fs := flag.NewFlagSet("gpg-sign setup", flag.ExitOnError)
 	local := fs.Bool("local", false, "Configure per-repo (--local) instead of --global")
+	remoteSocket := fs.String("remote-socket", "", "Sign through this forwarded remote socket (docs/REMOTE-PROXY.md)")
 	fs.Parse(args) //nolint:errcheck
 
 	scope := "global"
@@ -1018,7 +1036,7 @@ func runGPGSignSetup(args []string) {
 		scope = "local"
 	}
 
-	if err := gpgsign.SetupGitConfig(scope); err != nil {
+	if err := gpgsign.SetupGitConfig(scope, *remoteSocket); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

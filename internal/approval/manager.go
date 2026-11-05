@@ -107,9 +107,9 @@ type Request struct {
 	// Set by ApproveGPGFailed.
 	GPGExitCode int `json:"-"`
 
-	// Internal: channel signaled when request is approved/denied
-	done   chan struct{}
-	result bool // true = approved, false = denied
+	// Internal: channel closed when the request is resolved
+	done       chan struct{}
+	resolution Resolution // set before done is closed
 }
 
 // Resolution represents how a request was resolved.
@@ -257,23 +257,30 @@ func (m *Manager) notify(event Event) {
 	}
 }
 
+// Returns how a request ends when this event fires, or false for an event that
+// ends none.
+func (t EventType) Resolution() (Resolution, bool) {
+	switch t {
+	case EventRequestApproved:
+		return ResolutionApproved, true
+	case EventRequestDenied:
+		return ResolutionDenied, true
+	case EventRequestExpired:
+		return ResolutionExpired, true
+	case EventRequestCancelled:
+		return ResolutionCancelled, true
+	case EventRequestAutoApproved:
+		return ResolutionAutoApproved, true
+	case EventRequestIgnored:
+		return ResolutionIgnored, true
+	}
+	return "", false
+}
+
 // addHistory records a resolved request in history.
 func (m *Manager) addHistory(event Event) {
-	var resolution Resolution
-	switch event.Type {
-	case EventRequestApproved:
-		resolution = ResolutionApproved
-	case EventRequestDenied:
-		resolution = ResolutionDenied
-	case EventRequestExpired:
-		resolution = ResolutionExpired
-	case EventRequestCancelled:
-		resolution = ResolutionCancelled
-	case EventRequestAutoApproved:
-		resolution = ResolutionAutoApproved
-	case EventRequestIgnored:
-		resolution = ResolutionIgnored
-	default:
+	resolution, ok := event.Type.Resolution()
+	if !ok {
 		return
 	}
 
@@ -435,7 +442,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 
 	select {
 	case <-req.done:
-		if req.result {
+		if req.resolution == ResolutionApproved {
 			return false, nil
 		}
 		return false, ErrDenied
@@ -473,7 +480,7 @@ func (m *Manager) Approve(id string) error {
 		return ErrNotFound
 	}
 
-	req.result = true
+	req.resolution = ResolutionApproved
 	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
@@ -493,7 +500,7 @@ func (m *Manager) ApproveAndAutoApprove(id string) error {
 		return ErrNotFound
 	}
 
-	req.result = true
+	req.resolution = ResolutionApproved
 	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
@@ -513,7 +520,7 @@ func (m *Manager) Deny(id string) error {
 		return ErrNotFound
 	}
 
-	req.result = false
+	req.resolution = ResolutionDenied
 	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
@@ -532,7 +539,7 @@ func (m *Manager) Cancel(id string) error {
 		return ErrNotFound
 	}
 
-	req.result = false
+	req.resolution = ResolutionCancelled
 	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
@@ -573,7 +580,7 @@ func (m *Manager) ApproveWithSignature(id string, sig, status []byte) error {
 
 	req.Signature = sig
 	req.GPGStatus = status
-	req.result = true
+	req.resolution = ResolutionApproved
 	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()
@@ -596,7 +603,7 @@ func (m *Manager) ApproveGPGFailed(id string, status []byte, exitCode int) error
 
 	req.GPGStatus = status
 	req.GPGExitCode = exitCode
-	req.result = true
+	req.resolution = ResolutionApproved
 	delete(m.pending, id)
 	close(req.done)
 	m.mu.Unlock()

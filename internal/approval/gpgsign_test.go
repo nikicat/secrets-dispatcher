@@ -15,6 +15,7 @@ func sampleGPGSignInfo() *GPGSignInfo {
 		Committer:    "Alice <alice@example.com>",
 		KeyID:        "ABCD1234",
 		ChangedFiles: []string{"main.go"},
+		CommitObject: "tree 0\n",
 	}
 }
 

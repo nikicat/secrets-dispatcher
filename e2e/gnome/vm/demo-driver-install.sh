@@ -75,7 +75,12 @@ place() { # place <x> <y> <w> <h>
 open_window() { # open_window <tmux-session> — open a gnome-terminal on that session
     local s=$1 i
     tmux kill-session -t "$s" 2>/dev/null || true
-    tmux new-session -d -s "$s" -e PATH="$HOME/go/bin:$PATH"
+    # Killing the server's last session makes it exit; a client racing that exit
+    # fails with "server exited unexpectedly", so retry until a server takes it.
+    for i in $(seq 25); do
+        tmux new-session -d -s "$s" -e PATH="$HOME/go/bin:$PATH" 2>/dev/null && break
+        sleep 0.2
+    done
     tmux set-option -t "$s" status off
     setsid gnome-terminal -- tmux attach -t "$s" >/dev/null 2>&1 &
     for i in $(seq 15); do

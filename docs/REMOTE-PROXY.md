@@ -34,6 +34,5 @@ with the requesting client. Trust rules (see
 [TRUST-RULES.md](TRUST-RULES.md)) let you pre-authorize known-good patterns
 (e.g. a deploy script → deploy secrets) and prompt for everything else.
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the full design — threat model,
-access-control model, and the planned client-pairing and transport-encryption
-work.
+See [ADR 0003](adr/0003-remote-clients-identified-by-their-tunnel.md) for why a
+remote is identified by its tunnel, and why client pairing is deferred.

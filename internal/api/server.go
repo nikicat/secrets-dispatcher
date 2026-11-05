@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -24,6 +25,8 @@ type Server struct {
 	unixListener   net.Listener
 	UnixSocketPath string
 	testMode       bool
+	// The remote sockets ServeRemote opened. Shutdown closes them under its deadline.
+	remotes []*RemoteServer
 }
 
 // NewServer creates a new API server for single-socket mode.
@@ -44,8 +47,8 @@ func NewServerWithProvider(addr string, manager *approval.Manager, provider Clie
 	return newServerWithHandlers(addr, handlers, wsHandler, auth, unixSocketPath)
 }
 
-// newServerWithHandlers creates a new API server with the given handlers.
-// If unixSocketPath is non-empty, the server also listens on a Unix socket.
+// Creates an API server listening on addr, and also on unixSocketPath when it is
+// non-empty.
 func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth, unixSocketPath string) (*Server, error) {
 
 	// Create the main router
@@ -116,26 +119,12 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 		listener:   listener,
 	}
 
-	// Set up Unix socket listener if path is provided.
 	if unixSocketPath != "" {
-		// Remove stale socket file from previous runs (Pitfall 5).
-		os.Remove(unixSocketPath) //nolint:errcheck
-
-		// Ensure parent directory exists with restrictive permissions.
-		if err := os.MkdirAll(filepath.Dir(unixSocketPath), 0700); err != nil {
-			listener.Close()
-			return nil, err
-		}
-
-		unixListener, err := net.Listen("unix", unixSocketPath)
+		unixListener, err := listenUnix(unixSocketPath)
 		if err != nil {
 			listener.Close()
 			return nil, err
 		}
-
-		// Owner-only access: thin client runs as same user as daemon.
-		os.Chmod(unixSocketPath, 0600) //nolint:errcheck
-
 		s.unixListener = unixListener
 		s.UnixSocketPath = unixSocketPath
 	}
@@ -143,19 +132,38 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	return s, nil
 }
 
-// Start begins serving HTTP requests. This is non-blocking.
-func (s *Server) Start() error {
+// Listens on a new Unix socket at path that only the owner can connect to.
+// Closing the listener removes the socket file.
+func listenUnix(path string) (net.Listener, error) {
+	os.Remove(path) //nolint:errcheck // stale socket from a previous run
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0600); err != nil {
+		listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
+
+// Serves srv on listener in the background and logs any failure other than shutdown.
+func serveInBackground(srv *http.Server, listener net.Listener, failure string, logArgs ...any) {
 	go func() {
-		if err := s.httpServer.Serve(s.listener); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP server error", "error", err)
+		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+			slog.Error(failure, append(logArgs, "error", err)...)
 		}
 	}()
+}
+
+// Begins serving HTTP requests in the background.
+func (s *Server) Start() error {
+	serveInBackground(s.httpServer, s.listener, "HTTP server error")
 	if s.unixListener != nil {
-		go func() {
-			if err := s.httpServer.Serve(s.unixListener); err != nil && err != http.ErrServerClosed {
-				slog.Error("Unix socket server error", "error", err)
-			}
-		}()
+		serveInBackground(s.httpServer, s.unixListener, "Unix socket server error")
 	}
 	return nil
 }
@@ -165,15 +173,17 @@ func (s *Server) Addr() string {
 	return s.listener.Addr().String()
 }
 
-// Shutdown gracefully shuts down the server.
+// Gracefully shuts down the server and its remote sockets. Errors when ctx ends
+// before the requests in flight finish.
 func (s *Server) Shutdown(ctx context.Context) error {
+	var errs []error
+	for _, rs := range s.remotes {
+		errs = append(errs, rs.httpServer.Shutdown(ctx))
+	}
 	if s.unixListener != nil {
 		s.unixListener.Close()
-		if s.UnixSocketPath != "" {
-			os.Remove(s.UnixSocketPath) //nolint:errcheck
-		}
 	}
-	return s.httpServer.Shutdown(ctx)
+	return errors.Join(append(errs, s.httpServer.Shutdown(ctx))...)
 }
 
 // CookieFilePath returns the path to the authentication cookie file.

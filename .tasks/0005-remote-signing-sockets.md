@@ -19,6 +19,15 @@ forwarded there.
 - The remote endpoint is synchronous (submit and wait for the result), so the
   remote never needs the WebSocket, which broadcasts every request.
 
+## State
+Branch `feat/remote-gpg-sign`: `serve.remotes` listeners owned by `api.Server`
+(`internal/api/remote.go`), `approval.Manager.AwaitGPGSign`, the client mode
+(`internal/gpgsign/remote.go`), `gpg-sign setup --remote-socket`, and docs
+(ADR 0011, REMOTE-PROXY.md). Unit tests drive the real client against the real
+server over a socket for every resolution, shutdown under a pending request,
+and no other endpoint reachable. Not yet run against a live daemon.
+
 ## Next
-Branch off `docs/adrs-and-tasks`; add the remote listener in `internal/api`,
-the config key, and the client mode in `internal/gpgsign`.
+Live check: run the branch's daemon with a remote configured, forward its socket
+into the symbiosis dev container on nb-home (zxc-fleet `clients/symbiosis-dev`),
+and sign a commit there; then delete this task.

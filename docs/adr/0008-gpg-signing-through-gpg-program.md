@@ -11,8 +11,9 @@ pinentry, which shows the key, not the commit.
 
 ## Decision
 
-- `secrets-dispatcher gpg-sign setup` points git's `gpg.program` at
-  `secrets-dispatcher gpg-sign`, a thin client.
+- `secrets-dispatcher gpg-sign setup` writes a wrapper script that runs
+  `secrets-dispatcher gpg-sign`, a thin client, and points git's `gpg.program`
+  at it.
 - For a signing call, the thin client parses the payload (commit, annotated tag
   or push certificate), collects context from the repository it runs in (repo
   name via `git rev-parse --show-toplevel`, staged files via

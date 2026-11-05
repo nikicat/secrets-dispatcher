@@ -237,16 +237,10 @@ func (h *Handlers) HandleAutoApproveList(w http.ResponseWriter, r *http.Request)
 
 // HandleAutoApproveCreate handles POST /api/v1/auto-approve.
 func (h *Handlers) HandleAutoApproveCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var req struct {
 		RequestID string `json:"request_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, "invalid request body", http.StatusBadRequest)
+	if !decodePost(w, r, &req) {
 		return
 	}
 
@@ -383,16 +377,23 @@ func writeError(w http.ResponseWriter, message string, code int) {
 	json.NewEncoder(w).Encode(ErrorResponse{Error: message})
 }
 
-// HandleAuth handles POST /api/v1/auth for JWT to session cookie exchange.
-func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
+// Decodes a POSTed JSON body into body, or writes the error response and returns false.
+func decodePost(w http.ResponseWriter, r *http.Request, body any) bool {
 	if r.Method != http.MethodPost {
 		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+		return false
 	}
-
-	var req AuthRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(body); err != nil {
 		writeError(w, "invalid request body", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// HandleAuth handles POST /api/v1/auth for JWT to session cookie exchange.
+func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
+	var req AuthRequest
+	if !decodePost(w, r, &req) {
 		return
 	}
 
@@ -433,14 +434,8 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if r.Method != http.MethodPost {
-		writeError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var entry HistoryEntry
-	if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
-		writeError(w, "invalid request body", http.StatusBadRequest)
+	if !decodePost(w, r, &entry) {
 		return
 	}
 

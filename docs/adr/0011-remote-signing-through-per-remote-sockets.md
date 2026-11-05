@@ -1,6 +1,6 @@
 # ADR 0011: Remote git signing through a dedicated socket per remote
 
-Date: 2026-11-05 · Status: proposed
+Date: 2026-11-05 · Status: accepted
 
 ## Context
 
@@ -28,16 +28,16 @@ already identifies a remote by the tunnel it arrives on.
   arrives on is the remote's identity; there is no token.
 - **The remote socket serves signing only:** one endpoint that submits a
   gpg-sign request and blocks until it is resolved, returning the signature and
-  gpg status, or the denial. No approve, list, history or WebSocket endpoint is
+  gpg status, or why there is none (denied, expired, cancelled). No approve, list, history or WebSocket endpoint is
   reachable from it.
 - **Requests are labelled with the remote,** as client `remote:<name>`.
   Peer credentials there only name the local `ssh` process, so the dispatcher
-  records no process chain, never applies `trusted_signers`, and marks the
-  repository and changed files the remote reports as unverified. The commit
-  author, committer and message stay bound to the signed bytes, as for local
-  requests.
-- **The thin client is unchanged in role:** on the remote host git's
-  `gpg.program` is `secrets-dispatcher gpg-sign`, and
+  records no process chain. The remote endpoint consults neither
+  `trusted_signers` nor auto-approve rules. The commit author, committer and
+  message stay bound to the signed bytes, as for local requests. The repository
+  and changed files are shown as the remote reports them.
+- **The thin client is unchanged in role.** On the remote host git's
+  `gpg.program` is a wrapper script that runs `secrets-dispatcher gpg-sign`.
   `SECRETS_DISPATCHER_REMOTE_SOCKET=<forwarded path>` makes it use the remote
   endpoint instead of the local socket and cookie.
 - The daemon still runs gpg locally ([ADR 0008](0008-gpg-signing-through-gpg-program.md)),
@@ -46,8 +46,7 @@ already identifies a remote by the tunnel it arrives on.
 ## Consequences
 
 - A remote host gets exactly one capability, asking for a signature, and every
-  request needs an approval on the laptop, unless an "approve and auto-approve"
-  rule for that remote is active.
+  request needs an approval on the laptop.
 - Trust in a remote is the trust in whoever set up its tunnel, as in ADR 0003;
   a compromised remote can submit requests but cannot approve them, see other
   requests, or sign without the user seeing the commit.

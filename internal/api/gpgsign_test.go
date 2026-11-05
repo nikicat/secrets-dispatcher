@@ -461,6 +461,7 @@ func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
 		Committer:    "A",
 		KeyID:        "ABCD1234",
 		ChangedFiles: []string{"main.go"},
+		CommitObject: "tree 0\n",
 	}
 	id, err := mgr.CreateGPGSignRequest("test-client", info, approval.SenderInfo{})
 	if err != nil {

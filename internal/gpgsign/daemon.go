@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 
@@ -21,17 +22,53 @@ type DaemonClient struct {
 	httpClient *http.Client
 }
 
-// NewDaemonClient creates a client connected to the daemon's Unix socket.
-func NewDaemonClient(socketPath, token string) *DaemonClient {
-	transport := &http.Transport{
+// Placeholder host of URLs sent over a unix socket. The dialer ignores it.
+const socketHost = "localhost"
+
+// Builds the http URL of path on a server reached through UnixSocketClient.
+func SocketURL(path string) string { return "http://" + socketHost + path }
+
+// Builds an HTTP client that sends every request to the unix socket at socketPath.
+func UnixSocketClient(socketPath string) *http.Client {
+	return &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 		},
+	}}
+}
+
+// POSTs in as JSON, with header added, and decodes a 200 answer into out.
+func postJSON(ctx context.Context, client *http.Client, path string, header http.Header, in, out any) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL(path), bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	maps.Copy(req.Header, header)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("daemon unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// NewDaemonClient creates a client connected to the daemon's Unix socket.
+func NewDaemonClient(socketPath, token string) *DaemonClient {
 	return &DaemonClient{
 		socketPath: socketPath,
 		token:      token,
-		httpClient: &http.Client{Transport: transport},
+		httpClient: UnixSocketClient(socketPath),
 	}
 }
 
@@ -39,7 +76,7 @@ func NewDaemonClient(socketPath, token string) *DaemonClient {
 // using the Unix socket transport with Bearer token authentication.
 // The caller must close the connection when done.
 func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, error) {
-	conn, _, err := websocket.Dial(ctx, "ws://localhost/api/v1/ws", &websocket.DialOptions{
+	conn, _, err := websocket.Dial(ctx, "ws://"+socketHost+"/api/v1/ws", &websocket.DialOptions{
 		HTTPClient: c.httpClient,
 		HTTPHeader: http.Header{
 			"Authorization": {"Bearer " + c.token},
@@ -63,33 +100,12 @@ func (c *DaemonClient) PostSigningRequest(ctx context.Context, client string, in
 		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
 	}{Client: client, GPGSignInfo: info}
 
-	data, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/api/v1/gpg-sign/request", bytes.NewReader(data))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.token)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("post signing request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("daemon returned status %d", resp.StatusCode)
-	}
-
 	var result struct {
 		RequestID string `json:"request_id"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
+	header := http.Header{"Authorization": {"Bearer " + c.token}}
+	if err := postJSON(ctx, c.httpClient, "/api/v1/gpg-sign/request", header, body, &result); err != nil {
+		return "", err
 	}
 	if result.RequestID == "" {
 		return "", fmt.Errorf("daemon returned empty request_id")
@@ -100,7 +116,7 @@ func (c *DaemonClient) PostSigningRequest(ctx context.Context, client string, in
 // CancelSigningRequest sends a cancel request to the daemon for a pending GPG sign request.
 // Best-effort: errors are returned but callers may choose to ignore them (process is exiting).
 func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://localhost/api/v1/pending/"+requestID+"/cancel", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL("/api/v1/pending/"+requestID+"/cancel"), nil)
 	if err != nil {
 		return fmt.Errorf("create cancel request: %w", err)
 	}

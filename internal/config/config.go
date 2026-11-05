@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -120,6 +121,14 @@ func (cfg *Config) Validate() error {
 
 	if s.Upstream.Type == "session_bus" && hasSessionBusDown {
 		return fmt.Errorf("upstream and downstream cannot both be session_bus (same bus)")
+	}
+
+	seen := map[RemoteName]bool{}
+	for i, r := range s.Remotes {
+		if seen[r.Name] {
+			return fmt.Errorf("remotes[%d]: duplicate name %q", i, r.Name)
+		}
+		seen[r.Name] = true
 	}
 
 	// Validate trust rules
@@ -262,6 +271,30 @@ type ServeConfig struct {
 	UpstreamSlowThreshold   *Duration       `yaml:"upstream_slow_threshold"`        // 0 disables; default 1.5s
 	UpstreamSlowAlways      *bool           `yaml:"upstream_slow_always,omitempty"` // show for all requests, not just auto-approved
 	Rules                   []TrustRule     `yaml:"rules,omitempty"`
+	Remotes                 []RemoteConfig  `yaml:"remotes,omitempty"`
+}
+
+// A remote host that signs git commits through the signing socket the daemon
+// serves for it (ADR 0011).
+type RemoteConfig struct {
+	Name RemoteName `yaml:"name"`
+}
+
+// A remote's name, restricted so that it can name the remote's socket file.
+type RemoteName string
+
+var remoteNameFormat = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+func (n *RemoteName) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	if !remoteNameFormat.MatchString(s) {
+		return fmt.Errorf("invalid remote name %q: must match %s", s, remoteNameFormat)
+	}
+	*n = RemoteName(s)
+	return nil
 }
 
 // TrustedSigner defines a process that is auto-approved for GPG signing.

@@ -46,3 +46,7 @@ serve:
   trusted_signers: []
     # - exe_path: /usr/bin/nvim
     # - exe_path: /usr/bin/code
+
+  # Remote hosts allowed to sign git commits through a forwarded socket (docs/REMOTE-PROXY.md)
+  remotes: []
+    # - name: myserver

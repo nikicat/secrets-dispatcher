@@ -15,20 +15,20 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-// Run is the entry point for the gpg-sign subcommand.
-// It is called by git as: secrets-dispatcher gpg-sign --status-fd=2 -bsau <keyID>
-// with the raw commit object on stdin.
-// Returns the process exit code.
-//
-// Exit codes:
-//   - 0: success (signature written to stdout, gpg status to stderr)
-//   - 1: user denied the signing request or request timed out
-//   - 2: system error (daemon unreachable, auth token missing, etc.)
-//   - N: gpg's own exit code (ERR-02: propagate real gpg failures)
-func Run(args []string, stdin io.Reader) int {
-	debug := os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"
+// Exit codes of the thin client, besides gpg's own (ERR-02).
+const (
+	exitOK          = 0
+	exitRefused     = 1 // denied by the user or timed out
+	exitSystemError = 2 // daemon unreachable, auth token missing, etc.
+)
 
-	// 0. Delegate non-signing invocations to the real gpg. git also calls
+// Serves the gpg-sign subcommand, which git runs as
+// `secrets-dispatcher gpg-sign --status-fd=2 -bsau <keyID>` with the object to sign on stdin.
+// Returns the process exit code: one of the exit constants, or gpg's own (ERR-02).
+func Run(args []string, stdin io.Reader) int {
+	c := thinClient{debug: os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"}
+
+	// Delegate non-signing invocations to the real gpg. git also calls
 	// gpg.program to *verify* signatures (verify-commit, verify-tag, log
 	// --show-signature, merge/pull verification) and to list keys or probe
 	// --version; this proxy only knows how to create signatures via the daemon.
@@ -36,68 +36,60 @@ func Run(args []string, stdin io.Reader) int {
 	// operations work exactly as if gpg.program were plain gpg (see
 	// passThroughToGPG).
 	if !isSignRequest(args) {
-		if debug {
-			fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: non-signing invocation, delegating to real gpg: %v\n", args)
-		}
+		c.debugf("non-signing invocation, delegating to real gpg: %v", args)
 		return passThroughToGPG(args, stdin)
 	}
 
-	// 1. Parse key ID from args.
-	keyID := extractKeyID(args)
-	if debug {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: keyID=%s args=%v\n", keyID, args)
+	info, err := c.collectSignInfo(args, stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
+		return exitSystemError
 	}
+	if socket := os.Getenv(remoteSocketEnv); socket != "" {
+		return c.runRemote(socket, info)
+	}
+	return c.runLocal(info)
+}
 
-	// 2. Read commit object from stdin (SIGN-02).
+// The process-wide settings of one gpg-sign invocation.
+type thinClient struct {
+	debug bool // set by SECRETS_DISPATCHER_DEBUG=1
+}
+
+// Writes a debug line to stderr when debugging is on.
+func (c thinClient) debugf(format string, a ...any) {
+	if c.debug {
+		fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: "+format+"\n", a...)
+	}
+}
+
+// Reads the object to sign from stdin and returns it with its git context for
+// the approval prompt.
+func (c thinClient) collectSignInfo(args []string, stdin io.Reader) (*approval.GPGSignInfo, error) {
+	keyID := extractKeyID(args)
+	c.debugf("keyID=%s args=%v", keyID, args)
+
+	// Read commit object from stdin (SIGN-02).
 	commitBytes, err := io.ReadAll(stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: failed to read stdin: %v\n", err)
-		return 2
+		return nil, fmt.Errorf("failed to read stdin: %w", err)
 	}
 
-	// 3. Parse the signed payload for display context (SIGN-02). git signs
+	// Parse the signed payload for display context (SIGN-02). git signs
 	// commits, annotated tags, and push certificates through this same path;
 	// detect which so the approval prompt shows the right fields.
 	payload := ParseSignedPayload(commitBytes)
 
-	// 4. Collect git context (SIGN-03, SIGN-04). Changed files describe a
+	// Collect git context (SIGN-03, SIGN-04). Changed files describe a
 	// commit's staged tree — they are meaningless for tag/push signing and
 	// could mislead both the prompt and trusted-signer matching, so gather them
 	// for commits only.
-	repoName := resolveRepoName(debug)
+	repoName := c.resolveRepoName()
 	var changedFiles []string
 	if payload.Kind == KindCommit {
-		changedFiles = collectChangedFiles(debug)
+		changedFiles = c.collectChangedFiles()
 	}
-
-	// 5. Load auth token (ERR-01 if missing).
-	token, err := loadAuthToken()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: daemon not running (cannot read auth token): %v\n", err)
-		return 2
-	}
-
-	// 6. Determine socket path.
-	socketPath := unixSocketPath()
-	if debug {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: socket=%s\n", socketPath)
-	}
-
-	// 7. Create daemon client.
-	client := NewDaemonClient(socketPath, token)
-	ctx := context.Background()
-
-	// 8. WebSocket FIRST — ensures we don't miss the resolution event between
-	// POST and the time we start listening (locked decision from CONTEXT.md).
-	wsConn, err := client.DialWebSocket(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: daemon unreachable at %s. Is secrets-dispatcher running?\n", socketPath)
-		return 2
-	}
-	defer wsConn.CloseNow()
-
-	// 9. POST signing request to daemon (SIGN-05).
-	reqID, err := client.PostSigningRequest(ctx, repoName, &approval.GPGSignInfo{
+	return &approval.GPGSignInfo{
 		RepoName:     repoName,
 		Kind:         string(payload.Kind),
 		CommitMsg:    payload.Message,
@@ -110,17 +102,42 @@ func Run(args []string, stdin io.Reader) int {
 		Target:       payload.Target,
 		Pushee:       payload.Pushee,
 		CommitObject: string(commitBytes),
-	})
+	}, nil
+}
+
+// Signs info through the local daemon's API socket and returns the process exit code.
+func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
+	// Load auth token (ERR-01 if missing).
+	token, err := loadAuthToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secrets-dispatcher: daemon not running (cannot read auth token): %v\n", err)
+		return exitSystemError
+	}
+
+	socketPath := unixSocketPath()
+	c.debugf("socket=%s", socketPath)
+
+	client := NewDaemonClient(socketPath, token)
+	ctx := context.Background()
+
+	// WebSocket FIRST — ensures we don't miss the resolution event between
+	// POST and the time we start listening (locked decision from CONTEXT.md).
+	wsConn, err := client.DialWebSocket(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secrets-dispatcher: daemon unreachable at %s. Is secrets-dispatcher running?\n", socketPath)
+		return exitSystemError
+	}
+	defer wsConn.CloseNow()
+
+	// POST signing request to daemon (SIGN-05).
+	reqID, err := client.PostSigningRequest(ctx, info.RepoName, info)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "secrets-dispatcher: failed to send signing request: %v\n", err)
-		return 2
+		return exitSystemError
 	}
+	c.debugf("request_id=%s", reqID)
 
-	if debug {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: request_id=%s\n", reqID)
-	}
-
-	// 10. Trap SIGINT/SIGTERM to cancel the signing request on interrupt.
+	// Trap SIGINT/SIGTERM to cancel the signing request on interrupt.
 	wsCtx, wsCancel := context.WithCancel(ctx)
 	defer wsCancel()
 
@@ -129,13 +146,11 @@ func Run(args []string, stdin io.Reader) int {
 	go func() {
 		select {
 		case <-sigCh:
-			if debug {
-				fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: interrupted, cancelling request %s\n", reqID)
-			}
+			c.debugf("interrupted, cancelling request %s", reqID)
 			wsCancel()
 			// Best-effort cancel — use background context since wsCtx is cancelled.
-			if err := client.CancelSigningRequest(context.Background(), reqID); err != nil && debug {
-				fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: cancel request failed: %v\n", err)
+			if err := client.CancelSigningRequest(context.Background(), reqID); err != nil {
+				c.debugf("cancel request failed: %v", err)
 			}
 		case <-wsCtx.Done():
 			// Normal exit path — nothing to do.
@@ -143,42 +158,74 @@ func Run(args []string, stdin io.Reader) int {
 		signal.Stop(sigCh)
 	}()
 
-	// 11. Block until resolution (SIGN-08, ERR-01, ERR-02).
+	// Block until resolution (SIGN-08, ERR-01, ERR-02).
 	signature, gpgStatus, exitCode, denied, err := client.WaitForResolution(wsCtx, wsConn, reqID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
-		return 1 // timeout is exit 1 per spec
+		return exitRefused
 	}
 
 	if denied {
 		fmt.Fprintln(os.Stderr, "secrets-dispatcher: signing request denied by user")
-		return 1
+		return exitRefused
 	}
+	return GPGOutput{Signature: signature, Status: gpgStatus, ExitCode: exitCode}.Emit()
+}
 
-	if exitCode != 0 {
-		// ERR-02: propagate gpg exit code.
-		if len(gpgStatus) > 0 {
-			os.Stderr.Write(gpgStatus) //nolint:errcheck
+// Signs info through the remote socket at socketPath and returns the process exit code.
+func (c thinClient) runRemote(socketPath string, info *approval.GPGSignInfo) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	c.debugf("remote socket=%s", socketPath)
+	res, err := SignRemote(ctx, socketPath, info)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
+		return exitSystemError
+	}
+	switch res.Result {
+	case approval.ResolutionApproved:
+		if res.GPGOutput == nil {
+			fmt.Fprintln(os.Stderr, "secrets-dispatcher: approved, but the daemon sent no signature")
+			return exitSystemError
 		}
-		return exitCode
+		return res.GPGOutput.Emit()
+	case approval.ResolutionExpired:
+		fmt.Fprintln(os.Stderr, "secrets-dispatcher: signing request timed out")
+		return exitRefused
+	case approval.ResolutionDenied, approval.ResolutionCancelled:
+		fmt.Fprintln(os.Stderr, "secrets-dispatcher: signing request denied by user")
+		return exitRefused
 	}
+	fmt.Fprintf(os.Stderr, "secrets-dispatcher: unexpected result %q from the daemon\n", res.Result)
+	return exitSystemError
+}
 
-	// SIGN-08: Write signature to stdout, status to stderr.
-	os.Stdout.Write(signature) //nolint:errcheck
-	if len(gpgStatus) > 0 {
-		os.Stderr.Write(gpgStatus) //nolint:errcheck
+// gpg's result for one sign request, as the thin client hands it back to git.
+type GPGOutput struct {
+	Signature []byte `json:"signature,omitempty"`
+	Status    []byte `json:"gpg_status,omitempty"`
+	ExitCode  int    `json:"exit_code,omitempty"`
+}
+
+// Writes gpg's status lines to stderr and, when gpg succeeded, the signature
+// to stdout (SIGN-08). Returns the process exit code, which is gpg's own (ERR-02).
+func (o GPGOutput) Emit() int {
+	if len(o.Status) > 0 {
+		os.Stderr.Write(o.Status) //nolint:errcheck
 	}
-	return 0
+	if o.ExitCode != 0 {
+		return o.ExitCode
+	}
+	os.Stdout.Write(o.Signature) //nolint:errcheck
+	return exitOK
 }
 
 // resolveRepoName runs git rev-parse --show-toplevel and returns the base name.
 // Returns "unknown" on error.
-func resolveRepoName(debug bool) string {
+func (c thinClient) resolveRepoName() string {
 	out, err := runGitCommand("rev-parse", "--show-toplevel")
 	if err != nil {
-		if debug {
-			fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: resolveRepoName error: %v\n", err)
-		}
+		c.debugf("resolveRepoName error: %v", err)
 		return "unknown"
 	}
 	return filepath.Base(strings.TrimSpace(out))
@@ -186,12 +233,10 @@ func resolveRepoName(debug bool) string {
 
 // collectChangedFiles runs git diff --cached --name-only and returns the file list.
 // Returns nil on error.
-func collectChangedFiles(debug bool) []string {
+func (c thinClient) collectChangedFiles() []string {
 	out, err := runGitCommand("diff", "--cached", "--name-only")
 	if err != nil {
-		if debug {
-			fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: collectChangedFiles error: %v\n", err)
-		}
+		c.debugf("collectChangedFiles error: %v", err)
 		return nil
 	}
 	var files []string

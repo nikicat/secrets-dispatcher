@@ -43,12 +43,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          # .dvmrc single-sources the deno pin — releases must build with the
-          # exact toolchain CI tests (see check.yml for the pin rationale).
-          # This previously floated on v2.x.
-          deno-version-file: .dvmrc
+      - uses: ./.github/actions/setup-frontend
 
       - name: Build frontend
         run: make embed-frontend
@@ -76,8 +71,10 @@ jobs:
       # latest as of 2026-07-06
       image: archlinux:latest@sha256:681569955d1d17313ef7134acc8b5cd8adcda2fc24709bed472d95e1cf3d71a1
     steps:
-      - name: Install build dependencies
-        run: pacman -Syu --noconfirm --needed base-devel go deno git pacman-contrib
+      # The tools to check out, checksum and build the package. The package's
+      # own dependencies come from the rendered PKGBUILD below.
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm --needed base-devel git pacman-contrib
 
       # The triggering commit provides the PKGBUILD template; the *tag*
       # determines what the package builds (it's baked into source=()), so a
@@ -92,6 +89,10 @@ jobs:
           cp packaging/aur/secrets-dispatcher.install /tmp/aur-build/
           cp packaging/aur/gitignore /tmp/aur-build/.gitignore
 
+      - name: Install the PKGBUILD's dependencies
+        run: |
+          (source /tmp/aur-build/PKGBUILD && pacman -S --needed --noconfirm "${depends[@]}" "${makedepends[@]}")
+
       - name: Fill checksums and build the package as an unprivileged user
         run: |
           useradd -m builder
@@ -100,7 +101,7 @@ jobs:
           # updpkgsums downloads the source tarball and writes real sha256sums
           # into the PKGBUILD; makepkg then verifies them, so the PKGBUILD we
           # publish is exactly what was test-built. --noconfirm because deps
-          # are preinstalled above.
+          # are installed above.
           sudo -u builder updpkgsums
           sudo -u builder makepkg -f --noconfirm
           sudo -u builder makepkg --printsrcinfo

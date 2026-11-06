@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    // esbuild reads `target` when it compiles TypeScript. ES2020 keeps the
+    // bundle identical to the Deno build (docs/adr/0012).
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "svelte", "vite/client"],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "checkJs": true,
+    "allowJs": true
+  },
+  "include": ["src", "tests", "*.ts", "*.js"]
+}

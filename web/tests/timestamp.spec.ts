@@ -23,9 +23,9 @@ test.describe("Timestamp Display Toggle", () => {
 
     // Inject test history entry via API with unique ID
     const token = await backend.getAuthToken();
-    const uniqueId = `test-${Date.now()}-${
-      Math.random().toString(36).slice(2)
-    }`;
+    const uniqueId = `test-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2)}`;
     await page.request.post(`${backend.url}/api/v1/test/history`, {
       headers: { Authorization: `Bearer ${token}` },
       data: {

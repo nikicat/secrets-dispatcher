@@ -17,7 +17,9 @@ test.afterAll(async () => {
 test.describe("Request History API", () => {
   // API-only tests that don't need UI authentication
 
-  test("log API endpoint returns empty array initially", async ({ request }) => {
+  test("log API endpoint returns empty array initially", async ({
+    request,
+  }) => {
     const token = await backend.getAuthToken();
 
     const response = await request.get(`${backend.url}/api/v1/log`, {
@@ -36,7 +38,9 @@ test.describe("Request History API", () => {
     expect(response.status()).toBe(401);
   });
 
-  test("history entry has correct structure in API response", async ({ request }) => {
+  test("history entry has correct structure in API response", async ({
+    request,
+  }) => {
     const token = await backend.getAuthToken();
 
     const response = await request.get(`${backend.url}/api/v1/log`, {
@@ -70,9 +74,7 @@ test.describe("Request History API", () => {
         "cancelled",
         "auto_approved",
         "ignored",
-      ]).toContain(
-        entry.resolution,
-      );
+      ]).toContain(entry.resolution);
     }
   });
 });
@@ -94,14 +96,18 @@ test.describe("Request History UI", () => {
     await expect(page.locator(".history-section")).not.toBeVisible();
   });
 
-  test("snapshot WebSocket message includes history array", async ({ page }) => {
+  test("snapshot WebSocket message includes history array", async ({
+    page,
+  }) => {
     // The WebSocket snapshot should include a history field (even if empty)
     // We can verify this by checking that the page loaded without errors
     // and the app is functioning (which means the snapshot was parsed correctly)
     await expect(page.getByText("No pending requests")).toBeVisible();
   });
 
-  test("history entry with ignored resolution shows correct badge", async ({ page }) => {
+  test("history entry with ignored resolution shows correct badge", async ({
+    page,
+  }) => {
     const resolvedAt = new Date().toISOString();
 
     // Intercept WebSocket and inject a history_entry after snapshot
@@ -169,7 +175,9 @@ test.describe("Request History UI", () => {
     await expect(badge).toHaveText("ignored");
   });
 
-  test("history entry with ignored resolution appears in snapshot", async ({ page }) => {
+  test("history entry with ignored resolution appears in snapshot", async ({
+    page,
+  }) => {
     const resolvedAt = new Date().toISOString();
 
     // Intercept WebSocket and inject history into the snapshot itself
@@ -278,7 +286,9 @@ test.describe("Auto-Approved History Collapsing", () => {
     };
   }
 
-  test("consecutive auto-approved entries are collapsed with count", async ({ page }) => {
+  test("consecutive auto-approved entries are collapsed with count", async ({
+    page,
+  }) => {
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((message) => {
@@ -309,7 +319,9 @@ test.describe("Auto-Approved History Collapsing", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -352,7 +364,9 @@ test.describe("Auto-Approved History Collapsing", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -368,7 +382,9 @@ test.describe("Auto-Approved History Collapsing", () => {
     await expect(page.locator(".history-count")).toHaveCount(0);
   });
 
-  test("non-consecutive auto-approved entries are still collapsed", async ({ page }) => {
+  test("non-consecutive auto-approved entries are still collapsed", async ({
+    page,
+  }) => {
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((message) => {
@@ -399,7 +415,9 @@ test.describe("Auto-Approved History Collapsing", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -416,7 +434,9 @@ test.describe("Auto-Approved History Collapsing", () => {
     await expect(page.locator(".history-count")).toHaveText("×2");
   });
 
-  test("new auto-approved entry via WebSocket increments existing group", async ({ page }) => {
+  test("new auto-approved entry via WebSocket increments existing group", async ({
+    page,
+  }) => {
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((message) => {
@@ -435,19 +455,23 @@ test.describe("Auto-Approved History Collapsing", () => {
               ws.send(JSON.stringify(parsed));
               // Send another matching entry after snapshot
               setTimeout(() => {
-                ws.send(JSON.stringify({
-                  type: "history_entry",
-                  history_entry: makeHistoryEntry(
-                    "aa-2",
-                    "auto_approved",
-                    "app.service",
-                    "/org/freedesktop/secrets/collection/default/x",
-                  ),
-                }));
+                ws.send(
+                  JSON.stringify({
+                    type: "history_entry",
+                    history_entry: makeHistoryEntry(
+                      "aa-2",
+                      "auto_approved",
+                      "app.service",
+                      "/org/freedesktop/secrets/collection/default/x",
+                    ),
+                  }),
+                );
               }, 100);
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });

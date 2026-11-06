@@ -1,17 +1,61 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 declare global {
   interface Window {
-    __notificationCalls: Array<
-      { title: string; options?: NotificationOptions }
-    >;
+    __notificationCalls: Array<{
+      title: string;
+      options: NotificationOptions;
+    }>;
   }
 }
 
 // These tests verify the browser notification functionality.
 // Due to Playwright limitations (headless mode doesn't support real notifications,
 // WebKit doesn't work at all), we use a spy pattern to track Notification API calls.
+
+/**
+ * Replaces `window.Notification` in every document the page loads with a spy.
+ * The spy records each constructed notification in `window.__notificationCalls`
+ * and reports `permission` as the permission state. When `hidden` is true,
+ * `document.hidden` also reads true.
+ */
+async function installNotificationSpy(
+  page: Page,
+  spy: { permission: NotificationPermission; hidden: boolean },
+) {
+  await page.addInitScript(({ permission, hidden }) => {
+    window.__notificationCalls = [];
+
+    const SpyNotification = function (
+      this: Notification,
+      title: string,
+      options?: NotificationOptions,
+    ) {
+      window.__notificationCalls.push({ title, options: options ?? {} });
+      return { onclick: null, close: () => {} } as unknown as Notification;
+    } as unknown as typeof Notification;
+
+    Object.defineProperty(SpyNotification, "permission", {
+      get: () => permission,
+      configurable: true,
+    });
+    SpyNotification.requestPermission = () => Promise.resolve(permission);
+
+    Object.defineProperty(window, "Notification", {
+      value: SpyNotification,
+      writable: true,
+      configurable: true,
+    });
+
+    if (hidden) {
+      Object.defineProperty(document, "hidden", {
+        get: () => true,
+        configurable: true,
+      });
+    }
+  }, spy);
+}
 
 let backend: TestBackend;
 
@@ -24,7 +68,9 @@ test.afterAll(async () => {
 });
 
 test.describe("Browser Notifications", () => {
-  test("app loads successfully with notification permission granted", async ({ browser }) => {
+  test("app loads successfully with notification permission granted", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -40,7 +86,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("app loads successfully with notification permission denied", async ({ browser }) => {
+  test("app loads successfully with notification permission denied", async ({
+    browser,
+  }) => {
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -64,7 +112,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("showRequestNotification creates notification when conditions are met", async ({ browser }) => {
+  test("showRequestNotification creates notification when conditions are met", async ({
+    browser,
+  }) => {
     // Test that the showRequestNotification function correctly creates a notification
     // when document is hidden and permission is granted
     const context = await browser.newContext({
@@ -72,37 +122,7 @@ test.describe("Browser Notifications", () => {
     });
     const page = await context.newPage();
 
-    // Set up spy with page hidden
-    await page.addInitScript(() => {
-      window.__notificationCalls = [];
-
-      const SpyNotification = function (
-        this: Notification,
-        title: string,
-        options?: NotificationOptions,
-      ) {
-        window.__notificationCalls.push({ title, options });
-        return { onclick: null, close: () => {} } as unknown as Notification;
-      } as unknown as typeof Notification;
-
-      Object.defineProperty(SpyNotification, "permission", {
-        get: () => "granted",
-        configurable: true,
-      });
-      SpyNotification.requestPermission = () =>
-        Promise.resolve("granted" as NotificationPermission);
-
-      Object.defineProperty(window, "Notification", {
-        value: SpyNotification,
-        writable: true,
-        configurable: true,
-      });
-
-      Object.defineProperty(document, "hidden", {
-        get: () => true,
-        configurable: true,
-      });
-    });
+    await installNotificationSpy(page, { permission: "granted", hidden: true });
 
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
@@ -162,37 +182,17 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("showRequestNotification does NOT create notification when page is visible", async ({ browser }) => {
+  test("showRequestNotification does NOT create notification when page is visible", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
     const page = await context.newPage();
 
-    // Set up spy but leave document.hidden as false (page visible)
-    await page.addInitScript(() => {
-      window.__notificationCalls = [];
-
-      const SpyNotification = function (
-        this: Notification,
-        title: string,
-        options?: NotificationOptions,
-      ) {
-        window.__notificationCalls.push({ title, options });
-        return { onclick: null, close: () => {} } as unknown as Notification;
-      } as unknown as typeof Notification;
-
-      Object.defineProperty(SpyNotification, "permission", {
-        get: () => "granted",
-        configurable: true,
-      });
-      SpyNotification.requestPermission = () =>
-        Promise.resolve("granted" as NotificationPermission);
-
-      Object.defineProperty(window, "Notification", {
-        value: SpyNotification,
-        writable: true,
-        configurable: true,
-      });
+    await installNotificationSpy(page, {
+      permission: "granted",
+      hidden: false,
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -222,42 +222,14 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("showRequestNotification does NOT create notification when permission denied", async ({ browser }) => {
+  test("showRequestNotification does NOT create notification when permission denied", async ({
+    browser,
+  }) => {
     const context = await browser.newContext();
     const page = await context.newPage();
 
-    // Set up spy with denied permission
-    await page.addInitScript(() => {
-      window.__notificationCalls = [];
-
-      const SpyNotification = function (
-        this: Notification,
-        title: string,
-        options?: NotificationOptions,
-      ) {
-        window.__notificationCalls.push({ title, options });
-        return { onclick: null, close: () => {} } as unknown as Notification;
-      } as unknown as typeof Notification;
-
-      Object.defineProperty(SpyNotification, "permission", {
-        get: () => "denied",
-        configurable: true,
-      });
-      SpyNotification.requestPermission = () =>
-        Promise.resolve("denied" as NotificationPermission);
-
-      Object.defineProperty(window, "Notification", {
-        value: SpyNotification,
-        writable: true,
-        configurable: true,
-      });
-
-      // Even with hidden page, notification should not be created if permission denied
-      Object.defineProperty(document, "hidden", {
-        get: () => true,
-        configurable: true,
-      });
-    });
+    // Even with a hidden page, no notification is created if permission is denied.
+    await installNotificationSpy(page, { permission: "denied", hidden: true });
 
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
@@ -284,42 +256,15 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("notification body formats correctly for multiple items", async ({ browser }) => {
+  test("notification body formats correctly for multiple items", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
     const page = await context.newPage();
 
-    await page.addInitScript(() => {
-      window.__notificationCalls = [];
-
-      const SpyNotification = function (
-        this: Notification,
-        title: string,
-        options?: NotificationOptions,
-      ) {
-        window.__notificationCalls.push({ title, options });
-        return { onclick: null, close: () => {} } as unknown as Notification;
-      } as unknown as typeof Notification;
-
-      Object.defineProperty(SpyNotification, "permission", {
-        get: () => "granted",
-        configurable: true,
-      });
-      SpyNotification.requestPermission = () =>
-        Promise.resolve("granted" as NotificationPermission);
-
-      Object.defineProperty(window, "Notification", {
-        value: SpyNotification,
-        writable: true,
-        configurable: true,
-      });
-
-      Object.defineProperty(document, "hidden", {
-        get: () => true,
-        configurable: true,
-      });
-    });
+    await installNotificationSpy(page, { permission: "granted", hidden: true });
 
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
@@ -336,7 +281,7 @@ test.describe("Browser Notifications", () => {
           { path: "/secrets/key2", label: "Key 2" },
           { path: "/secrets/key3", label: "Key 3" },
         ],
-        sender_info: { pid: 5678 },
+        sender_info: { pid: 5678 } as { pid: number; invoker_name?: string },
         expires_at: new Date(Date.now() + 300000).toISOString(),
       };
 
@@ -370,7 +315,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("notification toggle button is visible and defaults to enabled", async ({ browser }) => {
+  test("notification toggle button is visible and defaults to enabled", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -387,7 +334,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("notification toggle disables and persists in localStorage", async ({ browser }) => {
+  test("notification toggle disables and persists in localStorage", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -405,7 +354,7 @@ test.describe("Browser Notifications", () => {
 
     // Verify localStorage was set
     const stored = await page.evaluate(() =>
-      localStorage.getItem("notificationsEnabled")
+      localStorage.getItem("notificationsEnabled"),
     );
     expect(stored).toBe("false");
 
@@ -427,49 +376,22 @@ test.describe("Browser Notifications", () => {
       "Notifications enabled",
     );
     const storedAfter = await page.evaluate(() =>
-      localStorage.getItem("notificationsEnabled")
+      localStorage.getItem("notificationsEnabled"),
     );
     expect(storedAfter).toBe("true");
 
     await context.close();
   });
 
-  test("notification body formats correctly for search requests", async ({ browser }) => {
+  test("notification body formats correctly for search requests", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
     const page = await context.newPage();
 
-    await page.addInitScript(() => {
-      window.__notificationCalls = [];
-
-      const SpyNotification = function (
-        this: Notification,
-        title: string,
-        options?: NotificationOptions,
-      ) {
-        window.__notificationCalls.push({ title, options });
-        return { onclick: null, close: () => {} } as unknown as Notification;
-      } as unknown as typeof Notification;
-
-      Object.defineProperty(SpyNotification, "permission", {
-        get: () => "granted",
-        configurable: true,
-      });
-      SpyNotification.requestPermission = () =>
-        Promise.resolve("granted" as NotificationPermission);
-
-      Object.defineProperty(window, "Notification", {
-        value: SpyNotification,
-        writable: true,
-        configurable: true,
-      });
-
-      Object.defineProperty(document, "hidden", {
-        get: () => true,
-        configurable: true,
-      });
-    });
+    await installNotificationSpy(page, { permission: "granted", hidden: true });
 
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);

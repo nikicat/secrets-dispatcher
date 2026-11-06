@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  PROJECT_ROOT,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 
@@ -7,7 +11,7 @@ import { mkdir } from "node:fs/promises";
 // Run: make screenshots
 // Output: docs/screenshots/
 
-const SCREENSHOT_DIR = join(__dirname, "..", "..", "docs", "screenshots");
+const SCREENSHOT_DIR = join(PROJECT_ROOT, "docs", "screenshots");
 
 let backend: TestBackend;
 
@@ -250,64 +254,63 @@ const trustRules = [
 // -- Screenshot tests --
 
 test.describe("Screenshots", () => {
-  test(
-    "webui-overview: pending requests with history and trust rules",
-    async ({ page }) => {
-      // Intercept WebSocket to inject rich state.
-      await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-        const server = ws.connectToServer();
-        server.onMessage((message) => {
-          if (typeof message === "string") {
-            try {
-              const parsed = JSON.parse(message);
-              if (parsed.type === "snapshot") {
-                // Inject history and trust rules into snapshot.
-                parsed.history = makeHistory();
-                parsed.trust_rules = trustRules;
-                ws.send(JSON.stringify(parsed));
+  test("webui-overview: pending requests with history and trust rules", async ({
+    page,
+  }) => {
+    // Intercept WebSocket to inject rich state.
+    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((message) => {
+        if (typeof message === "string") {
+          try {
+            const parsed = JSON.parse(message);
+            if (parsed.type === "snapshot") {
+              // Inject history and trust rules into snapshot.
+              parsed.history = makeHistory();
+              parsed.trust_rules = trustRules;
+              ws.send(JSON.stringify(parsed));
 
-                // Then inject pending requests.
-                setTimeout(() => {
-                  ws.send(JSON.stringify(secretRequest));
-                }, 200);
-                setTimeout(() => {
-                  ws.send(JSON.stringify(gpgSignRequest));
-                }, 400);
-                return;
-              }
-            } catch {
-              /* not JSON */
+              // Then inject pending requests.
+              setTimeout(() => {
+                ws.send(JSON.stringify(secretRequest));
+              }, 200);
+              setTimeout(() => {
+                ws.send(JSON.stringify(gpgSignRequest));
+              }, 400);
+              return;
             }
+          } catch {
+            /* not JSON */
           }
-          ws.send(message);
-        });
+        }
+        ws.send(message);
       });
+    });
 
-      await page.setViewportSize({ width: 1280, height: 900 });
+    await page.setViewportSize({ width: 1280, height: 900 });
 
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
 
-      // Wait for both pending cards to appear.
-      await expect(page.locator(".card")).toHaveCount(2, { timeout: 10_000 });
+    // Wait for both pending cards to appear.
+    await expect(page.locator(".card")).toHaveCount(2, { timeout: 10_000 });
 
-      // Wait for history to render.
-      await expect(page.getByText("Recent Activity")).toBeVisible();
+    // Wait for history to render.
+    await expect(page.getByText("Recent Activity")).toBeVisible();
 
-      // Expand the GPG sign commit body for a richer screenshot.
-      const gpgCard = page.locator(".card--gpg_sign");
-      const bodyToggle = gpgCard.locator(".commit-body-toggle summary");
-      if (await bodyToggle.isVisible()) {
-        await bodyToggle.click();
-      }
+    // Expand the GPG sign commit body for a richer screenshot.
+    const gpgCard = page.locator(".card--gpg_sign");
+    const bodyToggle = gpgCard.locator(".commit-body-toggle summary");
+    if (await bodyToggle.isVisible()) {
+      await bodyToggle.click();
+    }
 
-      // Small pause for animations to settle.
-      await page.waitForTimeout(500);
+    // Small pause for animations to settle.
+    await page.waitForTimeout(500);
 
-      await page.screenshot({
-        path: join(SCREENSHOT_DIR, "webui-overview.png"),
-        fullPage: false,
-      });
-    },
-  );
+    await page.screenshot({
+      path: join(SCREENSHOT_DIR, "webui-overview.png"),
+      fullPage: false,
+    });
+  });
 });

@@ -20,18 +20,24 @@
       {#each chain as proc}
         <div class="chain-detail-entry">
           <span class="chain-detail-name">{proc.name}</span>
-          <table class="props-table"><tbody>
-            <tr><td class="prop-key">pid</td><td>{proc.pid}</td></tr>
-            {#if proc.exe}
-              <tr><td class="prop-key">exe</td><td>{proc.exe}</td></tr>
-            {/if}
-            {#if proc.args && proc.args.length > 1}
-              <tr><td class="prop-key">args</td><td>{proc.args.slice(1).join(' ')}</td></tr>
-            {/if}
-            {#if proc.cwd}
-              <tr><td class="prop-key">cwd</td><td>{proc.cwd}</td></tr>
-            {/if}
-          </tbody></table>
+          <table class="props-table">
+            <tbody>
+              <tr><td class="prop-key">pid</td><td>{proc.pid}</td></tr>
+              {#if proc.exe}
+                <tr><td class="prop-key">exe</td><td>{proc.exe}</td></tr>
+              {/if}
+              {#if proc.args && proc.args.length > 1}
+                <tr
+                  ><td class="prop-key">args</td><td
+                    >{proc.args.slice(1).join(" ")}</td
+                  ></tr
+                >
+              {/if}
+              {#if proc.cwd}
+                <tr><td class="prop-key">cwd</td><td>{proc.cwd}</td></tr>
+              {/if}
+            </tbody>
+          </table>
         </div>
       {/each}
     </div>

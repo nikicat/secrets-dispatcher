@@ -4,16 +4,9 @@ secrets-dispatcher
 mock-secret-service
 *.exe
 
-# Frontend build artifacts
-web/dist/
-web/node_modules/
-
 # Embedded frontend: internal/api/web/dist is COMMITTED (keeps plain
 # `go install` fully functional, web UI included). Regenerate with
 # `make embed-frontend`; CI fails if it drifts from web/ sources.
-
-# Test artifacts
-web/test-results/
 
 # Python bytecode (e2e demo/harness helpers, e.g. rd_agent.py)
 __pycache__/

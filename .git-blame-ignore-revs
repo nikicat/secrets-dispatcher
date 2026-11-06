@@ -1,0 +1,5 @@
+# Commits that only reformat code. GitHub's blame view skips them on its own;
+# for local `git blame`, see CONTRIBUTING.md.
+
+# style(web): format web/ with Prettier (the switch from deno fmt, ADR 0012)
+8251f523953b63ce9ae1598a56d57a0a472a11ec

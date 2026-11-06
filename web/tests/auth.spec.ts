@@ -32,7 +32,9 @@ test.describe("Authentication", () => {
     await expect(page.getByText("secrets-dispatcher login")).toBeVisible();
   });
 
-  test("login with valid JWT sets cookie and shows connected status", async ({ page }) => {
+  test("login with valid JWT sets cookie and shows connected status", async ({
+    page,
+  }) => {
     // Generate a valid login URL
     const loginURL = await backend.generateLoginURL();
 
@@ -58,7 +60,9 @@ test.describe("Authentication", () => {
     await expect(page.getByText("Invalid or expired login link")).toBeVisible();
   });
 
-  test("session persists after page reload when authenticated", async ({ page }) => {
+  test("session persists after page reload when authenticated", async ({
+    page,
+  }) => {
     // First, authenticate
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
@@ -96,7 +100,9 @@ test.describe("Authentication", () => {
     expect(response.status()).toBe(400);
   });
 
-  test("auth endpoint accepts valid JWT and sets cookie", async ({ request }) => {
+  test("auth endpoint accepts valid JWT and sets cookie", async ({
+    request,
+  }) => {
     const token = await backend.getAuthToken();
     const jwt = generateJWT(token);
 
@@ -111,7 +117,9 @@ test.describe("Authentication", () => {
     expect(cookies).toContain("session=");
   });
 
-  test("auth endpoint rejects correctly signed JWT without jti", async ({ request }) => {
+  test("auth endpoint rejects correctly signed JWT without jti", async ({
+    request,
+  }) => {
     // Login JWTs are single-use, keyed by jti. A token without one (the
     // pre-single-use format) must be rejected as malformed rather than
     // letting "" act as the shared nonce.

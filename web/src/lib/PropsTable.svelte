@@ -9,15 +9,20 @@
 </script>
 
 {#if process || collection || (attributes && Object.keys(attributes).length > 0)}
-  <table class="props-table"><tbody>
-    {#if process}<tr><td class="prop-key">process</td><td>{process}</td></tr>{/if}
-    {#if collection}<tr><td class="prop-key">collection</td><td>{collection}</td></tr>{/if}
-    {#if attributes}
-      {#each Object.entries(attributes) as [key, value]}
-        <tr><td class="prop-key">{key}</td><td>{value}</td></tr>
-      {/each}
-    {/if}
-  </tbody></table>
+  <table class="props-table">
+    <tbody>
+      {#if process}<tr><td class="prop-key">process</td><td>{process}</td></tr
+        >{/if}
+      {#if collection}<tr
+          ><td class="prop-key">collection</td><td>{collection}</td></tr
+        >{/if}
+      {#if attributes}
+        {#each Object.entries(attributes) as [key, value]}
+          <tr><td class="prop-key">{key}</td><td>{value}</td></tr>
+        {/each}
+      {/if}
+    </tbody>
+  </table>
 {/if}
 
 <style>

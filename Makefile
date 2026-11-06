@@ -1,15 +1,27 @@
 MAKEFLAGS += -j
 
-.PHONY: all build install frontend backend backend-dev backend-go notifstub notifprobe clean test test-go test-e2e test-e2e-all test-e2e-browser \
+.PHONY: all build install deps-frontend frontend backend backend-dev backend-go notifstub notifprobe clean test test-go test-e2e test-e2e-all test-e2e-browser \
 	test-e2e-gnome test-e2e-gnome-container demo playwright-install dev version release pre-commit screenshots \
 	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
 all: build
 
-# Build the frontend with Deno
-frontend:
-	cd web && deno task build
+# pnpm in the frontend project; scripts run with cwd web/
+PNPM := pnpm --dir web
+
+# Install frontend dependencies exactly as locked. pnpm leaves .modules.yaml
+# alone when nothing changed, so touch it to keep the stamp newer than its
+# prerequisites.
+web/node_modules/.modules.yaml: web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml
+	$(PNPM) install --frozen-lockfile
+	touch $@
+
+deps-frontend: web/node_modules/.modules.yaml
+
+# Build the frontend
+frontend: deps-frontend
+	$(PNPM) build
 
 # Copy frontend dist to internal/api for embedding. The dist is committed
 # (go-install support), so the copy must be exact: remove first, or stale
@@ -49,8 +61,8 @@ install:
 	install -Dm755 secrets-dispatcher $(DESTDIR)$(PREFIX)/bin/secrets-dispatcher
 
 # Run frontend dev server (with API proxy to localhost:8484)
-dev:
-	cd web && deno task dev
+dev: deps-frontend
+	$(PNPM) dev
 
 # Run all tests
 test: test-go test-e2e
@@ -61,18 +73,18 @@ test-go:
 
 # E2E tests (no embed needed — proxy serves frontend from web/dist)
 test-e2e: backend-dev
-	cd web && deno task test:e2e
+	$(PNPM) test:e2e
 
 # E2E tests in all browsers (chromium + firefox)
 test-e2e-all: backend-dev
-	cd web && ALL_BROWSERS=1 deno task test:e2e
+	ALL_BROWSERS=1 $(PNPM) test:e2e
 
 # E2E tests for a single browser (usage: make test-e2e-browser BROWSER=firefox)
 BROWSER ?= chromium
 test-e2e-browser: backend-dev
-	cd web && ALL_BROWSERS=1 deno run -A npm:@playwright/test@1.61.1/cli test --project=$(BROWSER)
+	ALL_BROWSERS=1 $(PNPM) test:e2e --project=$(BROWSER)
 
-# Go-only dev binary (no frontend, no deno). Distinct output so it can't race
+# Go-only dev binary (no frontend, no Node). Distinct output so it can't race
 # a parallel backend-dev build of .build/secrets-dispatcher.
 backend-go:
 	@mkdir -p .build
@@ -136,13 +148,12 @@ demo: backend-go
 	e2e/gnome/vm/run.sh destroy
 
 # Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
-playwright-install:
-	cd web && deno run -A npm:@playwright/test@1.61.1/cli install --with-deps $(BROWSER)
+playwright-install: deps-frontend
+	$(PNPM) exec playwright install --with-deps $(BROWSER)
 
 # Generate screenshots for docs (output: docs/screenshots/)
 screenshots: backend-dev
-	cd web && deno cache --node-modules-dir playwright.config.ts tests/screenshots.spec.ts && \
-		deno run -A npm:@playwright/test@1.61.1/cli test --project=chromium tests/screenshots.spec.ts
+	$(PNPM) test:e2e --project=chromium tests/screenshots.spec.ts
 
 # Show the version that will be embedded
 version:
@@ -191,16 +202,16 @@ check-go-staticcheck:
 	go tool staticcheck -tags dev ./...
 
 # All frontend checks (types + formatting + lint)
-check-frontend: check-frontend-fmt check-frontend-lint
-	cd web && deno task check
+check-frontend: check-frontend-fmt check-frontend-lint deps-frontend
+	$(PNPM) check
 
 # Frontend formatting check
-check-frontend-fmt:
-	cd web && deno fmt --check
+check-frontend-fmt: deps-frontend
+	$(PNPM) fmt:check
 
 # Frontend linting
-check-frontend-lint:
-	cd web && deno lint
+check-frontend-lint: deps-frontend
+	$(PNPM) lint
 
 # --- Auto-formatters ---
 
@@ -212,5 +223,5 @@ fmt-go:
 	gofmt -w .
 
 # Format frontend code
-fmt-frontend:
-	cd web && deno fmt
+fmt-frontend: deps-frontend
+	$(PNPM) fmt

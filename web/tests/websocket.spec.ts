@@ -37,7 +37,9 @@ test.describe("WebSocket Connection", () => {
     await expect(page.getByText("local")).toBeVisible();
   });
 
-  test("shows unauthenticated state without valid session", async ({ page }) => {
+  test("shows unauthenticated state without valid session", async ({
+    page,
+  }) => {
     // Go directly to the app without authentication
     await page.goto(backend.url);
 
@@ -45,7 +47,9 @@ test.describe("WebSocket Connection", () => {
     await expect(page.getByText("Authentication Required")).toBeVisible();
   });
 
-  test("status indicator reflects WebSocket connection state", async ({ page }) => {
+  test("status indicator reflects WebSocket connection state", async ({
+    page,
+  }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
@@ -79,7 +83,9 @@ test.describe("WebSocket Real-time Updates", () => {
     await expect(page.getByText("local")).toBeVisible();
   });
 
-  test("persists connection across page visibility changes", async ({ page }) => {
+  test("persists connection across page visibility changes", async ({
+    page,
+  }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
@@ -126,7 +132,10 @@ test.describe("WebSocket Error Handling", () => {
 });
 
 test.describe("WebSocket API Integration", () => {
-  test("WebSocket and REST API return consistent data", async ({ page, request }) => {
+  test("WebSocket and REST API return consistent data", async ({
+    page,
+    request,
+  }) => {
     const loginURL = await backend.generateLoginURL();
     await page.goto(loginURL);
 
@@ -146,16 +155,20 @@ test.describe("WebSocket API Integration", () => {
 
     // Default config has a "local" client
     expect(status.running).toBe(true);
-    expect(status.clients).toEqual([{
-      name: "local",
-      socket_path: "session_bus",
-    }]);
+    expect(status.clients).toEqual([
+      {
+        name: "local",
+        socket_path: "session_bus",
+      },
+    ]);
 
     // UI shows the client
     await expect(page.getByText("local")).toBeVisible();
   });
 
-  test("pending requests from REST API matches WebSocket snapshot", async ({ request }) => {
+  test("pending requests from REST API matches WebSocket snapshot", async ({
+    request,
+  }) => {
     // In API-only mode, there should be no pending requests
     const token = await backend.getAuthToken();
     const response = await request.get(`${backend.url}/api/v1/pending`, {

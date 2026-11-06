@@ -17,14 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          # .dvmrc is the single source of the deno pin (all jobs here plus
-          # the release build). Pinned deliberately, not by float. Requires
-          # @playwright/test >= 1.60: deno >= 2.9 ports Node 26.1 stream
-          # semantics (nodejs/node#62557), which deadlock the fd-slicer
-          # bundled in playwright <= 1.59 during browser-archive extraction.
-          deno-version-file: .dvmrc
+      - uses: ./.github/actions/setup-frontend
 
       - run: make check
 
@@ -37,10 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          # See the check job for why the .dvmrc pin exists.
-          deno-version-file: .dvmrc
+      - uses: ./.github/actions/setup-frontend
 
       - run: make embed-frontend
 
@@ -79,10 +69,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          # See the check job for why the .dvmrc pin exists.
-          deno-version-file: .dvmrc
+      - uses: ./.github/actions/setup-frontend
 
       - run: make playwright-install BROWSER=${{ matrix.browser }}
 

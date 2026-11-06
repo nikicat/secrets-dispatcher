@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  PROJECT_ROOT,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 
@@ -7,7 +11,7 @@ import { mkdir } from "node:fs/promises";
 // Run: make screenshots
 // Output: docs/screenshots/
 
-const SCREENSHOT_DIR = join(__dirname, "..", "..", "docs", "screenshots");
+const SCREENSHOT_DIR = join(PROJECT_ROOT, "docs", "screenshots");
 
 let backend: TestBackend;
 

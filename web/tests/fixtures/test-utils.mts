@@ -15,15 +15,13 @@ import { tmpdir } from "node:os";
 import { createHmac, randomBytes } from "node:crypto";
 import type { Socket } from "node:net";
 
-// Resolved from the runner's cwd — every entry point (`deno task test:e2e`,
-// `make test-e2e*`, `make screenshots`) launches Playwright from `web/`.
-// Not `import.meta.url`: Playwright >= 1.59 transpiles this file to
-// CommonJS, where `import.meta` is a syntax error.
-const PROJECT_ROOT = resolve("..");
+// The suite runs with cwd web/. The root is not derived from `import.meta.url`
+// or `__dirname`, because Playwright may load this file in either module format.
+export const PROJECT_ROOT = resolve("..");
 if (!existsSync(join(PROJECT_ROOT, "go.mod"))) {
   throw new Error(
     `expected the repo root at ${PROJECT_ROOT} (cwd must be web/); ` +
-      "launch the E2E suite via `deno task test:e2e` or `make test-e2e`",
+      "launch the E2E suite via `pnpm test:e2e`",
   );
 }
 const BINARY_PATH = join(PROJECT_ROOT, ".build", "secrets-dispatcher");
@@ -276,18 +274,10 @@ export async function startTestBackend(options?: {
     ].join("\n"),
   );
 
-  // Build environment with optional version override
-  const env: Record<string, string> = { ...process.env };
-  if (options?.version) {
-    env.TEST_BUILD_VERSION = options.version;
-  }
-
   const extraArgs = options?.extraArgs ?? [];
 
-  const spawnBackend = (
-    listenAddr: string,
-    spawnEnv: Record<string, string>,
-  ): ChildProcess => {
+  // A non-empty version overrides the build version the backend reports.
+  const spawnBackend = (listenAddr: string, version?: string): ChildProcess => {
     return spawn(
       BINARY_PATH,
       [
@@ -304,7 +294,9 @@ export async function startTestBackend(options?: {
       ],
       {
         stdio: ["ignore", "pipe", "pipe"],
-        env: spawnEnv,
+        env: version
+          ? { ...process.env, TEST_BUILD_VERSION: version }
+          : process.env,
         detached: false,
       },
     );
@@ -367,7 +359,7 @@ export async function startTestBackend(options?: {
   };
 
   // Start with port 0 — let the OS assign an available port
-  let proc = spawnBackend("127.0.0.1:0", env);
+  let proc = spawnBackend("127.0.0.1:0", options?.version);
   const backendPort = await waitForServer(proc);
 
   // Start reverse proxy (serves frontend from disk, proxies API to backend)
@@ -393,13 +385,8 @@ export async function startTestBackend(options?: {
   }): Promise<void> => {
     await stopProcess(proc);
 
-    const restartEnv: Record<string, string> = { ...process.env };
-    if (restartOptions?.version) {
-      restartEnv.TEST_BUILD_VERSION = restartOptions.version;
-    }
-
     // Reuse the same backend port so the proxy can reconnect
-    proc = spawnBackend(`127.0.0.1:${backendPort}`, restartEnv);
+    proc = spawnBackend(`127.0.0.1:${backendPort}`, restartOptions?.version);
     await waitForServer(proc);
   };
 

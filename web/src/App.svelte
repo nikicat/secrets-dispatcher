@@ -56,6 +56,7 @@
 
   // Notification delay from server config
   let notificationDelayMS = $state(0);
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- holds timer handles; nothing renders it
   let pendingNotifications = new Map<string, ReturnType<typeof setTimeout>>();
 
   // Tick counter for auto-approve rule timer display (increments every second)
@@ -207,6 +208,7 @@
   }
 
   async function handleAuth() {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a one-shot parse of the query; nothing reacts to it
     const params = new URLSearchParams(window.location.search);
     const token = params.get("token");
 
@@ -328,6 +330,7 @@
     return slash >= 0 ? path.slice(slash + 1) : path;
   }
 
+  // Takes `_tick` only so that the template re-renders the countdown every second.
   function formatRuleExpiry(expiresAt: string, _tick: number): string {
     const diff = new Date(expiresAt).getTime() - Date.now();
     if (diff <= 0) return "expired";
@@ -352,6 +355,7 @@
 
   let groupedHistory = $derived.by(() => {
     const groups: HistoryGroup[] = [];
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- scratch map, local to this $derived.by
     const keyIndex = new Map<string, number>();
     for (const entry of history) {
       if (entry.resolution === "auto_approved") {

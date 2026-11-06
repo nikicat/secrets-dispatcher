@@ -4,7 +4,8 @@ Contributions are welcome! Here's how to get started.
 
 ## Building
 
-**Prerequisites:** Go 1.26+, Deno 2.x, Make
+**Prerequisites:** Go 1.26+, Node (the version CI uses, pinned in `.nvmrc`), [pnpm](https://pnpm.io/installation), Make.
+The pnpm version is pinned in `web/package.json` (`packageManager`), and pnpm switches to it on its own.
 
 ```bash
 git clone https://github.com/nikicat/secrets-dispatcher.git
@@ -46,7 +47,9 @@ come from there).
 ## Code Style
 
 - **Go:** `gofmt` (enforced by CI). Run `make fmt-go` to auto-format.
-- **Frontend:** Deno fmt + lint (enforced by CI). Run `make fmt-frontend`.
+- **Frontend:** Prettier (with `prettier-plugin-svelte`) + ESLint (with
+  `typescript-eslint` and `eslint-plugin-svelte`), enforced by CI. Run
+  `make fmt-frontend`.
 - **Static analysis:** `go vet` and `staticcheck` (enforced by CI).
 
 ## Submitting Changes
@@ -80,7 +83,7 @@ come from there).
 │   ├── sshagent/           # SSH agent proxy — gates key signing through approval
 │   └── testutil/           # Test helpers
 ├── cmd/mock-secret-service/ # Test fixture Secret Service backend
-├── web/                    # Svelte frontend (Deno + Vite)
+├── web/                    # Svelte frontend (pnpm + Vite)
 ├── e2e/                    # Playwright + Tier-2 GNOME VM end-to-end suite
 ├── packaging/              # AUR PKGBUILD and packaging assets
 ├── scripts/                # Build / release / CI helper scripts

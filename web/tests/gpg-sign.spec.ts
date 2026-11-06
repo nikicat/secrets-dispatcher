@@ -144,8 +144,9 @@ test.describe("GPG Sign Card Rendering", () => {
     await expect(card.locator(".changed-files")).toContainText("parser.go");
 
     // Approve and Deny buttons present.
-    await expect(card.getByRole("button", { name: "Approve", exact: true }))
-      .toBeVisible();
+    await expect(
+      card.getByRole("button", { name: "Approve", exact: true }),
+    ).toBeVisible();
     await expect(card.getByRole("button", { name: "Deny" })).toBeVisible();
 
     // Cleanup.
@@ -234,7 +235,9 @@ test.describe("GPG Sign Card Rendering", () => {
 });
 
 test.describe("GPG Sign Corner Cases", () => {
-  test("initial commit — no parent hash, no changed files", async ({ page }) => {
+  test("initial commit — no parent hash, no changed files", async ({
+    page,
+  }) => {
     await authenticate(page);
     const token = await backend.getAuthToken();
     const reqId = await createGPGSignRequest(token, {
@@ -288,9 +291,7 @@ test.describe("GPG Sign Corner Cases", () => {
 
     // Parent hash should appear in More details.
     await card.locator(".secondary-meta summary").click();
-    await expect(card.locator(".secondary-meta")).toContainText(
-      "abc123def456",
-    );
+    await expect(card.locator(".secondary-meta")).toContainText("abc123def456");
 
     await fetch(`${backend.url}/api/v1/pending/${reqId}/deny`, {
       method: "POST",
@@ -324,9 +325,7 @@ test.describe("GPG Sign Corner Cases", () => {
 
     // Parent hash in details.
     await card.locator(".secondary-meta summary").click();
-    await expect(card.locator(".secondary-meta")).toContainText(
-      "aaa111bbb222",
-    );
+    await expect(card.locator(".secondary-meta")).toContainText("aaa111bbb222");
 
     await fetch(`${backend.url}/api/v1/pending/${reqId}/deny`, {
       method: "POST",
@@ -334,7 +333,9 @@ test.describe("GPG Sign Corner Cases", () => {
     });
   });
 
-  test("amend commit — same author, different committer timestamp", async ({ page }) => {
+  test("amend commit — same author, different committer timestamp", async ({
+    page,
+  }) => {
     await authenticate(page);
     const token = await backend.getAuthToken();
     const reqId = await createGPGSignRequest(token, {
@@ -367,7 +368,9 @@ test.describe("GPG Sign Corner Cases", () => {
     });
   });
 
-  test("many changed files — shows first 5 then expandable overflow", async ({ page }) => {
+  test("many changed files — shows first 5 then expandable overflow", async ({
+    page,
+  }) => {
     await authenticate(page);
     const token = await backend.getAuthToken();
     const files = Array.from({ length: 8 }, (_, i) => `src/file${i + 1}.go`);
@@ -464,7 +467,9 @@ test.describe("GPG Sign Corner Cases", () => {
     });
   });
 
-  test("same author and committer — committer hidden in details", async ({ page }) => {
+  test("same author and committer — committer hidden in details", async ({
+    page,
+  }) => {
     await authenticate(page);
     const token = await backend.getAuthToken();
     const reqId = await createGPGSignRequest(token, {
@@ -491,7 +496,9 @@ test.describe("GPG Sign Corner Cases", () => {
     });
   });
 
-  test("process chain rendered when sender has process_chain", async ({ page }) => {
+  test("process chain rendered when sender has process_chain", async ({
+    page,
+  }) => {
     // Intercept the WebSocket to inject a request_created message
     // with process_chain — tests the {#if hasProcessChain()} branch.
     let sendToClient: ((msg: string) => void) | undefined;
@@ -511,11 +518,13 @@ test.describe("GPG Sign Corner Cases", () => {
       request: {
         id: "chain-test-001",
         client: "chain-client",
-        items: [{
-          path: "/secrets/collection/test/1",
-          label: "ChainItem",
-          attributes: {},
-        }],
+        items: [
+          {
+            path: "/secrets/collection/test/1",
+            label: "ChainItem",
+            attributes: {},
+          },
+        ],
         session: "/secrets/session/s0",
         created_at: new Date().toISOString(),
         expires_at: new Date(Date.now() + 300000).toISOString(),
@@ -609,7 +618,9 @@ test.describe("GPG Sign Approval Flow", () => {
     );
   });
 
-  test("approve removes request from UI and adds to history", async ({ page }) => {
+  test("approve removes request from UI and adds to history", async ({
+    page,
+  }) => {
     await authenticate(page);
     const token = await backend.getAuthToken();
     await createGPGSignRequest(token, {

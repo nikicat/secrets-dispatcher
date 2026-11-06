@@ -59,9 +59,8 @@ export function showRequestNotification(request: PendingRequest): void {
     return;
   }
 
-  const title = request.type === "gpg_sign"
-    ? "Commit Signing Request"
-    : "Secret Request";
+  const title =
+    request.type === "gpg_sign" ? "Commit Signing Request" : "Secret Request";
   const body = formatBody(request);
 
   // Use window.Notification to ensure we use the (potentially mocked) global

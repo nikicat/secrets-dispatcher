@@ -219,7 +219,7 @@ function proxyWebSocket(
 }
 
 function serveStatic(req: IncomingMessage, res: ServerResponse): void {
-  let urlPath = (req.url?.split("?")[0]) || "/";
+  let urlPath = req.url?.split("?")[0] || "/";
   if (urlPath === "/") urlPath = "/index.html";
 
   const filePath = join(FRONTEND_DIR, urlPath);
@@ -250,9 +250,10 @@ function serveStatic(req: IncomingMessage, res: ServerResponse): void {
  * A lightweight reverse proxy serves the frontend from web/dist/ and proxies
  * API/WebSocket traffic to the Go backend (no embed or copy needed).
  */
-export async function startTestBackend(
-  options?: { version?: string; extraArgs?: string[] },
-): Promise<TestBackend> {
+export async function startTestBackend(options?: {
+  version?: string;
+  extraArgs?: string[];
+}): Promise<TestBackend> {
   // Create temp directory for test
   const testId = randomBytes(8).toString("hex");
   const stateDir = join(tmpdir(), `secrets-dispatcher-test-${testId}`);
@@ -358,7 +359,9 @@ export async function startTestBackend(
       killTimer = setTimeout(() => {
         try {
           p.kill("SIGKILL");
-        } catch { /* already dead */ }
+        } catch {
+          /* already dead */
+        }
       }, 2000);
     });
   };
@@ -385,9 +388,9 @@ export async function startTestBackend(
     return `${url}/?token=${jwt}`;
   };
 
-  const restart = async (
-    restartOptions?: { version?: string },
-  ): Promise<void> => {
+  const restart = async (restartOptions?: {
+    version?: string;
+  }): Promise<void> => {
     await stopProcess(proc);
 
     const restartEnv: Record<string, string> = { ...process.env };

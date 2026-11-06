@@ -239,9 +239,7 @@ test.describe("Focus Mode — Cancel/Expire Keep Open", () => {
 
     await cancelRequest(reqId);
 
-    await expect(
-      page.getByText("Request is no longer pending"),
-    ).toBeVisible();
+    await expect(page.getByText("Request is no longer pending")).toBeVisible();
     expect(await wasWindowCloseCalled(page)).toBe(false);
   });
 });
@@ -304,30 +302,27 @@ test.describe("Focus Mode — Request Expiration", () => {
   test("shows message when focused request expires", async ({ page }) => {
     const token = await shortBackend.getAuthToken();
 
-    const res = await fetch(
-      `${shortBackend.url}/api/v1/gpg-sign/request`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          client: "expire-test",
-          gpg_sign_info: (() => {
-            const info = {
-              repo_name: "test-repo",
-              commit_msg: "feat: will expire",
-              author: "Dev <dev@example.com> 1700000000 +0000",
-              committer: "Dev <dev@example.com> 1700000000 +0000",
-              key_id: "EXPIRE01",
-              changed_files: ["main.go"],
-            };
-            return { commit_object: buildCommitObject(info), ...info };
-          })(),
-        }),
+    const res = await fetch(`${shortBackend.url}/api/v1/gpg-sign/request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
       },
-    );
+      body: JSON.stringify({
+        client: "expire-test",
+        gpg_sign_info: (() => {
+          const info = {
+            repo_name: "test-repo",
+            commit_msg: "feat: will expire",
+            author: "Dev <dev@example.com> 1700000000 +0000",
+            committer: "Dev <dev@example.com> 1700000000 +0000",
+            key_id: "EXPIRE01",
+            changed_files: ["main.go"],
+          };
+          return { commit_object: buildCommitObject(info), ...info };
+        })(),
+      }),
+    });
     const { request_id: reqId } = (await res.json()) as {
       request_id: string;
     };
@@ -349,13 +344,11 @@ test.describe("Focus Mode — Request Expiration", () => {
     });
 
     // Wait for expiration (2s timeout + buffer)
-    await expect(
-      page.getByText("Request is no longer pending"),
-    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Request is no longer pending")).toBeVisible({
+      timeout: 10000,
+    });
 
     // Should NOT auto-close on expiration
-    expect(
-      await page.evaluate(() => window.__closeCalled),
-    ).toBe(false);
+    expect(await page.evaluate(() => window.__closeCalled)).toBe(false);
   });
 });

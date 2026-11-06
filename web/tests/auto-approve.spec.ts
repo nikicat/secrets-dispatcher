@@ -14,7 +14,9 @@ test.afterAll(async () => {
 });
 
 test.describe("Auto-Approve Rules API", () => {
-  test("auto-approve list returns empty array initially", async ({ request }) => {
+  test("auto-approve list returns empty array initially", async ({
+    request,
+  }) => {
     const token = await backend.getAuthToken();
     const response = await request.get(`${backend.url}/api/v1/auto-approve`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -44,7 +46,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
             if (parsed.type === "snapshot") {
               snapshotMsg = parsed;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -82,7 +86,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -126,7 +132,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
               );
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -143,7 +151,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     await expect(page.getByText("login")).toBeVisible();
   });
 
-  test("rule_removed message via WS removes rule from sidebar", async ({ page }) => {
+  test("rule_removed message via WS removes rule from sidebar", async ({
+    page,
+  }) => {
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
 
     let sendToPage: ((msg: string) => void) | null = null;
@@ -168,7 +178,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -195,7 +207,9 @@ test.describe("Auto-Approve Rules WebSocket", () => {
 });
 
 test.describe("Auto-Approve Rule Reset", () => {
-  test("rule_added with same ID updates expiry instead of duplicating", async ({ page }) => {
+  test("rule_added with same ID updates expiry instead of duplicating", async ({
+    page,
+  }) => {
     const initialExpiry = new Date(Date.now() + 30_000).toISOString();
     const resetExpiry = new Date(Date.now() + 120_000).toISOString();
 
@@ -221,7 +235,9 @@ test.describe("Auto-Approve Rule Reset", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -239,16 +255,18 @@ test.describe("Auto-Approve Rule Reset", () => {
     await expect(timerEl).toHaveText(/^\d+s$/);
 
     // Simulate timer reset: backend sends rule_added with same ID, new expiry
-    sendToPage!(JSON.stringify({
-      type: "auto_approve_rule_added",
-      auto_approve_rule: {
-        id: "reset-rule",
-        invoker_name: "reset-invoker",
-        request_type: "get_secret",
-        collection: "default",
-        expires_at: resetExpiry,
-      },
-    }));
+    sendToPage!(
+      JSON.stringify({
+        type: "auto_approve_rule_added",
+        auto_approve_rule: {
+          id: "reset-rule",
+          invoker_name: "reset-invoker",
+          request_type: "get_secret",
+          collection: "default",
+          expires_at: resetExpiry,
+        },
+      }),
+    );
 
     // Should show ~2m remaining now (not ~30s)
     await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
@@ -284,7 +302,9 @@ test.describe("Auto-Approve Rule Reset", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -298,16 +318,18 @@ test.describe("Auto-Approve Rule Reset", () => {
     });
 
     // Reset the timer with a longer expiry
-    sendToPage!(JSON.stringify({
-      type: "auto_approve_rule_added",
-      auto_approve_rule: {
-        id: "tick-rule",
-        invoker_name: "tick-invoker",
-        request_type: "search",
-        collection: "",
-        expires_at: resetExpiry,
-      },
-    }));
+    sendToPage!(
+      JSON.stringify({
+        type: "auto_approve_rule_added",
+        auto_approve_rule: {
+          id: "tick-rule",
+          invoker_name: "tick-invoker",
+          request_type: "search",
+          collection: "",
+          expires_at: resetExpiry,
+        },
+      }),
+    );
 
     const timerEl = page.locator(".rule-expiry");
     await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
@@ -346,7 +368,9 @@ test.describe("Auto-Approve Rule Timer", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -391,7 +415,9 @@ test.describe("Auto-Approve Rule Timer", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });

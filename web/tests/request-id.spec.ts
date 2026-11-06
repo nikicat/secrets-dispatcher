@@ -142,7 +142,9 @@ test.describe("Request ID on History Cards", () => {
     await expect(idEl).toHaveAttribute("title", fakeId);
   });
 
-  test("history entry from real approval shows request ID", async ({ page }) => {
+  test("history entry from real approval shows request ID", async ({
+    page,
+  }) => {
     await authenticate(page);
     const token = await backend.getAuthToken();
     const reqId = await createGPGSignRequest(token, {

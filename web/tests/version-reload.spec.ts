@@ -11,7 +11,9 @@ import { startTestBackend } from "./fixtures/test-utils.mts";
 // which can change the snapshot version without restarting the backend.
 
 test.describe("Sessions Across Restart", () => {
-  test("restart revokes browser session; fresh login recovers", async ({ page }) => {
+  test("restart revokes browser session; fresh login recovers", async ({
+    page,
+  }) => {
     const backend = await startTestBackend({ version: "version_aaa1" });
 
     try {
@@ -45,7 +47,9 @@ test.describe("Sessions Across Restart", () => {
 });
 
 test.describe("Version Mismatch Auto-Reload", () => {
-  test("reloads on version change across reconnects, not on match", async ({ page }) => {
+  test("reloads on version change across reconnects, not on match", async ({
+    page,
+  }) => {
     const backend = await startTestBackend({ version: "real_version" });
 
     try {
@@ -71,7 +75,9 @@ test.describe("Version Mismatch Auto-Reload", () => {
                 ws.send(JSON.stringify(parsed));
                 return;
               }
-            } catch { /* not JSON */ }
+            } catch {
+              /* not JSON */
+            }
           }
           ws.send(message);
         });

@@ -26,7 +26,9 @@ test.describe("Trust Rules WebSocket", () => {
             if (parsed.type === "snapshot") {
               snapshotMsg = parsed;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -61,7 +63,9 @@ test.describe("Trust Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -102,7 +106,9 @@ test.describe("Trust Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -145,7 +151,9 @@ test.describe("Trust Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -176,7 +184,9 @@ test.describe("Trust Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });
@@ -189,7 +199,9 @@ test.describe("Trust Rules WebSocket", () => {
     await expect(page.getByText("Trust Rules")).not.toBeVisible();
   });
 
-  test("trust rules in main content coexist with auto-approve rules in sidebar", async ({ page }) => {
+  test("trust rules in main content coexist with auto-approve rules in sidebar", async ({
+    page,
+  }) => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
@@ -220,7 +232,9 @@ test.describe("Trust Rules WebSocket", () => {
               ws.send(JSON.stringify(parsed));
               return;
             }
-          } catch { /* not JSON */ }
+          } catch {
+            /* not JSON */
+          }
         }
         ws.send(message);
       });

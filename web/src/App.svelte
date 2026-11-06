@@ -1,12 +1,28 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { PendingRequest, AuthState, ClientInfo, HistoryEntry, AutoApproveRule, TrustedSigner, TrustRule } from "./lib/types";
-  import { exchangeToken, getStatus, createAutoApprove, deleteAutoApproveRule } from "./lib/api";
+  import type {
+    PendingRequest,
+    AuthState,
+    ClientInfo,
+    HistoryEntry,
+    AutoApproveRule,
+    TrustedSigner,
+    TrustRule,
+  } from "./lib/types";
+  import {
+    exchangeToken,
+    getStatus,
+    createAutoApprove,
+    deleteAutoApproveRule,
+  } from "./lib/api";
   import { ApprovalWebSocket } from "./lib/websocket";
   import RequestCard from "./lib/RequestCard.svelte";
   import HistoryEntryCard from "./lib/HistoryEntry.svelte";
   import PropsTable from "./lib/PropsTable.svelte";
-  import { requestPermission, showRequestNotification } from "./lib/notifications";
+  import {
+    requestPermission,
+    showRequestNotification,
+  } from "./lib/notifications";
 
   let authState = $state<AuthState>("checking");
   let requests = $state<PendingRequest[]>([]);
@@ -20,10 +36,16 @@
   let connected = $state(false);
   let sidebarOpen = $state(false);
   let historyOpen = $state(true);
-  let trustRulesOpen = $state(localStorage.getItem('trustRulesOpen') === 'true');
+  let trustRulesOpen = $state(
+    localStorage.getItem("trustRulesOpen") === "true",
+  );
   let version = $state("");
-  let useAbsoluteTime = $state(localStorage.getItem('timeFormat') === 'absolute');
-  let notificationsEnabled = $state(localStorage.getItem('notificationsEnabled') !== 'false');
+  let useAbsoluteTime = $state(
+    localStorage.getItem("timeFormat") === "absolute",
+  );
+  let notificationsEnabled = $state(
+    localStorage.getItem("notificationsEnabled") !== "false",
+  );
 
   // Single-request mode: when opened from a desktop notification
   let focusRequestId = $state<string | null>(null);
@@ -49,12 +71,18 @@
 
   function toggleTimeFormat() {
     useAbsoluteTime = !useAbsoluteTime;
-    localStorage.setItem('timeFormat', useAbsoluteTime ? 'absolute' : 'relative');
+    localStorage.setItem(
+      "timeFormat",
+      useAbsoluteTime ? "absolute" : "relative",
+    );
   }
 
   function toggleNotifications() {
     notificationsEnabled = !notificationsEnabled;
-    localStorage.setItem('notificationsEnabled', notificationsEnabled ? 'true' : 'false');
+    localStorage.setItem(
+      "notificationsEnabled",
+      notificationsEnabled ? "true" : "false",
+    );
     if (notificationsEnabled) {
       requestPermission();
     }
@@ -73,7 +101,17 @@
 
   function startWebSocket() {
     ws = new ApprovalWebSocket({
-      onSnapshot: (reqs, cls, hist, ver, rules, signers, tRules, aaDuration, notifDelay) => {
+      onSnapshot: (
+        reqs,
+        cls,
+        hist,
+        ver,
+        rules,
+        signers,
+        tRules,
+        aaDuration,
+        notifDelay,
+      ) => {
         requests = reqs;
         clients = cls;
         history = hist;
@@ -91,10 +129,13 @@
         requests = [...requests, req];
         if (notificationsEnabled) {
           if (notificationDelayMS > 0) {
-            pendingNotifications.set(req.id, setTimeout(() => {
-              pendingNotifications.delete(req.id);
-              showRequestNotification(req);
-            }, notificationDelayMS));
+            pendingNotifications.set(
+              req.id,
+              setTimeout(() => {
+                pendingNotifications.delete(req.id);
+                showRequestNotification(req);
+              }, notificationDelayMS),
+            );
           } else {
             showRequestNotification(req);
           }
@@ -129,7 +170,7 @@
         history = [entry, ...history];
       },
       onAutoApproveRuleAdded: (rule) => {
-        const idx = autoApproveRules.findIndex(r => r.id === rule.id);
+        const idx = autoApproveRules.findIndex((r) => r.id === rule.id);
         if (idx >= 0) {
           autoApproveRules[idx] = rule;
           autoApproveRules = autoApproveRules;
@@ -138,7 +179,7 @@
         }
       },
       onAutoApproveRuleRemoved: (id) => {
-        autoApproveRules = autoApproveRules.filter(r => r.id !== id);
+        autoApproveRules = autoApproveRules.filter((r) => r.id !== id);
       },
       onConnectionChange: (isConnected) => {
         connected = isConnected;
@@ -223,7 +264,7 @@
 
   function toggleTrustRules() {
     trustRulesOpen = !trustRulesOpen;
-    localStorage.setItem('trustRulesOpen', trustRulesOpen ? 'true' : 'false');
+    localStorage.setItem("trustRulesOpen", trustRulesOpen ? "true" : "false");
   }
 
   function formatRelativeTime(dateString: string): string {
@@ -276,7 +317,7 @@
   async function handleDeleteRule(ruleId: string) {
     try {
       await deleteAutoApproveRule(ruleId);
-      autoApproveRules = autoApproveRules.filter(r => r.id !== ruleId);
+      autoApproveRules = autoApproveRules.filter((r) => r.id !== ruleId);
     } catch {
       // Ignore
     }
@@ -305,7 +346,7 @@
   function autoApproveKey(e: HistoryEntry): string {
     const type = e.request.type;
     const invoker = e.request.sender_info?.invoker_name ?? "";
-    const items = e.request.items.map(i => i.path).join("\0");
+    const items = e.request.items.map((i) => i.path).join("\0");
     return `${type}\0${invoker}\0${items}`;
   }
 
@@ -339,7 +380,7 @@
       // Clean up expired rules
       if (autoApproveRules.length > 0) {
         autoApproveRules = autoApproveRules.filter(
-          r => new Date(r.expires_at).getTime() > Date.now()
+          (r) => new Date(r.expires_at).getTime() > Date.now(),
         );
       }
     }, 1000);
@@ -353,7 +394,11 @@
 <div class="app-layout" class:sidebar-open={sidebarOpen}>
   <!-- Sidebar overlay for mobile -->
   {#if sidebarOpen && !focusRequestId}
-    <button class="sidebar-overlay" onclick={closeSidebar} aria-label="Close sidebar"></button>
+    <button
+      class="sidebar-overlay"
+      onclick={closeSidebar}
+      aria-label="Close sidebar"
+    ></button>
   {/if}
 
   <!-- Sidebar -->
@@ -361,8 +406,22 @@
     <aside class="sidebar" class:open={sidebarOpen}>
       <div class="sidebar-header">
         <h3>Connected Clients</h3>
-        <button class="sidebar-close" onclick={closeSidebar} aria-label="Close sidebar">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <button
+          class="sidebar-close"
+          onclick={closeSidebar}
+          aria-label="Close sidebar"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <line x1="18" y1="6" x2="6" y2="18"></line>
             <line x1="6" y1="6" x2="18" y2="18"></line>
           </svg>
@@ -386,17 +445,24 @@
         <div class="sidebar-rules">
           <h3>Auto-Approve Rules</h3>
           <ul class="rules-list">
-            {#each trustedSigners as signer (signer.exe_path + (signer.repo_path ?? '') + (signer.file_prefix ?? ''))}
+            {#each trustedSigners as signer (signer.exe_path + (signer.repo_path ?? "") + (signer.file_prefix ?? ""))}
               {@const attrs = {
                 ...(signer.repo_path ? { repo: signer.repo_path } : {}),
-                ...(signer.file_prefix ? { file_prefix: signer.file_prefix } : {}),
+                ...(signer.file_prefix
+                  ? { file_prefix: signer.file_prefix }
+                  : {}),
               } satisfies Record<string, string>}
               <li class="rule-entry">
                 <div class="rule-header">
-                  <span class="history-type history-type--gpg_sign">GPG Sign</span>
+                  <span class="history-type history-type--gpg_sign"
+                    >GPG Sign</span
+                  >
                   <span class="rule-permanent">permanent</span>
                 </div>
-                <PropsTable process={basename(signer.exe_path)} attributes={attrs} />
+                <PropsTable
+                  process={basename(signer.exe_path)}
+                  attributes={attrs}
+                />
               </li>
             {/each}
             {#each autoApproveRules as rule (rule.id)}
@@ -406,13 +472,39 @@
                     {#if rule.request_type === "gpg_sign"}GPG Sign{:else if rule.request_type === "search"}Search{:else if rule.request_type === "delete"}Delete{:else if rule.request_type === "write"}Write{:else}Secret{/if}
                   </span>
                   <div class="rule-header-right">
-                    <span class="rule-expiry">{formatRuleExpiry(rule.expires_at, tick)}</span>
-                    <button class="rule-delete" onclick={() => handleDeleteRule(rule.id)} title="Remove rule">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    <span class="rule-expiry"
+                      >{formatRuleExpiry(rule.expires_at, tick)}</span
+                    >
+                    <button
+                      class="rule-delete"
+                      onclick={() => handleDeleteRule(rule.id)}
+                      title="Remove rule"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        ><line x1="18" y1="6" x2="6" y2="18"></line><line
+                          x1="6"
+                          y1="6"
+                          x2="18"
+                          y2="18"
+                        ></line></svg
+                      >
                     </button>
                   </div>
                 </div>
-                <PropsTable process={rule.invoker_name} collection={rule.collection} attributes={rule.attributes} />
+                <PropsTable
+                  process={rule.invoker_name}
+                  collection={rule.collection}
+                  attributes={rule.attributes}
+                />
               </li>
             {/each}
           </ul>
@@ -431,19 +523,39 @@
     <header>
       <div class="header-title">
         <h1>Secrets Dispatcher</h1>
-        <a href="https://github.com/nikicat/secrets-dispatcher" target="_blank" rel="noopener noreferrer" class="github-link" aria-label="View on GitHub">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+        <a
+          href="https://github.com/nikicat/secrets-dispatcher"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="github-link"
+          aria-label="View on GitHub"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path
+              d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"
+            />
           </svg>
         </a>
       </div>
       {#if authState === "authenticated" && focusRequestId}
-        <a class="focus-home-link" href="/" aria-label="Back to dashboard">← Back to dashboard</a>
+        <a class="focus-home-link" href="/" aria-label="Back to dashboard"
+          >← Back to dashboard</a
+        >
       {/if}
       {#if authState === "authenticated" && !focusRequestId}
         <div class="header-actions">
           <div class="status-indicator">
-            <span class="status-dot" class:ok={connected} class:error={!connected}></span>
+            <span
+              class="status-dot"
+              class:ok={connected}
+              class:error={!connected}
+            ></span>
             <span class="status-text">
               {#if connected}
                 {clients.length} client{clients.length !== 1 ? "s" : ""} connected
@@ -452,14 +564,42 @@
               {/if}
             </span>
           </div>
-          <button class="notification-toggle" class:off={!notificationsEnabled} onclick={toggleNotifications} aria-label="Toggle notifications" title={notificationsEnabled ? 'Notifications enabled' : 'Notifications disabled'}>
+          <button
+            class="notification-toggle"
+            class:off={!notificationsEnabled}
+            onclick={toggleNotifications}
+            aria-label="Toggle notifications"
+            title={notificationsEnabled
+              ? "Notifications enabled"
+              : "Notifications disabled"}
+          >
             {#if notificationsEnabled}
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
                 <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
               </svg>
             {:else}
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
                 <path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path>
                 <path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path>
@@ -468,8 +608,22 @@
               </svg>
             {/if}
           </button>
-          <button class="sidebar-toggle" onclick={toggleSidebar} aria-label="Toggle client list">
-            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <button
+            class="sidebar-toggle"
+            onclick={toggleSidebar}
+            aria-label="Toggle client list"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
               <line x1="9" y1="3" x2="9" y2="21"></line>
             </svg>
@@ -506,9 +660,13 @@
         </div>
       {:else if focusRequestId}
         <!-- Single-request mode: opened from desktop notification -->
-        {@const focusedRequest = requests.find(r => r.id === focusRequestId)}
+        {@const focusedRequest = requests.find((r) => r.id === focusRequestId)}
         {#if focusedRequest}
-          <RequestCard request={focusedRequest} onAction={handleAction} {autoApproveDurationSeconds} />
+          <RequestCard
+            request={focusedRequest}
+            onAction={handleAction}
+            {autoApproveDurationSeconds}
+          />
         {:else if focusRequestGone}
           <div class="empty-state">
             <p>Request is no longer pending</p>
@@ -527,14 +685,33 @@
           <section class="history-section">
             <button class="history-toggle" onclick={toggleHistory}>
               <h2>Recent Activity ({history.length})</h2>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:rotated={!historyOpen}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class:rotated={!historyOpen}
+              >
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
             {#if historyOpen}
               <ul class="history-list">
                 {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
-                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                  <HistoryEntryCard
+                    entry={group.entry}
+                    count={group.count}
+                    {tick}
+                    {autoApproveRules}
+                    {formatTime}
+                    {toggleTimeFormat}
+                    onAutoApprove={handleAutoApprove}
+                  />
                 {/each}
               </ul>
             {/if}
@@ -544,7 +721,11 @@
         <section>
           <h2>Pending Requests ({requests.length})</h2>
           {#each [...requests].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) as request (request.id)}
-            <RequestCard {request} onAction={handleAction} {autoApproveDurationSeconds} />
+            <RequestCard
+              {request}
+              onAction={handleAction}
+              {autoApproveDurationSeconds}
+            />
           {/each}
         </section>
         <!-- Show history section below pending requests -->
@@ -552,14 +733,33 @@
           <section class="history-section">
             <button class="history-toggle" onclick={toggleHistory}>
               <h2>Recent Activity ({history.length})</h2>
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:rotated={!historyOpen}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class:rotated={!historyOpen}
+              >
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
             {#if historyOpen}
               <ul class="history-list">
                 {#each groupedHistory as group (group.entry.request.id + group.entry.resolved_at)}
-                  <HistoryEntryCard entry={group.entry} count={group.count} {tick} {autoApproveRules} {formatTime} {toggleTimeFormat} onAutoApprove={handleAutoApprove} />
+                  <HistoryEntryCard
+                    entry={group.entry}
+                    count={group.count}
+                    {tick}
+                    {autoApproveRules}
+                    {formatTime}
+                    {toggleTimeFormat}
+                    onAutoApprove={handleAutoApprove}
+                  />
                 {/each}
               </ul>
             {/if}
@@ -571,7 +771,18 @@
         <section class="trust-rules-section">
           <button class="history-toggle" onclick={toggleTrustRules}>
             <h2>Trust Rules ({trustRules.length})</h2>
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class:rotated={!trustRulesOpen}>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              class:rotated={!trustRulesOpen}
+            >
               <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
           </button>
@@ -580,16 +791,34 @@
               {#each trustRules as rule, i (rule.name ?? i)}
                 <li class="rule-entry">
                   <div class="rule-header">
-                    <span class="history-type history-type--{(rule.request_types ?? [])[0] ?? 'get_secret'}">
-                      {#if (rule.action ?? 'approve') === 'ignore'}Ignore{:else}Approve{/if}
-                      {#if rule.request_types?.length}{rule.request_types.map(t => t === 'get_secret' ? 'Secret' : t === 'ssh_sign' ? 'SSH Sign' : t.charAt(0).toUpperCase() + t.slice(1)).join(', ')}{:else}All{/if}
+                    <span
+                      class="history-type history-type--{(rule.request_types ??
+                        [])[0] ?? 'get_secret'}"
+                    >
+                      {#if (rule.action ?? "approve") === "ignore"}Ignore{:else}Approve{/if}
+                      {#if rule.request_types?.length}{rule.request_types
+                          .map((t) =>
+                            t === "get_secret"
+                              ? "Secret"
+                              : t === "ssh_sign"
+                                ? "SSH Sign"
+                                : t.charAt(0).toUpperCase() + t.slice(1),
+                          )
+                          .join(", ")}{:else}All{/if}
                     </span>
                     <span class="rule-permanent">config</span>
                   </div>
                   <PropsTable
-                    process={rule.process?.name ?? rule.process?.exe ?? rule.process?.args ?? rule.process?.cwd ?? rule.process?.unit ?? undefined}
+                    process={rule.process?.name ??
+                      rule.process?.exe ??
+                      rule.process?.args ??
+                      rule.process?.cwd ??
+                      rule.process?.unit ??
+                      undefined}
                     collection={rule.secret?.collection ?? undefined}
-                    attributes={rule.secret?.attributes ?? rule.search_attributes ?? undefined}
+                    attributes={rule.secret?.attributes ??
+                      rule.search_attributes ??
+                      undefined}
                   />
                   {#if rule.name}
                     <div class="rule-name">{rule.name}</div>

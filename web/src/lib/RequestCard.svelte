@@ -53,23 +53,28 @@
   }
 
   function commitSubject(msg: string): string {
-    return msg.split('\n')[0];
+    return msg.split("\n")[0];
   }
 
   function commitBody(msg: string): string {
-    const lines = msg.split('\n');
-    if (lines.length <= 1) return '';
-    const body = lines.slice(1).join('\n').replace(/^\n/, '');
+    const lines = msg.split("\n");
+    if (lines.length <= 1) return "";
+    const body = lines.slice(1).join("\n").replace(/^\n/, "");
     return body.trimEnd();
   }
 
   function typeBadgeLabel(type: string): string {
     switch (type) {
-      case "gpg_sign": return "GPG Sign";
-      case "search": return "Search";
-      case "delete": return "Delete";
-      case "write": return "Write";
-      default: return "Secret";
+      case "gpg_sign":
+        return "GPG Sign";
+      case "search":
+        return "Search";
+      case "delete":
+        return "Delete";
+      case "write":
+        return "Write";
+      default:
+        return "Secret";
     }
   }
 
@@ -161,7 +166,9 @@
         <span class="type-badge type-badge--{request.type}">
           {typeBadgeLabel(request.type)}
         </span>
-        <span class="request-id" title={request.id}>{request.id.slice(0, 8)}</span>
+        <span class="request-id" title={request.id}
+          >{request.id.slice(0, 8)}</span
+        >
         <span class="session-id">
           {#if request.type === "gpg_sign" && request.gpg_sign_info}
             PID {request.sender_info.pid} · {request.gpg_sign_info.repo_name}
@@ -174,10 +181,14 @@
         {#if request.type === "gpg_sign" && request.gpg_sign_info}
           {commitSubject(request.gpg_sign_info.commit_msg)}
         {:else}
-          {request.items.map(i => i.label || i.path).join(", ") || "Secret request"}
+          {request.items.map((i) => i.label || i.path).join(", ") ||
+            "Secret request"}
         {/if}
       </span>
-      <ProcessChain chain={request.sender_info?.process_chain ?? []} fallbackText={formatSenderInfo()} />
+      <ProcessChain
+        chain={request.sender_info?.process_chain ?? []}
+        fallbackText={formatSenderInfo()}
+      />
     </div>
     <span class="expires">Expires: {timeLeft}</span>
   </div>
@@ -215,13 +226,36 @@
                 title="Copy item path"
               >
                 {#if copiedPath === item.path}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
                     <polyline points="20 6 9 17 4 12"></polyline>
                   </svg>
                 {:else}
-                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  <svg
+                    xmlns="http://www.w3.org/2000/svg"
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"
+                    ></rect>
+                    <path
+                      d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                    ></path>
                   </svg>
                 {/if}
               </button>
@@ -244,7 +278,12 @@
     </div>
   {:else if request.type === "gpg_sign" && request.gpg_sign_info}
     {@const info = request.gpg_sign_info}
-    {@const signerLabel = info.kind === "tag" ? "Tagger" : info.kind === "push" ? "Pusher" : "Author"}
+    {@const signerLabel =
+      info.kind === "tag"
+        ? "Tagger"
+        : info.kind === "push"
+          ? "Pusher"
+          : "Author"}
     <div class="gpg-sign-content">
       <div class="commit-meta">
         {#if info.kind === "tag" && info.tag_name}
@@ -284,7 +323,9 @@
 
       {#if info.changed_files?.length}
         <div class="changed-files">
-          <span class="section-label">Changed files ({info.changed_files.length})</span>
+          <span class="section-label"
+            >Changed files ({info.changed_files.length})</span
+          >
           {#each info.changed_files.slice(0, 5) as file}
             <div class="file-path mono">{file}</div>
           {/each}
@@ -311,7 +352,13 @@
     </div>
   {:else}
     <div class="items">
-      <h4>{request.type === "delete" ? "Items to Delete" : request.type === "write" ? "Items to Write" : "Requested Secrets"}</h4>
+      <h4>
+        {request.type === "delete"
+          ? "Items to Delete"
+          : request.type === "write"
+            ? "Items to Write"
+            : "Requested Secrets"}
+      </h4>
       {#each request.items as item}
         <div class="item-card">
           <div class="item-header">
@@ -322,13 +369,35 @@
               title="Copy item path"
             >
               {#if copiedPath === item.path}
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
                   <polyline points="20 6 9 17 4 12"></polyline>
                 </svg>
               {:else}
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  <path
+                    d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"
+                  ></path>
                 </svg>
               {/if}
             </button>
@@ -370,7 +439,9 @@
       class="btn-approve-auto"
       onclick={handleApproveAndAutoApprove}
       disabled={loading !== null}
-      title="Approve and auto-approve similar requests for {formatDurationShort(autoApproveDurationSeconds)}"
+      title="Approve and auto-approve similar requests for {formatDurationShort(
+        autoApproveDurationSeconds,
+      )}"
     >
       {#if loading === "approve_auto"}
         Approving...

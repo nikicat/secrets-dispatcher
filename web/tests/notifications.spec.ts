@@ -3,9 +3,10 @@ import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 declare global {
   interface Window {
-    __notificationCalls: Array<
-      { title: string; options?: NotificationOptions }
-    >;
+    __notificationCalls: Array<{
+      title: string;
+      options?: NotificationOptions;
+    }>;
   }
 }
 
@@ -24,7 +25,9 @@ test.afterAll(async () => {
 });
 
 test.describe("Browser Notifications", () => {
-  test("app loads successfully with notification permission granted", async ({ browser }) => {
+  test("app loads successfully with notification permission granted", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -40,7 +43,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("app loads successfully with notification permission denied", async ({ browser }) => {
+  test("app loads successfully with notification permission denied", async ({
+    browser,
+  }) => {
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -64,7 +69,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("showRequestNotification creates notification when conditions are met", async ({ browser }) => {
+  test("showRequestNotification creates notification when conditions are met", async ({
+    browser,
+  }) => {
     // Test that the showRequestNotification function correctly creates a notification
     // when document is hidden and permission is granted
     const context = await browser.newContext({
@@ -162,7 +169,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("showRequestNotification does NOT create notification when page is visible", async ({ browser }) => {
+  test("showRequestNotification does NOT create notification when page is visible", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -222,7 +231,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("showRequestNotification does NOT create notification when permission denied", async ({ browser }) => {
+  test("showRequestNotification does NOT create notification when permission denied", async ({
+    browser,
+  }) => {
     const context = await browser.newContext();
     const page = await context.newPage();
 
@@ -284,7 +295,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("notification body formats correctly for multiple items", async ({ browser }) => {
+  test("notification body formats correctly for multiple items", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -370,7 +383,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("notification toggle button is visible and defaults to enabled", async ({ browser }) => {
+  test("notification toggle button is visible and defaults to enabled", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -387,7 +402,9 @@ test.describe("Browser Notifications", () => {
     await context.close();
   });
 
-  test("notification toggle disables and persists in localStorage", async ({ browser }) => {
+  test("notification toggle disables and persists in localStorage", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });
@@ -405,7 +422,7 @@ test.describe("Browser Notifications", () => {
 
     // Verify localStorage was set
     const stored = await page.evaluate(() =>
-      localStorage.getItem("notificationsEnabled")
+      localStorage.getItem("notificationsEnabled"),
     );
     expect(stored).toBe("false");
 
@@ -427,14 +444,16 @@ test.describe("Browser Notifications", () => {
       "Notifications enabled",
     );
     const storedAfter = await page.evaluate(() =>
-      localStorage.getItem("notificationsEnabled")
+      localStorage.getItem("notificationsEnabled"),
     );
     expect(storedAfter).toBe("true");
 
     await context.close();
   });
 
-  test("notification body formats correctly for search requests", async ({ browser }) => {
+  test("notification body formats correctly for search requests", async ({
+    browser,
+  }) => {
     const context = await browser.newContext({
       permissions: ["notifications"],
     });

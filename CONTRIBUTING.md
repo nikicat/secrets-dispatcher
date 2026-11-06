@@ -51,6 +51,10 @@ come from there).
   `typescript-eslint` and `eslint-plugin-svelte`), enforced by CI. Run
   `make fmt-frontend`.
 - **Static analysis:** `go vet` and `staticcheck` (enforced by CI).
+- **Formatting-only commits** are listed in `.git-blame-ignore-revs`, so that
+  `git blame` shows who last changed a line's code, not its layout. GitHub
+  reads the file on its own. For local blame, run this once per clone:
+  `git config blame.ignoreRevsFile .git-blame-ignore-revs`.
 
 ## Submitting Changes
 

@@ -1,5 +1,10 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  routeSnapshot,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
+import type { WSSnapshotMessage } from "../src/lib/types.ts";
 
 // These tests verify auto-approve rule WebSocket notifications and timer display.
 
@@ -35,23 +40,13 @@ test.describe("Auto-Approve Rules API", () => {
 
 test.describe("Auto-Approve Rules WebSocket", () => {
   test("snapshot includes auto_approve_rules field", async ({ page }) => {
-    let snapshotMsg: Record<string, unknown> | null = null;
+    let snapshotMsg: WSSnapshotMessage | null = null;
 
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              snapshotMsg = parsed;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => {
+        snapshotMsg = s;
+        return s;
+      },
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -67,31 +62,19 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     // Intercept real server snapshot and inject rules into it
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.auto_approve_rules = [
-                {
-                  id: "test-rule-1",
-                  invoker_name: "test-invoker",
-                  request_type: "get_secret",
-                  collection: "default",
-                  expires_at: expiresAt,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        auto_approve_rules: [
+          {
+            id: "test-rule-1",
+            invoker_name: "test-invoker",
+            request_type: "get_secret",
+            collection: "default",
+            expires_at: expiresAt,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -109,35 +92,19 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     // Forward real WS but inject a rule_added message after snapshot
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              ws.send(message);
-              // Send rule_added synchronously after snapshot
-              ws.send(
-                JSON.stringify({
-                  type: "auto_approve_rule_added",
-                  auto_approve_rule: {
-                    id: "ws-rule-1",
-                    invoker_name: "ws-invoker",
-                    request_type: "search",
-                    collection: "login",
-                    expires_at: expiresAt,
-                  },
-                }),
-              );
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      after: [
+        {
+          type: "auto_approve_rule_added",
+          auto_approve_rule: {
+            id: "ws-rule-1",
+            invoker_name: "ws-invoker",
+            request_type: "search",
+            collection: "login",
+            expires_at: expiresAt,
+          },
+        },
+      ],
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -156,34 +123,19 @@ test.describe("Auto-Approve Rules WebSocket", () => {
   }) => {
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
 
-    let sendToPage: ((msg: string) => void) | null = null;
-
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      sendToPage = (msg) => ws.send(msg);
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.auto_approve_rules = [
-                {
-                  id: "rule-to-remove",
-                  invoker_name: "remove-me",
-                  request_type: "search",
-                  collection: "login",
-                  expires_at: expiresAt,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    const sendToPage = await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        auto_approve_rules: [
+          {
+            id: "rule-to-remove",
+            invoker_name: "remove-me",
+            request_type: "search",
+            collection: "login",
+            expires_at: expiresAt,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -193,12 +145,10 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     await expect(page.getByText("remove-me")).toBeVisible({ timeout: 10000 });
 
     // Send rule_removed
-    sendToPage!(
-      JSON.stringify({
-        type: "auto_approve_rule_removed",
-        id: "rule-to-remove",
-      }),
-    );
+    sendToPage({
+      type: "auto_approve_rule_removed",
+      id: "rule-to-remove",
+    });
 
     // Rule should disappear
     await expect(page.getByText("remove-me")).not.toBeVisible();
@@ -213,34 +163,19 @@ test.describe("Auto-Approve Rule Reset", () => {
     const initialExpiry = new Date(Date.now() + 30_000).toISOString();
     const resetExpiry = new Date(Date.now() + 120_000).toISOString();
 
-    let sendToPage: ((msg: string) => void) | null = null;
-
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      sendToPage = (msg) => ws.send(msg);
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.auto_approve_rules = [
-                {
-                  id: "reset-rule",
-                  invoker_name: "reset-invoker",
-                  request_type: "get_secret",
-                  collection: "default",
-                  expires_at: initialExpiry,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    const sendToPage = await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        auto_approve_rules: [
+          {
+            id: "reset-rule",
+            invoker_name: "reset-invoker",
+            request_type: "get_secret",
+            collection: "default",
+            expires_at: initialExpiry,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -255,18 +190,16 @@ test.describe("Auto-Approve Rule Reset", () => {
     await expect(timerEl).toHaveText(/^\d+s$/);
 
     // Simulate timer reset: backend sends rule_added with same ID, new expiry
-    sendToPage!(
-      JSON.stringify({
-        type: "auto_approve_rule_added",
-        auto_approve_rule: {
-          id: "reset-rule",
-          invoker_name: "reset-invoker",
-          request_type: "get_secret",
-          collection: "default",
-          expires_at: resetExpiry,
-        },
-      }),
-    );
+    sendToPage({
+      type: "auto_approve_rule_added",
+      auto_approve_rule: {
+        id: "reset-rule",
+        invoker_name: "reset-invoker",
+        request_type: "get_secret",
+        collection: "default",
+        expires_at: resetExpiry,
+      },
+    });
 
     // Should show ~2m remaining now (not ~30s)
     await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
@@ -280,34 +213,19 @@ test.describe("Auto-Approve Rule Reset", () => {
     const initialExpiry = new Date(Date.now() + 10_000).toISOString();
     const resetExpiry = new Date(Date.now() + 65_000).toISOString();
 
-    let sendToPage: ((msg: string) => void) | null = null;
-
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      sendToPage = (msg) => ws.send(msg);
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.auto_approve_rules = [
-                {
-                  id: "tick-rule",
-                  invoker_name: "tick-invoker",
-                  request_type: "search",
-                  collection: "",
-                  expires_at: initialExpiry,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    const sendToPage = await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        auto_approve_rules: [
+          {
+            id: "tick-rule",
+            invoker_name: "tick-invoker",
+            request_type: "search",
+            collection: "",
+            expires_at: initialExpiry,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -318,18 +236,16 @@ test.describe("Auto-Approve Rule Reset", () => {
     });
 
     // Reset the timer with a longer expiry
-    sendToPage!(
-      JSON.stringify({
-        type: "auto_approve_rule_added",
-        auto_approve_rule: {
-          id: "tick-rule",
-          invoker_name: "tick-invoker",
-          request_type: "search",
-          collection: "",
-          expires_at: resetExpiry,
-        },
-      }),
-    );
+    sendToPage({
+      type: "auto_approve_rule_added",
+      auto_approve_rule: {
+        id: "tick-rule",
+        invoker_name: "tick-invoker",
+        request_type: "search",
+        collection: "",
+        expires_at: resetExpiry,
+      },
+    });
 
     const timerEl = page.locator(".rule-expiry");
     await expect(timerEl).toHaveText(/^\d+m \d+s$/, { timeout: 3000 });
@@ -349,31 +265,19 @@ test.describe("Auto-Approve Rule Timer", () => {
   test("rule expiry timer ticks down", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 65_000).toISOString();
 
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.auto_approve_rules = [
-                {
-                  id: "timer-rule",
-                  invoker_name: "timer-test",
-                  request_type: "get_secret",
-                  collection: "",
-                  expires_at: expiresAt,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        auto_approve_rules: [
+          {
+            id: "timer-rule",
+            invoker_name: "timer-test",
+            request_type: "get_secret",
+            collection: "",
+            expires_at: expiresAt,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -396,31 +300,19 @@ test.describe("Auto-Approve Rule Timer", () => {
   test("expired rules are cleaned up automatically", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 2_000).toISOString();
 
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.auto_approve_rules = [
-                {
-                  id: "expiring-rule",
-                  invoker_name: "expiring-test",
-                  request_type: "get_secret",
-                  collection: "",
-                  expires_at: expiresAt,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        auto_approve_rules: [
+          {
+            id: "expiring-rule",
+            invoker_name: "expiring-test",
+            request_type: "get_secret",
+            collection: "",
+            expires_at: expiresAt,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();

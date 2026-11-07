@@ -1,6 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   buildCommitObject,
+  pendingRequest,
+  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -81,50 +83,17 @@ test.describe("Request ID on History Cards", () => {
     const fakeId = "abcd1234-5678-9abc-def0-123456789abc";
 
     // Intercept WebSocket to inject a history entry with a known ID
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.history = [
-                {
-                  request: {
-                    id: fakeId,
-                    client: "test-client",
-                    items: [
-                      {
-                        path: "/org/freedesktop/secrets/collection/default/1",
-                        label: "ID Test Secret",
-                        attributes: {},
-                      },
-                    ],
-                    session: "/org/freedesktop/secrets/session/1",
-                    created_at: resolvedAt,
-                    expires_at: resolvedAt,
-                    type: "get_secret",
-                    sender_info: {
-                      sender: ":1.100",
-                      pid: 12345,
-                      uid: 1000,
-                      user_name: "testuser",
-                      invoker_name: "test.service",
-                    },
-                  },
-                  resolution: "approved",
-                  resolved_at: resolvedAt,
-                },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: [
+          {
+            request: pendingRequest({ id: fakeId }),
+            resolution: "approved",
+            resolved_at: resolvedAt,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();

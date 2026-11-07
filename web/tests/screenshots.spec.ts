@@ -1,9 +1,18 @@
 import { expect, test } from "@playwright/test";
 import {
+  pendingRequest,
   PROJECT_ROOT,
+  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
+import type {
+  HistoryEntry,
+  PendingRequest,
+  Resolution,
+  TrustRule,
+  WSRequestCreatedMessage,
+} from "../src/lib/types.ts";
 import { join } from "node:path";
 import { mkdir } from "node:fs/promises";
 
@@ -27,14 +36,12 @@ test.afterAll(async () => {
 // -- Fixture data --
 
 const now = new Date().toISOString();
-const later = new Date(Date.now() + 300_000).toISOString();
 
 /** A pending secret access request from an AI agent with process chain. */
-const secretRequest = {
+const secretRequest: WSRequestCreatedMessage = {
   type: "request_created",
-  request: {
+  request: pendingRequest({
     id: "req-screenshot-secret-001",
-    client: "local",
     items: [
       {
         path: "/org/freedesktop/secrets/collection/login/github-token",
@@ -46,14 +53,9 @@ const secretRequest = {
         },
       },
     ],
-    session: "/org/freedesktop/secrets/session/s1",
-    created_at: now,
-    expires_at: later,
-    type: "get_secret",
     sender_info: {
       sender: ":1.142",
       pid: 48210,
-      uid: 1000,
       user_name: "dev",
       invoker_name: "app-org.freedesktop.secrets.slice",
       process_chain: [
@@ -80,24 +82,21 @@ const secretRequest = {
         },
       ],
     },
-  },
+  }),
 };
 
 /** A pending GPG commit signing request. */
-const gpgSignRequest = {
+const gpgSignRequest: WSRequestCreatedMessage = {
   type: "request_created",
-  request: {
+  request: pendingRequest({
     id: "req-screenshot-gpg-001",
     client: "gpg-sign",
     items: [],
     session: "",
-    created_at: now,
-    expires_at: later,
     type: "gpg_sign",
     sender_info: {
       sender: "local",
       pid: 49300,
-      uid: 1000,
       user_name: "dev",
       invoker_name: "",
       process_chain: [
@@ -140,13 +139,20 @@ const gpgSignRequest = {
       ],
       parent_hash: "f7ca80c",
     },
-  },
+  }),
 };
 
 /** History entries showing a mix of resolutions. */
-function makeHistory() {
-  const entries = [];
-  const resolutions = [
+function makeHistory(): HistoryEntry[] {
+  const entries: HistoryEntry[] = [];
+  const resolutions: {
+    id: string;
+    resolution: Resolution;
+    label: string;
+    unit: string;
+    collection: string;
+    type: PendingRequest["type"];
+  }[] = [
     {
       id: "hist-1",
       resolution: "approved",
@@ -199,9 +205,8 @@ function makeHistory() {
 
   for (const r of resolutions) {
     entries.push({
-      request: {
+      request: pendingRequest({
         id: r.id,
-        client: "local",
         items: [
           {
             path: `/org/freedesktop/secrets/collection/${r.collection}/1`,
@@ -209,18 +214,13 @@ function makeHistory() {
             attributes: {},
           },
         ],
-        session: "/org/freedesktop/secrets/session/1",
-        created_at: now,
-        expires_at: later,
         type: r.type,
         sender_info: {
-          sender: ":1.100",
           pid: 10000,
-          uid: 1000,
           user_name: "dev",
           invoker_name: r.unit,
         },
-      },
+      }),
       resolution: r.resolution,
       resolved_at: now,
     });
@@ -229,7 +229,7 @@ function makeHistory() {
 }
 
 /** Trust rules to show in sidebar. */
-const trustRules = [
+const trustRules: TrustRule[] = [
   {
     name: "Firefox",
     action: "approve",
@@ -258,33 +258,13 @@ test.describe("Screenshots", () => {
     page,
   }) => {
     // Intercept WebSocket to inject rich state.
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              // Inject history and trust rules into snapshot.
-              parsed.history = makeHistory();
-              parsed.trust_rules = trustRules;
-              ws.send(JSON.stringify(parsed));
-
-              // Then inject pending requests.
-              setTimeout(() => {
-                ws.send(JSON.stringify(secretRequest));
-              }, 200);
-              setTimeout(() => {
-                ws.send(JSON.stringify(gpgSignRequest));
-              }, 400);
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (snapshot) => ({
+        ...snapshot,
+        history: makeHistory(),
+        trust_rules: trustRules,
+      }),
+      after: [secretRequest, gpgSignRequest],
     });
 
     await page.setViewportSize({ width: 1280, height: 900 });

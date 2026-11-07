@@ -1,5 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  pendingRequest,
+  routeSnapshot,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
+import type { PendingRequest } from "../src/lib/types.ts";
 
 declare global {
   interface Window {
@@ -14,16 +20,21 @@ declare global {
 // Due to Playwright limitations (headless mode doesn't support real notifications,
 // WebKit doesn't work at all), we use a spy pattern to track Notification API calls.
 
+/** The notification permission and page visibility the spy reports. */
+interface SpyState {
+  permission: NotificationPermission;
+  hidden: boolean;
+}
+
+const HIDDEN_GRANTED: SpyState = { permission: "granted", hidden: true };
+
 /**
  * Replaces `window.Notification` in every document the page loads with a spy.
  * The spy records each constructed notification in `window.__notificationCalls`
  * and reports `permission` as the permission state. When `hidden` is true,
  * `document.hidden` also reads true.
  */
-async function installNotificationSpy(
-  page: Page,
-  spy: { permission: NotificationPermission; hidden: boolean },
-) {
+async function installNotificationSpy(page: Page, spy: SpyState) {
   await page.addInitScript(({ permission, hidden }) => {
     window.__notificationCalls = [];
 
@@ -59,6 +70,30 @@ async function installNotificationSpy(
 
 let backend: TestBackend;
 
+/**
+ * Opens the app on `page` with the notification spy reporting `spy`, and with
+ * `requests` pending. Resolves once the app shows them, by which time it has
+ * decided whether to notify.
+ */
+async function openWithRequests(
+  page: Page,
+  spy: SpyState,
+  requests: PendingRequest[],
+) {
+  await installNotificationSpy(page, spy);
+  await routeSnapshot(page, {
+    // With no delay, the app decides on each notification as the request arrives.
+    rewrite: (s) => ({ ...s, notification_delay_ms: 0 }),
+    after: requests.map((request) => ({ type: "request_created", request })),
+  });
+  await page.goto(await backend.generateLoginURL());
+  await expect(page.locator(".card-header")).toHaveCount(requests.length);
+}
+
+function notificationCalls(page: Page) {
+  return page.evaluate(() => window.__notificationCalls);
+}
+
 test.beforeAll(async () => {
   backend = await startTestBackend();
 });
@@ -87,232 +122,94 @@ test.describe("Browser Notifications", () => {
   });
 
   test("app loads successfully with notification permission denied", async ({
-    browser,
+    page,
   }) => {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    await installNotificationSpy(page, { permission: "denied", hidden: false });
 
-    // Simulate denied permission state
-    await page.addInitScript(() => {
-      Object.defineProperty(Notification, "permission", {
-        value: "denied",
-        writable: false,
-        configurable: true,
-      });
-      Notification.requestPermission = () =>
-        Promise.resolve("denied" as NotificationPermission);
-    });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
+    await page.goto(await backend.generateLoginURL());
 
     // App should still work without notifications
     await expect(page.getByText("No pending requests")).toBeVisible();
-
-    await context.close();
   });
 
-  test("showRequestNotification creates notification when conditions are met", async ({
-    browser,
+  test("a request that arrives while the page is hidden raises a notification", async ({
+    page,
   }) => {
-    // Test that the showRequestNotification function correctly creates a notification
-    // when document is hidden and permission is granted
-    const context = await browser.newContext({
-      permissions: ["notifications"],
-    });
-    const page = await context.newPage();
-
-    await installNotificationSpy(page, { permission: "granted", hidden: true });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("No pending requests")).toBeVisible();
-
-    // Simulate what happens when a new request arrives and triggers showRequestNotification
-    // by directly invoking the notification creation logic
-    await page.evaluate(() => {
-      const request = {
+    await openWithRequests(page, HIDDEN_GRANTED, [
+      pendingRequest({
         id: "test-123",
         client: "my-app",
-        type: "get_secret",
-        items: [{ path: "/secrets/api-key", label: "API Key" }],
-        sender_info: { invoker_name: "my-app.service", pid: 1234 },
-        expires_at: new Date(Date.now() + 300000).toISOString(),
-      };
+        items: [{ path: "/secrets/api-key", label: "API Key", attributes: {} }],
+        sender_info: { pid: 1234, invoker_name: "my-app.service" },
+      }),
+    ]);
 
-      // Replicate the showRequestNotification logic from notifications.ts
-      // Check conditions
-      if (!document.hidden) {
-        return; // Would not create notification
-      }
-      if (Notification.permission !== "granted") {
-        return; // Would not create notification
-      }
-
-      // Format body like notifications.ts does
-      const parts: string[] = [];
-      parts.push(`Client: ${request.client}`);
-      if (request.sender_info?.invoker_name) {
-        parts.push(`Process: ${request.sender_info.invoker_name}`);
-      }
-      if (request.items.length === 1) {
-        parts.push(
-          `Secret: ${request.items[0].label || request.items[0].path}`,
-        );
-      }
-
-      // Create notification
-      new Notification("Secret Access Request", {
-        body: parts.join("\n"),
-        icon: "/favicon.ico",
-        tag: request.id,
-        requireInteraction: true,
-      });
-    });
-
-    const calls = await page.evaluate(() => window.__notificationCalls);
-    expect(calls.length).toBe(1);
-    expect(calls[0].title).toBe("Secret Access Request");
-    expect(calls[0].options.body).toContain("Client: my-app");
-    expect(calls[0].options.body).toContain("Process: my-app.service");
-    expect(calls[0].options.body).toContain("Secret: API Key");
-    expect(calls[0].options.tag).toBe("test-123");
-    expect(calls[0].options.requireInteraction).toBe(true);
-
-    await context.close();
+    expect(await notificationCalls(page)).toMatchObject([
+      {
+        title: "Secret Request",
+        options: {
+          body: "Client: my-app\nProcess: my-app.service\nSecret: API Key",
+          tag: "test-123",
+          requireInteraction: true,
+        },
+      },
+    ]);
   });
 
-  test("showRequestNotification does NOT create notification when page is visible", async ({
-    browser,
-  }) => {
-    const context = await browser.newContext({
-      permissions: ["notifications"],
-    });
-    const page = await context.newPage();
+  test("no notification while the page is visible", async ({ page }) => {
+    await openWithRequests(page, { permission: "granted", hidden: false }, [
+      pendingRequest({ id: "test-visible" }),
+    ]);
 
-    await installNotificationSpy(page, {
-      permission: "granted",
-      hidden: false,
-    });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("No pending requests")).toBeVisible();
-
-    // Verify page is visible
-    const isHidden = await page.evaluate(() => document.hidden);
-    expect(isHidden).toBe(false);
-
-    // Simulate showRequestNotification behavior when page is visible
-    const notificationCreated = await page.evaluate(() => {
-      // Same check as showRequestNotification
-      if (!document.hidden) {
-        return false; // Would return early, no notification
-      }
-      new Notification("Should not appear", {});
-      return true;
-    });
-
-    expect(notificationCreated).toBe(false);
-
-    // Verify no notifications were created
-    const calls = await page.evaluate(() => window.__notificationCalls);
-    expect(calls.length).toBe(0);
-
-    await context.close();
+    expect(await notificationCalls(page)).toEqual([]);
   });
 
-  test("showRequestNotification does NOT create notification when permission denied", async ({
-    browser,
-  }) => {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+  test("no notification when permission is denied", async ({ page }) => {
+    await openWithRequests(page, { permission: "denied", hidden: true }, [
+      pendingRequest({ id: "test-denied" }),
+    ]);
 
-    // Even with a hidden page, no notification is created if permission is denied.
-    await installNotificationSpy(page, { permission: "denied", hidden: true });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("No pending requests")).toBeVisible();
-
-    // Simulate showRequestNotification behavior when permission denied
-    const notificationCreated = await page.evaluate(() => {
-      if (!document.hidden) {
-        return false;
-      }
-      if (Notification.permission !== "granted") {
-        return false; // Would return early due to permission
-      }
-      new Notification("Should not appear", {});
-      return true;
-    });
-
-    expect(notificationCreated).toBe(false);
-
-    // Verify no notifications were created
-    const calls = await page.evaluate(() => window.__notificationCalls);
-    expect(calls.length).toBe(0);
-
-    await context.close();
+    expect(await notificationCalls(page)).toEqual([]);
   });
 
-  test("notification body formats correctly for multiple items", async ({
-    browser,
+  test("notification body counts multiple items and falls back to the PID", async ({
+    page,
   }) => {
-    const context = await browser.newContext({
-      permissions: ["notifications"],
-    });
-    const page = await context.newPage();
-
-    await installNotificationSpy(page, { permission: "granted", hidden: true });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("No pending requests")).toBeVisible();
-
-    // Test with multiple items - should show count instead of label
-    await page.evaluate(() => {
-      const request = {
+    await openWithRequests(page, HIDDEN_GRANTED, [
+      pendingRequest({
         id: "test-multi",
         client: "batch-app",
-        type: "get_secret",
         items: [
-          { path: "/secrets/key1", label: "Key 1" },
-          { path: "/secrets/key2", label: "Key 2" },
-          { path: "/secrets/key3", label: "Key 3" },
+          { path: "/secrets/key1", label: "Key 1", attributes: {} },
+          { path: "/secrets/key2", label: "Key 2", attributes: {} },
+          { path: "/secrets/key3", label: "Key 3", attributes: {} },
         ],
-        sender_info: { pid: 5678 } as { pid: number; invoker_name?: string },
-        expires_at: new Date(Date.now() + 300000).toISOString(),
-      };
+        sender_info: { pid: 5678, invoker_name: "" },
+      }),
+    ]);
 
-      const parts: string[] = [];
-      parts.push(`Client: ${request.client}`);
-      if (request.sender_info?.invoker_name) {
-        parts.push(`Process: ${request.sender_info.invoker_name}`);
-      } else if (request.sender_info?.pid) {
-        parts.push(`PID: ${request.sender_info.pid}`);
-      }
-      if (request.items.length === 1) {
-        parts.push(
-          `Secret: ${request.items[0].label || request.items[0].path}`,
-        );
-      } else {
-        parts.push(`Secrets: ${request.items.length} items`);
-      }
+    expect(await notificationCalls(page)).toMatchObject([
+      { options: { body: "Client: batch-app\nPID: 5678\nSecrets: 3 items" } },
+    ]);
+  });
 
-      new Notification("Secret Access Request", {
-        body: parts.join("\n"),
-        tag: request.id,
-      });
-    });
+  test("notification body names the type of a search request", async ({
+    page,
+  }) => {
+    await openWithRequests(page, HIDDEN_GRANTED, [
+      pendingRequest({
+        id: "test-search",
+        client: "search-app",
+        type: "search",
+        items: [],
+        search_attributes: { username: "admin" },
+        sender_info: { pid: 4321, invoker_name: "" },
+      }),
+    ]);
 
-    const calls = await page.evaluate(() => window.__notificationCalls);
-    expect(calls.length).toBe(1);
-    expect(calls[0].options.body).toContain("Client: batch-app");
-    expect(calls[0].options.body).toContain("PID: 5678");
-    expect(calls[0].options.body).toContain("Secrets: 3 items");
-
-    await context.close();
+    expect(await notificationCalls(page)).toMatchObject([
+      { options: { body: "Client: search-app\nPID: 4321\nType: search" } },
+    ]);
   });
 
   test("notification toggle button is visible and defaults to enabled", async ({
@@ -379,51 +276,6 @@ test.describe("Browser Notifications", () => {
       localStorage.getItem("notificationsEnabled"),
     );
     expect(storedAfter).toBe("true");
-
-    await context.close();
-  });
-
-  test("notification body formats correctly for search requests", async ({
-    browser,
-  }) => {
-    const context = await browser.newContext({
-      permissions: ["notifications"],
-    });
-    const page = await context.newPage();
-
-    await installNotificationSpy(page, { permission: "granted", hidden: true });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("No pending requests")).toBeVisible();
-
-    // Test with search request type
-    await page.evaluate(() => {
-      const request = {
-        id: "test-search",
-        client: "search-app",
-        type: "search",
-        items: [],
-        search_attributes: { username: "admin" },
-        expires_at: new Date(Date.now() + 300000).toISOString(),
-      };
-
-      const parts: string[] = [];
-      parts.push(`Client: ${request.client}`);
-      if (request.type === "search") {
-        parts.push("Type: search");
-      }
-
-      new Notification("Secret Access Request", {
-        body: parts.join("\n"),
-        tag: request.id,
-      });
-    });
-
-    const calls = await page.evaluate(() => window.__notificationCalls);
-    expect(calls.length).toBe(1);
-    expect(calls[0].options.body).toContain("Client: search-app");
-    expect(calls[0].options.body).toContain("Type: search");
 
     await context.close();
   });

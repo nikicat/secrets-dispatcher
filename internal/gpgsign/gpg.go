@@ -87,8 +87,7 @@ func passThroughToGPG(args []string, stdin io.Reader) int {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return exitErr.ExitCode()
 		}
 		fmt.Fprintf(os.Stderr, "secrets-dispatcher: gpg pass-through failed: %v\n", err)

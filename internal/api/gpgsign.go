@@ -40,8 +40,7 @@ func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) ([
 	err := cmd.Run()
 	exitCode := 0
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
 			return nil, statusBuf.Bytes(), 1, fmt.Errorf("gpg exec failed: %w", err)

@@ -1,11 +1,10 @@
 {
   "compilerOptions": {
-    // esbuild reads `target` when it compiles TypeScript. ES2020 keeps the
-    // bundle identical to the Deno build (docs/adr/0012).
-    "target": "ES2020",
+    // The browser floor is set by `build.target` in vite.config.ts.
+    "target": "ES2025",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": ["ES2025", "DOM", "DOM.Iterable"],
     "types": ["node", "svelte", "vite/client"],
     "strict": true,
     "noEmit": true,

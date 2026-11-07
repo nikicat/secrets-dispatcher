@@ -13,7 +13,7 @@ PNPM := pnpm --dir web
 # Install frontend dependencies exactly as locked. pnpm leaves .modules.yaml
 # alone when nothing changed, so touch it to keep the stamp newer than its
 # prerequisites.
-web/node_modules/.modules.yaml: web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml
+web/node_modules/.modules.yaml: web/package.json web/pnpm-lock.yaml
 	$(PNPM) install --frozen-lockfile
 	touch $@
 

@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  pendingRequest,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
 
 // These tests verify the timestamp display toggle feature in the WebUI.
 // Users can click on timestamps to toggle between relative ("5 minutes ago")
@@ -29,22 +33,7 @@ test.describe("Timestamp Display Toggle", () => {
     await page.request.post(`${backend.url}/api/v1/test/history`, {
       headers: { Authorization: `Bearer ${token}` },
       data: {
-        request: {
-          id: uniqueId,
-          client: "test-client",
-          items: [{ path: "/test/item", label: "Test Secret", attributes: {} }],
-          session: "/session/1",
-          created_at: new Date().toISOString(),
-          expires_at: new Date(Date.now() + 300000).toISOString(),
-          type: "get_secret",
-          sender_info: {
-            sender: "",
-            pid: 0,
-            uid: 0,
-            user_name: "",
-            invoker_name: "",
-          },
-        },
+        request: pendingRequest({ id: uniqueId }),
         resolution: "approved",
         resolved_at: new Date().toISOString(),
       },

@@ -1,6 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   buildCommitObject,
+  pendingRequest,
+  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -501,21 +503,14 @@ test.describe("GPG Sign Corner Cases", () => {
   }) => {
     // Intercept the WebSocket to inject a request_created message
     // with process_chain — tests the {#if hasProcessChain()} branch.
-    let sendToClient: ((msg: string) => void) | undefined;
-    await page.routeWebSocket(/\/api\/v1\/ws/, (ws) => {
-      const server = ws.connectToServer();
-      sendToClient = (msg) => ws.send(msg);
-      // Forward all messages bidirectionally.
-      ws.onMessage((msg) => server.send(msg));
-      server.onMessage((msg) => ws.send(msg));
-    });
+    const sendToClient = await routeSnapshot(page);
 
     await authenticate(page);
 
     // Inject a fake request with process_chain via the intercepted WebSocket.
-    const fakeRequest = {
+    sendToClient({
       type: "request_created",
-      request: {
+      request: pendingRequest({
         id: "chain-test-001",
         client: "chain-client",
         items: [
@@ -525,14 +520,9 @@ test.describe("GPG Sign Corner Cases", () => {
             attributes: {},
           },
         ],
-        session: "/secrets/session/s0",
-        created_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 300000).toISOString(),
-        type: "get_secret",
         sender_info: {
           sender: ":1.42",
           pid: 1234,
-          uid: 1000,
           user_name: "dev",
           invoker_name: "claude",
           process_chain: [
@@ -566,9 +556,8 @@ test.describe("GPG Sign Corner Cases", () => {
             },
           ],
         },
-      },
-    };
-    sendToClient!(JSON.stringify(fakeRequest));
+      }),
+    });
 
     const card = page.locator(".card").filter({ hasText: "ChainItem" });
     await expect(card).toBeVisible();

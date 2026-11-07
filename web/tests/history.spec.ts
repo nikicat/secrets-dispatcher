@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  pendingRequest,
+  routeSnapshot,
+  startTestBackend,
+  type TestBackend,
+} from "./fixtures/test-utils.mts";
+import type {
+  HistoryEntry,
+  PendingRequest,
+  Resolution,
+} from "../src/lib/types.ts";
 
 // These tests verify the history feature of the WebUI.
 // Each test starts an isolated backend instance.
@@ -111,54 +121,31 @@ test.describe("Request History UI", () => {
     const resolvedAt = new Date().toISOString();
 
     // Intercept WebSocket and inject a history_entry after snapshot
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        ws.send(message);
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              // Send history_entry with "ignored" resolution after snapshot
-              ws.send(
-                JSON.stringify({
-                  type: "history_entry",
-                  history_entry: {
-                    request: {
-                      id: "ignored-test-1",
-                      client: "test-client",
-                      items: [
-                        {
-                          path: "/org/freedesktop/secrets/collection/default/1",
-                          label: "Chrome Safe Storage",
-                          attributes: {
-                            "xdg:schema": "_chrome_dummy_schema_for_unlocking",
-                          },
-                        },
-                      ],
-                      session: "/org/freedesktop/secrets/session/1",
-                      created_at: resolvedAt,
-                      expires_at: resolvedAt,
-                      type: "write",
-                      sender_info: {
-                        sender: ":1.100",
-                        pid: 12345,
-                        uid: 1000,
-                        user_name: "testuser",
-                        invoker_name: "chrome.service",
-                      },
-                    },
-                    resolution: "ignored",
-                    resolved_at: resolvedAt,
+    await routeSnapshot(page, {
+      after: [
+        {
+          type: "history_entry",
+          history_entry: {
+            request: pendingRequest({
+              id: "ignored-test-1",
+              client: "test-client",
+              items: [
+                {
+                  path: "/org/freedesktop/secrets/collection/default/1",
+                  label: "Chrome Safe Storage",
+                  attributes: {
+                    "xdg:schema": "_chrome_dummy_schema_for_unlocking",
                   },
-                }),
-              );
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-      });
+                },
+              ],
+              type: "write",
+              sender_info: { pid: 12345, invoker_name: "chrome.service" },
+            }),
+            resolution: "ignored",
+            resolved_at: resolvedAt,
+          },
+        },
+      ],
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -181,52 +168,35 @@ test.describe("Request History UI", () => {
     const resolvedAt = new Date().toISOString();
 
     // Intercept WebSocket and inject history into the snapshot itself
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.history = [
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: [
+          {
+            request: pendingRequest({
+              id: "snap-ignored-1",
+              client: "test-client",
+              items: [
                 {
-                  request: {
-                    id: "snap-ignored-1",
-                    client: "test-client",
-                    items: [
-                      {
-                        path: "/org/freedesktop/secrets/collection/default/2",
-                        label: "Chrome Dummy",
-                        attributes: {
-                          "xdg:schema": "_chrome_dummy_schema_for_unlocking",
-                        },
-                      },
-                    ],
-                    session: "/org/freedesktop/secrets/session/2",
-                    created_at: resolvedAt,
-                    expires_at: resolvedAt,
-                    type: "write",
-                    sender_info: {
-                      sender: ":1.200",
-                      pid: 54321,
-                      uid: 1000,
-                      user_name: "testuser",
-                      invoker_name: "chrome.service",
-                    },
+                  path: "/org/freedesktop/secrets/collection/default/2",
+                  label: "Chrome Dummy",
+                  attributes: {
+                    "xdg:schema": "_chrome_dummy_schema_for_unlocking",
                   },
-                  resolution: "ignored",
-                  resolved_at: resolvedAt,
                 },
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+              ],
+              type: "write",
+              sender_info: {
+                sender: ":1.200",
+                pid: 54321,
+                invoker_name: "chrome.service",
+              },
+            }),
+            resolution: "ignored",
+            resolved_at: resolvedAt,
+          },
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -258,73 +228,51 @@ test.describe("Auto-Approved History Collapsing", () => {
 
   function makeHistoryEntry(
     id: string,
-    resolution: string,
+    resolution: Resolution,
     invokerName: string,
     itemPath: string,
-    type = "get_secret",
-  ) {
-    const resolvedAt = new Date().toISOString();
+    type: PendingRequest["type"] = "get_secret",
+  ): HistoryEntry {
     return {
-      request: {
+      request: pendingRequest({
         id,
         client: "test-client",
         items: [{ path: itemPath, label: `item-${id}`, attributes: {} }],
-        session: "/org/freedesktop/secrets/session/1",
-        created_at: resolvedAt,
-        expires_at: resolvedAt,
         type,
-        sender_info: {
-          sender: ":1.100",
-          pid: 1000,
-          uid: 1000,
-          user_name: "testuser",
-          invoker_name: invokerName,
-        },
-      },
+        sender_info: { invoker_name: invokerName },
+      }),
       resolution,
-      resolved_at: resolvedAt,
+      resolved_at: new Date().toISOString(),
     };
   }
 
   test("consecutive auto-approved entries are collapsed with count", async ({
     page,
   }) => {
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.history = [
-                makeHistoryEntry(
-                  "aa-1",
-                  "auto_approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-                makeHistoryEntry(
-                  "aa-2",
-                  "auto_approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-                makeHistoryEntry(
-                  "aa-3",
-                  "auto_approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: [
+          makeHistoryEntry(
+            "aa-1",
+            "auto_approved",
+            "app.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+          makeHistoryEntry(
+            "aa-2",
+            "auto_approved",
+            "app.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+          makeHistoryEntry(
+            "aa-3",
+            "auto_approved",
+            "app.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -340,36 +288,24 @@ test.describe("Auto-Approved History Collapsing", () => {
   });
 
   test("different invokers are not collapsed", async ({ page }) => {
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.history = [
-                makeHistoryEntry(
-                  "aa-1",
-                  "auto_approved",
-                  "app-a.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-                makeHistoryEntry(
-                  "aa-2",
-                  "auto_approved",
-                  "app-b.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: [
+          makeHistoryEntry(
+            "aa-1",
+            "auto_approved",
+            "app-a.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+          makeHistoryEntry(
+            "aa-2",
+            "auto_approved",
+            "app-b.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -385,42 +321,30 @@ test.describe("Auto-Approved History Collapsing", () => {
   test("non-consecutive auto-approved entries are still collapsed", async ({
     page,
   }) => {
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.history = [
-                makeHistoryEntry(
-                  "aa-1",
-                  "auto_approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-                makeHistoryEntry(
-                  "manual-1",
-                  "approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-                makeHistoryEntry(
-                  "aa-2",
-                  "auto_approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-              ];
-              ws.send(JSON.stringify(parsed));
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: [
+          makeHistoryEntry(
+            "aa-1",
+            "auto_approved",
+            "app.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+          makeHistoryEntry(
+            "manual-1",
+            "approved",
+            "app.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+          makeHistoryEntry(
+            "aa-2",
+            "auto_approved",
+            "app.service",
+            "/org/freedesktop/secrets/collection/default/x",
+          ),
+        ],
+      }),
     });
 
     const loginURL = await backend.generateLoginURL();
@@ -437,44 +361,25 @@ test.describe("Auto-Approved History Collapsing", () => {
   test("new auto-approved entry via WebSocket increments existing group", async ({
     page,
   }) => {
-    await page.routeWebSocket(`**/api/v1/ws`, (ws) => {
-      const server = ws.connectToServer();
-      server.onMessage((message) => {
-        if (typeof message === "string") {
-          try {
-            const parsed = JSON.parse(message);
-            if (parsed.type === "snapshot") {
-              parsed.history = [
-                makeHistoryEntry(
-                  "aa-1",
-                  "auto_approved",
-                  "app.service",
-                  "/org/freedesktop/secrets/collection/default/x",
-                ),
-              ];
-              ws.send(JSON.stringify(parsed));
-              // Send another matching entry after snapshot
-              setTimeout(() => {
-                ws.send(
-                  JSON.stringify({
-                    type: "history_entry",
-                    history_entry: makeHistoryEntry(
-                      "aa-2",
-                      "auto_approved",
-                      "app.service",
-                      "/org/freedesktop/secrets/collection/default/x",
-                    ),
-                  }),
-                );
-              }, 100);
-              return;
-            }
-          } catch {
-            /* not JSON */
-          }
-        }
-        ws.send(message);
-      });
+    const itemPath = "/org/freedesktop/secrets/collection/default/x";
+    await routeSnapshot(page, {
+      rewrite: (snapshot) => ({
+        ...snapshot,
+        history: [
+          makeHistoryEntry("aa-1", "auto_approved", "app.service", itemPath),
+        ],
+      }),
+      after: [
+        {
+          type: "history_entry",
+          history_entry: makeHistoryEntry(
+            "aa-2",
+            "auto_approved",
+            "app.service",
+            itemPath,
+          ),
+        },
+      ],
     });
 
     const loginURL = await backend.generateLoginURL();

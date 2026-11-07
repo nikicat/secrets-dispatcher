@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
 func TestLoadFullConfig(t *testing.T) {
@@ -156,6 +158,71 @@ serve:
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), `invalid remote name "../api"`) {
 		t.Fatalf("expected invalid remote name error, got %v", err)
+	}
+}
+
+func TestLoadRejectsUnknownEnumValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, wantErr string
+	}{
+		{
+			name: "rule action",
+			yaml: `
+serve:
+  rules:
+    - name: bad-rule
+      action: block
+`,
+			wantErr: `action must be "approve", "ignore" or "deny", got "block"`,
+		},
+		{
+			name: "upstream type",
+			yaml: `
+serve:
+  upstream:
+    type: tcp
+`,
+			wantErr: `bus type must be "session_bus", "socket" or "sockets", got "tcp"`,
+		},
+		{
+			name: "downstream type",
+			yaml: `
+serve:
+  downstream:
+    - type: system_bus
+`,
+			wantErr: `got "system_bus"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			os.WriteFile(path, []byte(tc.yaml), 0o644)
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Load() error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestRuleActionDefaultsToApprove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(path, []byte(`
+serve:
+  rules:
+    - name: no-action
+      process:
+        exe: /usr/bin/git
+`), 0o644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.WithDefaults().Serve.Rules[0].Action; got != approval.RuleApprove {
+		t.Fatalf("Action = %q, want %q", got, approval.RuleApprove)
+	}
+	if cfg.Serve.Rules[0].Action != "" {
+		t.Fatalf("WithDefaults changed the loaded config's rules in place")
 	}
 }
 
@@ -320,18 +387,6 @@ func TestValidate(t *testing.T) {
 					Process: &ProcessMatcher{Name: "epiphany-search"},
 				}},
 			}},
-		},
-		{
-			name: "invalid rule action",
-			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
-				Rules: []TrustRule{{
-					Name:   "bad-rule",
-					Action: "block",
-				}},
-			}},
-			wantErr: `action must be "approve", "ignore", or "deny"`,
 		},
 		{
 			name: "valid args rule",

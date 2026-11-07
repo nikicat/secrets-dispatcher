@@ -1,6 +1,8 @@
 // Package approval manages pending secret access requests requiring user approval.
 package approval
 
+import "fmt"
+
 // ProcessInfo represents a single process in the process chain.
 type ProcessInfo struct {
 	Name string   `json:"name"`
@@ -13,11 +15,42 @@ type ProcessInfo struct {
 // TrustRule defines a persistent declarative rule from config for auto-approving, ignoring, or denying requests.
 type TrustRule struct {
 	Name             string            `json:"name,omitempty"`
-	Action           string            `json:"action,omitempty"`
-	RequestTypes     []string          `json:"request_types,omitempty"`
+	Action           RuleAction        `json:"action,omitempty"`
+	RequestTypes     []RequestType     `json:"request_types,omitempty"`
 	Process          *ProcessMatcher   `json:"process,omitempty"`
 	Secret           *SecretMatcher    `json:"secret,omitempty"`
 	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
+}
+
+// RuleAction is what a matching trust rule does with a request.
+type RuleAction string
+
+const (
+	RuleApprove RuleAction = "approve"
+	// RuleIgnore drops the request silently. Config allows it only for writes.
+	RuleIgnore RuleAction = "ignore"
+	RuleDeny   RuleAction = "deny"
+)
+
+// UnmarshalText parses an action, so that a config file or API body naming an
+// unknown action fails to load. An empty action reads as RuleApprove.
+func (a *RuleAction) UnmarshalText(text []byte) error {
+	switch v := RuleAction(text); v {
+	case "":
+		*a = RuleApprove
+	case RuleApprove, RuleIgnore, RuleDeny:
+		*a = v
+	default:
+		return fmt.Errorf("action must be %q, %q or %q, got %q", RuleApprove, RuleIgnore, RuleDeny, v)
+	}
+	return nil
+}
+
+// Restrictive reports whether the action withholds the secret. A restrictive
+// rule fires when any requested item is in its scope, a permissive one only
+// when every item is.
+func (a RuleAction) Restrictive() bool {
+	return a == RuleDeny || a == RuleIgnore
 }
 
 // ProcessMatcher matches against sender process attributes.

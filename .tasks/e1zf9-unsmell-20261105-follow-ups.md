@@ -1,5 +1,5 @@
 ---
-status: todo
+status: doing
 tags: [refactor, unsmell]
 ---
 # Follow-ups planned by the 2026-11-05 unsmell run
@@ -48,20 +48,17 @@ entry is independent; split one out into its own task when you start it.
   is false. Fix: one `newLogHandler(level, format)`.
 - **Misplaced doc line.** "runService handles the service subcommand group"
   sits above `runTry`, so `runService` has no doc. Fix: move it.
-- **`Config.Validate` by type.** It inlines bus, rule-action, request-type and
-  glob checks; `strFromProcessMatcher`/`strFromSecretMatcher` pick fields by
-  string key. Fix: `BusConfig.validate`, `TrustRule.validate`, and name/value
-  pairs built from the structs.
-- **Typed enums in config.** `BusConfig.Type` and `TrustRule.Action` are strings
-  branched on by literal. Fix: string types whose `UnmarshalYAML` rejects
-  unknown values (as `RemoteName` does), with typed constants at every branch.
-- **Long trailing field comments in config.** They encode defaults and what an
-  empty or zero value means ("0 disables; default 1.5s"). Fix: comments above
-  the fields as sentences; typed defaults where zero means "use the default".
-
 - **`SetupGitConfig` doc on relative sockets.** It now resolves a relative
   `remoteSocket` against the current directory at setup time, and its doc does
   not say so. Fix: one sentence in the doc.
+
+- **One `TrustRule` type.** `config.TrustRule`, `ProcessMatcher` and
+  `SecretMatcher` are copied field by field into their `approval` twins in
+  `main.go`. Fix: one set of types in `approval`, with both `yaml` and `json`
+  tags, and `config` using them directly.
+- **Typed install mode.** `service.Install` branches on the strings `"remote"`,
+  `"local"` and `"full"`. Fix: a `Mode` type with constants, parsed where the
+  flag is read.
 
 ## Next
 Pick the runtime-directory owner first: the thin client, the daemon and the

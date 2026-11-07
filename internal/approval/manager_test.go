@@ -1387,13 +1387,13 @@ func TestCheckTrustRules(t *testing.T) {
 		{
 			Name:         "approve-gh-search",
 			Action:       "approve",
-			RequestTypes: []string{"search"},
+			RequestTypes: []RequestType{"search"},
 			Process:      &ProcessMatcher{Name: "gh"},
 		},
 		{
 			Name:         "ignore-chrome-write",
 			Action:       "ignore",
-			RequestTypes: []string{"write"},
+			RequestTypes: []RequestType{"write"},
 			Process:      &ProcessMatcher{Exe: "/opt/google/chrome/chrome"},
 			Secret:       &SecretMatcher{Collection: "default"},
 		},
@@ -1410,7 +1410,7 @@ func TestCheckTrustRules(t *testing.T) {
 		{
 			Name:             "approve-search-attrs",
 			Action:           "approve",
-			RequestTypes:     []string{"search"},
+			RequestTypes:     []RequestType{"search"},
 			SearchAttributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
 		},
 		{
@@ -1666,7 +1666,7 @@ func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 			{
 				Name:         "approve-gh",
 				Action:       "approve",
-				RequestTypes: []string{"search"},
+				RequestTypes: []RequestType{"search"},
 				Process:      &ProcessMatcher{Name: "gh"},
 			},
 		},
@@ -1709,7 +1709,7 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 			{
 				Name:         "ignore-chrome",
 				Action:       "ignore",
-				RequestTypes: []string{"write"},
+				RequestTypes: []RequestType{"write"},
 				Secret:       &SecretMatcher{Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"}},
 			},
 		},
@@ -1795,7 +1795,7 @@ func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
 		TrustRules: []TrustRule{
 			{
 				Name:         "approve-gh",
-				RequestTypes: []string{"search"},
+				RequestTypes: []RequestType{"search"},
 				Process:      &ProcessMatcher{Name: "gh"},
 			},
 		},
@@ -1844,7 +1844,7 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 		TrustRules: []TrustRule{
 			{
 				Name:         "vscode-cwd",
-				RequestTypes: []string{"get_secret"},
+				RequestTypes: []RequestType{"get_secret"},
 				Process: &ProcessMatcher{
 					CWD: "/usr/lib/visual-studio-code-electron",
 				},
@@ -1919,7 +1919,7 @@ func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
 		HistoryMax: 100,
 		TrustRules: []TrustRule{{
 			Name:         "test",
-			RequestTypes: []string{"get_secret"},
+			RequestTypes: []RequestType{"get_secret"},
 			Process:      &ProcessMatcher{Name: "gh"},
 		}},
 	})

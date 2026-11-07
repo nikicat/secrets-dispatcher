@@ -464,7 +464,7 @@ func runServe(args []string) {
 
 	// Resolve upstream address
 	var upstreamAddr string
-	if cfg.Serve.Upstream.Type == "socket" {
+	if cfg.Serve.Upstream.Type == config.BusSocket {
 		upstreamAddr = "unix:path=" + cfg.Serve.Upstream.Path
 	}
 
@@ -476,7 +476,7 @@ func runServe(args []string) {
 
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
-		case "sockets":
+		case config.BusSockets:
 			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 			if mgrErr != nil {
 				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
@@ -487,7 +487,7 @@ func runServe(args []string) {
 				return mgr.Run(ctx)
 			})
 
-		case "session_bus":
+		case config.BusSessionBus:
 			sp := &staticProvider{info: proxy.ClientInfo{Name: "local", SocketPath: "session_bus"}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
@@ -534,7 +534,7 @@ func runServe(args []string) {
 				}
 			})
 
-		case "socket":
+		case config.BusSocket:
 			clientName := filepath.Base(ds.Path)
 			p := proxy.New(proxy.Config{
 				ClientName:            clientName,

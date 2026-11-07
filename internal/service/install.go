@@ -306,20 +306,20 @@ func updateTopologyConfig(configPath, runtimeDir, mode string) error {
 
 	switch mode {
 	case "remote":
-		cfg.Serve.Upstream = config.BusConfig{Type: "session_bus"}
+		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSessionBus}
 		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: "sockets", Path: socketsDir},
+			{Type: config.BusSockets, Path: socketsDir},
 		}
 	case "local":
-		cfg.Serve.Upstream = config.BusConfig{Type: "socket", Path: busSocket}
+		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSocket, Path: busSocket}
 		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: "session_bus"},
+			{Type: config.BusSessionBus},
 		}
 	case "full":
-		cfg.Serve.Upstream = config.BusConfig{Type: "socket", Path: busSocket}
+		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSocket, Path: busSocket}
 		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: "session_bus"},
-			{Type: "sockets", Path: socketsDir},
+			{Type: config.BusSessionBus},
+			{Type: config.BusSockets, Path: socketsDir},
 		}
 	}
 

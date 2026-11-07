@@ -1622,7 +1622,7 @@ func TestSearchItemsDenyRule(t *testing.T) {
 		TrustRules: []approval.TrustRule{{
 			Name:             "deny-epiphany-search",
 			Action:           "deny",
-			RequestTypes:     []string{"search"},
+			RequestTypes:     []approval.RequestType{"search"},
 			SearchAttributes: map[string]string{"xdg:schema": "org.epiphany.FormPassword"},
 		}},
 	})

@@ -187,7 +187,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	senderInfo := c.resolver.Resolve(sender)
 
 	// Check if request should be denied by a trust rule
-	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == "deny" {
+	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == approval.RuleDeny {
 		c.approval.RecordDenied(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}

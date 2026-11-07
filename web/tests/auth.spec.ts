@@ -8,7 +8,7 @@ import { Buffer } from "node:buffer";
 import { createHmac } from "node:crypto";
 
 // These tests verify the authentication flow of the WebUI.
-// Each test starts an isolated backend instance.
+// The tests in this file share one isolated backend instance.
 
 let backend: TestBackend;
 

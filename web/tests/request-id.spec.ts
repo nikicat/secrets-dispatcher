@@ -1,6 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
-  buildCommitObject,
   pendingRequest,
   routeSnapshot,
   startTestBackend,
@@ -19,38 +18,11 @@ test.afterAll(async () => {
   await backend.cleanup();
 });
 
-async function createGPGSignRequest(
-  token: string,
-  info: Record<string, unknown>,
-  client = "test-repo",
-): Promise<string> {
-  const res = await fetch(`${backend.url}/api/v1/gpg-sign/request`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      client,
-      gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
-    }),
-  });
-  if (!res.ok) throw new Error(`POST gpg-sign/request failed: ${res.status}`);
-  const data = (await res.json()) as { request_id: string };
-  return data.request_id;
-}
-
-async function authenticate(page: Page): Promise<void> {
-  const loginURL = await backend.generateLoginURL();
-  await page.goto(loginURL);
-  await expect(page.getByText("client connected")).toBeVisible();
-}
-
 test.describe("Request ID on Pending Cards", () => {
   test("pending card shows truncated request ID", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "id-test-repo",
       commit_msg: "feat: test request id display",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -114,9 +86,8 @@ test.describe("Request ID on History Cards", () => {
   test("history entry from real approval shows request ID", async ({
     page,
   }) => {
-    await authenticate(page);
-    const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    await backend.authenticate(page);
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "history-id-repo",
       commit_msg: "feat: history id test",
       author: "Dev <dev@example.com> 1700000000 +0000",

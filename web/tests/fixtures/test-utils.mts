@@ -10,7 +10,7 @@ import { createInterface } from "node:readline";
 import { createHmac, randomBytes } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { preview, type PreviewServer } from "vite";
-import type { Page, WebSocketRoute } from "@playwright/test";
+import { expect, type Page, type WebSocketRoute } from "@playwright/test";
 import type {
   PendingRequest,
   SenderInfo,
@@ -35,6 +35,16 @@ export interface TestBackend {
   generateLoginURL: () => Promise<string>;
   getAuthToken: () => Promise<string>;
   restart: (options?: BackendOptions) => Promise<void>;
+  /** Logs the page in and resolves once it shows the connected client. */
+  authenticate: (page: Page) => Promise<void>;
+  /**
+   * Posts a GPG sign request for a commit with the given display fields, as
+   * `client`, and returns its request ID.
+   */
+  createGPGSignRequest: (
+    info: Record<string, unknown>,
+    client?: string,
+  ) => Promise<string>;
 }
 
 /** Settings that may change on each start of the backend, restarts included. */
@@ -397,11 +407,36 @@ export async function startTestBackend(
   const getAuthToken = async (): Promise<string> =>
     (await readFile(backend.cookieFile, "utf-8")).trim();
 
+  const generateLoginURL = async (): Promise<string> =>
+    `${url}/?token=${generateJWT(await getAuthToken())}`;
+
   return {
     url,
     getAuthToken,
-    generateLoginURL: async () =>
-      `${url}/?token=${generateJWT(await getAuthToken())}`,
+    generateLoginURL,
+    authenticate: async (page) => {
+      await page.goto(await generateLoginURL());
+      await expect(page.getByText("client connected")).toBeVisible();
+    },
+    createGPGSignRequest: async (info, client = "test-repo") => {
+      const res = await fetch(`${url}/api/v1/gpg-sign/request`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${await getAuthToken()}`,
+        },
+        body: JSON.stringify({
+          client,
+          // The daemon rebinds display fields to commit_object (WYSIWYS), so
+          // the posted metadata only shows in the UI if the raw bytes agree.
+          gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`POST gpg-sign/request failed: ${res.status}`);
+      }
+      return ((await res.json()) as { request_id: string }).request_id;
+    },
     restart: async (restartOptions = {}) => {
       await backend.stop();
       backend = await BackendProcess.start(

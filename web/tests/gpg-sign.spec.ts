@@ -1,6 +1,5 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import {
-  buildCommitObject,
   pendingRequest,
   routeSnapshot,
   startTestBackend,
@@ -21,41 +20,10 @@ test.afterAll(async () => {
   await backend.cleanup();
 });
 
-/** POST a GPG sign request and return the request_id. */
-async function createGPGSignRequest(
-  token: string,
-  info: Record<string, unknown>,
-  client = "test-repo",
-): Promise<string> {
-  const res = await fetch(`${backend.url}/api/v1/gpg-sign/request`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      client,
-      // The daemon rebinds display fields to commit_object (WYSIWYS), so the
-      // posted metadata only shows up in the UI if the raw bytes agree with it.
-      gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
-    }),
-  });
-  if (!res.ok) throw new Error(`POST gpg-sign/request failed: ${res.status}`);
-  const data = (await res.json()) as { request_id: string };
-  return data.request_id;
-}
-
-/** Authenticate the page and wait for the connected status. */
-async function authenticate(page: Page): Promise<void> {
-  const loginURL = await backend.generateLoginURL();
-  await page.goto(loginURL);
-  await expect(page.getByText("client connected")).toBeVisible();
-}
-
 test.describe("GPG Sign API", () => {
   test("POST creates a pending gpg_sign request", async () => {
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "myrepo",
       commit_msg: "feat: add login",
       author: "Alice <alice@example.com> 1700000000 +0000",
@@ -112,9 +80,9 @@ test.describe("GPG Sign API", () => {
 
 test.describe("GPG Sign Card Rendering", () => {
   test("shows GPG Sign badge and commit subject", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-app",
       commit_msg: "fix: resolve null pointer in parser",
       author: "Bob <bob@example.com> 1700000000 +0000",
@@ -159,9 +127,9 @@ test.describe("GPG Sign Card Rendering", () => {
   });
 
   test("shows multi-line commit body behind toggle", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-app",
       commit_msg:
         "feat: add OAuth2 support\n\nImplements RFC 6749 authorization code flow.\nIncludes refresh token rotation.",
@@ -204,9 +172,9 @@ test.describe("GPG Sign Card Rendering", () => {
   });
 
   test("shows different committer in More details", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "collab-repo",
       commit_msg: "docs: update readme",
       author: "Alice <alice@example.com> 1700000000 +0000",
@@ -240,9 +208,9 @@ test.describe("GPG Sign Corner Cases", () => {
   test("initial commit — no parent hash, no changed files", async ({
     page,
   }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "new-project",
       commit_msg: "Initial commit",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -270,9 +238,9 @@ test.describe("GPG Sign Corner Cases", () => {
   });
 
   test("empty commit — no file changes but has parent", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "chore: empty commit for CI trigger",
       author: "CI Bot <ci@example.com> 1700000000 +0000",
@@ -302,9 +270,9 @@ test.describe("GPG Sign Corner Cases", () => {
   });
 
   test("merge commit — message style and parent hash", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "main-repo",
       commit_msg: "Merge branch 'feature/auth' into main",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -338,9 +306,9 @@ test.describe("GPG Sign Corner Cases", () => {
   test("amend commit — same author, different committer timestamp", async ({
     page,
   }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "fix: correct typo in handler",
       author: "Alice <alice@example.com> 1700000000 +0000",
@@ -373,10 +341,10 @@ test.describe("GPG Sign Corner Cases", () => {
   test("many changed files — shows first 5 then expandable overflow", async ({
     page,
   }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
     const files = Array.from({ length: 8 }, (_, i) => `src/file${i + 1}.go`);
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "big-change",
       commit_msg: "refactor: restructure src directory",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -419,9 +387,9 @@ test.describe("GPG Sign Corner Cases", () => {
   });
 
   test("single-line commit — no body toggle shown", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "chore: bump version to 1.2.3",
       author: "Release Bot <bot@example.com> 1700000000 +0000",
@@ -443,9 +411,9 @@ test.describe("GPG Sign Corner Cases", () => {
   });
 
   test("empty commit message", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -472,9 +440,9 @@ test.describe("GPG Sign Corner Cases", () => {
   test("same author and committer — committer hidden in details", async ({
     page,
   }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "test: same identity",
       author: "Same <same@example.com> 1700000000 +0000",
@@ -505,7 +473,7 @@ test.describe("GPG Sign Corner Cases", () => {
     // with process_chain — tests the {#if hasProcessChain()} branch.
     const sendToClient = await routeSnapshot(page);
 
-    await authenticate(page);
+    await backend.authenticate(page);
 
     // Inject a fake request with process_chain via the intercepted WebSocket.
     sendToClient({
@@ -574,9 +542,8 @@ test.describe("GPG Sign Corner Cases", () => {
 
 test.describe("GPG Sign Approval Flow", () => {
   test("deny removes request from UI and adds to history", async ({ page }) => {
-    await authenticate(page);
-    const token = await backend.getAuthToken();
-    await createGPGSignRequest(token, {
+    await backend.authenticate(page);
+    await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "feat: to be denied",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -610,9 +577,8 @@ test.describe("GPG Sign Approval Flow", () => {
   test("approve removes request from UI and adds to history", async ({
     page,
   }) => {
-    await authenticate(page);
-    const token = await backend.getAuthToken();
-    await createGPGSignRequest(token, {
+    await backend.authenticate(page);
+    await backend.createGPGSignRequest({
       repo_name: "my-repo",
       commit_msg: "feat: to be approved",
       author: "Dev <dev@example.com> 1700000000 +0000",
@@ -635,14 +601,14 @@ test.describe("GPG Sign Approval Flow", () => {
   });
 
   test("WebSocket delivers request_created for gpg_sign", async ({ page }) => {
-    await authenticate(page);
+    await backend.authenticate(page);
 
     // Initially empty.
     await expect(page.getByText("No pending requests")).toBeVisible();
 
     // Create a request via API — UI should get it via WebSocket.
     const token = await backend.getAuthToken();
-    const reqId = await createGPGSignRequest(token, {
+    const reqId = await backend.createGPGSignRequest({
       repo_name: "ws-test",
       commit_msg: "chore: test websocket delivery",
       author: "Dev <dev@example.com> 1700000000 +0000",

@@ -1,9 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import {
-  buildCommitObject,
-  startTestBackend,
-  type TestBackend,
-} from "./fixtures/test-utils.mts";
+import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 declare global {
   interface Window {
@@ -32,30 +28,18 @@ test.afterAll(async () => {
 async function createRequest(
   overrides: Record<string, unknown> = {},
 ): Promise<string> {
-  const token = await backend.getAuthToken();
-  const info = {
-    repo_name: "test-repo",
-    commit_msg: "test: focus mode commit",
-    author: "Dev <dev@example.com> 1700000000 +0000",
-    committer: "Dev <dev@example.com> 1700000000 +0000",
-    key_id: "FOCUS001",
-    changed_files: ["main.go"],
-    ...overrides,
-  };
-  const res = await fetch(`${backend.url}/api/v1/gpg-sign/request`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+  return backend.createGPGSignRequest(
+    {
+      repo_name: "test-repo",
+      commit_msg: "test: focus mode commit",
+      author: "Dev <dev@example.com> 1700000000 +0000",
+      committer: "Dev <dev@example.com> 1700000000 +0000",
+      key_id: "FOCUS001",
+      changed_files: ["main.go"],
+      ...overrides,
     },
-    body: JSON.stringify({
-      client: "focus-test",
-      gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
-    }),
-  });
-  if (!res.ok) throw new Error(`POST gpg-sign/request failed: ${res.status}`);
-  const data = (await res.json()) as { request_id: string };
-  return data.request_id;
+    "focus-test",
+  );
 }
 
 /** Deny a request via API. */
@@ -78,9 +62,7 @@ async function cancelRequest(reqId: string): Promise<void> {
 
 /** Authenticate page, then navigate to focus URL for given request ID. */
 async function openFocused(page: Page, requestId: string): Promise<void> {
-  const loginURL = await backend.generateLoginURL();
-  await page.goto(loginURL);
-  await expect(page.getByText("client connected")).toBeVisible();
+  await backend.authenticate(page);
   await page.goto(`${backend.url}/?request=${requestId}`);
 }
 
@@ -246,11 +228,7 @@ test.describe("Focus Mode — Cancel/Expire Keep Open", () => {
 
 test.describe("Focus Mode — Invalid/Missing Request", () => {
   test("shows 'not found' for nonexistent request ID", async ({ page }) => {
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("client connected")).toBeVisible();
-
-    await page.goto(`${backend.url}/?request=nonexistent-id-12345`);
+    await openFocused(page, "nonexistent-id-12345");
 
     await expect(page.getByText("Request not found")).toBeVisible();
     await expect(page.locator(".card")).not.toBeAttached();
@@ -260,11 +238,7 @@ test.describe("Focus Mode — Invalid/Missing Request", () => {
     const reqId = await createRequest({ commit_msg: "feat: already resolved" });
     await denyRequest(reqId);
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("client connected")).toBeVisible();
-
-    await page.goto(`${backend.url}/?request=${reqId}`);
+    await openFocused(page, reqId);
 
     await expect(page.getByText("Request not found")).toBeVisible();
   });
@@ -300,37 +274,20 @@ test.describe("Focus Mode — Request Expiration", () => {
   });
 
   test("shows message when focused request expires", async ({ page }) => {
-    const token = await shortBackend.getAuthToken();
-
-    const res = await fetch(`${shortBackend.url}/api/v1/gpg-sign/request`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+    const reqId = await shortBackend.createGPGSignRequest(
+      {
+        repo_name: "test-repo",
+        commit_msg: "feat: will expire",
+        author: "Dev <dev@example.com> 1700000000 +0000",
+        committer: "Dev <dev@example.com> 1700000000 +0000",
+        key_id: "EXPIRE01",
+        changed_files: ["main.go"],
       },
-      body: JSON.stringify({
-        client: "expire-test",
-        gpg_sign_info: (() => {
-          const info = {
-            repo_name: "test-repo",
-            commit_msg: "feat: will expire",
-            author: "Dev <dev@example.com> 1700000000 +0000",
-            committer: "Dev <dev@example.com> 1700000000 +0000",
-            key_id: "EXPIRE01",
-            changed_files: ["main.go"],
-          };
-          return { commit_object: buildCommitObject(info), ...info };
-        })(),
-      }),
-    });
-    const { request_id: reqId } = (await res.json()) as {
-      request_id: string;
-    };
+      "expire-test",
+    );
 
     // Authenticate and open focus page
-    const loginURL = await shortBackend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.getByText("client connected")).toBeVisible();
+    await shortBackend.authenticate(page);
 
     await page.goto(`${shortBackend.url}/?request=${reqId}`);
     await expect(page.locator(".card")).toBeVisible();

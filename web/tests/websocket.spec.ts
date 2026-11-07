@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify the WebSocket functionality of the WebUI.
-// Each test starts an isolated backend instance.
+// The tests in this file share one isolated backend instance.
 
 let backend: TestBackend;
 

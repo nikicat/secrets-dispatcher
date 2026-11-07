@@ -355,7 +355,7 @@ func runServe(args []string) {
 				return a
 			}
 		}
-		handler = tint.NewHandler(os.Stderr, opts)
+		handler = tint.NewTextHandler(os.Stderr, opts)
 	}
 	slog.SetDefault(slog.New(handler))
 
@@ -1099,7 +1099,7 @@ func runDaemon(args []string) {
 	if underSystemd {
 		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
 	} else {
-		handler = tint.NewHandler(os.Stderr, &tint.Options{
+		handler = tint.NewTextHandler(os.Stderr, &tint.Options{
 			Level:   level,
 			NoColor: false,
 		})

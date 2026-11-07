@@ -81,6 +81,10 @@ open_window() { # open_window <tmux-session> — open a gnome-terminal on that s
         tmux new-session -d -s "$s" -e PATH="$HOME/go/bin:$PATH" 2>/dev/null && break
         sleep 0.2
     done
+    if ! tmux has-session -t "$s" 2>/dev/null; then
+        echo "tmux never started session $s" >&2
+        return 1
+    fi
     tmux set-option -t "$s" status off
     setsid gnome-terminal -- tmux attach -t "$s" >/dev/null 2>&1 &
     for i in $(seq 15); do

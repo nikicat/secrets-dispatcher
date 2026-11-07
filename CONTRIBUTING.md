@@ -4,7 +4,7 @@ Contributions are welcome! Here's how to get started.
 
 ## Building
 
-**Prerequisites:** Go 1.26+, Node (the version CI uses, pinned in `.nvmrc`), [pnpm](https://pnpm.io/installation), Make.
+**Prerequisites:** Go 1.27+, Node (the version CI uses, pinned in `.nvmrc`), [pnpm](https://pnpm.io/installation), Make.
 The pnpm version is pinned in `web/package.json` (`packageManager`), and pnpm switches to it on its own.
 
 ```bash

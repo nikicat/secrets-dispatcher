@@ -474,8 +474,7 @@ func isConnClosedErr(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
-	var netErr *net.OpError
-	if errors.As(err, &netErr) {
+	if _, ok := errors.AsType[*net.OpError](err); ok {
 		// Covers "write: broken pipe" and "write: connection reset by peer"
 		return true
 	}

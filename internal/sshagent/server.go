@@ -93,13 +93,11 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	upstream := agent.NewClient(upstreamConn)
 	proxy := newProxyAgent(upstream, s.approval, senderInfo, destination, s.logger)
 
-	// agent.ServeAgent handles the SSH agent protocol framing.
-	// It returns when the client connection is closed.
-	if err := agent.ServeAgent(proxy, clientConn); err != nil {
-		// Connection closed by client is normal
-		if ctx.Err() == nil {
-			s.logger.Debug("agent connection ended", "error", err)
-		}
+	// agent.ServeAgent handles the SSH agent protocol framing. It always
+	// returns an error, io.EOF when the client closes the connection.
+	err = agent.ServeAgent(proxy, clientConn)
+	if ctx.Err() == nil {
+		s.logger.Debug("agent connection ended", "error", err)
 	}
 }
 

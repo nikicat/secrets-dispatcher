@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -361,7 +362,8 @@ type Handler struct {
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
 	requests      map[uint32]string // notification ID -> request ID (reverse)
-	pending       *delayGroup       // notifications waiting for the grace period
+	requestData   map[string]*approval.Request
+	pending       *delayGroup // notifications waiting for the grace period
 
 	// cancelledRequests stores recently cancelled requests for auto-approve lookup.
 	// Keys are request IDs, values expire after 5 minutes.
@@ -390,6 +392,7 @@ func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs b
 		openURL:             func(u string) { exec.Command("xdg-open", u).Start() },
 		notifications:       make(map[string]uint32),
 		requests:            make(map[uint32]string),
+		requestData:         make(map[string]*approval.Request),
 		pending:             newDelayGroup(),
 		cancelledRequests:   make(map[string]cancelledEntry),
 	}
@@ -412,6 +415,11 @@ func (h *Handler) ListenActions(ctx context.Context, actions <-chan Action) {
 }
 
 func (h *Handler) handleAction(action Action) {
+	if action.ActionKey == "details" || action.ActionKey == "default" {
+		h.handleDetails(action.NotificationID)
+		return
+	}
+
 	h.mu.Lock()
 	reqID, ok := h.requests[action.NotificationID]
 	if ok {
@@ -422,6 +430,7 @@ func (h *Handler) handleAction(action Action) {
 		// reaching the approver.
 		delete(h.requests, action.NotificationID)
 		delete(h.notifications, reqID)
+		delete(h.requestData, reqID)
 	}
 	h.mu.Unlock()
 
@@ -431,9 +440,6 @@ func (h *Handler) handleAction(action Action) {
 
 	var err error
 	switch action.ActionKey {
-	case "default":
-		h.openURL(h.baseURL + "?request=" + reqID)
-		return
 	case "approve":
 		err = h.approver.Approve(reqID)
 	case "approve_and_auto_approve":
@@ -459,6 +465,42 @@ func (h *Handler) handleAction(action Action) {
 	}
 
 	slog.Info("resolved request from notification", "action", action.ActionKey, "request_id", reqID)
+}
+
+func (h *Handler) handleDetails(notificationID uint32) {
+	h.mu.Lock()
+	reqID, ok := h.requests[notificationID]
+	req := h.requestData[reqID]
+	h.mu.Unlock()
+	if !ok || req == nil {
+		return
+	}
+
+	h.openURL(h.baseURL + "?request=" + reqID)
+
+	// GNOME dismisses a notification after invoking any action. Reissue the
+	// still-pending request after the action completes so approval remains
+	// visible without granting or denying it.
+	time.AfterFunc(150*time.Millisecond, func() {
+		summary, icon := h.notificationMeta(req)
+		newID, err := h.notifier.Notify(summary, h.formatBody(req)+detailsHint(), icon, h.approvalActions())
+		if err != nil {
+			slog.Error("failed to reissue notification after opening details", "error", err, "request_id", reqID)
+			return
+		}
+
+		h.mu.Lock()
+		currentID, pending := h.notifications[reqID]
+		if !pending || currentID != notificationID {
+			h.mu.Unlock()
+			_ = h.notifier.Close(newID)
+			return
+		}
+		delete(h.requests, notificationID)
+		h.notifications[reqID] = newID
+		h.requests[newID] = reqID
+		h.mu.Unlock()
+	})
 }
 
 // OnEvent implements approval.Observer.
@@ -508,6 +550,20 @@ func formatDurationShort(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
+func (h *Handler) approvalActions() []string {
+	return []string{
+		"default", "",
+		"approve", "Approve once",
+		"approve_and_auto_approve", "Approve " + formatDurationShort(h.autoApproveDuration),
+		"deny", "Deny",
+		"details", "Details",
+	}
+}
+
+func detailsHint() string {
+	return " • Select Details for full request information"
+}
+
 func (h *Handler) handleCreated(req *approval.Request) {
 	if h.notificationDelay <= 0 {
 		h.sendNotification(req)
@@ -521,15 +577,9 @@ func (h *Handler) handleCreated(req *approval.Request) {
 func (h *Handler) sendNotification(req *approval.Request) {
 	summary, icon := h.notificationMeta(req)
 	body := h.formatBody(req)
-	durLabel := formatDurationShort(h.autoApproveDuration)
-	actions := []string{
-		"default", "",
-		"approve", "Approve",
-		"approve_and_auto_approve", "Approve " + durLabel,
-		"deny", "Deny",
-	}
+	actions := h.approvalActions()
 
-	id, err := h.notifier.Notify(summary, body, icon, actions)
+	id, err := h.notifier.Notify(summary, body+detailsHint(), icon, actions)
 	if err != nil {
 		slog.Error("failed to send notification", "error", err, "request_id", req.ID)
 		return
@@ -538,6 +588,7 @@ func (h *Handler) sendNotification(req *approval.Request) {
 	h.mu.Lock()
 	h.notifications[req.ID] = id
 	h.requests[id] = req.ID
+	h.requestData[req.ID] = req
 	h.mu.Unlock()
 
 	slog.Debug("sent desktop notification", "request_id", req.ID, "notification_id", id)
@@ -555,6 +606,7 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 	if ok {
 		delete(h.notifications, req.ID)
 		delete(h.requests, notifID)
+		delete(h.requestData, req.ID)
 	}
 	h.mu.Unlock()
 
@@ -612,6 +664,7 @@ func (h *Handler) handleResolved(requestID string) {
 	if ok {
 		delete(h.notifications, requestID)
 		delete(h.requests, notifID)
+		delete(h.requestData, requestID)
 	}
 	h.mu.Unlock()
 
@@ -646,6 +699,125 @@ func commitSubject(msg string) string {
 	return msg
 }
 
+func notificationApplication(req *approval.Request) string {
+	if len(req.SenderInfo.ProcessChain) > 0 && req.SenderInfo.ProcessChain[0].Name != "" {
+		return req.SenderInfo.ProcessChain[0].Name
+	}
+	if req.SenderInfo.InvokerName != "" {
+		return strings.TrimSuffix(req.SenderInfo.InvokerName, ".service")
+	}
+	if req.Client != "" {
+		return req.Client
+	}
+	return "Unknown application"
+}
+
+func requestActionLabel(t approval.RequestType) string {
+	switch t {
+	case approval.RequestTypeSearch:
+		return "Search secrets"
+	case approval.RequestTypeDelete:
+		return "Delete secret"
+	case approval.RequestTypeWrite:
+		return "Write secret"
+	case approval.RequestTypeSSHSign:
+		return "Use SSH key"
+	case approval.RequestTypeUnlock:
+		return "Unlock collection"
+	default:
+		return "Read secret"
+	}
+}
+
+func requestSecretLabel(req *approval.Request) string {
+	if len(req.Items) == 1 {
+		item := req.Items[0]
+		if item.Label != "" && !strings.HasPrefix(item.Label, "org.freedesktop.Secret.") {
+			return item.Label
+		}
+		service := firstAttribute(item.Attributes, "service", "application", "app", "xdg:schema")
+		account := firstAttribute(item.Attributes, "account", "username", "user")
+		purpose := ""
+		if strings.HasSuffix(account, "_accessTokenKey") {
+			account = strings.TrimSuffix(account, "_accessTokenKey")
+			purpose = "access token"
+		}
+		accountRunes := []rune(account)
+		if len(accountRunes) > 8 {
+			account = string(accountRunes[:8]) + "…"
+		}
+
+		description := "Generic secret"
+		switch {
+		case service != "" && purpose != "":
+			description = service + " — " + purpose
+		case service != "":
+			description = service
+		case purpose != "":
+			description = purpose
+		}
+		if account != "" {
+			description += " (account " + account + ")"
+		}
+		return description
+	}
+	if len(req.Items) > 1 {
+		return fmt.Sprintf("%d secrets", len(req.Items))
+	}
+	if len(req.SearchAttributes) > 0 {
+		keys := make([]string, 0, len(req.SearchAttributes))
+		for key := range req.SearchAttributes {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		attrs := make([]string, 0, len(keys))
+		for _, key := range keys {
+			attrs = append(attrs, key+"="+req.SearchAttributes[key])
+		}
+		return strings.Join(attrs, ", ")
+	}
+	return "Unspecified"
+}
+
+func firstAttribute(attrs map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(attrs[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+const maxNotificationProcesses = 2
+
+func (h *Handler) formatProcessChain(b *strings.Builder, chain []approval.ProcessInfo) {
+	writeProcess := func(p approval.ProcessInfo) {
+		b.WriteString(escapeMarkup(p.Name))
+		if h.showPIDs {
+			fmt.Fprintf(b, "[%d]", p.PID)
+		}
+	}
+
+	if len(chain) <= maxNotificationProcesses+1 {
+		for i, process := range chain {
+			if i > 0 {
+				b.WriteString(" ← ")
+			}
+			writeProcess(process)
+		}
+		return
+	}
+
+	for i, process := range chain[:maxNotificationProcesses] {
+		if i > 0 {
+			b.WriteString(" ← ")
+		}
+		writeProcess(process)
+	}
+	fmt.Fprintf(b, " ← … (+%d) ← ", len(chain)-maxNotificationProcesses-1)
+	writeProcess(chain[len(chain)-1])
+}
+
 func (h *Handler) formatBody(req *approval.Request) string {
 	var b strings.Builder
 
@@ -657,35 +829,14 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	// so unescaped markup could forge reassuring content on the consent surface.
 	esc := escapeMarkup
 
-	// writeChain appends the process chain (comm names), escaping each name.
-	writeChain := func(chain []approval.ProcessInfo) {
-		for i, p := range chain {
-			if i == 0 {
-				b.WriteString("\n")
-			} else {
-				b.WriteString(" ← ")
-			}
-			b.WriteString(esc(p.Name))
-			if h.showPIDs {
-				fmt.Fprintf(&b, "[%d]", p.PID)
-			}
-		}
-	}
-
-	// escapedSearchAttrs renders "k=v, k=v" with keys and values escaped.
-	escapedSearchAttrs := func() string {
-		attrs := make([]string, 0, len(req.SearchAttributes))
-		for k, v := range req.SearchAttributes {
-			attrs = append(attrs, fmt.Sprintf("%s=%s", esc(k), esc(v)))
-		}
-		return strings.Join(attrs, ", ")
-	}
-
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		if req.GPGSignInfo != nil {
 			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(req.GPGSignInfo.RepoName), esc(commitSubject(req.GPGSignInfo.CommitMsg)))
-			writeChain(req.SenderInfo.ProcessChain)
+			if len(req.SenderInfo.ProcessChain) > 0 {
+				b.WriteString(" • <b>Process:</b> ")
+				h.formatProcessChain(&b, req.SenderInfo.ProcessChain)
+			}
 		}
 	case approval.RequestTypeSSHSign:
 		// Show key label and destination
@@ -695,49 +846,21 @@ func (h *Handler) formatBody(req *approval.Request) string {
 				fmt.Fprintf(&b, " → %s", esc(dest))
 			}
 		}
-		writeChain(req.SenderInfo.ProcessChain)
-	default:
 		if len(req.SenderInfo.ProcessChain) > 0 {
-			// New format: item label, then process chain (parent → child order)
-			switch req.Type {
-			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
-				if len(req.Items) == 1 {
-					fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].Label))
-				} else {
-					fmt.Fprintf(&b, "<b>%d items</b>", len(req.Items))
-				}
-			case approval.RequestTypeSearch:
-				if len(req.SearchAttributes) > 0 {
-					fmt.Fprintf(&b, "<b>%s</b>", escapedSearchAttrs())
-				} else {
-					b.WriteString("<b>all</b>")
-				}
-			}
-			writeChain(req.SenderInfo.ProcessChain)
-		} else {
-			// Fallback: old format for remote requests without process chain
-			if req.SenderInfo.InvokerName != "" {
-				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", esc(req.SenderInfo.InvokerName), esc(req.Client), req.SenderInfo.PID)
-			} else if req.SenderInfo.PID != 0 {
-				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", esc(req.Client), req.SenderInfo.PID)
-			} else {
-				fmt.Fprintf(&b, "<b>%s</b>: ", esc(req.Client))
-			}
-
-			switch req.Type {
-			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
-				if len(req.Items) == 1 {
-					fmt.Fprintf(&b, "<i>%s</i>", esc(req.Items[0].Label))
-				} else {
-					fmt.Fprintf(&b, "<i>%d items</i>", len(req.Items))
-				}
-			case approval.RequestTypeSearch:
-				if len(req.SearchAttributes) > 0 {
-					fmt.Fprintf(&b, "<i>%s</i>", escapedSearchAttrs())
-				} else {
-					b.WriteString("<i>all</i>")
-				}
-			}
+			b.WriteString(" • <b>Process:</b> ")
+			h.formatProcessChain(&b, req.SenderInfo.ProcessChain)
+		}
+	default:
+		fmt.Fprintf(&b, "<b>Application:</b> %s", esc(notificationApplication(req)))
+		fmt.Fprintf(&b, " • <b>Request:</b> %s", esc(requestActionLabel(req.Type)))
+		fmt.Fprintf(&b, " • <b>Secret:</b> %s", esc(requestSecretLabel(req)))
+		if len(req.SenderInfo.ProcessChain) > 0 {
+			b.WriteString(" • <b>Process:</b> ")
+			h.formatProcessChain(&b, req.SenderInfo.ProcessChain)
+		} else if req.SenderInfo.InvokerName != "" {
+			fmt.Fprintf(&b, " • <b>Process:</b> %s[%d]", esc(req.SenderInfo.InvokerName), req.SenderInfo.PID)
+		} else if req.SenderInfo.PID != 0 {
+			fmt.Fprintf(&b, " • <b>Process:</b> %s[%d]", esc(req.Client), req.SenderInfo.PID)
 		}
 	}
 

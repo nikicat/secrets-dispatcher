@@ -20,3 +20,7 @@ Pick between coalescing pending approvals into one summary notification and
 capping concurrent approval notifications at three (queueing the rest). Test it
 in the Tier-2 VM with more than three concurrent requests, keeping at most
 three open per source while measuring (more measures eviction, not expiry).
+
+## Related
+Tnzb1p (PR #31) re-issues a pending request's notification after GNOME dismisses
+it. Weigh it against the options above before picking one.

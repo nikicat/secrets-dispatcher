@@ -31,4 +31,4 @@ proxy logic but none of these.
 
 - The Tier-2 gate takes about 1.5 minutes with the weekly image cache.
 - Approving through a notification button is not driven in tests yet: GNOME 46
-  exposes the buttons over AT-SPI but with no actions to invoke (task T0004).
+  exposes the buttons over AT-SPI but with no actions to invoke (task Tjqr70).

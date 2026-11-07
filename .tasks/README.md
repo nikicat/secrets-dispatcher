@@ -7,14 +7,15 @@ files by hand, or let Claude Code do it with the
 
 ## File
 
-`NNNN-short-slug.md`. The id is never reused: take the highest id ever used,
-including deleted tasks, plus one. In references the id is written `T0007`
-(`other-repo#T0007` for another repo), so GitHub doesn't link it to PR #7.
+`xxxxx-short-slug.md`, where `xxxxx` is a random id from `0-9a-z` without
+`i l o u`, so tasks made on parallel branches don't clash. Never reuse an id,
+including those of deleted tasks. In references the id is written `T7kq2x`
+(`other-repo#T7kq2x` for another repo), so GitHub doesn't link it to PR #7.
 
 ```markdown
 ---
 status: todo                 # todo | doing | blocked
-deps: [T0005, other-repo#T0012]   # optional; other-repo = same-owner repo name, or owner/repo
+deps: [Tc9wdr, other-repo#Tm3xaj]   # optional; other-repo = same-owner repo name, or owner/repo
 due: 2026-11-07              # optional
 tags: [backend]              # optional
 ---
@@ -32,7 +33,7 @@ Only the title is required; use the sections as the task grows.
 ## Workflow
 
 - **Start / block:** edit `status:`. Write blockers in `deps` or in the body.
-- **Done:** delete the file in the commit that resolves it, with `(task TNNNN)`
+- **Done:** delete the file in the commit that resolves it, with `(task Txxxxx)`
   in the message.
 - **Someone else's task:** ask the author before you close or rewrite it.
 
@@ -40,6 +41,6 @@ Only the title is required; use the sections as the task grows.
 
 ```sh
 git log --diff-filter=D --name-only -- .tasks/   # closed tasks
-git show <commit>^:.tasks/NNNN-slug.md           # read a closed task
-git log -- '.tasks/NNNN-*'                       # everything that touched it
+git show <commit>^:.tasks/xxxxx-slug.md           # read a closed task
+git log -- '.tasks/xxxxx-*'                       # everything that touched it
 ```

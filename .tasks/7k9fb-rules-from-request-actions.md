@@ -14,3 +14,8 @@ that create a durable rule from it or adjust the rule that matched it.
 Decide where the rule is written (append to `config.yaml` and restart, or a
 separate rules file the daemon reloads) and which matchers to prefill from the
 request (`exe`, per ADR 0005).
+
+## Related
+Tytty7 (PR #34) is one concrete design for part of this task. It writes
+exact, approve-only grants to a separate `state_dir/approval-rules.json`.
+Review it before designing from scratch.

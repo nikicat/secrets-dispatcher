@@ -32,6 +32,6 @@ is not shipped.
 - gnome-shell keeps at most three notifications per app
   (`MAX_NOTIFICATIONS_PER_SOURCE`) and destroys the oldest with
   `reason=expired`, which on the bus is indistinguishable from a timeout. A
-  burst of requests can evict a pending approval (task T0001).
+  burst of requests can evict a pending approval (task Thaxg6).
 - `NotificationClosed` and `ActionInvoked` are unicast to the sender, so tests
   observe them only through the notifier's own connection.

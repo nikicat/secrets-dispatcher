@@ -20,7 +20,7 @@ from.
 
 Cryptographic client pairing (SRP, SPAKE2 or a visually confirmed code), which
 would make the transport MITM-resistant independently of SSH, is deferred
-(task T0002).
+(task Tr1wkt).
 
 ## Consequences
 

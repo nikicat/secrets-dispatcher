@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,7 +219,12 @@ serve:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.WithDefaults().Serve.Rules[0].Action; got != approval.RuleApprove {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	out, err := cfg.WithDefaults()
+	if err != nil {
+		t.Fatalf("WithDefaults: %v", err)
+	}
+	if got := out.Serve.Rules[0].Action; got != approval.RuleApprove {
 		t.Fatalf("Action = %q, want %q", got, approval.RuleApprove)
 	}
 	if cfg.Serve.Rules[0].Action != "" {
@@ -277,7 +283,10 @@ func TestWithDefaults(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	cfg := &Config{}
-	out := cfg.WithDefaults()
+	out, err := cfg.WithDefaults()
+	if err != nil {
+		t.Fatalf("WithDefaults: %v", err)
+	}
 
 	if out.Listen != DefaultListenAddr {
 		t.Errorf("Listen = %q, want %q", out.Listen, DefaultListenAddr)
@@ -296,6 +305,71 @@ func TestWithDefaults(t *testing.T) {
 	}
 	if out.Serve.Downstream[0].Path != "/run/user/1000/secrets-dispatcher/sockets" {
 		t.Errorf("Downstream[0].Path = %q", out.Serve.Downstream[0].Path)
+	}
+}
+
+func TestWithDefaultsSSH(t *testing.T) {
+	t.Run("empty fields", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
+		cfg := &Config{SSH: &SSHConfig{}}
+		out, err := cfg.WithDefaults()
+		if err != nil {
+			t.Fatalf("WithDefaults: %v", err)
+		}
+		want := SSHConfig{
+			Upstream: "/tmp/real-agent.sock",
+			Listen:   "/run/user/1000/secrets-dispatcher/ssh-agent.sock",
+		}
+		if *out.SSH != want {
+			t.Errorf("SSH = %+v, want %+v", *out.SSH, want)
+		}
+		if *cfg.SSH != (SSHConfig{}) {
+			t.Errorf("WithDefaults changed the input's SSH section in place")
+		}
+	})
+	t.Run("fields set", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "")
+		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
+		want := SSHConfig{Upstream: "/tmp/up.sock", Listen: "/tmp/agent.sock"}
+		cfg := &Config{
+			Serve: ServeConfig{Downstream: []BusConfig{{Type: BusSocket, Path: "/tmp/bus.sock"}}},
+			SSH:   &want,
+		}
+		out, err := cfg.WithDefaults()
+		if err != nil {
+			t.Fatalf("WithDefaults: %v", err)
+		}
+		if *out.SSH != want {
+			t.Errorf("SSH = %+v, want %+v", *out.SSH, want)
+		}
+	})
+	t.Run("no section", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+		out, err := (&Config{}).WithDefaults()
+		if err != nil {
+			t.Fatalf("WithDefaults: %v", err)
+		}
+		if out.SSH != nil {
+			t.Errorf("SSH = %+v, want nil", *out.SSH)
+		}
+	})
+	t.Run("listen without runtime dir", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "")
+		cfg := &Config{
+			Serve: ServeConfig{Downstream: []BusConfig{{Type: BusSocket, Path: "/tmp/bus.sock"}}},
+			SSH:   &SSHConfig{Upstream: "/tmp/up.sock"},
+		}
+		if _, err := cfg.WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
+			t.Errorf("WithDefaults() error = %v, want ErrNoRuntimeDir", err)
+		}
+	})
+}
+
+func TestWithDefaultsDownstreamWithoutRuntimeDir(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if _, err := (&Config{}).WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
+		t.Errorf("WithDefaults() error = %v, want ErrNoRuntimeDir", err)
 	}
 }
 

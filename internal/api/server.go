@@ -12,44 +12,40 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 // Server is the HTTP API server.
 type Server struct {
-	httpServer     *http.Server
-	auth           *Auth
-	handlers       *Handlers
-	wsHandler      *WSHandler
-	listener       net.Listener
-	unixListener   net.Listener
-	UnixSocketPath string
-	testMode       bool
+	httpServer *http.Server
+	auth       *Auth
+	handlers   *Handlers
+	wsHandler  *WSHandler
+	listener   net.Listener
+	// The directory that holds the API socket. It is empty until ServeAPISocket
+	// runs, and ServeRemote opens the remote sockets in it.
+	runtimeDir config.RuntimeDir
 	// The remote sockets ServeRemote opened. Shutdown closes them under its deadline.
 	remotes []*RemoteServer
 }
 
-// NewServer creates a new API server for single-socket mode.
-// If unixSocketPath is non-empty, the server also listens on that Unix socket
-// to serve the thin client (gpg-sign subcommand).
-func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth, unixSocketPath string, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) (*Server, error) {
+// Creates an API server for single-socket mode, listening on addr.
+func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) (*Server, error) {
 	handlers := NewHandlers(manager, remoteSocket, clientName, auth, trimProcessChain, upstreamNotifier, slowThreshold)
 	wsHandler := NewWSHandler(manager, nil, auth, remoteSocket, clientName)
-	return newServerWithHandlers(addr, handlers, wsHandler, auth, unixSocketPath)
+	return newServerWithHandlers(addr, handlers, wsHandler, auth)
 }
 
-// NewServerWithProvider creates a new API server for multi-socket mode.
-// If unixSocketPath is non-empty, the server also listens on that Unix socket
-// to serve the thin client (gpg-sign subcommand).
-func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth, unixSocketPath string, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) (*Server, error) {
+// Creates an API server for multi-socket mode, listening on addr.
+func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) (*Server, error) {
 	handlers := NewHandlersWithProvider(manager, provider, auth, trimProcessChain, upstreamNotifier, slowThreshold)
 	wsHandler := NewWSHandler(manager, provider, auth, "", "")
-	return newServerWithHandlers(addr, handlers, wsHandler, auth, unixSocketPath)
+	return newServerWithHandlers(addr, handlers, wsHandler, auth)
 }
 
-// Creates an API server listening on addr, and also on unixSocketPath when it is
-// non-empty.
-func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth, unixSocketPath string) (*Server, error) {
+// Creates an API server listening on addr.
+func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth) (*Server, error) {
 
 	// Create the main router
 	rootMux := http.NewServeMux()
@@ -111,25 +107,25 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 		ConnContext: connContext,
 	}
 
-	s := &Server{
+	return &Server{
 		httpServer: httpServer,
 		auth:       auth,
 		handlers:   handlers,
 		wsHandler:  wsHandler,
 		listener:   listener,
-	}
+	}, nil
+}
 
-	if unixSocketPath != "" {
-		unixListener, err := listenUnix(unixSocketPath)
-		if err != nil {
-			listener.Close()
-			return nil, err
-		}
-		s.unixListener = unixListener
-		s.UnixSocketPath = unixSocketPath
+// Opens the API socket in dir and serves the API on it in the background.
+// Shutdown closes it.
+func (s *Server) ServeAPISocket(dir config.RuntimeDir) error {
+	unixListener, err := listenUnix(dir.APISocket())
+	if err != nil {
+		return err
 	}
-
-	return s, nil
+	s.runtimeDir = dir
+	serveInBackground(s.httpServer, unixListener, "Unix socket server error")
+	return nil
 }
 
 // Listens on a new Unix socket at path that only the owner can connect to.
@@ -162,9 +158,6 @@ func serveInBackground(srv *http.Server, listener net.Listener, failure string, 
 // Begins serving HTTP requests in the background.
 func (s *Server) Start() error {
 	serveInBackground(s.httpServer, s.listener, "HTTP server error")
-	if s.unixListener != nil {
-		serveInBackground(s.httpServer, s.unixListener, "Unix socket server error")
-	}
 	return nil
 }
 
@@ -179,9 +172,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var errs []error
 	for _, rs := range s.remotes {
 		errs = append(errs, rs.httpServer.Shutdown(ctx))
-	}
-	if s.unixListener != nil {
-		s.unixListener.Close()
 	}
 	return errors.Join(append(errs, s.httpServer.Shutdown(ctx))...)
 }
@@ -198,6 +188,5 @@ func (s *Server) WSHandler() *WSHandler {
 
 // SetTestMode enables test-only endpoints.
 func (s *Server) SetTestMode(enabled bool) {
-	s.testMode = enabled
 	s.handlers.SetTestMode(enabled)
 }

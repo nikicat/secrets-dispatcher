@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
@@ -20,13 +19,13 @@ type RemoteServer struct {
 	httpServer *http.Server
 }
 
-// Opens the named remote's signing socket beside UnixSocketPath. Errors when the
-// server has no Unix socket.
+// Opens the named remote's signing socket in the server's runtime directory.
+// Errors when the server has no API socket.
 func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
-	if s.UnixSocketPath == "" {
-		return nil, fmt.Errorf("remote %s: the API server has no Unix socket", name)
+	if s.runtimeDir == "" {
+		return nil, fmt.Errorf("remote %s: the API server has no API socket", name)
 	}
-	rs := &RemoteServer{name: name, SocketPath: s.remoteSocketPath(name), manager: s.handlers.manager}
+	rs := &RemoteServer{name: name, SocketPath: s.runtimeDir.RemoteSocket(name), manager: s.handlers.manager}
 	listener, err := listenUnix(rs.SocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("remote %s: %w", name, err)
@@ -37,10 +36,6 @@ func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
 	serveInBackground(rs.httpServer, listener, "remote socket server error", "remote", name)
 	s.remotes = append(s.remotes, rs)
 	return rs, nil
-}
-
-func (s *Server) remoteSocketPath(name config.RemoteName) string {
-	return filepath.Join(filepath.Dir(s.UnixSocketPath), "remote", string(name)+".sock")
 }
 
 // The approval client every request from this remote is filed under.

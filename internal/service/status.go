@@ -30,7 +30,7 @@ func Status() error {
 	for _, name := range allUnitNames {
 		if _, err := os.Stat(filepath.Join(unitsDir, name)); err == nil {
 			installed = append(installed, name)
-			if name == "secrets-dispatcher-bus.socket" {
+			if name == busSocketUnit {
 				takeover = true
 			}
 		}
@@ -75,7 +75,7 @@ func Status() error {
 
 		if takeover {
 			if p.Kind != ProviderDispatcher {
-				problems = append(problems, fmt.Sprintf("installed for takeover but NOT in front — the owner is %s (re-grab? try `systemctl --user restart %s`)", p, unitFileName))
+				problems = append(problems, fmt.Sprintf("installed for takeover but NOT in front — the owner is %s (re-grab? try `systemctl --user restart %s`)", p, proxyServiceUnit))
 			}
 			if !masked {
 				problems = append(problems, "D-Bus activation of org.freedesktop.secrets is not masked — the stock provider can be activated back in front")
@@ -83,7 +83,7 @@ func Status() error {
 			if demoted != shadowed {
 				problems = append(problems, fmt.Sprintf("gnome-keyring demotion is inconsistent (drop-in: %v, autostart shadow: %v) — reinstall or uninstall to converge", demoted, shadowed))
 			}
-			for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-backend.service", unitFileName} {
+			for _, name := range []string{busSocketUnit, backendServiceUnit, proxyServiceUnit} {
 				if state, ok := states[name]; ok && state != "active" {
 					problems = append(problems, fmt.Sprintf("%s is %s", name, state))
 				}
@@ -94,10 +94,10 @@ func Status() error {
 			if masked || demoted || shadowed {
 				problems = append(problems, "remote topology installed but local takeover state present (mask/demotion) — run `service uninstall`, then reinstall")
 			}
-			if state, ok := states[unitFileName]; !ok {
-				problems = append(problems, unitFileName+" is missing while other units are installed — reinstall or uninstall")
+			if state, ok := states[proxyServiceUnit]; !ok {
+				problems = append(problems, proxyServiceUnit+" is missing while other units are installed — reinstall or uninstall")
 			} else if state != "active" {
-				problems = append(problems, fmt.Sprintf("%s is %s", unitFileName, state))
+				problems = append(problems, fmt.Sprintf("%s is %s", proxyServiceUnit, state))
 			}
 			// A running dispatcher in remote topology proxies to whatever owns
 			// org.freedesktop.secrets upstream; if nothing owns it, every secret

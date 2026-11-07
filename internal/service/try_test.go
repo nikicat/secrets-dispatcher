@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 // shortOwnerWait shrinks the ownership-confirmation timeout so tests whose
@@ -28,7 +30,7 @@ func mockOwnerByInstallState(t *testing.T, unitsDir string) {
 	t.Helper()
 	mockBusctlOwner(t, 4242)
 	mockReadlink(t, func(string) (string, error) {
-		if _, err := os.Stat(filepath.Join(unitsDir, unitFileName)); err == nil {
+		if _, err := os.Stat(filepath.Join(unitsDir, proxyServiceUnit)); err == nil {
 			return "/usr/bin/secrets-dispatcher", nil
 		}
 		return "/usr/bin/gnome-keyring-daemon", nil
@@ -43,10 +45,20 @@ func TestTryRefusesWhenInstalled(t *testing.T) {
 
 	unitsDir := filepath.Join(tmpDir, "systemd", "user")
 	require.NoError(t, os.MkdirAll(unitsDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(unitsDir, unitFileName), []byte("x"), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(unitsDir, proxyServiceUnit), []byte("x"), 0644))
 
 	err := Try(context.Background(), TryOptions{})
 	require.ErrorContains(t, err, "already installed")
+}
+
+func TestTryMissingRuntimeDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_RUNTIME_DIR", "")
+
+	err := Try(context.Background(), TryOptions{})
+	require.ErrorIs(t, err, config.ErrNoRuntimeDir)
 }
 
 func TestTryDryRunWritesNothing(t *testing.T) {
@@ -94,7 +106,7 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	// Wait for the trial to be fully installed.
 	trialConfig := filepath.Join(tmpDir, "secrets-dispatcher", "try-config.yaml")
 	require.Eventually(t, func() bool {
-		_, err := os.Stat(filepath.Join(unitsDir, unitFileName))
+		_, err := os.Stat(filepath.Join(unitsDir, proxyServiceUnit))
 		return err == nil
 	}, 10*time.Second, 10*time.Millisecond, "trial never installed the proxy unit")
 

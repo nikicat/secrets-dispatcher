@@ -326,8 +326,8 @@ func runServe(args []string) {
 	}
 
 	// Apply defaults and validate
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
+	cfg, err = cfg.Resolve()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
@@ -572,30 +572,15 @@ func runServe(args []string) {
 	}
 
 	// Set up SSH agent proxy if configured
-	if cfg.SSH != nil {
-		sshUpstream := cfg.SSH.Upstream
-		if sshUpstream == "" {
-			sshUpstream = os.Getenv("SSH_AUTH_SOCK")
-		}
-		if sshUpstream == "" {
+	if ssh := cfg.SSH; ssh != nil {
+		if ssh.Upstream == "" {
 			slog.Error("SSH agent proxy enabled but no upstream socket (set ssh.upstream in config or SSH_AUTH_SOCK)")
 		} else {
-			sshListen := cfg.SSH.Listen
-			if sshListen == "" {
-				runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-				if runtimeDir != "" {
-					sshListen = filepath.Join(runtimeDir, "secrets-dispatcher", "ssh-agent.sock")
-				}
-			}
-			if sshListen == "" {
-				slog.Error("SSH agent proxy: cannot determine listen path (set ssh.listen in config or XDG_RUNTIME_DIR)")
-			} else {
-				sshServer := sshagent.NewServer(sshListen, sshUpstream, approvalMgr, *cfg.Serve.TrimProcessChain, slog.Default())
-				runners = append(runners, func(ctx context.Context) error {
-					return sshServer.Run(ctx)
-				})
-				slog.Info("SSH agent proxy configured", "listen", sshListen, "upstream", sshUpstream)
-			}
+			sshServer := sshagent.NewServer(ssh.Listen, ssh.Upstream, approvalMgr, *cfg.Serve.TrimProcessChain, slog.Default())
+			runners = append(runners, func(ctx context.Context) error {
+				return sshServer.Run(ctx)
+			})
+			slog.Info("SSH agent proxy configured", "listen", ssh.Listen, "upstream", ssh.Upstream)
 		}
 	}
 
@@ -610,20 +595,8 @@ func runServe(args []string) {
 		provider = &multiProvider{providers: providers}
 	}
 
-	// Compute Unix socket path for thin client (gpg-sign subcommand).
-	// Skip in --api-only mode (test/dev use case — no signing pipeline needed).
-	var apiUnixSocket string
-	if !*apiOnly {
-		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-		if runtimeDir == "" {
-			slog.Warn("XDG_RUNTIME_DIR is not set; Unix socket for gpg-sign will not be created")
-		} else {
-			apiUnixSocket = filepath.Join(runtimeDir, "secrets-dispatcher", "api.sock")
-		}
-	}
-
 	// Create API server
-	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
+	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
@@ -635,6 +608,19 @@ func runServe(args []string) {
 		apiServer.SetTestMode(true)
 	}
 
+	// Serve the API socket in the runtime directory, except with --api-only.
+	if !*apiOnly {
+		runtimeDir, err := config.LookupRuntimeDir()
+		if err != nil {
+			slog.Warn("the API socket will not be created", "error", err)
+		} else if err := apiServer.ServeAPISocket(runtimeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "error opening API socket: %v\n", err)
+			os.Exit(1)
+		} else {
+			slog.Info("API socket ready", "socket", runtimeDir.APISocket())
+		}
+	}
+
 	// Start API server
 	if err := apiServer.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "error starting API server: %v\n", err)
@@ -643,9 +629,6 @@ func runServe(args []string) {
 	slog.Info("API server started",
 		"url", "http://"+apiServer.Addr(),
 		"cookie_file", apiServer.CookieFilePath())
-	if apiServer.UnixSocketPath != "" {
-		slog.Info("Unix socket ready for gpg-sign", "socket", apiServer.UnixSocketPath)
-	}
 
 	// Graceful shutdown of API server
 	defer func() {
@@ -770,7 +753,11 @@ func runConfigShow(args []string) {
 	}
 
 	if *defaults {
-		cfg = cfg.WithDefaults()
+		cfg, err = cfg.WithDefaults()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "# %s\n", path)
@@ -843,8 +830,8 @@ func runConfigEdit(args []string) {
 		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
 		return
 	}
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
+	_, err = cfg.Resolve()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: config validation error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
 		return
@@ -878,8 +865,8 @@ func runConfigValidate(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
+	_, err = cfg.Resolve()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}

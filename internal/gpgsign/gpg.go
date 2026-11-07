@@ -2,7 +2,6 @@ package gpgsign
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -79,7 +78,7 @@ func isSignRequest(args []string) bool {
 func passThroughToGPG(args []string, stdin io.Reader) int {
 	gpgPath, err := FindRealGPG()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: cannot locate real gpg for pass-through: %v\n", err)
+		errorf("cannot locate real gpg for pass-through: %v", err)
 		return 2
 	}
 	cmd := exec.Command(gpgPath, args...)
@@ -90,7 +89,7 @@ func passThroughToGPG(args []string, stdin io.Reader) int {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return exitErr.ExitCode()
 		}
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: gpg pass-through failed: %v\n", err)
+		errorf("gpg pass-through failed: %v", err)
 		return 2
 	}
 	return 0

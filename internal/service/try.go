@@ -21,16 +21,6 @@ type TryOptions struct {
 	DryRun bool
 }
 
-// trialConfigPath returns the throwaway config used for the trial. It lives
-// under XDG_RUNTIME_DIR so even a crashed trial leaves nothing after reboot.
-func trialConfigPath() (string, error) {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return "", fmt.Errorf("XDG_RUNTIME_DIR must be set")
-	}
-	return filepath.Join(runtimeDir, "secrets-dispatcher", "try-config.yaml"), nil
-}
-
 // Try puts secrets-dispatcher in front of the current Secret Service for as
 // long as ctx lives, then restores the original setup exactly (US-9). It
 // composes the proven primitives: Install (local mode, detection-driven
@@ -46,10 +36,11 @@ func Try(ctx context.Context, opts TryOptions) error {
 		}
 	}
 
-	trialConfig, err := trialConfigPath()
+	runtimeDir, err := config.LookupRuntimeDir()
 	if err != nil {
 		return err
 	}
+	trialConfig := runtimeDir.TrialConfig()
 	baseConfig := opts.ConfigPath
 	if baseConfig == "" {
 		baseConfig = config.DefaultPath()

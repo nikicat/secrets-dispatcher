@@ -142,7 +142,7 @@ func TestStatusWarnsOnLeftoverMask(t *testing.T) {
 func TestStatusRemoteModeOwnerIsProvider(t *testing.T) {
 	// Remote topology: the stock provider owning the session name is healthy.
 	f := newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
-	f.writeUnits(t, unitFileName)
+	f.writeUnits(t, proxyServiceUnit)
 
 	assert.NoError(t, Status())
 }
@@ -153,7 +153,7 @@ func TestStatusRemoteModeWarnsOnUnowned(t *testing.T) {
 	// the doctor reporting "✓ no problems found" in exactly this state (the
 	// real incident that broke secret access after a stray remote-mode install).
 	f := newStatusFixture(t, "")
-	f.writeUnits(t, unitFileName)
+	f.writeUnits(t, proxyServiceUnit)
 	// Override the exec fakes so busctl reports the name as unowned (the
 	// GetConnectionUnixProcessID call fails), while systemctl still says active.
 	mockExecOutput(t, func(name string, _ ...string) ([]byte, error) {

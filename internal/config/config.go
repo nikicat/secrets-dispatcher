@@ -74,8 +74,10 @@ func (b BusConfig) validate() error {
 	return nil
 }
 
-// WithDefaults returns a copy of cfg with zero-value fields filled from program defaults.
-func (cfg *Config) WithDefaults() *Config {
+// Returns a copy of cfg with zero-value fields filled from program defaults.
+// Errors with ErrNoRuntimeDir when a default it must fill needs the runtime
+// directory and there is none.
+func (cfg *Config) WithDefaults() (*Config, error) {
 	out := *cfg
 	if out.Listen == "" {
 		out.Listen = DefaultListenAddr
@@ -122,7 +124,11 @@ func (cfg *Config) WithDefaults() *Config {
 		s.Upstream = BusConfig{Type: BusSessionBus}
 	}
 	if len(s.Downstream) == 0 {
-		s.Downstream = []BusConfig{{Type: BusSockets, Path: defaultSocketsDir()}}
+		dir, err := LookupRuntimeDir()
+		if err != nil {
+			return nil, fmt.Errorf("no default for serve.downstream: %w", err)
+		}
+		s.Downstream = []BusConfig{{Type: BusSockets, Path: dir.ClientSockets()}}
 	}
 	if len(s.Rules) > 0 {
 		s.Rules = slices.Clone(s.Rules)
@@ -132,7 +138,34 @@ func (cfg *Config) WithDefaults() *Config {
 			}
 		}
 	}
-	return &out
+	if out.SSH != nil {
+		ssh := *out.SSH
+		if ssh.Upstream == "" {
+			ssh.Upstream = os.Getenv("SSH_AUTH_SOCK")
+		}
+		if ssh.Listen == "" {
+			dir, err := LookupRuntimeDir()
+			if err != nil {
+				return nil, fmt.Errorf("no default for ssh.listen: %w", err)
+			}
+			ssh.Listen = dir.SSHAgentSocket()
+		}
+		out.SSH = &ssh
+	}
+	return &out, nil
+}
+
+// Returns a copy of cfg with defaults filled in, ready to run. Errors as
+// WithDefaults and Validate do.
+func (cfg *Config) Resolve() (*Config, error) {
+	out, err := cfg.WithDefaults()
+	if err != nil {
+		return nil, err
+	}
+	if err := out.Validate(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Validate checks the config for logical errors.
@@ -245,15 +278,6 @@ func (r TrustRule) globs() []namedGlob {
 		add("search_attributes["+k+"]", v)
 	}
 	return out
-}
-
-// defaultSocketsDir returns $XDG_RUNTIME_DIR/secrets-dispatcher/sockets.
-func defaultSocketsDir() string {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return ""
-	}
-	return filepath.Join(runtimeDir, "secrets-dispatcher", "sockets")
 }
 
 // Duration wraps time.Duration with YAML unmarshalling for human-readable strings.
@@ -385,10 +409,11 @@ type SecretMatcher struct {
 
 // SSHConfig configures the SSH agent proxy. Nil means disabled.
 type SSHConfig struct {
-	// The real agent's socket. Empty means $SSH_AUTH_SOCK at startup.
+	// The real agent's socket. WithDefaults fills an empty one from
+	// $SSH_AUTH_SOCK.
 	Upstream string `yaml:"upstream"`
-	// The proxy's socket. Empty means
-	// $XDG_RUNTIME_DIR/secrets-dispatcher/ssh-agent.sock.
+	// The proxy's socket. WithDefaults fills an empty one with the runtime
+	// directory's SSHAgentSocket.
 	Listen string `yaml:"listen"`
 }
 

@@ -41,8 +41,8 @@ func TestPlanLocalGnomeKeyringMirrorsInstallOrder(t *testing.T) {
 	dropIn := changeIndex(changes, "write", gkDropInName)
 	shadow := changeIndex(changes, "write", gkAutostartName)
 	sigterm := changeIndex(changes, "signal", "pid 4242")
-	proxyUnit := changeIndex(changes, "write", unitFileName)
-	start := changeIndex(changes, "run", "start "+unitFileName)
+	proxyUnit := changeIndex(changes, "write", proxyServiceUnit)
+	start := changeIndex(changes, "run", "start "+proxyServiceUnit)
 
 	for name, idx := range map[string]int{
 		"config": config, "mask": mask, "drop-in": dropIn, "shadow": shadow,
@@ -97,7 +97,7 @@ func TestPlanRemoteMinimal(t *testing.T) {
 	changes, err := Plan(Options{})
 	require.NoError(t, err)
 
-	assert.GreaterOrEqual(t, changeIndex(changes, "write", unitFileName), 0)
+	assert.GreaterOrEqual(t, changeIndex(changes, "write", proxyServiceUnit), 0)
 	assert.Equal(t, -1, changeIndex(changes, "write", dbusServiceFile), "remote mode must not mask")
 	assert.Equal(t, -1, changeIndex(changes, "signal", ""), "remote mode must not signal anyone")
 	for _, c := range changes {

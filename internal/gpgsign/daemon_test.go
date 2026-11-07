@@ -441,22 +441,3 @@ func TestLoadAuthToken(t *testing.T) {
 		}
 	})
 }
-
-func TestUnixSocketPath(t *testing.T) {
-	t.Run("uses XDG_RUNTIME_DIR", func(t *testing.T) {
-		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-		got := unixSocketPath()
-		want := "/run/user/1000/secrets-dispatcher/api.sock"
-		if got != want {
-			t.Errorf("unixSocketPath() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("falls back to /run/user/<uid>", func(t *testing.T) {
-		t.Setenv("XDG_RUNTIME_DIR", "")
-		got := unixSocketPath()
-		if !strings.HasPrefix(got, "/run/user/") || !strings.HasSuffix(got, "/secrets-dispatcher/api.sock") {
-			t.Errorf("unixSocketPath() = %q, want /run/user/<uid>/secrets-dispatcher/api.sock", got)
-		}
-	})
-}

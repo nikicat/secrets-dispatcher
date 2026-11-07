@@ -10,13 +10,6 @@ sit on older lines, or need a decision or work larger than that branch. Each
 entry is independent; split one out into its own task when you start it.
 
 ## Entries
-- **One owner of the runtime directory.** `$XDG_RUNTIME_DIR/secrets-dispatcher`
-  is derived in about seven places with three fallbacks (none, error,
-  `/run/user/<uid>`); `api.sock` is written by `main.go` and read by
-  `gpgsign.unixSocketPath` with different fallbacks. Fix: one function in config
-  returning the directory, with named paths for `api.sock`, `ssh-agent.sock`,
-  `sockets/`, `remote/<name>.sock`, `backend-bus.sock`; pick one fallback rule
-  (a behaviour change for the thin client).
 - **No auto-approve offer on remote requests.** The web UI
   (`RequestCard.svelte`) and the desktop notification (`notification/desktop.go`)
   offer "approve and auto-approve" on `remote:<name>` requests; the rule it
@@ -61,5 +54,5 @@ entry is independent; split one out into its own task when you start it.
   flag is read.
 
 ## Next
-Pick the runtime-directory owner first: the thin client, the daemon and the
-remote sockets all depend on it.
+The thin-client entries next: one outcome type for both paths, and the local
+path's `signal.NotifyContext`. Both touch `internal/gpgsign` only.

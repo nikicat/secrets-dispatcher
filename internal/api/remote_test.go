@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 )
 
@@ -40,7 +40,8 @@ func newRemoteHarnessExpiring(t *testing.T, timeout time.Duration) *remoteHarnes
 	mgr := approval.NewManager(approval.ManagerConfig{Timeout: timeout, HistoryMax: 100})
 	h := testHandlers(t, mgr)
 	h.resolver.GPGRunner = &fakeGPGRunner{sig: []byte("SIG"), status: []byte("[GNUPG:] SIG_CREATED\n")}
-	server := &Server{handlers: h, httpServer: &http.Server{}, UnixSocketPath: filepath.Join(t.TempDir(), "api.sock")}
+	server := &Server{handlers: h, httpServer: &http.Server{}}
+	require.NoError(t, server.ServeAPISocket(config.RuntimeDir(t.TempDir())))
 	rs, err := server.ServeRemote("nb-home")
 	require.NoError(t, err)
 	t.Cleanup(func() { server.Shutdown(context.Background()) }) //nolint:errcheck
@@ -133,7 +134,7 @@ func TestRemoteSign_ShutdownKeepsItsDeadline(t *testing.T) {
 	require.NoError(t, (<-result).err)
 }
 
-func TestServeRemote_NeedsUnixSocket(t *testing.T) {
+func TestServeRemote_NeedsAPISocket(t *testing.T) {
 	_, err := (&Server{}).ServeRemote("nb-home")
 	assert.Error(t, err)
 }

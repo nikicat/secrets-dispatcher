@@ -1,6 +1,5 @@
 ---
 status: todo
-deps: [Tea918]
 tags: [external-pr, proxy, gnome, bug]
 ---
 # Review PR #36: pin prompter conversations to the accepting prompter

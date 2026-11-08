@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/coder/websocket"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
 
 // roundTripFunc is an adapter to allow the use of ordinary functions as http.RoundTripper.
@@ -81,7 +81,7 @@ func TestCancelSigningRequest_NotFound(t *testing.T) {
 }
 
 // newTestClient creates a DaemonClient that redirects requests to the given httptest server.
-func newTestClient(srv *httptest.Server, token string) *DaemonClient {
+func newTestClient(srv *httptest.Server, token config.AuthToken) *DaemonClient {
 	return &DaemonClient{
 		token: token,
 		httpClient: &http.Client{
@@ -95,7 +95,8 @@ func newTestClient(srv *httptest.Server, token string) *DaemonClient {
 }
 
 func TestPostSigningRequest_Success(t *testing.T) {
-	var gotPath, gotMethod, gotContentType, gotAuth string
+	var gotPath, gotMethod, gotContentType string
+	var gotAuth config.AuthToken
 	var gotBody struct {
 		Client      string                `json:"client"`
 		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
@@ -105,7 +106,7 @@ func TestPostSigningRequest_Success(t *testing.T) {
 		gotPath = r.URL.Path
 		gotMethod = r.Method
 		gotContentType = r.Header.Get("Content-Type")
-		gotAuth = r.Header.Get("Authorization")
+		gotAuth, _ = config.ParseAuthorization(r.Header)
 		json.NewDecoder(r.Body).Decode(&gotBody)
 		json.NewEncoder(w).Encode(map[string]string{"request_id": "req-abc-123"})
 	}))
@@ -133,8 +134,8 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	if gotContentType != "application/json" {
 		t.Errorf("content-type = %q, want application/json", gotContentType)
 	}
-	if gotAuth != "Bearer test-token" {
-		t.Errorf("authorization = %q, want %q", gotAuth, "Bearer test-token")
+	if gotAuth != "test-token" {
+		t.Errorf("Bearer token = %q, want %q", string(gotAuth), "test-token")
 	}
 	if gotBody.Client != "my-repo" {
 		t.Errorf("body.client = %q, want %q", gotBody.Client, "my-repo")
@@ -217,9 +218,9 @@ func TestWaitForResolution_Approved(t *testing.T) {
 	wantSig := []byte("-----BEGIN PGP SIGNATURE-----\ntest\n-----END PGP SIGNATURE-----")
 	srv := wsTestServer(t, []any{
 		wsMsg{
-			Type:      "request_resolved",
+			Type:      wsmsg.RequestResolved,
 			ID:        "req-1",
-			Result:    "approved",
+			Result:    approval.ResolutionApproved,
 			Signature: base64.StdEncoding.EncodeToString(wantSig),
 			GPGStatus: "[GNUPG:] SIG_CREATED",
 		},
@@ -250,7 +251,7 @@ func TestWaitForResolution_Approved(t *testing.T) {
 
 func TestWaitForResolution_Denied(t *testing.T) {
 	srv := wsTestServer(t, []any{
-		wsMsg{Type: "request_resolved", ID: "req-2", Result: "denied"},
+		wsMsg{Type: wsmsg.RequestResolved, ID: "req-2", Result: approval.ResolutionDenied},
 	})
 	defer srv.Close()
 
@@ -272,7 +273,7 @@ func TestWaitForResolution_Denied(t *testing.T) {
 
 func TestWaitForResolution_Expired(t *testing.T) {
 	srv := wsTestServer(t, []any{
-		wsMsg{Type: "request_expired", ID: "req-3"},
+		wsMsg{Type: wsmsg.RequestExpired, ID: "req-3"},
 	})
 	defer srv.Close()
 
@@ -291,7 +292,7 @@ func TestWaitForResolution_Expired(t *testing.T) {
 
 func TestWaitForResolution_Cancelled(t *testing.T) {
 	srv := wsTestServer(t, []any{
-		wsMsg{Type: "request_cancelled", ID: "req-4"},
+		wsMsg{Type: wsmsg.RequestCancelled, ID: "req-4"},
 	})
 	defer srv.Close()
 
@@ -311,9 +312,9 @@ func TestWaitForResolution_Cancelled(t *testing.T) {
 func TestWaitForResolution_GPGFailure(t *testing.T) {
 	srv := wsTestServer(t, []any{
 		wsMsg{
-			Type:      "request_resolved",
+			Type:      wsmsg.RequestResolved,
 			ID:        "req-5",
-			Result:    "approved",
+			Result:    approval.ResolutionApproved,
 			ExitCode:  2,
 			GPGStatus: "[GNUPG:] ERROR",
 		},
@@ -346,14 +347,14 @@ func TestWaitForResolution_IgnoresOtherRequests(t *testing.T) {
 	wantSig := []byte("real-sig")
 	srv := wsTestServer(t, []any{
 		// Messages for other request IDs should be skipped.
-		wsMsg{Type: "request_resolved", ID: "other-req", Result: "denied"},
-		wsMsg{Type: "request_expired", ID: "other-req-2"},
-		wsMsg{Type: "snapshot", ID: "req-6"}, // non-resolution message type
+		wsMsg{Type: wsmsg.RequestResolved, ID: "other-req", Result: approval.ResolutionDenied},
+		wsMsg{Type: wsmsg.RequestExpired, ID: "other-req-2"},
+		wsMsg{Type: wsmsg.Snapshot, ID: "req-6"}, // non-resolution message type
 		// The real resolution for our request.
 		wsMsg{
-			Type:      "request_resolved",
+			Type:      wsmsg.RequestResolved,
 			ID:        "req-6",
-			Result:    "approved",
+			Result:    approval.ResolutionApproved,
 			Signature: base64.StdEncoding.EncodeToString(wantSig),
 		},
 	})
@@ -378,7 +379,7 @@ func TestWaitForResolution_IgnoresOtherRequests(t *testing.T) {
 func TestWaitForResolution_ContextCancelled(t *testing.T) {
 	// Server that never sends our message — the context will cancel first.
 	srv := wsTestServer(t, []any{
-		wsMsg{Type: "snapshot", ID: "req-7"},
+		wsMsg{Type: wsmsg.Snapshot, ID: "req-7"},
 	})
 	defer srv.Close()
 
@@ -386,77 +387,11 @@ func TestWaitForResolution_ContextCancelled(t *testing.T) {
 	defer conn.CloseNow()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	client := &DaemonClient{}
 	_, _, _, _, err := client.WaitForResolution(ctx, conn, "req-7")
 	if err == nil {
 		t.Fatal("expected error for cancelled context, got nil")
 	}
-}
-
-func TestLoadAuthToken(t *testing.T) {
-	t.Run("reads token from cookie file", func(t *testing.T) {
-		dir := t.TempDir()
-		cookieDir := filepath.Join(dir, "secrets-dispatcher")
-		if err := os.MkdirAll(cookieDir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(cookieDir, ".cookie"), []byte("my-secret-token\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		t.Setenv("XDG_STATE_HOME", dir)
-		token, err := loadAuthToken()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if token != "my-secret-token" {
-			t.Errorf("token = %q, want %q", token, "my-secret-token")
-		}
-	})
-
-	t.Run("returns error for missing file", func(t *testing.T) {
-		t.Setenv("XDG_STATE_HOME", t.TempDir())
-		_, err := loadAuthToken()
-		if err == nil {
-			t.Fatal("expected error for missing cookie file, got nil")
-		}
-	})
-
-	t.Run("returns error for empty file", func(t *testing.T) {
-		dir := t.TempDir()
-		cookieDir := filepath.Join(dir, "secrets-dispatcher")
-		if err := os.MkdirAll(cookieDir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(cookieDir, ".cookie"), []byte(""), 0o600); err != nil {
-			t.Fatal(err)
-		}
-
-		t.Setenv("XDG_STATE_HOME", dir)
-		_, err := loadAuthToken()
-		if err == nil {
-			t.Fatal("expected error for empty cookie file, got nil")
-		}
-	})
-}
-
-func TestUnixSocketPath(t *testing.T) {
-	t.Run("uses XDG_RUNTIME_DIR", func(t *testing.T) {
-		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-		got := unixSocketPath()
-		want := "/run/user/1000/secrets-dispatcher/api.sock"
-		if got != want {
-			t.Errorf("unixSocketPath() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("falls back to /run/user/<uid>", func(t *testing.T) {
-		t.Setenv("XDG_RUNTIME_DIR", "")
-		got := unixSocketPath()
-		if !strings.HasPrefix(got, "/run/user/") || !strings.HasSuffix(got, "/secrets-dispatcher/api.sock") {
-			t.Errorf("unixSocketPath() = %q, want /run/user/<uid>/secrets-dispatcher/api.sock", got)
-		}
-	})
 }

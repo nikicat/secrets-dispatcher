@@ -1,20 +1,19 @@
 package api
 
 import (
-	"os"
-	"path/filepath"
+	"encoding/base64"
+	"fmt"
+	"io/fs"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/stretchr/testify/require"
 )
 
 func TestJWTGenerateAndValidate(t *testing.T) {
-	// Create a temporary directory for the test
-	tmpDir := t.TempDir()
-	auth, err := NewAuth(tmpDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	auth := newTestAuth(t)
 
 	// Generate a JWT
 	token, err := auth.GenerateJWT()
@@ -47,11 +46,7 @@ func TestJWTGenerateAndValidate(t *testing.T) {
 }
 
 func TestJWTInvalidSignature(t *testing.T) {
-	tmpDir := t.TempDir()
-	auth, err := NewAuth(tmpDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	auth := newTestAuth(t)
 
 	token, err := auth.GenerateJWT()
 	if err != nil {
@@ -73,45 +68,26 @@ func TestJWTInvalidSignature(t *testing.T) {
 }
 
 func TestJWTExpired(t *testing.T) {
-	tmpDir := t.TempDir()
-	auth, err := NewAuth(tmpDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	auth := newTestAuth(t)
 
-	// Create an expired token manually
-	// We'll modify the auth's internal state to create a token that's already expired
-	// This is a bit hacky but avoids waiting for real expiry
+	expired := time.Now().Add(-time.Minute)
+	token := signJWT(auth, fmt.Sprintf(`{"iat":%d,"exp":%d,"jti":"expired"}`,
+		expired.Add(-jwtExpiry).Unix(), expired.Unix()))
 
-	// Instead, let's create a test with a different approach:
-	// We'll validate a token that has an exp in the past
+	_, err := auth.ValidateJWT(token)
+	require.ErrorContains(t, err, "token expired")
+}
 
-	// Generate a valid token first to get the format right
-	token, err := auth.GenerateJWT()
-	if err != nil {
-		t.Fatalf("GenerateJWT failed: %v", err)
-	}
-
-	// Parse and modify the claims to make it expired
-	parts := strings.Split(token, ".")
-
-	// The token should be valid initially
-	_, err = auth.ValidateJWT(token)
-	if err != nil {
-		t.Fatalf("Fresh token should be valid: %v", err)
-	}
-
-	// We can't easily test expiry without time manipulation,
-	// but we verified the format and basic validation works
-	_ = parts
+// Returns a JWT that auth signs over claims, a JSON object, so a test can
+// present claims that GenerateJWT never mints.
+func signJWT(auth *Auth, claims string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	signingInput := header + "." + base64.RawURLEncoding.EncodeToString([]byte(claims))
+	return signingInput + "." + auth.sign(signingInput)
 }
 
 func TestJWTInvalidFormat(t *testing.T) {
-	tmpDir := t.TempDir()
-	auth, err := NewAuth(tmpDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	auth := newTestAuth(t)
 
 	tests := []struct {
 		name  string
@@ -135,18 +111,8 @@ func TestJWTInvalidFormat(t *testing.T) {
 
 func TestJWTDifferentSecrets(t *testing.T) {
 	// Create two auth instances with different tokens
-	tmpDir1 := t.TempDir()
-	tmpDir2 := t.TempDir()
-
-	auth1, err := NewAuth(tmpDir1)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
-
-	auth2, err := NewAuth(tmpDir2)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	auth1 := newTestAuth(t)
+	auth2 := newTestAuth(t)
 
 	// Generate token with auth1
 	token, err := auth1.GenerateJWT()
@@ -168,11 +134,7 @@ func TestJWTDifferentSecrets(t *testing.T) {
 }
 
 func TestGenerateLoginURL(t *testing.T) {
-	tmpDir := t.TempDir()
-	auth, err := NewAuth(tmpDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	auth := newTestAuth(t)
 
 	addr := "127.0.0.1:8484"
 	url, err := auth.GenerateLoginURL(addr)
@@ -199,16 +161,16 @@ func TestGenerateLoginURL(t *testing.T) {
 }
 
 func TestLoadAuth(t *testing.T) {
-	tmpDir := t.TempDir()
+	dir := config.StateDir(t.TempDir())
 
 	// Create initial auth
-	auth1, err := NewAuth(tmpDir)
+	auth1, err := NewAuth(dir)
 	if err != nil {
 		t.Fatalf("NewAuth failed: %v", err)
 	}
 
 	// Load auth from same directory
-	auth2, err := LoadAuth(tmpDir)
+	auth2, err := LoadAuth(dir)
 	if err != nil {
 		t.Fatalf("LoadAuth failed: %v", err)
 	}
@@ -231,29 +193,6 @@ func TestLoadAuth(t *testing.T) {
 }
 
 func TestLoadAuthNotExists(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Try to load from directory without cookie file
-	_, err := LoadAuth(tmpDir)
-	if err == nil {
-		t.Error("LoadAuth should fail when cookie file doesn't exist")
-	}
-	if !os.IsNotExist(err) {
-		t.Errorf("Error should be 'not exist', got: %v", err)
-	}
-}
-
-func TestLoadAuthInvalidContent(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create an empty cookie file
-	cookiePath := filepath.Join(tmpDir, cookieFileName)
-	if err := os.WriteFile(cookiePath, []byte(""), 0600); err != nil {
-		t.Fatalf("Failed to write cookie file: %v", err)
-	}
-
-	_, err := LoadAuth(tmpDir)
-	if err == nil {
-		t.Error("LoadAuth should fail with empty cookie file")
-	}
+	_, err := LoadAuth(config.StateDir(t.TempDir()))
+	require.ErrorIs(t, err, fs.ErrNotExist)
 }

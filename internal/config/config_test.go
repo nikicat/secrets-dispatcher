@@ -1,11 +1,15 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
 func TestLoadFullConfig(t *testing.T) {
@@ -110,12 +114,44 @@ serve:
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	cfg, err := Load("/nonexistent/path/config.yaml")
-	if err != nil {
-		t.Fatalf("Load: expected nil error for missing file, got %v", err)
+	path := "/nonexistent/path/config.yaml"
+	_, err := Load(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Load() error = %v, want os.ErrNotExist", err)
 	}
-	if cfg.StateDir != "" || cfg.Listen != "" {
-		t.Errorf("expected empty config, got %+v", cfg)
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("Load() error = %v, want it to name %s", err, path)
+	}
+}
+
+func TestLoadDefaultMissingFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg, err := LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault() error = %v", err)
+	}
+	if !reflect.DeepEqual(cfg, &Config{}) {
+		t.Errorf("LoadDefault() = %+v, want an empty config", cfg)
+	}
+}
+
+func TestPathOrDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	want, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath() error = %v", err)
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"/etc/custom.yaml", "/etc/custom.yaml"},
+		{"", want},
+	} {
+		got, err := PathOrDefault(tc.in)
+		if err != nil {
+			t.Fatalf("PathOrDefault(%q) error = %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("PathOrDefault(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -159,6 +195,76 @@ serve:
 	}
 }
 
+func TestLoadRejectsUnknownEnumValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, wantErr string
+	}{
+		{
+			name: "rule action",
+			yaml: `
+serve:
+  rules:
+    - name: bad-rule
+      action: block
+`,
+			wantErr: `action must be "approve", "ignore" or "deny", got "block"`,
+		},
+		{
+			name: "upstream type",
+			yaml: `
+serve:
+  upstream:
+    type: tcp
+`,
+			wantErr: `bus type must be "session_bus", "socket" or "sockets", got "tcp"`,
+		},
+		{
+			name: "downstream type",
+			yaml: `
+serve:
+  downstream:
+    - type: system_bus
+`,
+			wantErr: `got "system_bus"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			os.WriteFile(path, []byte(tc.yaml), 0o644)
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Load() error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestRuleActionDefaultsToApprove(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(path, []byte(`
+serve:
+  rules:
+    - name: no-action
+      process:
+        exe: /usr/bin/git
+`), 0o644)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	out, err := cfg.WithDefaults()
+	if err != nil {
+		t.Fatalf("WithDefaults: %v", err)
+	}
+	if got := out.Serve.Rules[0].Action; got != approval.RuleApprove {
+		t.Fatalf("Action = %q, want %q", got, approval.RuleApprove)
+	}
+	if cfg.Serve.Rules[0].Action != "" {
+		t.Fatalf("WithDefaults changed the loaded config's rules in place")
+	}
+}
+
 func TestNotificationsFalseVsUnset(t *testing.T) {
 	dir := t.TempDir()
 
@@ -197,11 +303,12 @@ serve:
 }
 
 func TestDefaultPath(t *testing.T) {
-	// With XDG_CONFIG_HOME set
 	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
-	got := DefaultPath()
-	want := "/custom/config/secrets-dispatcher/config.yaml"
-	if got != want {
+	got, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath: %v", err)
+	}
+	if want := "/custom/config/secrets-dispatcher/config.yaml"; got != want {
 		t.Errorf("DefaultPath() = %q, want %q", got, want)
 	}
 }
@@ -210,7 +317,10 @@ func TestWithDefaults(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	cfg := &Config{}
-	out := cfg.WithDefaults()
+	out, err := cfg.WithDefaults()
+	if err != nil {
+		t.Fatalf("WithDefaults: %v", err)
+	}
 
 	if out.Listen != DefaultListenAddr {
 		t.Errorf("Listen = %q, want %q", out.Listen, DefaultListenAddr)
@@ -229,6 +339,71 @@ func TestWithDefaults(t *testing.T) {
 	}
 	if out.Serve.Downstream[0].Path != "/run/user/1000/secrets-dispatcher/sockets" {
 		t.Errorf("Downstream[0].Path = %q", out.Serve.Downstream[0].Path)
+	}
+}
+
+func TestWithDefaultsSSH(t *testing.T) {
+	t.Run("empty fields", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
+		cfg := &Config{SSH: &SSHConfig{}}
+		out, err := cfg.WithDefaults()
+		if err != nil {
+			t.Fatalf("WithDefaults: %v", err)
+		}
+		want := SSHConfig{
+			Upstream: "/tmp/real-agent.sock",
+			Listen:   "/run/user/1000/secrets-dispatcher/ssh-agent.sock",
+		}
+		if *out.SSH != want {
+			t.Errorf("SSH = %+v, want %+v", *out.SSH, want)
+		}
+		if *cfg.SSH != (SSHConfig{}) {
+			t.Errorf("WithDefaults changed the input's SSH section in place")
+		}
+	})
+	t.Run("fields set", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "")
+		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
+		want := SSHConfig{Upstream: "/tmp/up.sock", Listen: "/tmp/agent.sock"}
+		cfg := &Config{
+			Serve: ServeConfig{Downstream: []BusConfig{{Type: BusSocket, Path: "/tmp/bus.sock"}}},
+			SSH:   &want,
+		}
+		out, err := cfg.WithDefaults()
+		if err != nil {
+			t.Fatalf("WithDefaults: %v", err)
+		}
+		if *out.SSH != want {
+			t.Errorf("SSH = %+v, want %+v", *out.SSH, want)
+		}
+	})
+	t.Run("no section", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+		out, err := (&Config{}).WithDefaults()
+		if err != nil {
+			t.Fatalf("WithDefaults: %v", err)
+		}
+		if out.SSH != nil {
+			t.Errorf("SSH = %+v, want nil", *out.SSH)
+		}
+	})
+	t.Run("listen without runtime dir", func(t *testing.T) {
+		t.Setenv("XDG_RUNTIME_DIR", "")
+		cfg := &Config{
+			Serve: ServeConfig{Downstream: []BusConfig{{Type: BusSocket, Path: "/tmp/bus.sock"}}},
+			SSH:   &SSHConfig{Upstream: "/tmp/up.sock"},
+		}
+		if _, err := cfg.WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
+			t.Errorf("WithDefaults() error = %v, want ErrNoRuntimeDir", err)
+		}
+	})
+}
+
+func TestWithDefaultsDownstreamWithoutRuntimeDir(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "")
+	if _, err := (&Config{}).WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
+		t.Errorf("WithDefaults() error = %v, want ErrNoRuntimeDir", err)
 	}
 }
 
@@ -320,18 +495,6 @@ func TestValidate(t *testing.T) {
 					Process: &ProcessMatcher{Name: "epiphany-search"},
 				}},
 			}},
-		},
-		{
-			name: "invalid rule action",
-			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
-				Rules: []TrustRule{{
-					Name:   "bad-rule",
-					Action: "block",
-				}},
-			}},
-			wantErr: `action must be "approve", "ignore", or "deny"`,
 		},
 		{
 			name: "valid args rule",

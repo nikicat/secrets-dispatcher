@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,7 +35,7 @@ const validGPGSignBody = `{
 // TestHandleGPGSignRequest_ValidBody verifies Case 6:
 // POST with a valid body returns 200 and a non-empty request_id.
 func TestHandleGPGSignRequest_ValidBody(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
@@ -69,8 +70,7 @@ func TestHandleGPGSignRequest_ValidBody(t *testing.T) {
 // TestHandleGPGSignRequest_MissingGPGSignInfo verifies Case 7:
 // POST without gpg_sign_info returns 400.
 func TestHandleGPGSignRequest_MissingGPGSignInfo(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
 		strings.NewReader(`{"client":"test"}`))
@@ -88,7 +88,7 @@ func TestHandleGPGSignRequest_MissingGPGSignInfo(t *testing.T) {
 // commit bytes has nothing to sign and nothing to bind the approval display
 // to, so it must fail loudly with 400 instead of rendering blank fields.
 func TestHandleGPGSignRequest_MissingCommitObject(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
 	body := `{
@@ -115,8 +115,7 @@ func TestHandleGPGSignRequest_MissingCommitObject(t *testing.T) {
 // TestHandleGPGSignRequest_WrongMethod verifies Case 8:
 // GET to the endpoint returns 405 Method Not Allowed.
 func TestHandleGPGSignRequest_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/gpg-sign/request", nil)
 	rr := httptest.NewRecorder()
@@ -132,8 +131,7 @@ func TestHandleGPGSignRequest_WrongMethod(t *testing.T) {
 // After a successful POST, the pending list includes the request and its
 // gpg_sign_info.key_id is visible.
 func TestHandleGPGSignRequest_KeyIDVisibleInPendingList(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	// POST to create the request.
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
@@ -183,7 +181,7 @@ func TestHandleGPGSignRequest_KeyIDVisibleInPendingList(t *testing.T) {
 // display fields and derive them from the bytes it will actually sign, so the
 // approval prompt reflects the real payload.
 func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
 	// The bytes that will actually be signed describe an attacker identity and a
@@ -239,7 +237,7 @@ func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
 // re-derived from the signed tag bytes — not trusted from a client that lies
 // about them (here claiming a benign commit).
 func TestHandleGPGSignRequest_DisplayBoundToTagObject(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
 	tagObject := "object 1111111111111111111111111111111111111111\n" +
@@ -300,9 +298,9 @@ func (o *wsEventObserver) OnEvent(event approval.Event) {
 		return
 	}
 	msg := WSMessage{
-		Type:   "request_resolved",
+		Type:   wsmsg.RequestResolved,
 		ID:     event.Request.ID,
-		Result: "approved",
+		Result: approval.ResolutionApproved,
 	}
 	if event.Request.Type == approval.RequestTypeGPGSign {
 		msg.Signature = base64.StdEncoding.EncodeToString([]byte("PLACEHOLDER_SIGNATURE"))
@@ -349,11 +347,7 @@ func (f *fakeGPGRunner) RunGPG(_ /* path */, _ /* keyID */ string, _ /* commit *
 // whose exe matches the rule signs without a prompt) is exercised end-to-end by
 // the podman E2E suite, where real processes with distinct exes exist.
 func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:             5 * time.Second,
-		HistoryMax:          100,
-		AutoApproveDuration: time.Minute,
-	})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 	handlers.resolver.GPGRunner = &fakeGPGRunner{
 		sig:    []byte("FAKE_SIG"),
@@ -385,11 +379,7 @@ func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
 // consulted by CheckAutoApproveRules and matches a caller whose invoker exe
 // equals the rule's — never merely its comm.
 func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:             5 * time.Second,
-		HistoryMax:          100,
-		AutoApproveDuration: time.Minute,
-	})
+	mgr := newTestManager()
 
 	const pid = 4242
 	exeSender := approval.SenderInfo{
@@ -417,11 +407,7 @@ func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
 // an auto-approve rule whose invoker does not match must NOT short-circuit; the
 // request still enters the pending queue and waits for a desktop notification.
 func TestHandleGPGSignRequest_NoMatchingRuleStaysPending(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:             5 * time.Second,
-		HistoryMax:          100,
-		AutoApproveDuration: time.Minute,
-	})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 	handlers.resolver.GPGRunner = &fakeGPGRunner{}
 
@@ -449,7 +435,7 @@ func TestHandleGPGSignRequest_NoMatchingRuleStaysPending(t *testing.T) {
 // When a gpg_sign request is approved, the resulting WSMessage has a non-empty
 // Signature field.
 func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := newTestManager()
 	obs := &wsEventObserver{}
 	mgr.Subscribe(obs)
 
@@ -480,10 +466,10 @@ func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
 	}
 
 	msg := msgs[0]
-	if msg.Type != "request_resolved" {
+	if msg.Type != wsmsg.RequestResolved {
 		t.Errorf("expected type 'request_resolved', got %q", msg.Type)
 	}
-	if msg.Result != "approved" {
+	if msg.Result != approval.ResolutionApproved {
 		t.Errorf("expected result 'approved', got %q", msg.Result)
 	}
 	if msg.Signature == "" {

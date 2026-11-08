@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 // Secrets-only demotion of gnome-keyring (spike-validated on Ubuntu 24.04
@@ -51,15 +53,11 @@ Name=Secret Storage Service
 Hidden=true
 `
 
-// autostartDir returns the user XDG autostart directory.
+// Returns the user XDG autostart directory, under the XDG config home.
 func autostartDir() (string, error) {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		configHome = filepath.Join(home, ".config")
+	configHome, err := config.ConfigHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(configHome, "autostart"), nil
 }

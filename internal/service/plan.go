@@ -13,10 +13,11 @@ import (
 // from. Shared by Install (the executor) and Plan (the --dry-run view) so the
 // two cannot disagree about mode, paths, or the proxy command line.
 type installInputs struct {
-	mode       string
-	runtimeDir string
-	configPath string
-	execStart  string // proxy unit ExecStart
+	mode        string
+	runtimeDir  config.RuntimeDir
+	configPath  string
+	execStart   string // proxy unit ExecStart
+	backendPath string // private backend selector, as Options.BackendPath
 }
 
 func resolveInstallInputs(opts Options) (installInputs, error) {
@@ -30,9 +31,9 @@ func resolveInstallInputs(opts Options) (installInputs, error) {
 		return installInputs{}, fmt.Errorf("unknown mode %q (must be remote, local, or full)", mode)
 	}
 
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return installInputs{}, fmt.Errorf("XDG_RUNTIME_DIR must be set")
+	runtimeDir, err := config.LookupRuntimeDir()
+	if err != nil {
+		return installInputs{}, err
 	}
 
 	self, err := os.Executable()
@@ -44,42 +45,40 @@ func resolveInstallInputs(opts Options) (installInputs, error) {
 		return installInputs{}, fmt.Errorf("resolve executable: %w", err)
 	}
 
-	configPath := opts.ConfigPath
-	if configPath == "" {
-		configPath = config.DefaultPath()
-		if configPath == "" {
-			return installInputs{}, fmt.Errorf("cannot determine config path (is HOME set?)")
-		}
+	configPath, err := config.PathOrDefault(opts.ConfigPath)
+	if err != nil {
+		return installInputs{}, err
 	}
 
 	return installInputs{
-		mode:       mode,
-		runtimeDir: runtimeDir,
-		configPath: configPath,
-		execStart:  self + " serve --config " + configPath,
+		mode:        mode,
+		runtimeDir:  runtimeDir,
+		configPath:  configPath,
+		execStart:   self + " serve --config " + configPath,
+		backendPath: opts.BackendPath,
 	}, nil
 }
 
-// buildUnits returns the unit files (name -> content) a mode installs.
+// Returns the unit files (name -> content) the mode installs.
 // provider drives the detection-driven backend default (resolveBackendExec).
-func buildUnits(mode, execStart string, provider Provider, backendPath string) (map[string]string, error) {
+func (in installInputs) units(provider Provider) (map[string]string, error) {
 	needed := make(map[string]string)
-	switch mode {
+	switch in.mode {
 	case "remote":
-		needed[unitFileName] = fmt.Sprintf(unitTemplate, execStart)
+		needed[proxyServiceUnit] = fmt.Sprintf(unitTemplate, in.execStart)
 	case "local", "full":
 		dbusDaemon, err := lookPathFunc("dbus-daemon")
 		if err != nil {
 			return nil, fmt.Errorf("find dbus-daemon: %w", err)
 		}
-		backendExec, err := resolveBackendExec(backendPath, provider)
+		backendExec, err := resolveBackendExec(in.backendPath, provider)
 		if err != nil {
 			return nil, err
 		}
-		needed["secrets-dispatcher-bus.socket"] = busSocketTemplate
-		needed["secrets-dispatcher-bus.service"] = fmt.Sprintf(busServiceTemplate, dbusDaemon)
-		needed["secrets-dispatcher-backend.service"] = fmt.Sprintf(backendServiceTemplate, backendExec)
-		needed[unitFileName] = fmt.Sprintf(localProxyTemplate, execStart)
+		needed[busSocketUnit] = fmt.Sprintf(busSocketTemplate, config.SystemdRuntimeDir.BackendBusSocket())
+		needed[busServiceUnit] = fmt.Sprintf(busServiceTemplate, dbusDaemon)
+		needed[backendServiceUnit] = fmt.Sprintf(backendServiceTemplate, backendExec, config.SystemdRuntimeDir.BackendBusSocket())
+		needed[proxyServiceUnit] = fmt.Sprintf(localProxyTemplate, in.execStart)
 	}
 	return needed, nil
 }
@@ -190,7 +189,7 @@ func Plan(opts Options) ([]Change, error) {
 		}
 	}
 
-	needed, err := buildUnits(in.mode, in.execStart, provider, opts.BackendPath)
+	needed, err := in.units(provider)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +197,7 @@ func Plan(opts Options) ([]Change, error) {
 		path := filepath.Join(unitsDir, name)
 		if content, ok := needed[name]; ok {
 			note := ""
-			if name == "secrets-dispatcher-backend.service" {
+			if name == backendServiceUnit {
 				// Surface the resolved backend — the one non-obvious content choice.
 				note = "private backend: " + execStartOf(content)
 			}
@@ -210,14 +209,14 @@ func Plan(opts Options) ([]Change, error) {
 
 	changes = append(changes, Change{"run", "systemctl --user daemon-reload", ""})
 	if in.mode != "remote" {
-		changes = append(changes, Change{"run", "systemctl --user enable secrets-dispatcher-bus.socket", ""})
+		changes = append(changes, Change{"run", "systemctl --user enable " + busSocketUnit, ""})
 	}
-	changes = append(changes, Change{"run", "systemctl --user enable " + unitFileName, ""})
+	changes = append(changes, Change{"run", "systemctl --user enable " + proxyServiceUnit, ""})
 	if opts.Start {
 		if in.mode != "remote" {
-			changes = append(changes, Change{"run", "systemctl --user start secrets-dispatcher-bus.socket", ""})
+			changes = append(changes, Change{"run", "systemctl --user start " + busSocketUnit, ""})
 		}
-		changes = append(changes, Change{"run", "systemctl --user start " + unitFileName, ""})
+		changes = append(changes, Change{"run", "systemctl --user start " + proxyServiceUnit, ""})
 	}
 	return changes, nil
 }

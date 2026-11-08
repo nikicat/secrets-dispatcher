@@ -68,7 +68,7 @@ func TestInstallRemoteWritesProxyUnit(t *testing.T) {
 	dir := filepath.Join(tmpDir, "systemd", "user")
 
 	// Proxy unit should exist.
-	content, err := os.ReadFile(filepath.Join(dir, unitFileName))
+	content, err := os.ReadFile(filepath.Join(dir, proxyServiceUnit))
 	if err != nil {
 		t.Fatalf("read proxy unit: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestInstallRemoteSystemctlCalls(t *testing.T) {
 
 	expected := []string{
 		"daemon-reload",
-		"enable " + unitFileName,
+		"enable " + proxyServiceUnit,
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -167,8 +167,8 @@ func TestInstallRemoteWithStart(t *testing.T) {
 
 	expected := []string{
 		"daemon-reload",
-		"enable " + unitFileName,
-		"start " + unitFileName,
+		"enable " + proxyServiceUnit,
+		"start " + proxyServiceUnit,
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -199,7 +199,7 @@ func TestInstallCustomConfigPath(t *testing.T) {
 	}
 
 	// ExecStart should reference the custom path.
-	unitPath := filepath.Join(tmpDir, "systemd", "user", unitFileName)
+	unitPath := filepath.Join(tmpDir, "systemd", "user", proxyServiceUnit)
 	content, _ := os.ReadFile(unitPath)
 	if !strings.Contains(string(content), "--config "+customConfig) {
 		t.Error("ExecStart should reference custom config path")
@@ -259,7 +259,7 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	}
 
 	// Proxy service (local variant).
-	content, _ = os.ReadFile(filepath.Join(dir, unitFileName))
+	content, _ = os.ReadFile(filepath.Join(dir, proxyServiceUnit))
 	s = string(content)
 	if !strings.Contains(s, "serve --config") {
 		t.Error("proxy service missing 'serve --config'")
@@ -323,7 +323,7 @@ func TestInstallLocalSystemctlCalls(t *testing.T) {
 	expected := []string{
 		"daemon-reload",
 		"enable secrets-dispatcher-bus.socket",
-		"enable " + unitFileName,
+		"enable " + proxyServiceUnit,
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -353,9 +353,9 @@ func TestInstallLocalWithStart(t *testing.T) {
 	expected := []string{
 		"daemon-reload",
 		"enable secrets-dispatcher-bus.socket",
-		"enable " + unitFileName,
+		"enable " + proxyServiceUnit,
 		"start secrets-dispatcher-bus.socket",
-		"start " + unitFileName,
+		"start " + proxyServiceUnit,
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -510,7 +510,7 @@ func TestInstallSwitchLocalToRemoteRemovesStaleUnits(t *testing.T) {
 	}
 
 	// Only proxy unit should remain.
-	if _, err := os.Stat(filepath.Join(dir, unitFileName)); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, proxyServiceUnit)); err != nil {
 		t.Error("proxy unit should exist")
 	}
 	for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-bus.service", "secrets-dispatcher-backend.service"} {
@@ -639,12 +639,7 @@ func TestInstallMissingRuntimeDir(t *testing.T) {
 	mockSystemctl(t)
 
 	err := Install(Options{})
-	if err == nil {
-		t.Fatal("expected error when XDG_RUNTIME_DIR is empty")
-	}
-	if !strings.Contains(err.Error(), "XDG_RUNTIME_DIR") {
-		t.Errorf("error should mention XDG_RUNTIME_DIR, got: %v", err)
-	}
+	require.ErrorIs(t, err, config.ErrNoRuntimeDir)
 }
 
 func TestInstallUnknownMode(t *testing.T) {
@@ -674,7 +669,7 @@ func TestUninstall(t *testing.T) {
 	// Create a single unit file (remote mode).
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	os.MkdirAll(dir, 0755)
-	unitPath := filepath.Join(dir, unitFileName)
+	unitPath := filepath.Join(dir, proxyServiceUnit)
 	os.WriteFile(unitPath, []byte("fake"), 0644)
 
 	calls := mockSystemctl(t)
@@ -738,7 +733,7 @@ func TestUnitPath(t *testing.T) {
 		t.Fatalf("UnitPath() error: %v", err)
 	}
 
-	want := filepath.Join(tmpDir, "systemd", "user", unitFileName)
+	want := filepath.Join(tmpDir, "systemd", "user", proxyServiceUnit)
 	if p != want {
 		t.Errorf("UnitPath() = %q, want %q", p, want)
 	}
@@ -971,7 +966,7 @@ func TestInstallVerboseNarratesChanges(t *testing.T) {
 
 	assert.Contains(t, out, "Wrote unit file:")
 	assert.Contains(t, out, "Wrote config:")
-	assert.Contains(t, out, "Enabled "+unitFileName)
+	assert.Contains(t, out, "Enabled "+proxyServiceUnit)
 }
 
 func TestUninstallQuietByDefault(t *testing.T) {

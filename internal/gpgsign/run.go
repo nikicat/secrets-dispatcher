@@ -3,6 +3,7 @@ package gpgsign
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 // Exit codes of the thin client, besides gpg's own (ERR-02).
@@ -28,13 +30,9 @@ const (
 func Run(args []string, stdin io.Reader) int {
 	c := thinClient{debug: os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"}
 
-	// Delegate non-signing invocations to the real gpg. git also calls
-	// gpg.program to *verify* signatures (verify-commit, verify-tag, log
-	// --show-signature, merge/pull verification) and to list keys or probe
-	// --version; this proxy only knows how to create signatures via the daemon.
-	// Anything that is not a sign request goes straight to real gpg, so those
-	// operations work exactly as if gpg.program were plain gpg (see
-	// passThroughToGPG).
+	// Git also calls gpg.program to verify signatures, list keys and print the
+	// version. Only signing goes through the daemon, so every other call goes to
+	// the real gpg unchanged.
 	if !isSignRequest(args) {
 		c.debugf("non-signing invocation, delegating to real gpg: %v", args)
 		return passThroughToGPG(args, stdin)
@@ -42,7 +40,7 @@ func Run(args []string, stdin io.Reader) int {
 
 	info, err := c.collectSignInfo(args, stdin)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
+		errorf("%v", err)
 		return exitSystemError
 	}
 	if socket := os.Getenv(remoteSocketEnv); socket != "" {
@@ -56,10 +54,19 @@ type thinClient struct {
 	debug bool // set by SECRETS_DISPATCHER_DEBUG=1
 }
 
+// The prefix of every message the thin client itself writes to stderr. gpg's
+// status lines go out unchanged, because git reads them.
+const stderrPrefix = "secrets-dispatcher: "
+
+// Writes a user-facing error line to stderr.
+func errorf(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, stderrPrefix+format+"\n", a...)
+}
+
 // Writes a debug line to stderr when debugging is on.
 func (c thinClient) debugf(format string, a ...any) {
 	if c.debug {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: debug: "+format+"\n", a...)
+		fmt.Fprintf(os.Stderr, stderrPrefix+"debug: "+format+"\n", a...)
 	}
 }
 
@@ -108,13 +115,28 @@ func (c thinClient) collectSignInfo(args []string, stdin io.Reader) (*approval.G
 // Signs info through the local daemon's API socket and returns the process exit code.
 func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
 	// Load auth token (ERR-01 if missing).
-	token, err := loadAuthToken()
+	stateDir, err := daemonStateDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: daemon not running (cannot read auth token): %v\n", err)
+		errorf("cannot find the daemon's auth token: %v", err)
+		return exitSystemError
+	}
+	c.debugf("state dir=%s", stateDir)
+	token, err := stateDir.ReadToken()
+	if errors.Is(err, os.ErrNotExist) {
+		errorf("daemon not running (cannot read auth token): %v", err)
+		return exitSystemError
+	}
+	if err != nil {
+		errorf("cannot read the daemon's auth token: %v", err)
 		return exitSystemError
 	}
 
-	socketPath := unixSocketPath()
+	runtimeDir, err := config.LookupRuntimeDir()
+	if err != nil {
+		errorf("cannot find the daemon's socket: %v", err)
+		return exitSystemError
+	}
+	socketPath := runtimeDir.APISocket()
 	c.debugf("socket=%s", socketPath)
 
 	client := NewDaemonClient(socketPath, token)
@@ -124,7 +146,7 @@ func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
 	// POST and the time we start listening (locked decision from CONTEXT.md).
 	wsConn, err := client.DialWebSocket(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: daemon unreachable at %s. Is secrets-dispatcher running?\n", socketPath)
+		errorf("daemon unreachable at %s. Is secrets-dispatcher running?", socketPath)
 		return exitSystemError
 	}
 	defer wsConn.CloseNow()
@@ -132,7 +154,7 @@ func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
 	// POST signing request to daemon (SIGN-05).
 	reqID, err := client.PostSigningRequest(ctx, info.RepoName, info)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: failed to send signing request: %v\n", err)
+		errorf("failed to send signing request: %v", err)
 		return exitSystemError
 	}
 	c.debugf("request_id=%s", reqID)
@@ -161,12 +183,12 @@ func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
 	// Block until resolution (SIGN-08, ERR-01, ERR-02).
 	signature, gpgStatus, exitCode, denied, err := client.WaitForResolution(wsCtx, wsConn, reqID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
+		errorf("%v", err)
 		return exitRefused
 	}
 
 	if denied {
-		fmt.Fprintln(os.Stderr, "secrets-dispatcher: signing request denied by user")
+		errorf("signing request denied by user")
 		return exitRefused
 	}
 	return GPGOutput{Signature: signature, Status: gpgStatus, ExitCode: exitCode}.Emit()
@@ -179,25 +201,37 @@ func (c thinClient) runRemote(socketPath string, info *approval.GPGSignInfo) int
 	c.debugf("remote socket=%s", socketPath)
 	res, err := SignRemote(ctx, socketPath, info)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "secrets-dispatcher: %v\n", err)
+		errorf("%v", err)
 		return exitSystemError
 	}
 	switch res.Result {
 	case approval.ResolutionApproved:
 		if res.GPGOutput == nil {
-			fmt.Fprintln(os.Stderr, "secrets-dispatcher: approved, but the daemon sent no signature")
+			errorf("approved, but the daemon sent no signature")
 			return exitSystemError
 		}
 		return res.GPGOutput.Emit()
 	case approval.ResolutionExpired:
-		fmt.Fprintln(os.Stderr, "secrets-dispatcher: signing request timed out")
+		errorf("signing request timed out")
 		return exitRefused
 	case approval.ResolutionDenied, approval.ResolutionCancelled:
-		fmt.Fprintln(os.Stderr, "secrets-dispatcher: signing request denied by user")
+		errorf("signing request denied by user")
 		return exitRefused
 	}
-	fmt.Fprintf(os.Stderr, "secrets-dispatcher: unexpected result %q from the daemon\n", res.Result)
+	errorf("unexpected result %q from the daemon", res.Result)
 	return exitSystemError
+}
+
+// Returns the state directory that holds the daemon's API auth token. It is the
+// state_dir that the default config file sets, or the default state directory
+// when the file sets none. git runs gpg-sign without our flags, so a daemon
+// started with another state directory or config file is not found.
+func daemonStateDir() (config.StateDir, error) {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return "", err
+	}
+	return cfg.StateDir.OrDefault()
 }
 
 // gpg's result for one sign request, as the thin client hands it back to git.
@@ -248,46 +282,8 @@ func (c thinClient) collectChangedFiles() []string {
 	return files
 }
 
-// loadAuthToken reads the daemon's auth token from the cookie file at:
-//
-//	$XDG_STATE_HOME/secrets-dispatcher/.cookie
-//
-// Falls back to ~/.local/state/secrets-dispatcher/.cookie if XDG_STATE_HOME is unset.
-func loadAuthToken() (string, error) {
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		stateHome = filepath.Join(home, ".local", "state")
-	}
-	cookiePath := filepath.Join(stateHome, "secrets-dispatcher", ".cookie")
-	data, err := os.ReadFile(cookiePath)
-	if err != nil {
-		return "", fmt.Errorf("read cookie file %s: %w", cookiePath, err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("cookie file is empty: %s", cookiePath)
-	}
-	return token, nil
-}
-
-// unixSocketPath returns the path to the daemon's Unix socket:
-//
-//	$XDG_RUNTIME_DIR/secrets-dispatcher/api.sock
-//
-// Falls back to /run/user/<uid>/secrets-dispatcher/api.sock if XDG_RUNTIME_DIR is unset.
-func unixSocketPath() string {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		runtimeDir = fmt.Sprintf("/run/user/%d", os.Getuid())
-	}
-	return filepath.Join(runtimeDir, "secrets-dispatcher", "api.sock")
-}
-
-// runGitCommand runs a git subcommand and returns trimmed stdout output.
+// Returns the standard output of git run with the given arguments, untrimmed.
+// Errors when git cannot start or exits non-zero.
 func runGitCommand(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	var out bytes.Buffer

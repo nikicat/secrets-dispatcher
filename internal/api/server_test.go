@@ -12,16 +12,11 @@ import (
 )
 
 func TestServer_Integration(t *testing.T) {
-	tempDir := t.TempDir()
-
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	auth, err := NewAuth(tempDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	mgr := newTestManager()
+	auth := newTestAuth(t)
 
 	// Use port 0 to get a random available port
-	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth, "", false, nil, 0)
+	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth, false, nil, 0)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -50,7 +45,7 @@ func TestServer_Integration(t *testing.T) {
 	// Test with valid auth
 	t.Run("valid auth works", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/status", nil)
-		req.Header.Set("Authorization", "Bearer "+auth.Token())
+		auth.Token().Authorize(req.Header)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -86,31 +81,11 @@ func TestServer_Integration(t *testing.T) {
 
 	// Test full approval flow
 	t.Run("approval flow", func(t *testing.T) {
-		// Start a pending request
-		done := make(chan error, 1)
-		go func() {
-			_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-			done <- err
-		}()
-
-		// Wait for request to appear
-		var reqID string
-		for range 100 {
-			reqs := mgr.List()
-			if len(reqs) > 0 {
-				reqID = reqs[0].ID
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-
-		if reqID == "" {
-			t.Fatal("request did not appear")
-		}
+		started := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
 		// Get pending list via API
 		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/pending", nil)
-		req.Header.Set("Authorization", "Bearer "+auth.Token())
+		auth.Token().Authorize(req.Header)
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -126,8 +101,8 @@ func TestServer_Integration(t *testing.T) {
 		}
 
 		// Approve via API
-		req, _ = http.NewRequest(http.MethodPost, baseURL+"/api/v1/pending/"+reqID+"/approve", nil)
-		req.Header.Set("Authorization", "Bearer "+auth.Token())
+		req, _ = http.NewRequest(http.MethodPost, baseURL+"/api/v1/pending/"+started.ID+"/approve", nil)
+		auth.Token().Authorize(req.Header)
 
 		resp, err = client.Do(req)
 		if err != nil {
@@ -141,7 +116,7 @@ func TestServer_Integration(t *testing.T) {
 
 		// Verify approval unblocked the request
 		select {
-		case err := <-done:
+		case err := <-started.Done:
 			if err != nil {
 				t.Errorf("RequireApproval should return nil, got: %v", err)
 			}
@@ -149,23 +124,4 @@ func TestServer_Integration(t *testing.T) {
 			t.Error("RequireApproval did not unblock")
 		}
 	})
-}
-
-func TestServer_CookieFilePath(t *testing.T) {
-	tempDir := t.TempDir()
-
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	auth, err := NewAuth(tempDir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
-
-	server, err := NewServer("127.0.0.1:0", mgr, "/socket", "test-client", auth, "", false, nil, 0)
-	if err != nil {
-		t.Fatalf("NewServer failed: %v", err)
-	}
-
-	if server.CookieFilePath() != auth.FilePath() {
-		t.Errorf("expected %s, got %s", auth.FilePath(), server.CookieFilePath())
-	}
 }

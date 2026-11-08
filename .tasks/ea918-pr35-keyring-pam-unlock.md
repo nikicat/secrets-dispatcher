@@ -1,6 +1,5 @@
 ---
 status: todo
-deps: [Twhz82, T75jjt, Tnzb1p, T5ghy8, Tytty7]
 tags: [external-pr, service, gnome, bug]
 ---
 # Review PR #35: PAM cannot unlock the backend keyring at login

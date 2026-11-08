@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,13 +42,9 @@ func TestIsSignRequest(t *testing.T) {
 	}
 }
 
-// TestRunDelegatesVerificationToRealGPG is the regression test for the verify
-// pass-through: git verifies a signature by invoking gpg.program with --verify,
-// and the proxy must hand that straight to the real gpg — forwarding argv and
-// the signed payload on stdin, and propagating gpg's exit code — instead of
-// treating it as a signing request. Before the pass-through the proxy tried to
-// sign, emitted no GOODSIG, and git reported every validly-signed commit as
-// unsigned (git log --show-signature -> "N").
+// Checks that git's verify call reaches the real gpg with its arguments and
+// stdin, and that gpg's exit code comes back. A proxy that signs instead prints
+// no GOODSIG, so git reports every validly signed commit as unsigned.
 func TestRunDelegatesVerificationToRealGPG(t *testing.T) {
 	// git's actual verify argv (captured empirically), pointing at a real
 	// (harmless) temp file so nothing depends on its contents.
@@ -70,11 +67,12 @@ func TestRunDelegatesVerificationToRealGPG(t *testing.T) {
 	isolate := func(t *testing.T, gpgDir string) {
 		t.Helper()
 		// Prepend the fake gpg so FindRealGPG picks it up first (but keep the
-		// real PATH so the fake's shell can still find cat/sh). The daemon's
-		// cookie/socket point at nonexistent paths, so if Run ever took the
+		// real PATH so the fake's shell can still find cat/sh). The config,
+		// cookie and socket point at nonexistent paths, so if Run ever took the
 		// signing path instead of delegating it would fail loudly, not pass by
 		// luck.
 		t.Setenv("PATH", gpgDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(gpgDir, "no-config"))
 		t.Setenv("XDG_STATE_HOME", filepath.Join(gpgDir, "no-state"))
 		t.Setenv("XDG_RUNTIME_DIR", filepath.Join(gpgDir, "no-run"))
 	}
@@ -101,4 +99,26 @@ func TestRunDelegatesVerificationToRealGPG(t *testing.T) {
 		exit := Run(verifyArgs, strings.NewReader(payload))
 		assert.Equal(t, 1, exit, "gpg's failing exit code must propagate so git reports a bad signature")
 	})
+}
+
+func TestDaemonStateDirFromConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", "/home/u/.state")
+	path, err := config.DefaultPath()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("state_dir: /srv/state\n"), 0o600))
+
+	dir, err := daemonStateDir()
+	require.NoError(t, err)
+	assert.Equal(t, config.StateDir("/srv/state"), dir)
+}
+
+func TestDaemonStateDirWithoutConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", "/home/u/.state")
+
+	dir, err := daemonStateDir()
+	require.NoError(t, err)
+	assert.Equal(t, config.StateDir("/home/u/.state/secrets-dispatcher"), dir)
 }

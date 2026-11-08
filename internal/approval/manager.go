@@ -213,7 +213,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		autoApproveDuration: cfg.AutoApproveDuration,
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
-		trustRules:          cfg.TrustRules,
+		trustRules:          withDefaultActions(cfg.TrustRules),
 	}
 }
 
@@ -377,13 +377,9 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 
 	// Check persistent trust rules from config.
 	if rule := m.CheckTrustRules(senderInfo, items, reqType, searchAttrs); rule != nil {
-		action := rule.Action
-		if action == "" {
-			action = "approve"
-		}
 		slog.Info("trust rule matched",
 			"rule_name", rule.Name,
-			"action", action)
+			"action", rule.Action)
 		now := time.Now()
 		req := &Request{
 			ID:               uuid.New().String(),
@@ -396,11 +392,11 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 			SearchAttributes: searchAttrs,
 			SenderInfo:       senderInfo,
 		}
-		if action == "ignore" {
+		switch rule.Action {
+		case RuleIgnore:
 			m.notify(Event{Type: EventRequestIgnored, Request: req})
 			return true, ErrIgnored
-		}
-		if action == "deny" {
+		case RuleDeny:
 			m.notify(Event{Type: EventRequestDenied, Request: req})
 			return true, ErrDeniedByRule
 		}
@@ -942,6 +938,18 @@ func invokerExePath(s SenderInfo) string {
 	return ""
 }
 
+// withDefaultActions returns rules with an empty Action read as RuleApprove,
+// the default a config file gets when it names no action.
+func withDefaultActions(rules []TrustRule) []TrustRule {
+	out := slices.Clone(rules)
+	for i := range out {
+		if out[i].Action == "" {
+			out[i].Action = RuleApprove
+		}
+	}
+	return out
+}
+
 // CheckTrustRules checks if the request matches any configured trust rule.
 // Returns the first matching rule, or nil if no rules match.
 func (m *Manager) CheckTrustRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) *TrustRule {
@@ -959,7 +967,7 @@ func (m *Manager) CheckTrustRules(senderInfo SenderInfo, items []ItemInfo, reqTy
 func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) bool {
 	// Check request_types filter
 	if len(rule.RequestTypes) > 0 {
-		found := slices.Contains(rule.RequestTypes, string(reqType))
+		found := slices.Contains(rule.RequestTypes, reqType)
 		if !found {
 			return false
 		}
@@ -975,8 +983,7 @@ func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, re
 	// Check secret matcher. deny/ignore rules are restrictive (fire if ANY item
 	// is in scope); approve rules are permissive (fire only if EVERY item is).
 	if rule.Secret != nil {
-		restrictive := rule.Action == "deny" || rule.Action == "ignore"
-		if !matchSecret(rule.Secret, items, restrictive) {
+		if !matchSecret(rule.Secret, items, rule.Action.Restrictive()) {
 			return false
 		}
 	}

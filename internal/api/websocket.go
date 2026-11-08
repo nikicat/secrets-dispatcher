@@ -15,6 +15,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
 
 const (
@@ -30,8 +31,8 @@ const (
 
 // WSMessage represents a message sent over the WebSocket.
 type WSMessage struct {
-	Type    string `json:"type"`
-	Version string `json:"version,omitempty"`
+	Type    wsmsg.Type `json:"type"`
+	Version string     `json:"version,omitempty"`
 
 	// For snapshot - no omitempty to ensure arrays are always present in JSON
 	Requests                   []PendingRequest           `json:"requests"`
@@ -47,8 +48,8 @@ type WSMessage struct {
 	Request *PendingRequest `json:"request,omitempty"`
 
 	// For request_resolved
-	ID     string `json:"id,omitempty"`
-	Result string `json:"result,omitempty"`
+	ID     string              `json:"id,omitempty"`
+	Result approval.Resolution `json:"result,omitempty"`
 	// Signature carries base64-encoded signature bytes for gpg_sign request_resolved events.
 	// Empty for all other event types.
 	Signature string `json:"signature,omitempty"`
@@ -108,7 +109,7 @@ type wsConnection struct {
 func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Validate session cookie or Bearer token before accepting upgrade.
 	if !h.auth.ValidateRequest(r) {
-		http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
+		writeError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -160,14 +161,14 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 	switch event.Type {
 	case approval.EventRequestCreated:
 		msgs = append(msgs, WSMessage{
-			Type:    "request_created",
+			Type:    wsmsg.RequestCreated,
 			Request: convertRequest(event.Request),
 		})
 	case approval.EventRequestApproved:
 		msg := WSMessage{
-			Type:   "request_resolved",
+			Type:   wsmsg.RequestResolved,
 			ID:     event.Request.ID,
-			Result: "approved",
+			Result: approval.ResolutionApproved,
 		}
 		if event.Request.Type == approval.RequestTypeGPGSign {
 			msg.Signature = base64.StdEncoding.EncodeToString(event.Request.Signature)
@@ -179,47 +180,47 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		msgs = append(msgs, msg)
 		entry := makeHistoryEntry(event.Request, "approved")
 		msgs = append(msgs, WSMessage{
-			Type:         "history_entry",
+			Type:         wsmsg.HistoryEntry,
 			HistoryEntry: &entry,
 		})
 	case approval.EventRequestDenied:
 		msgs = append(msgs, WSMessage{
-			Type:   "request_resolved",
+			Type:   wsmsg.RequestResolved,
 			ID:     event.Request.ID,
-			Result: "denied",
+			Result: approval.ResolutionDenied,
 		})
 		entry := makeHistoryEntry(event.Request, "denied")
 		msgs = append(msgs, WSMessage{
-			Type:         "history_entry",
+			Type:         wsmsg.HistoryEntry,
 			HistoryEntry: &entry,
 		})
 	case approval.EventRequestExpired:
 		msgs = append(msgs, WSMessage{
-			Type: "request_expired",
+			Type: wsmsg.RequestExpired,
 			ID:   event.Request.ID,
 		})
 		entry := makeHistoryEntry(event.Request, "expired")
 		msgs = append(msgs, WSMessage{
-			Type:         "history_entry",
+			Type:         wsmsg.HistoryEntry,
 			HistoryEntry: &entry,
 		})
 	case approval.EventRequestCancelled:
 		msgs = append(msgs, WSMessage{
-			Type: "request_cancelled",
+			Type: wsmsg.RequestCancelled,
 			ID:   event.Request.ID,
 		})
 		entry := makeHistoryEntry(event.Request, "cancelled")
 		msgs = append(msgs, WSMessage{
-			Type:         "history_entry",
+			Type:         wsmsg.HistoryEntry,
 			HistoryEntry: &entry,
 		})
 	case approval.EventRequestAutoApproved:
 		// GPG sign auto-approvals carry signature data that the thin client needs.
 		if event.Request.Type == approval.RequestTypeGPGSign {
 			msg := WSMessage{
-				Type:   "request_resolved",
+				Type:   wsmsg.RequestResolved,
 				ID:     event.Request.ID,
-				Result: "auto_approved",
+				Result: approval.ResolutionAutoApproved,
 			}
 			msg.Signature = base64.StdEncoding.EncodeToString(event.Request.Signature)
 			msg.GPGStatus = string(event.Request.GPGStatus)
@@ -230,23 +231,23 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		}
 		entry := makeHistoryEntry(event.Request, "auto_approved")
 		msgs = append(msgs, WSMessage{
-			Type:         "history_entry",
+			Type:         wsmsg.HistoryEntry,
 			HistoryEntry: &entry,
 		})
 	case approval.EventRequestIgnored:
 		entry := makeHistoryEntry(event.Request, "ignored")
 		msgs = append(msgs, WSMessage{
-			Type:         "history_entry",
+			Type:         wsmsg.HistoryEntry,
 			HistoryEntry: &entry,
 		})
 	case approval.EventAutoApproveRuleAdded:
 		msgs = append(msgs, WSMessage{
-			Type:            "auto_approve_rule_added",
+			Type:            wsmsg.AutoApproveRuleAdded,
 			AutoApproveRule: event.Rule,
 		})
 	case approval.EventAutoApproveRuleRemoved:
 		msgs = append(msgs, WSMessage{
-			Type: "auto_approve_rule_removed",
+			Type: wsmsg.AutoApproveRuleRemoved,
 			ID:   event.Rule.ID,
 		})
 	default:
@@ -345,7 +346,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 	}
 
 	msg := WSMessage{
-		Type:                       "snapshot",
+		Type:                       wsmsg.Snapshot,
 		Version:                    BuildVersion,
 		Requests:                   requests,
 		Clients:                    clients,
@@ -489,7 +490,7 @@ func (h *WSHandler) SetNotificationDelay(ms int) {
 // BroadcastClientConnected sends a client_connected message to all connections.
 func (h *WSHandler) BroadcastClientConnected(client proxy.ClientInfo) {
 	h.broadcast(WSMessage{
-		Type:   "client_connected",
+		Type:   wsmsg.ClientConnected,
 		Client: &client,
 	})
 }
@@ -497,7 +498,7 @@ func (h *WSHandler) BroadcastClientConnected(client proxy.ClientInfo) {
 // BroadcastClientDisconnected sends a client_disconnected message to all connections.
 func (h *WSHandler) BroadcastClientDisconnected(client proxy.ClientInfo) {
 	h.broadcast(WSMessage{
-		Type:   "client_disconnected",
+		Type:   wsmsg.ClientDisconnected,
 		Client: &client,
 	})
 }

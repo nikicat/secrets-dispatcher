@@ -2,6 +2,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,14 +14,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const unitFileName = "secrets-dispatcher.service"
+const (
+	proxyServiceUnit   = "secrets-dispatcher.service"
+	busSocketUnit      = "secrets-dispatcher-bus.socket"
+	busServiceUnit     = "secrets-dispatcher-bus.service"
+	backendServiceUnit = "secrets-dispatcher-backend.service"
+)
 
 // allUnitNames lists every unit file the package may install.
 var allUnitNames = []string{
-	"secrets-dispatcher-bus.socket",
-	"secrets-dispatcher-bus.service",
-	"secrets-dispatcher-backend.service",
-	unitFileName,
+	busSocketUnit,
+	busServiceUnit,
+	backendServiceUnit,
+	proxyServiceUnit,
 }
 
 const unitTemplate = `[Unit]
@@ -41,7 +47,7 @@ const busSocketTemplate = `[Unit]
 Description=Secrets Dispatcher - Private D-Bus for backend
 
 [Socket]
-ListenStream=%t/secrets-dispatcher/backend-bus.sock
+ListenStream=%s
 DirectoryMode=0700
 
 [Install]
@@ -58,20 +64,20 @@ ExecStart=%s --session --nofork --nopidfile --address=systemd:
 
 const backendServiceTemplate = `[Unit]
 Description=Secrets Dispatcher - Secret Service backend
-Requires=secrets-dispatcher-bus.socket
-After=secrets-dispatcher-bus.socket
+Requires=` + busSocketUnit + `
+After=` + busSocketUnit + `
 
 [Service]
 Type=simple
 ExecStart=%s
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%%t/secrets-dispatcher/backend-bus.sock
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%s
 `
 
 const localProxyTemplate = `[Unit]
 Description=Secrets Dispatcher - D-Bus Secret Service approval proxy
 Documentation=https://github.com/nikicat/secrets-dispatcher
-Requires=secrets-dispatcher-backend.service
-After=secrets-dispatcher-backend.service
+Requires=` + backendServiceUnit + `
+After=` + backendServiceUnit + `
 
 [Service]
 Type=simple
@@ -95,7 +101,7 @@ type Options struct {
 	ConfigPath string
 	// Start the service immediately after enabling.
 	Start bool
-	// Mode selects the topology: "local" (default), "remote", or "full".
+	// The topology: remote, local or full. Empty means remote.
 	Mode string
 	// BackendPath selects the private backend for local/full modes: a binary
 	// path, a keyword ("gopass", "gnome-keyring"), or empty for the
@@ -125,16 +131,11 @@ var execOutputFunc = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).Output()
 }
 
-// unitDir returns the systemd user unit directory.
-// Uses $XDG_CONFIG_HOME/systemd/user/ with fallback to ~/.config/systemd/user/.
+// Returns the systemd user unit directory, under the XDG config home.
 func unitDir() (string, error) {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		configHome = filepath.Join(home, ".config")
+	configHome, err := config.ConfigHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(configHome, "systemd", "user"), nil
 }
@@ -145,7 +146,7 @@ func UnitPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, unitFileName), nil
+	return filepath.Join(dir, proxyServiceUnit), nil
 }
 
 // Install writes systemd user unit files, updates the config topology,
@@ -157,8 +158,7 @@ func Install(opts Options) error {
 		return err
 	}
 
-	// Update only the topology fields in the config, preserving everything else.
-	if err := updateTopologyConfig(in.configPath, in.runtimeDir, in.mode); err != nil {
+	if err := in.writeTopology(); err != nil {
 		return err
 	}
 	verbosef("Wrote config: %s\n", in.configPath)
@@ -193,7 +193,7 @@ func Install(opts Options) error {
 	}
 
 	// Build unit file contents for this mode.
-	needed, err := buildUnits(in.mode, in.execStart, provider, opts.BackendPath)
+	needed, err := in.units(provider)
 	if err != nil {
 		return err
 	}
@@ -232,27 +232,27 @@ func Install(opts Options) error {
 		return err
 	}
 	if in.mode != "remote" {
-		if err := systemctlFunc("enable", "secrets-dispatcher-bus.socket"); err != nil {
+		if err := systemctlFunc("enable", busSocketUnit); err != nil {
 			return err
 		}
-		verbosef("Enabled secrets-dispatcher-bus.socket\n")
+		verbosef("Enabled %s\n", busSocketUnit)
 	}
-	if err := systemctlFunc("enable", unitFileName); err != nil {
+	if err := systemctlFunc("enable", proxyServiceUnit); err != nil {
 		return err
 	}
-	verbosef("Enabled %s\n", unitFileName)
+	verbosef("Enabled %s\n", proxyServiceUnit)
 
 	if opts.Start {
 		if in.mode != "remote" {
-			if err := systemctlFunc("start", "secrets-dispatcher-bus.socket"); err != nil {
+			if err := systemctlFunc("start", busSocketUnit); err != nil {
 				return err
 			}
-			verbosef("Started secrets-dispatcher-bus.socket\n")
+			verbosef("Started %s\n", busSocketUnit)
 		}
-		if err := systemctlFunc("start", unitFileName); err != nil {
+		if err := systemctlFunc("start", proxyServiceUnit); err != nil {
 			return err
 		}
-		verbosef("Started %s\n", unitFileName)
+		verbosef("Started %s\n", proxyServiceUnit)
 
 		if in.mode != "remote" {
 			reportOwnership()
@@ -293,33 +293,37 @@ func reportOwnership() {
 	fmt.Printf("WARNING: org.freedesktop.secrets is owned by %s — secrets-dispatcher is NOT in front\n", p)
 }
 
-// updateTopologyConfig loads the config, sets upstream/downstream for the given mode,
-// and writes it back. All other fields are preserved.
-func updateTopologyConfig(configPath, runtimeDir, mode string) error {
-	cfg, err := config.Load(configPath)
-	if err != nil {
+// Sets the serve upstream and downstream in the config file at in.configPath
+// to the topology of in.mode. Every other setting in the file is kept.
+func (in installInputs) writeTopology() error {
+	// A missing file is the first install, which writes a fresh config.
+	cfg, err := config.Load(in.configPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		cfg = &config.Config{}
+	case err != nil:
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	busSocket := filepath.Join(runtimeDir, "secrets-dispatcher", "backend-bus.sock")
-	socketsDir := filepath.Join(runtimeDir, "secrets-dispatcher", "sockets")
+	busSocket := in.runtimeDir.BackendBusSocket()
+	socketsDir := in.runtimeDir.ClientSockets()
 
-	switch mode {
+	switch in.mode {
 	case "remote":
-		cfg.Serve.Upstream = config.BusConfig{Type: "session_bus"}
+		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSessionBus}
 		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: "sockets", Path: socketsDir},
+			{Type: config.BusSockets, Path: socketsDir},
 		}
 	case "local":
-		cfg.Serve.Upstream = config.BusConfig{Type: "socket", Path: busSocket}
+		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSocket, Path: busSocket}
 		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: "session_bus"},
+			{Type: config.BusSessionBus},
 		}
 	case "full":
-		cfg.Serve.Upstream = config.BusConfig{Type: "socket", Path: busSocket}
+		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSocket, Path: busSocket}
 		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: "session_bus"},
-			{Type: "sockets", Path: socketsDir},
+			{Type: config.BusSessionBus},
+			{Type: config.BusSockets, Path: socketsDir},
 		}
 	}
 
@@ -328,11 +332,11 @@ func updateTopologyConfig(configPath, runtimeDir, mode string) error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(in.configPath), 0755); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	return os.WriteFile(in.configPath, data, 0644)
 }
 
 // Uninstall stops and disables all service units, removes unit files, and reloads systemd.
@@ -394,16 +398,11 @@ func systemctlExec(args ...string) error {
 	return nil
 }
 
-// dbusServiceDir returns the user D-Bus service directory.
-// Uses $XDG_DATA_HOME/dbus-1/services/ with fallback to ~/.local/share/dbus-1/services/.
+// Returns the user D-Bus service directory, under the XDG data home.
 func dbusServiceDir() (string, error) {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		dataHome = filepath.Join(home, ".local", "share")
+	dataHome, err := config.DataHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(dataHome, "dbus-1", "services"), nil
 }

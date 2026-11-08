@@ -2,43 +2,32 @@
 package api
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/randhex"
 )
 
 const (
-	cookieFileName    = ".cookie"
-	cookieSize        = 32 // 32 bytes = 256 bits
 	sessionCookieName = "session"
 	sessionIDSize     = 32 // 32 bytes = 256 bits
 )
 
-// sessionID is an opaque, independent browser session identifier. It is a random
-// value minted server-side — never the master token — so a leaked session cookie
-// discloses nothing reusable as the Bearer credential.
+// An opaque browser session identifier. It is a random value minted by the
+// server and is never the master token. So a leaked session cookie does not
+// disclose the Bearer credential.
 type sessionID string
 
 // jti is a login-token nonce (the JWT "jti" claim) used to enforce single use.
 type jti string
 
-// Auth handles cookie-based authentication for the API.
-//
-// The master token (loaded from / persisted to the 0600 .cookie file) is the
-// Bearer credential used by same-user thin clients (gpg-sign, CLI). Browser
-// sessions are deliberately NOT the master token: SetSessionCookie mints an
-// independent random session ID stored server-side, so a leaked session cookie
-// never discloses the master token and can be revoked without rotating it.
+// Authenticates API requests by a browser session cookie or the master token.
 type Auth struct {
-	token    string
-	filePath string
+	token config.AuthToken
 
 	mu sync.Mutex
 	// sessions holds the set of live browser session IDs. Membership is the sole
@@ -51,47 +40,29 @@ type Auth struct {
 }
 
 // newAuth constructs an Auth with its in-memory session/nonce maps initialized.
-func newAuth(token, filePath string) *Auth {
+func newAuth(token config.AuthToken) *Auth {
 	return &Auth{
 		token:    token,
-		filePath: filePath,
 		sessions: make(map[sessionID]struct{}),
 		usedJTIs: make(map[jti]int64),
 	}
 }
 
-// NewAuth creates or loads an Auth from the config directory.
-// If a cookie file exists, it is loaded. Otherwise, a new random cookie is generated.
-// The cookie file is created with mode 0600.
-func NewAuth(configDir string) (*Auth, error) {
-	// Ensure config directory exists
-	if err := os.MkdirAll(configDir, 0700); err != nil {
+// Returns the Auth for the master token in dir. Reuses the token that dir
+// already holds when it is non-empty. Otherwise generates a new token and
+// writes it with config.StateDir.WriteToken.
+func NewAuth(dir config.StateDir) (*Auth, error) {
+	if token, err := dir.ReadToken(); err == nil {
+		return newAuth(token), nil
+	}
+	token, err := config.NewAuthToken()
+	if err != nil {
 		return nil, err
 	}
-
-	filePath := filepath.Join(configDir, cookieFileName)
-
-	// Try to load existing cookie file
-	if data, err := os.ReadFile(filePath); err == nil {
-		token := strings.TrimSpace(string(data))
-		if token != "" {
-			return newAuth(token, filePath), nil
-		}
-	}
-
-	// Generate new random token
-	tokenBytes := make([]byte, cookieSize)
-	if _, err := rand.Read(tokenBytes); err != nil {
+	if err := dir.WriteToken(token); err != nil {
 		return nil, err
 	}
-	token := hex.EncodeToString(tokenBytes)
-
-	// Write cookie file
-	if err := os.WriteFile(filePath, []byte(token), 0600); err != nil {
-		return nil, err
-	}
-
-	return newAuth(token, filePath), nil
+	return newAuth(token), nil
 }
 
 // Middleware returns an HTTP middleware that checks for valid auth.
@@ -105,53 +76,47 @@ func (a *Auth) Middleware(next http.Handler) http.Handler {
 		}
 
 		// Fall back to Bearer token
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			http.Error(w, `{"error": "unauthorized"}`, http.StatusUnauthorized)
-			return
+		switch err := a.checkBearer(r); {
+		case err == nil:
+			next.ServeHTTP(w, r)
+		case errors.Is(err, config.ErrNoAuthorization):
+			writeError(w, "unauthorized", http.StatusUnauthorized)
+		default:
+			writeError(w, err.Error(), http.StatusUnauthorized)
 		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			http.Error(w, `{"error": "invalid Authorization header format"}`, http.StatusUnauthorized)
-			return
-		}
-
-		providedToken := parts[1]
-		if subtle.ConstantTimeCompare([]byte(providedToken), []byte(a.token)) != 1 {
-			http.Error(w, `{"error": "invalid token"}`, http.StatusUnauthorized)
-			return
-		}
-
-		next.ServeHTTP(w, r)
 	})
 }
 
-// Token returns the current auth token (for testing).
-func (a *Auth) Token() string {
+// The Bearer credential in a request is not the master token.
+var errWrongToken = errors.New("invalid token")
+
+// Checks that r's Authorization header carries the master token. Errors as
+// config.ParseAuthorization does, and with errWrongToken when the header
+// carries another token.
+func (a *Auth) checkBearer(r *http.Request) error {
+	token, err := config.ParseAuthorization(r.Header)
+	if err != nil {
+		return err
+	}
+	if !token.Equal(a.token) {
+		return errWrongToken
+	}
+	return nil
+}
+
+// Returns the master token.
+func (a *Auth) Token() config.AuthToken {
 	return a.token
 }
 
-// FilePath returns the path to the cookie file.
-func (a *Auth) FilePath() string {
-	return a.filePath
-}
-
-// LoadAuth loads an existing Auth from the cookie file.
-// Returns an error if the cookie file doesn't exist or is invalid.
-func LoadAuth(configDir string) (*Auth, error) {
-	filePath := filepath.Join(configDir, cookieFileName)
-	data, err := os.ReadFile(filePath)
+// Returns the Auth for the master token that dir already holds.
+// Errors as config.StateDir.ReadToken does.
+func LoadAuth(dir config.StateDir) (*Auth, error) {
+	token, err := dir.ReadToken()
 	if err != nil {
 		return nil, err
 	}
-
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return nil, fmt.Errorf("empty cookie file")
-	}
-
-	return newAuth(token, filePath), nil
+	return newAuth(token), nil
 }
 
 // GenerateLoginURL creates a login URL with an embedded JWT.
@@ -175,30 +140,20 @@ func (a *Auth) ValidateSession(r *http.Request) bool {
 	return ok
 }
 
-// ValidateRequest checks session cookie first, then falls back to Bearer token
-// in the Authorization header. Used by WebSocket handler to accept both browser
-// sessions and thin client Bearer tokens.
+// Checks whether r carries a live session cookie or the master token as its
+// Bearer credential.
 func (a *Auth) ValidateRequest(r *http.Request) bool {
-	if a.ValidateSession(r) {
-		return true
-	}
-	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
-	if len(parts) == 2 && parts[0] == "Bearer" {
-		return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(a.token)) == 1
-	}
-	return false
+	return a.ValidateSession(r) || a.checkBearer(r) == nil
 }
 
-// SetSessionCookie mints a fresh, independent server-side session and sets it as
-// the session cookie. The cookie value is a random session ID — never the master
-// token — so reading it (e.g. from a curl client) grants only a revocable browser
-// session, not the Bearer credential.
+// Starts a new browser session and sets its ID as the session cookie. Errors
+// when the session ID cannot be generated.
 func (a *Auth) SetSessionCookie(w http.ResponseWriter) error {
-	idBytes := make([]byte, sessionIDSize)
-	if _, err := rand.Read(idBytes); err != nil {
+	s, err := randhex.String(sessionIDSize)
+	if err != nil {
 		return fmt.Errorf("generate session id: %w", err)
 	}
-	id := sessionID(hex.EncodeToString(idBytes))
+	id := sessionID(s)
 
 	a.mu.Lock()
 	a.sessions[id] = struct{}{}

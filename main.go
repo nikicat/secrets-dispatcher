@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -124,7 +125,8 @@ func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
-	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
+	var stateDir config.StateDir
+	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	fs.Parse(args)
 
 	// Load config and apply values for flags not explicitly set
@@ -135,32 +137,15 @@ func runLogin(args []string) {
 	}
 	set := setFlags(fs)
 	if !set["state-dir"] && cfg.StateDir != "" {
-		*stateDirFlag = cfg.StateDir
+		stateDir = cfg.StateDir
 	}
 	if !set["listen"] && cfg.Listen != "" {
 		*listenAddr = cfg.Listen
 	}
 
-	var stateDir string
-	if *stateDirFlag != "" {
-		stateDir = *stateDirFlag
-	} else {
-		var sdErr error
-		stateDir, sdErr = getStateDir()
-		if sdErr != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", sdErr)
-			os.Exit(1)
-		}
-	}
-
-	auth, err := api.LoadAuth(stateDir)
+	auth, err := loadClientAuth(stateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "error: %s is not running (no cookie file found)\n", progName)
-			fmt.Fprintf(os.Stderr, "Start the service first with: %s serve\n", progName)
-		} else {
-			fmt.Fprintf(os.Stderr, "error loading auth: %v\n", err)
-		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -184,7 +169,8 @@ func runLogin(args []string) {
 func runCLI(cmd string, args []string) {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
+	var stateDir config.StateDir
+	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	serverAddr := fs.String("server", defaultListenAddr, "API server address")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Parse(args)
@@ -197,31 +183,15 @@ func runCLI(cmd string, args []string) {
 	}
 	set := setFlags(fs)
 	if !set["state-dir"] && cfg.StateDir != "" {
-		*stateDirFlag = cfg.StateDir
+		stateDir = cfg.StateDir
 	}
 	if !set["server"] && cfg.Listen != "" {
 		*serverAddr = cfg.Listen
 	}
 
-	var stateDir string
-	if *stateDirFlag != "" {
-		stateDir = *stateDirFlag
-	} else {
-		stateDir, err = getStateDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	auth, err := api.LoadAuth(stateDir)
+	auth, err := loadClientAuth(stateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "error: %s is not running (no cookie file found)\n", progName)
-			fmt.Fprintf(os.Stderr, "Start the service first with: %s serve\n", progName)
-		} else {
-			fmt.Fprintf(os.Stderr, "error loading auth: %v\n", err)
-		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -291,7 +261,8 @@ func runServe(args []string) {
 	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
 	timeout := fs.Duration("timeout", defaultTimeout, "Approval timeout")
 	historyLimit := fs.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
-	stateDirFlag := fs.String("state-dir", "", "State directory (default: $XDG_STATE_HOME/secrets-dispatcher)")
+	var stateDir config.StateDir
+	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	apiOnly := fs.Bool("api-only", false, "Run only the API server (for testing)")
 	notifications := fs.Bool("notifications", true, "Enable desktop notifications for approval requests")
 	fs.Parse(args)
@@ -304,7 +275,7 @@ func runServe(args []string) {
 	}
 	set := setFlags(fs)
 	if !set["state-dir"] && cfg.StateDir != "" {
-		*stateDirFlag = cfg.StateDir
+		stateDir = cfg.StateDir
 	}
 	if !set["listen"] && cfg.Listen != "" {
 		*listenAddr = cfg.Listen
@@ -326,8 +297,8 @@ func runServe(args []string) {
 	}
 
 	// Apply defaults and validate
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
+	cfg, err = cfg.Resolve()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
@@ -424,20 +395,11 @@ func runServe(args []string) {
 		approvalMgr.Subscribe(notifHandler)
 	}
 
-	// Set up state directory for cookie
-	var stateDir string
-	if *stateDirFlag != "" {
-		stateDir = *stateDirFlag
-	} else {
-		var sdErr error
-		stateDir, sdErr = getStateDir()
-		if sdErr != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", sdErr)
-			os.Exit(1)
-		}
+	stateDir, err = stateDir.OrDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
-
-	// Create auth with cookie file
 	auth, err := api.NewAuth(stateDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating auth: %v\n", err)
@@ -464,7 +426,7 @@ func runServe(args []string) {
 
 	// Resolve upstream address
 	var upstreamAddr string
-	if cfg.Serve.Upstream.Type == "socket" {
+	if cfg.Serve.Upstream.Type == config.BusSocket {
 		upstreamAddr = "unix:path=" + cfg.Serve.Upstream.Path
 	}
 
@@ -476,7 +438,7 @@ func runServe(args []string) {
 
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
-		case "sockets":
+		case config.BusSockets:
 			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 			if mgrErr != nil {
 				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
@@ -487,7 +449,7 @@ func runServe(args []string) {
 				return mgr.Run(ctx)
 			})
 
-		case "session_bus":
+		case config.BusSessionBus:
 			sp := &staticProvider{info: proxy.ClientInfo{Name: "local", SocketPath: "session_bus"}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
@@ -534,7 +496,7 @@ func runServe(args []string) {
 				}
 			})
 
-		case "socket":
+		case config.BusSocket:
 			clientName := filepath.Base(ds.Path)
 			p := proxy.New(proxy.Config{
 				ClientName:            clientName,
@@ -572,30 +534,15 @@ func runServe(args []string) {
 	}
 
 	// Set up SSH agent proxy if configured
-	if cfg.SSH != nil {
-		sshUpstream := cfg.SSH.Upstream
-		if sshUpstream == "" {
-			sshUpstream = os.Getenv("SSH_AUTH_SOCK")
-		}
-		if sshUpstream == "" {
+	if ssh := cfg.SSH; ssh != nil {
+		if ssh.Upstream == "" {
 			slog.Error("SSH agent proxy enabled but no upstream socket (set ssh.upstream in config or SSH_AUTH_SOCK)")
 		} else {
-			sshListen := cfg.SSH.Listen
-			if sshListen == "" {
-				runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-				if runtimeDir != "" {
-					sshListen = filepath.Join(runtimeDir, "secrets-dispatcher", "ssh-agent.sock")
-				}
-			}
-			if sshListen == "" {
-				slog.Error("SSH agent proxy: cannot determine listen path (set ssh.listen in config or XDG_RUNTIME_DIR)")
-			} else {
-				sshServer := sshagent.NewServer(sshListen, sshUpstream, approvalMgr, *cfg.Serve.TrimProcessChain, slog.Default())
-				runners = append(runners, func(ctx context.Context) error {
-					return sshServer.Run(ctx)
-				})
-				slog.Info("SSH agent proxy configured", "listen", sshListen, "upstream", sshUpstream)
-			}
+			sshServer := sshagent.NewServer(ssh.Listen, ssh.Upstream, approvalMgr, *cfg.Serve.TrimProcessChain, slog.Default())
+			runners = append(runners, func(ctx context.Context) error {
+				return sshServer.Run(ctx)
+			})
+			slog.Info("SSH agent proxy configured", "listen", ssh.Listen, "upstream", ssh.Upstream)
 		}
 	}
 
@@ -610,20 +557,8 @@ func runServe(args []string) {
 		provider = &multiProvider{providers: providers}
 	}
 
-	// Compute Unix socket path for thin client (gpg-sign subcommand).
-	// Skip in --api-only mode (test/dev use case — no signing pipeline needed).
-	var apiUnixSocket string
-	if !*apiOnly {
-		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-		if runtimeDir == "" {
-			slog.Warn("XDG_RUNTIME_DIR is not set; Unix socket for gpg-sign will not be created")
-		} else {
-			apiUnixSocket = filepath.Join(runtimeDir, "secrets-dispatcher", "api.sock")
-		}
-	}
-
 	// Create API server
-	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, apiUnixSocket, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
+	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
@@ -635,6 +570,19 @@ func runServe(args []string) {
 		apiServer.SetTestMode(true)
 	}
 
+	// Serve the API socket in the runtime directory, except with --api-only.
+	if !*apiOnly {
+		runtimeDir, err := config.LookupRuntimeDir()
+		if err != nil {
+			slog.Warn("the API socket will not be created", "error", err)
+		} else if err := apiServer.ServeAPISocket(runtimeDir); err != nil {
+			fmt.Fprintf(os.Stderr, "error opening API socket: %v\n", err)
+			os.Exit(1)
+		} else {
+			slog.Info("API socket ready", "socket", runtimeDir.APISocket())
+		}
+	}
+
 	// Start API server
 	if err := apiServer.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "error starting API server: %v\n", err)
@@ -642,10 +590,7 @@ func runServe(args []string) {
 	}
 	slog.Info("API server started",
 		"url", "http://"+apiServer.Addr(),
-		"cookie_file", apiServer.CookieFilePath())
-	if apiServer.UnixSocketPath != "" {
-		slog.Info("Unix socket ready for gpg-sign", "socket", apiServer.UnixSocketPath)
-	}
+		"cookie_file", stateDir.Cookie())
 
 	// Graceful shutdown of API server
 	defer func() {
@@ -758,10 +703,7 @@ func runConfigShow(args []string) {
 	fs.Parse(args)
 
 	// Determine which path to display
-	path := *configPath
-	if path == "" {
-		path = config.DefaultPath()
-	}
+	path := configPathOrDefault(*configPath)
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
@@ -770,7 +712,11 @@ func runConfigShow(args []string) {
 	}
 
 	if *defaults {
-		cfg = cfg.WithDefaults()
+		cfg, err = cfg.WithDefaults()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "# %s\n", path)
@@ -788,14 +734,7 @@ func runConfigEdit(args []string) {
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	fs.Parse(args)
 
-	path := *configPath
-	if path == "" {
-		path = config.DefaultPath()
-	}
-	if path == "" {
-		fmt.Fprintln(os.Stderr, "error: cannot determine config path (set XDG_CONFIG_HOME or use --config)")
-		os.Exit(1)
-	}
+	path := configPathOrDefault(*configPath)
 
 	// Ensure parent directory exists
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -843,8 +782,8 @@ func runConfigEdit(args []string) {
 		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
 		return
 	}
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
+	_, err = cfg.Resolve()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: config validation error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
 		return
@@ -878,8 +817,8 @@ func runConfigValidate(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(); err != nil {
+	_, err = cfg.Resolve()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -1012,10 +951,8 @@ Install options:
 `, progName)
 }
 
-// runGPGSign handles the gpg-sign subcommand.
-// When called as "gpg-sign setup [--local]", it configures git to use this binary.
-// Otherwise, it acts as a gpg proxy: reads commit object from stdin, sends to daemon,
-// and blocks until the signing request is resolved.
+// Runs the gpg-sign subcommand. It either configures git to use this binary as
+// its gpg program or acts as that program.
 func runGPGSign(args []string) {
 	if len(args) > 0 && args[0] == "setup" {
 		runGPGSignSetup(args[1:])
@@ -1042,9 +979,8 @@ func runGPGSignSetup(args []string) {
 	}
 }
 
-// runProvision handles the "provision" subcommand.
-// Without --check, it creates the companion user and all deployment artifacts.
-// With --check, it validates an existing deployment and prints pass/fail per component.
+// Runs the provision subcommand. It sets up the companion user's deployment or
+// checks an existing one, and exits with status 1 when either fails.
 func runProvision(args []string) {
 	fs := flag.NewFlagSet("provision", flag.ExitOnError)
 	desktopUser := fs.String("user", "", "Desktop username to provision companion for (default: $SUDO_USER)")
@@ -1082,9 +1018,8 @@ func runProvision(args []string) {
 	}
 }
 
-// runDaemon handles the "daemon" subcommand.
-// Registers the companion daemon on the system D-Bus as net.mowaka.SecretsDispatcher1.
-// Sends READY=1 via sd-notify after registration, then blocks until SIGTERM/SIGINT.
+// Runs the companion daemon, which serves net.mowaka.SecretsDispatcher1 on D-Bus
+// until SIGTERM or SIGINT. Exits with status 1 when the daemon fails.
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	busAddress := fs.String("bus-address", "", "D-Bus address to connect to (default: system bus; non-empty used by tests)")
@@ -1135,44 +1070,42 @@ func parseLogLevel(s string) slog.Level {
 	}
 }
 
-func getStateDir() (string, error) {
-	// Use XDG_STATE_HOME if set, otherwise ~/.local/state
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		stateHome = filepath.Join(home, ".local", "state")
+// Loads the API auth token from dir, or from the default state directory when
+// dir is empty. Errors when the token file is missing. That error says the
+// daemon is not running.
+func loadClientAuth(dir config.StateDir) (*api.Auth, error) {
+	dir, err := dir.OrDefault()
+	if err != nil {
+		return nil, err
 	}
-	return filepath.Join(stateHome, "secrets-dispatcher"), nil
+	auth, err := api.LoadAuth(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%s is not running (no cookie file found)\nStart the service first with: %s serve", progName, progName)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load auth: %w", err)
+	}
+	return auth, nil
 }
 
-// loadConfig loads a config file. An explicit path that doesn't exist is an error.
-// A missing default path is silently ignored (returns empty config).
+// Loads the config file at explicitPath, or the default one when explicitPath
+// is empty.
 func loadConfig(explicitPath string) (*config.Config, error) {
 	if explicitPath != "" {
-		cfg, err := config.Load(explicitPath)
-		if err != nil {
-			return nil, fmt.Errorf("load config %s: %w", explicitPath, err)
-		}
-		// If the explicit path didn't exist, Load returns empty config.
-		// We need to distinguish: check if the file actually exists.
-		if _, statErr := os.Stat(explicitPath); statErr != nil {
-			return nil, fmt.Errorf("config file not found: %s", explicitPath)
-		}
-		return cfg, nil
+		return config.Load(explicitPath)
 	}
+	return config.LoadDefault()
+}
 
-	defaultPath := config.DefaultPath()
-	if defaultPath == "" {
-		return &config.Config{}, nil
-	}
-	cfg, err := config.Load(defaultPath)
+// Returns path, or the default config file when path is empty. Exits when
+// there is no default.
+func configPathOrDefault(path string) string {
+	path, err := config.PathOrDefault(path)
 	if err != nil {
-		return nil, fmt.Errorf("load config %s: %w", defaultPath, err)
+		fmt.Fprintf(os.Stderr, "error: %v (set XDG_CONFIG_HOME or use --config)\n", err)
+		os.Exit(1)
 	}
-	return cfg, nil
+	return path
 }
 
 // setFlags returns the set of flag names that were explicitly provided on the command line.

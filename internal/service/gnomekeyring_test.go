@@ -23,7 +23,7 @@ func TestDemoteGnomeKeyringWritesDropInAndShadow(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	calls := mockSystemctl(t)
 
-	require.NoError(t, demoteGnomeKeyring())
+	require.NoError(t, host{}.demoteGnomeKeyring())
 
 	dropInContent, err := os.ReadFile(dropIn)
 	require.NoError(t, err)
@@ -49,13 +49,13 @@ func TestDemoteGnomeKeyringBacksUpUserAutostart(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(shadow), 0755))
 	require.NoError(t, os.WriteFile(shadow, []byte(userContent), 0644))
 
-	require.NoError(t, demoteGnomeKeyring())
+	require.NoError(t, host{}.demoteGnomeKeyring())
 
 	backup, err := os.ReadFile(shadow + dbusBackupSuffix)
 	require.NoError(t, err)
 	assert.Equal(t, userContent, string(backup))
 
-	require.NoError(t, restoreGnomeKeyring())
+	require.NoError(t, host{}.restoreGnomeKeyring())
 
 	restored, err := os.ReadFile(shadow)
 	require.NoError(t, err)
@@ -68,8 +68,8 @@ func TestRestoreGnomeKeyringRemovesOnlyOurFiles(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSystemctl(t)
 
-	require.NoError(t, demoteGnomeKeyring())
-	require.NoError(t, restoreGnomeKeyring())
+	require.NoError(t, host{}.demoteGnomeKeyring())
+	require.NoError(t, host{}.restoreGnomeKeyring())
 
 	assert.NoFileExists(t, dropIn)
 	assert.NoFileExists(t, shadow)
@@ -81,7 +81,7 @@ func TestRestoreGnomeKeyringNoopWhenNeverDemoted(t *testing.T) {
 	gkPaths(t)
 	calls := mockSystemctl(t)
 
-	require.NoError(t, restoreGnomeKeyring())
+	require.NoError(t, host{}.restoreGnomeKeyring())
 
 	// Nothing was ours to remove — no systemctl churn either.
 	assert.Empty(t, *calls)
@@ -95,7 +95,7 @@ func TestRestoreGnomeKeyringLeavesForeignShadowAlone(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(shadow), 0755))
 	require.NoError(t, os.WriteFile(shadow, []byte(foreign), 0644))
 
-	require.NoError(t, restoreGnomeKeyring())
+	require.NoError(t, host{}.restoreGnomeKeyring())
 
 	content, err := os.ReadFile(shadow)
 	require.NoError(t, err)

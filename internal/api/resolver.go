@@ -74,16 +74,16 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 		gpgPath, err := r.GPGRunner.FindGPG()
 		if err != nil {
 			slog.Error("failed to find real gpg", "error", err)
-			return r.Manager.ApproveGPGFailed(id, nil, 2)
+			return r.Manager.ApproveGPGSign(id, approval.GPGResult{ExitCode: approval.GPGNotFound})
 		}
 
-		res := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, req.SenderInfo)
-		if res.err != nil || res.exitCode != 0 {
-			slog.Error("gpg signing failed", "error", res.err, "exit_code", res.exitCode)
-			return r.Manager.ApproveGPGFailed(id, res.status, res.exitCode)
+		res, err := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, req.SenderInfo)
+		if err != nil || res.ExitCode != 0 {
+			slog.Error("gpg signing failed", "error", err, "exit_code", res.ExitCode)
+			return r.Manager.ApproveGPGSign(id, res)
 		}
 
-		if err := r.Manager.ApproveWithSignature(id, res.sig, res.status); err != nil {
+		if err := r.Manager.ApproveGPGSign(id, res); err != nil {
 			return err
 		}
 		r.Manager.AddAutoApproveRule(req)
@@ -93,25 +93,23 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 	return r.Manager.ApproveAndAutoApprove(id)
 }
 
-// gpgResult bundles the return values of RunGPG for use with WithSlowNotify.
-type gpgResult struct {
-	sig      []byte
-	status   []byte
-	exitCode int
-	err      error
-}
-
 // runGPGWithNotify wraps RunGPG with slow upstream notification.
-func (r *Resolver) runGPGWithNotify(gpgPath, keyID string, commitObject []byte, info *approval.GPGSignInfo, senderInfo approval.SenderInfo) gpgResult {
+func (r *Resolver) runGPGWithNotify(gpgPath, keyID string, commitObject []byte, info *approval.GPGSignInfo, senderInfo approval.SenderInfo) (approval.GPGResult, error) {
+	// WithSlowNotify carries one value, so the result and its error travel together.
+	type run struct {
+		res approval.GPGResult
+		err error
+	}
 	items := gpgSignItems(info)
-	return proxy.WithSlowNotify(r.SlowThreshold, r.UpstreamNotifier, proxy.UpstreamCallContext{
+	out := proxy.WithSlowNotify(r.SlowThreshold, r.UpstreamNotifier, proxy.UpstreamCallContext{
 		RequestType: approval.RequestTypeGPGSign,
 		Items:       items,
 		SenderInfo:  senderInfo,
-	}, func() gpgResult {
-		sig, status, exitCode, err := r.GPGRunner.RunGPG(gpgPath, keyID, commitObject)
-		return gpgResult{sig, status, exitCode, err}
+	}, func() run {
+		res, err := r.GPGRunner.RunGPG(gpgPath, keyID, commitObject)
+		return run{res, err}
 	})
+	return out.res, out.err
 }
 
 // gpgSignItems builds ItemInfo for GPG signing notifications.
@@ -137,14 +135,12 @@ func (r *Resolver) approveGPGSign(id string, req *approval.Request) error {
 	gpgPath, err := r.GPGRunner.FindGPG()
 	if err != nil {
 		slog.Error("failed to find real gpg", "error", err)
-		return r.Manager.ApproveGPGFailed(id, nil, 2)
+		return r.Manager.ApproveGPGSign(id, approval.GPGResult{ExitCode: approval.GPGNotFound})
 	}
 
-	res := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, req.SenderInfo)
-	if res.err != nil || res.exitCode != 0 {
-		slog.Error("gpg signing failed", "error", res.err, "exit_code", res.exitCode)
-		return r.Manager.ApproveGPGFailed(id, res.status, res.exitCode)
+	res, err := r.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, req.SenderInfo)
+	if err != nil || res.ExitCode != 0 {
+		slog.Error("gpg signing failed", "error", err, "exit_code", res.ExitCode)
 	}
-
-	return r.Manager.ApproveWithSignature(id, res.sig, res.status)
+	return r.Manager.ApproveGPGSign(id, res)
 }

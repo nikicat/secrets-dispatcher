@@ -12,9 +12,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/randhex"
 )
 
-const (
-	jwtExpiry = 5 * time.Minute
-)
+// How long a login link from GenerateLoginURL stays valid.
+const LoginLinkLifetime = 5 * time.Minute
 
 // jwtHeader is the standard JWT header for HS256.
 type jwtHeader struct {
@@ -47,7 +46,7 @@ func (a *Auth) GenerateJWT() (string, error) {
 
 	claims := jwtClaims{
 		Iat: now.Unix(),
-		Exp: now.Add(jwtExpiry).Unix(),
+		Exp: now.Add(LoginLinkLifetime).Unix(),
 		Jti: nonce,
 	}
 

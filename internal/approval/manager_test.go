@@ -2096,3 +2096,20 @@ func TestRequireApproval_NotAutoApproved_Denied(t *testing.T) {
 		t.Error("denied request should return autoApproved=false")
 	}
 }
+
+func TestResolution_Approves(t *testing.T) {
+	tests := []struct {
+		resolution Resolution
+		want       bool
+	}{
+		{ResolutionApproved, true},
+		{ResolutionAutoApproved, true},
+		{ResolutionDenied, false},
+		{ResolutionExpired, false},
+		{ResolutionCancelled, false},
+		{ResolutionIgnored, false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, tt.resolution.Approves(), tt.resolution)
+	}
+}

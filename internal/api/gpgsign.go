@@ -16,7 +16,7 @@ import (
 // GPGRunner finds and executes the real gpg binary.
 type GPGRunner interface {
 	FindGPG() (string, error)
-	RunGPG(gpgPath, keyID string, commitObject []byte) (signature, status []byte, exitCode int, err error)
+	RunGPG(gpgPath, keyID string, commitObject []byte) (approval.GPGResult, error)
 }
 
 // defaultGPGRunner implements GPGRunner using the real gpg binary from PATH.
@@ -31,22 +31,26 @@ func (d *defaultGPGRunner) FindGPG() (string, error) {
 // RunGPG invokes the real gpg binary with --status-fd=2 -bsau <keyID>,
 // feeding commitObject to stdin. Signature bytes come from stdout; status
 // lines from stderr (separate buffers — mixing them corrupts the signature).
-func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) ([]byte, []byte, int, error) {
+func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) (approval.GPGResult, error) {
 	cmd := exec.Command(gpgPath, "--status-fd=2", "-bsau", keyID)
 	cmd.Stdin = bytes.NewReader(commitObject)
 	var sigBuf, statusBuf bytes.Buffer
 	cmd.Stdout = &sigBuf
 	cmd.Stderr = &statusBuf
 	err := cmd.Run()
-	exitCode := 0
+	var exitCode approval.GPGExitCode
 	if err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			exitCode = exitErr.ExitCode()
+			exitCode = approval.GPGExitCode(exitErr.ExitCode())
 		} else {
-			return nil, statusBuf.Bytes(), 1, fmt.Errorf("gpg exec failed: %w", err)
+			return approval.GPGResult{Status: statusBuf.Bytes(), ExitCode: approval.GPGNotStarted}, fmt.Errorf("gpg exec failed: %w", err)
 		}
 	}
-	return sigBuf.Bytes(), statusBuf.Bytes(), exitCode, nil
+	res := approval.GPGResult{Status: statusBuf.Bytes(), ExitCode: exitCode}
+	if exitCode == 0 {
+		res.Signature = sigBuf.Bytes()
+	}
+	return res, nil
 }
 
 // GPGSignRequest is the POST body for /api/v1/gpg-sign/request.
@@ -174,16 +178,16 @@ func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSign
 		writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
 		return
 	}
-	res := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, senderInfo)
-	if res.err != nil {
-		writeError(w, fmt.Sprintf("gpg exec failed: %v", res.err), http.StatusInternalServerError)
+	res, runErr := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, senderInfo)
+	if runErr != nil {
+		writeError(w, fmt.Sprintf("gpg exec failed: %v", runErr), http.StatusInternalServerError)
 		return
 	}
-	if res.exitCode != 0 {
-		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.exitCode)
+	if res.ExitCode != 0 {
+		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.ExitCode)
 	}
 
-	id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, res.sig, res.status)
+	id, err := h.manager.RecordAutoApprovedGPGSign(req.Client, req.GPGSignInfo, senderInfo, res)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return

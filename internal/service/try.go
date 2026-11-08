@@ -19,6 +19,8 @@ type TryOptions struct {
 	BackendPath string
 	// DryRun prints the changes the trial would make, without making any.
 	DryRun bool
+	// How much of the install and the restore Try prints.
+	Narration Narration
 }
 
 // Try puts secrets-dispatcher in front of the current Secret Service for as
@@ -45,7 +47,8 @@ func Try(ctx context.Context, opts TryOptions) error {
 	if err != nil {
 		return err
 	}
-	installOpts := Options{ConfigPath: trialConfig, Start: true, Mode: "local", BackendPath: opts.BackendPath}
+	h := host{narration: opts.Narration}
+	installOpts := Options{ConfigPath: trialConfig, Start: true, Mode: "local", BackendPath: opts.BackendPath, Narration: opts.Narration}
 
 	if opts.DryRun {
 		changes, err := Plan(installOpts)
@@ -80,7 +83,7 @@ func Try(ctx context.Context, opts TryOptions) error {
 
 	if err := Install(installOpts); err != nil {
 		fmt.Println(cErr("Install failed — reverting partial changes…"))
-		if restoreErr := restoreTrial(trialConfig, orig); restoreErr != nil {
+		if restoreErr := h.restoreTrial(trialConfig, orig); restoreErr != nil {
 			fmt.Printf("%s restore after failed install: %v\n", cWarn("WARNING:"), restoreErr)
 		}
 		return err
@@ -101,7 +104,7 @@ func Try(ctx context.Context, opts TryOptions) error {
 
 	fmt.Println()
 	fmt.Println(cDim("Stopping the trial — restoring the original Secret Service…"))
-	return restoreTrial(trialConfig, orig)
+	return h.restoreTrial(trialConfig, orig)
 }
 
 // watchOwnership blocks until ctx is done, reporting when the dispatcher
@@ -130,8 +133,8 @@ func watchOwnership(ctx context.Context) {
 
 // restoreTrial reverses the trial: full uninstall, drop the throwaway config,
 // and confirm the displaced provider is back in front.
-func restoreTrial(trialConfig string, orig Provider) error {
-	err := Uninstall()
+func (h host) restoreTrial(trialConfig string, orig Provider) error {
+	err := Uninstall(h.narration)
 	if rmErr := os.Remove(trialConfig); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
 		err = fmt.Errorf("remove trial config: %w", rmErr)
 	}

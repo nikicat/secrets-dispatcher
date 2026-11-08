@@ -17,36 +17,36 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
-// Exit codes of the thin client, besides gpg's own (ERR-02).
-const (
-	exitOK          = 0
-	exitRefused     = 1 // denied by the user or timed out
-	exitSystemError = 2 // daemon unreachable, auth token missing, etc.
-)
-
 // Serves the gpg-sign subcommand, which git runs as
 // `secrets-dispatcher gpg-sign --status-fd=2 -bsau <keyID>` with the object to sign on stdin.
-// Returns the process exit code: one of the exit constants, or gpg's own (ERR-02).
-func Run(args []string, stdin io.Reader) int {
+// SIGINT and SIGTERM cancel the request on the daemon.
+func Run(args []string, stdin io.Reader) ExitStatus {
 	c := thinClient{debug: os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"}
 
+	gpg := parseGPGArgs(args)
 	// Git also calls gpg.program to verify signatures, list keys and print the
 	// version. Only signing goes through the daemon, so every other call goes to
-	// the real gpg unchanged.
-	if !isSignRequest(args) {
+	// the real gpg unchanged. Git then reads gpg's own status lines and exit
+	// status, and a good signature still verifies.
+	if !gpg.sign {
 		c.debugf("non-signing invocation, delegating to real gpg: %v", args)
 		return passThroughToGPG(args, stdin)
 	}
 
-	info, err := c.collectSignInfo(args, stdin)
+	c.debugf("keyID=%s args=%v", gpg.keyID, args)
+	info, err := c.collectSignInfo(gpg.keyID, stdin)
 	if err != nil {
 		errorf("%v", err)
 		return exitSystemError
 	}
-	if socket := os.Getenv(remoteSocketEnv); socket != "" {
-		return c.runRemote(socket, info)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	outcome, err := c.sign(ctx, info)
+	if err != nil {
+		return reportFailure(ctx, err)
 	}
-	return c.runLocal(info)
+	return outcome.report()
 }
 
 // The process-wide settings of one gpg-sign invocation.
@@ -72,10 +72,7 @@ func (c thinClient) debugf(format string, a ...any) {
 
 // Reads the object to sign from stdin and returns it with its git context for
 // the approval prompt.
-func (c thinClient) collectSignInfo(args []string, stdin io.Reader) (*approval.GPGSignInfo, error) {
-	keyID := extractKeyID(args)
-	c.debugf("keyID=%s args=%v", keyID, args)
-
+func (c thinClient) collectSignInfo(keyID string, stdin io.Reader) (*approval.GPGSignInfo, error) {
 	// Read commit object from stdin (SIGN-02).
 	commitBytes, err := io.ReadAll(stdin)
 	if err != nil {
@@ -112,114 +109,68 @@ func (c thinClient) collectSignInfo(args []string, stdin io.Reader) (*approval.G
 	}, nil
 }
 
-// Signs info through the local daemon's API socket and returns the process exit code.
-func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
+// Signs info through the remote socket that remoteSocketEnv names, or through
+// the local daemon when it names none. Cancelling ctx cancels the request.
+func (c thinClient) sign(ctx context.Context, info *approval.GPGSignInfo) (SignOutcome, error) {
+	if socket := os.Getenv(remoteSocketEnv); socket != "" {
+		c.debugf("remote socket=%s", socket)
+		return SignRemote(ctx, socket, info)
+	}
+	return c.signLocal(ctx, info)
+}
+
+// Signs info through the local daemon's API socket and blocks until the
+// request is resolved. Cancelling ctx cancels the request on the daemon.
+func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (SignOutcome, error) {
+	client, err := c.locateLocalDaemon()
+	if err != nil {
+		return SignOutcome{}, err
+	}
+
+	// File the request with the daemon (SIGN-05).
+	req, err := client.startSignRequest(ctx, info.RepoName, info)
+	if err != nil {
+		return SignOutcome{}, err
+	}
+	defer req.Close()
+	c.debugf("request_id=%s", req.id)
+
+	// Block until resolution (SIGN-08, ERR-01).
+	outcome, err := req.Wait(ctx)
+	if err != nil && ctx.Err() != nil {
+		c.debugf("interrupted, cancelling request %s", req.id)
+		// Best effort: ctx is done, so the cancel goes without it.
+		if err := req.Cancel(context.WithoutCancel(ctx)); err != nil {
+			c.debugf("cancel request failed: %v", err)
+		}
+	}
+	return outcome, err
+}
+
+// Returns a client of the local daemon's API socket. Errors when the auth
+// token or the socket cannot be found.
+func (c thinClient) locateLocalDaemon() (*DaemonClient, error) {
 	// Load auth token (ERR-01 if missing).
 	stateDir, err := daemonStateDir()
 	if err != nil {
-		errorf("cannot find the daemon's auth token: %v", err)
-		return exitSystemError
+		return nil, fmt.Errorf("cannot find the daemon's auth token: %w", err)
 	}
 	c.debugf("state dir=%s", stateDir)
 	token, err := stateDir.ReadToken()
 	if errors.Is(err, os.ErrNotExist) {
-		errorf("daemon not running (cannot read auth token): %v", err)
-		return exitSystemError
+		return nil, fmt.Errorf("daemon not running (cannot read auth token): %w", err)
 	}
 	if err != nil {
-		errorf("cannot read the daemon's auth token: %v", err)
-		return exitSystemError
+		return nil, fmt.Errorf("cannot read the daemon's auth token: %w", err)
 	}
 
 	runtimeDir, err := config.LookupRuntimeDir()
 	if err != nil {
-		errorf("cannot find the daemon's socket: %v", err)
-		return exitSystemError
+		return nil, fmt.Errorf("cannot find the daemon's socket: %w", err)
 	}
 	socketPath := runtimeDir.APISocket()
 	c.debugf("socket=%s", socketPath)
-
-	client := NewDaemonClient(socketPath, token)
-	ctx := context.Background()
-
-	// WebSocket FIRST — ensures we don't miss the resolution event between
-	// POST and the time we start listening (locked decision from CONTEXT.md).
-	wsConn, err := client.DialWebSocket(ctx)
-	if err != nil {
-		errorf("daemon unreachable at %s. Is secrets-dispatcher running?", socketPath)
-		return exitSystemError
-	}
-	defer wsConn.CloseNow()
-
-	// POST signing request to daemon (SIGN-05).
-	reqID, err := client.PostSigningRequest(ctx, info.RepoName, info)
-	if err != nil {
-		errorf("failed to send signing request: %v", err)
-		return exitSystemError
-	}
-	c.debugf("request_id=%s", reqID)
-
-	// Trap SIGINT/SIGTERM to cancel the signing request on interrupt.
-	wsCtx, wsCancel := context.WithCancel(ctx)
-	defer wsCancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-sigCh:
-			c.debugf("interrupted, cancelling request %s", reqID)
-			wsCancel()
-			// Best-effort cancel — use background context since wsCtx is cancelled.
-			if err := client.CancelSigningRequest(context.Background(), reqID); err != nil {
-				c.debugf("cancel request failed: %v", err)
-			}
-		case <-wsCtx.Done():
-			// Normal exit path — nothing to do.
-		}
-		signal.Stop(sigCh)
-	}()
-
-	// Block until resolution (SIGN-08, ERR-01, ERR-02).
-	signature, gpgStatus, exitCode, denied, err := client.WaitForResolution(wsCtx, wsConn, reqID)
-	if err != nil {
-		errorf("%v", err)
-		return exitRefused
-	}
-
-	if denied {
-		errorf("signing request denied by user")
-		return exitRefused
-	}
-	return GPGOutput{Signature: signature, Status: gpgStatus, ExitCode: exitCode}.Emit()
-}
-
-// Signs info through the remote socket at socketPath and returns the process exit code.
-func (c thinClient) runRemote(socketPath string, info *approval.GPGSignInfo) int {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	c.debugf("remote socket=%s", socketPath)
-	res, err := SignRemote(ctx, socketPath, info)
-	if err != nil {
-		errorf("%v", err)
-		return exitSystemError
-	}
-	switch res.Result {
-	case approval.ResolutionApproved:
-		if res.GPGOutput == nil {
-			errorf("approved, but the daemon sent no signature")
-			return exitSystemError
-		}
-		return res.GPGOutput.Emit()
-	case approval.ResolutionExpired:
-		errorf("signing request timed out")
-		return exitRefused
-	case approval.ResolutionDenied, approval.ResolutionCancelled:
-		errorf("signing request denied by user")
-		return exitRefused
-	}
-	errorf("unexpected result %q from the daemon", res.Result)
-	return exitSystemError
+	return NewDaemonClient(socketPath, token), nil
 }
 
 // Returns the state directory that holds the daemon's API auth token. It is the
@@ -232,26 +183,6 @@ func daemonStateDir() (config.StateDir, error) {
 		return "", err
 	}
 	return cfg.StateDir.OrDefault()
-}
-
-// gpg's result for one sign request, as the thin client hands it back to git.
-type GPGOutput struct {
-	Signature []byte `json:"signature,omitempty"`
-	Status    []byte `json:"gpg_status,omitempty"`
-	ExitCode  int    `json:"exit_code,omitempty"`
-}
-
-// Writes gpg's status lines to stderr and, when gpg succeeded, the signature
-// to stdout (SIGN-08). Returns the process exit code, which is gpg's own (ERR-02).
-func (o GPGOutput) Emit() int {
-	if len(o.Status) > 0 {
-		os.Stderr.Write(o.Status) //nolint:errcheck
-	}
-	if o.ExitCode != 0 {
-		return o.ExitCode
-	}
-	os.Stdout.Write(o.Signature) //nolint:errcheck
-	return exitOK
 }
 
 // resolveRepoName runs git rev-parse --show-toplevel and returns the base name.

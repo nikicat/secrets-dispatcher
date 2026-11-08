@@ -39,7 +39,7 @@ func mockSystemctl(t *testing.T) *[]string {
 	t.Helper()
 	orig := systemctlFunc
 	var calls []string
-	systemctlFunc = func(args ...string) error {
+	systemctlFunc = func(_ Narration, args ...string) error {
 		calls = append(calls, strings.Join(args, " "))
 		return nil
 	}
@@ -674,7 +674,7 @@ func TestUninstall(t *testing.T) {
 
 	calls := mockSystemctl(t)
 
-	if err := Uninstall(); err != nil {
+	if err := Uninstall(NarrateMilestones); err != nil {
 		t.Fatalf("Uninstall() error: %v", err)
 	}
 
@@ -710,7 +710,7 @@ func TestUninstallAllUnits(t *testing.T) {
 
 	mockSystemctl(t)
 
-	if err := Uninstall(); err != nil {
+	if err := Uninstall(NarrateMilestones); err != nil {
 		t.Fatalf("Uninstall() error: %v", err)
 	}
 
@@ -875,7 +875,7 @@ func TestUninstallUnmasks(t *testing.T) {
 	origContent := "[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/usr/bin/gopass\n"
 	os.WriteFile(filepath.Join(dbusDir, dbusServiceFile+dbusBackupSuffix), []byte(origContent), 0644)
 
-	if err := Uninstall(); err != nil {
+	if err := Uninstall(NarrateMilestones); err != nil {
 		t.Fatalf("Uninstall() error: %v", err)
 	}
 
@@ -907,7 +907,7 @@ func TestUnmaskNoBackupRemovesMask(t *testing.T) {
 	os.MkdirAll(dbusDir, 0755)
 	os.WriteFile(filepath.Join(dbusDir, dbusServiceFile), []byte(dbusActivationMask), 0644)
 
-	if err := Uninstall(); err != nil {
+	if err := Uninstall(NarrateMilestones); err != nil {
 		t.Fatalf("Uninstall() error: %v", err)
 	}
 
@@ -957,11 +957,9 @@ func TestInstallVerboseNarratesChanges(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	mockSystemctl(t)
-	Verbose = true
-	t.Cleanup(func() { Verbose = false })
 
 	out := captureStdout(t, func() {
-		require.NoError(t, Install(Options{}))
+		require.NoError(t, Install(Options{Narration: NarrateChanges}))
 	})
 
 	assert.Contains(t, out, "Wrote unit file:")
@@ -979,8 +977,23 @@ func TestUninstallQuietByDefault(t *testing.T) {
 	require.NoError(t, Install(Options{}))
 
 	out := captureStdout(t, func() {
-		require.NoError(t, Uninstall())
+		require.NoError(t, Uninstall(NarrateMilestones))
 	})
 
 	assert.NotContains(t, out, "Removed ")
+}
+
+func TestNarrationFlagValue(t *testing.T) {
+	var n Narration
+	assert.Equal(t, "false", n.String())
+	assert.True(t, n.IsBoolFlag())
+
+	require.NoError(t, n.Set("true"))
+	assert.Equal(t, NarrateChanges, n)
+	assert.Equal(t, "true", n.String())
+
+	require.NoError(t, n.Set("false"))
+	assert.Equal(t, NarrateMilestones, n)
+
+	assert.Error(t, n.Set("loud"))
 }

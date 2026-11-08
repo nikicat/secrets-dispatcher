@@ -1,4 +1,6 @@
-// secrets-dispatcher proxies Secret Service requests from a remote D-Bus to the local Secret Service.
+// Stands between applications and the user's secrets and asks the user to
+// approve each access. It guards three ways in: the Secret Service, the
+// ssh-agent and gpg commit signing.
 package main
 
 import (
@@ -158,7 +160,7 @@ func runLogin(args []string) {
 	fmt.Println("Open this URL to access the Web UI:")
 	fmt.Println(url)
 	fmt.Println()
-	fmt.Println("(Single-use link; expires in 5 minutes)")
+	fmt.Printf("(Single-use link; expires in %d minutes)\n", int(api.LoginLinkLifetime.Minutes()))
 
 	// Try to open the URL in the default browser
 	if err := exec.Command("xdg-open", url).Start(); err != nil {
@@ -390,8 +392,9 @@ func runServe(args []string) {
 		}
 	}
 	upstreamSlowThreshold := time.Duration(*cfg.Serve.UpstreamSlowThreshold)
+	notificationDelay := time.Duration(cfg.Serve.NotificationDelay)
 	if desktopNotifier != nil {
-		notifHandler = notification.NewHandler(desktopNotifier, api.NewResolver(approvalMgr, slowUpstreamNotifier, upstreamSlowThreshold), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), time.Duration(cfg.Serve.NotificationDelay))
+		notifHandler = notification.NewHandler(desktopNotifier, api.NewResolver(approvalMgr, slowUpstreamNotifier, upstreamSlowThreshold), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
 		approvalMgr.Subscribe(notifHandler)
 	}
 
@@ -546,24 +549,13 @@ func runServe(args []string) {
 		}
 	}
 
-	// Build composite ClientProvider
-	var provider api.ClientProvider
-	switch len(providers) {
-	case 0:
-		provider = &staticProvider{}
-	case 1:
-		provider = providers[0]
-	default:
-		provider = &multiProvider{providers: providers}
-	}
-
 	// Create API server
-	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, provider, auth, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
+	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, &multiProvider{providers: providers}, auth, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
 	}
-	apiServer.WSHandler().SetNotificationDelay(int(time.Duration(cfg.Serve.NotificationDelay).Milliseconds()))
+	apiServer.WSHandler().SetNotificationDelay(notificationDelay)
 
 	// Enable test mode for API-only mode
 	if *apiOnly {
@@ -654,9 +646,6 @@ type staticProvider struct {
 }
 
 func (s *staticProvider) Clients() []proxy.ClientInfo {
-	if s.info.Name == "" {
-		return nil
-	}
 	return []proxy.ClientInfo{s.info}
 }
 
@@ -849,9 +838,8 @@ func runTry(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Print what the trial would change, then exit without changing anything")
 	configPath := fs.String("config", "", "Base config the trial copies settings from, never modified (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	backend := fs.String("backend", "", "Backend for the trial: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
-	verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
+	narration := narrationFlag(fs)
 	fs.Parse(args)
-	service.Verbose = *verbose
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -860,6 +848,7 @@ func runTry(args []string) {
 		ConfigPath:  *configPath,
 		BackendPath: *backend,
 		DryRun:      *dryRun,
+		Narration:   *narration,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -877,10 +866,9 @@ func runService(args []string) {
 		runServiceInstall(args[1:])
 	case "uninstall":
 		fs := flag.NewFlagSet("service uninstall", flag.ExitOnError)
-		verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
+		narration := narrationFlag(fs)
 		fs.Parse(args[1:])
-		service.Verbose = *verbose
-		if err := service.Uninstall(); err != nil {
+		if err := service.Uninstall(*narration); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -907,15 +895,15 @@ func runServiceInstall(args []string) {
 	mode := fs.String("mode", "local", "Topology mode: local (gate this desktop), remote (serve secrets to remote hosts), or full")
 	backend := fs.String("backend", "", "Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
 	dryRun := fs.Bool("dry-run", false, "Print what the install would change, then exit without changing anything")
-	verbose := fs.Bool("verbose", false, "Narrate every file and unit change (default: milestones only)")
+	narration := narrationFlag(fs)
 	fs.Parse(args)
-	service.Verbose = *verbose
 
 	opts := service.Options{
 		ConfigPath:  *configPath,
 		Start:       *start && !*noStart,
 		Mode:        *mode,
 		BackendPath: *backend,
+		Narration:   *narration,
 	}
 
 	if *dryRun {
@@ -930,6 +918,13 @@ func runServiceInstall(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// Registers the --verbose flag on fs and returns the narration it sets.
+func narrationFlag(fs *flag.FlagSet) *service.Narration {
+	n := service.NarrateMilestones
+	fs.Var(&n, "verbose", "Narrate every file and unit change (default: milestones only)")
+	return &n
 }
 
 func printServiceUsage() {
@@ -958,7 +953,7 @@ func runGPGSign(args []string) {
 		runGPGSignSetup(args[1:])
 		return
 	}
-	os.Exit(gpgsign.Run(args, os.Stdin))
+	os.Exit(int(gpgsign.Run(args, os.Stdin)))
 }
 
 // runGPGSignSetup handles the "gpg-sign setup" subcommand.
@@ -968,9 +963,9 @@ func runGPGSignSetup(args []string) {
 	remoteSocket := fs.String("remote-socket", "", "Sign through this forwarded remote socket (docs/REMOTE-PROXY.md)")
 	fs.Parse(args) //nolint:errcheck
 
-	scope := "global"
+	scope := gpgsign.ScopeGlobal
 	if *local {
-		scope = "local"
+		scope = gpgsign.ScopeLocal
 	}
 
 	if err := gpgsign.SetupGitConfig(scope, *remoteSocket); err != nil {
@@ -997,16 +992,10 @@ func runProvision(args []string) {
 
 	if *check {
 		results := companion.Check(cfg)
-		allPass := true
 		for _, r := range results {
-			status := "[PASS]"
-			if !r.Pass {
-				status = "[FAIL]"
-				allPass = false
-			}
-			fmt.Printf("%s %s: %s\n", status, r.Name, r.Message)
+			fmt.Println(r)
 		}
-		if !allPass {
+		if !companion.AllPass(results) {
 			os.Exit(1)
 		}
 		return

@@ -200,15 +200,21 @@ func TestWSHandler_BroadcastClient(t *testing.T) {
 	}
 }
 
+// Returns a request from invoker gh to read one secret in the default
+// collection, for the auto-approve rule tests to build rules from.
+func ghSecretRequest() *approval.Request {
+	return &approval.Request{
+		Type:       approval.RequestTypeGetSecret,
+		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
+	}
+}
+
 func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 	f := newWSFixture(t, newTestManager(), nil)
 
 	// Add a rule before connecting
-	f.mgr.AddAutoApproveRule(&approval.Request{
-		Type:       approval.RequestTypeGetSecret,
-		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
-	})
+	f.mgr.AddAutoApproveRule(ghSecretRequest())
 
 	msg := f.read(f.dial(), wsmsg.Snapshot)
 
@@ -228,11 +234,9 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
-	f.mgr.AddAutoApproveRule(&approval.Request{
-		Type:       approval.RequestTypeGetSecret,
-		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
-		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
-	})
+	req := ghSecretRequest()
+	req.Items[0].Attributes = map[string]string{"service": "gh:github.com"}
+	f.mgr.AddAutoApproveRule(req)
 
 	msg := f.read(conn, wsmsg.AutoApproveRuleAdded)
 
@@ -258,11 +262,7 @@ func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
-	ruleID := f.mgr.AddAutoApproveRule(&approval.Request{
-		Type:       approval.RequestTypeGetSecret,
-		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
-	})
+	ruleID := f.mgr.AddAutoApproveRule(ghSecretRequest())
 	f.read(conn, wsmsg.AutoApproveRuleAdded)
 
 	if err := f.mgr.RemoveAutoApproveRule(ruleID); err != nil {
@@ -296,20 +296,19 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 
 // Checks that the gpgsign thin client reads how the server resolved a gpg_sign
 // request: approved, denied or cancelled. The client loops past a message
-// whose type or result it does not recognize, so a drift between the two sides
-// shows up as a read that runs out of time.
+// whose type it does not recognize, so a drift between the two sides shows up
+// as a read that runs out of time.
 func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
 	tests := []struct {
-		name       string
-		resolve    func(mgr *approval.Manager, id string) error
-		wantDenied bool
+		resolve func(mgr *approval.Manager, id string) error
+		want    approval.Resolution
 	}{
-		{"approved", (*approval.Manager).Approve, false},
-		{"denied", (*approval.Manager).Deny, true},
-		{"cancelled", (*approval.Manager).Cancel, true},
+		{(*approval.Manager).Approve, approval.ResolutionApproved},
+		{(*approval.Manager).Deny, approval.ResolutionDenied},
+		{(*approval.Manager).Cancel, approval.ResolutionCancelled},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(string(tt.want), func(t *testing.T) {
 			f := newWSFixture(t, newTestManager(), nil)
 			conn := f.dial()
 			f.read(conn, wsmsg.Snapshot)
@@ -318,9 +317,9 @@ func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
 			require.NoError(t, err, "create gpg_sign request")
 			require.NoError(t, tt.resolve(f.mgr, id), "resolve request")
 
-			_, _, _, denied, err := (&gpgsign.DaemonClient{}).WaitForResolution(f.ctx, conn, id)
+			outcome, err := gpgsign.WaitForResolution(f.ctx, conn, id)
 			require.NoError(t, err, "wait for resolution")
-			assert.Equal(t, tt.wantDenied, denied)
+			assert.Equal(t, tt.want, outcome.Result)
 		})
 	}
 }

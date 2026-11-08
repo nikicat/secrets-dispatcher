@@ -40,46 +40,56 @@ func FindRealGPG() (string, error) {
 	return "", errors.New("gpg not found in PATH")
 }
 
-// isSignRequest reports whether the args git handed to gpg.program ask it to
-// *create* a signature, as opposed to verifying one (git verify-commit,
-// verify-tag, log --show-signature, merge/pull verification) or any other gpg
-// operation (--list-keys, --version, ...).
+// What git asks gpg.program to do, read once from the arguments it passes.
 //
-// Git's signing invocation is `--status-fd=2 -bsau <keyID>`; the tell is the
-// short-flag cluster carrying 's' (--sign) or 'b' (--detach-sign). Its verify
+// Git's signing invocation is `--status-fd=2 -bsau <keyID>`. Its verify
 // invocation is `--keyid-format=long --status-fd=1 --verify <sig> -`, which
-// carries neither (both verified empirically). Long options (--foo) and the
-// lone "-" that means stdin never count. This proxy can only create signatures
-// (via the daemon), so anything that is not a sign request is delegated to the
-// real gpg by the caller.
-func isSignRequest(args []string) bool {
-	for _, a := range args {
-		switch a {
-		case "--sign", "--detach-sign", "--clearsign", "--clear-sign":
-			return true
-		}
-		// Short-flag cluster like -bsau, but not a long --option nor the lone
-		// "-" (stdin). 's' = sign, 'b' = detach-sign.
-		if len(a) >= 2 && a[0] == '-' && a[1] != '-' && strings.ContainsAny(a[1:], "sb") {
-			return true
-		}
-	}
-	return false
+// asks for no signature (both verified empirically).
+type gpgArgs struct {
+	// Picks the daemon or the real gpg, as Run explains.
+	sign bool
+	// Names the signing key in the approval prompt. Empty when no -u is given.
+	keyID string
 }
 
-// passThroughToGPG execs the real gpg binary with the exact args git passed,
-// wiring stdin/stdout/stderr straight through, and returns gpg's own exit code.
-// It is used for every non-signing invocation (signature verification, key
-// listing, --version probing): git captures the child's stdout for the GNUPG
-// status lines and its exit code for pass/fail, so forwarding all three
-// verbatim makes gpg.program behave exactly as plain gpg would. Without it, git
-// would verify a validly-signed commit by calling this proxy, get no GOODSIG
-// back, and report the commit as unsigned.
-func passThroughToGPG(args []string, stdin io.Reader) int {
+// Parses the arguments git passes to gpg.program. A long sign option, or a
+// short-flag cluster carrying 's' (--sign) or 'b' (--detach-sign), asks for a
+// signature. The key ID is the argument after the first cluster that ends in
+// 'u', such as -u or -bsau.
+func parseGPGArgs(args []string) gpgArgs {
+	var g gpgArgs
+	for i, a := range args {
+		switch a {
+		case "--sign", "--detach-sign", "--clearsign", "--clear-sign":
+			g.sign = true
+		}
+		flags := shortFlags(a)
+		if strings.ContainsAny(flags, "sb") {
+			g.sign = true
+		}
+		if g.keyID == "" && strings.HasSuffix(flags, "u") && i+1 < len(args) {
+			g.keyID = args[i+1]
+		}
+	}
+	return g
+}
+
+// Returns the letters of a short-flag cluster such as -bsau. Returns "" for a
+// long --option, for the lone "-" that means stdin, and for an operand.
+func shortFlags(arg string) string {
+	if len(arg) < 2 || arg[0] != '-' || arg[1] == '-' {
+		return ""
+	}
+	return arg[1:]
+}
+
+// Runs the real gpg with args, stdin and the process's stdout and stderr, and
+// returns gpg's exit status.
+func passThroughToGPG(args []string, stdin io.Reader) ExitStatus {
 	gpgPath, err := FindRealGPG()
 	if err != nil {
 		errorf("cannot locate real gpg for pass-through: %v", err)
-		return 2
+		return exitSystemError
 	}
 	cmd := exec.Command(gpgPath, args...)
 	cmd.Stdin = stdin
@@ -87,40 +97,10 @@ func passThroughToGPG(args []string, stdin io.Reader) int {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			return exitErr.ExitCode()
+			return ExitStatus(exitErr.ExitCode())
 		}
 		errorf("gpg pass-through failed: %v", err)
-		return 2
+		return exitSystemError
 	}
-	return 0
-}
-
-// extractKeyID parses the GPG key ID from the args that git passes to
-// gpg.program. Git's invocation is:
-//
-//	--status-fd=2 -bsau <keyID>
-//
-// The key ID follows the -u flag, which may be embedded in a combined short
-// flag like -bsau (the last character is 'u', so the next argument is the
-// key ID). It may also appear as a standalone -u flag.
-//
-// Returns the key ID string, or an empty string if not found.
-func extractKeyID(args []string) string {
-	for i, arg := range args {
-		// Standalone -u flag: the next argument is the key ID.
-		if arg == "-u" {
-			if i+1 < len(args) {
-				return args[i+1]
-			}
-			return ""
-		}
-		// Combined short flag ending in 'u' (e.g. -bsau): next arg is key ID.
-		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") && strings.HasSuffix(arg, "u") {
-			if i+1 < len(args) {
-				return args[i+1]
-			}
-			return ""
-		}
-	}
-	return ""
+	return exitOK
 }

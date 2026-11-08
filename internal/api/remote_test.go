@@ -16,6 +16,9 @@ import (
 
 const remoteCommit = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A\ncommitter A\n\nfix: remote\n"
 
+// Pending-request timeout long enough that no test request expires on its own.
+const remoteTimeout = 5 * time.Second
+
 // A server with remote "nb-home" open on a real socket, signing with a fake gpg.
 type remoteHarness struct {
 	mgr    *approval.Manager
@@ -26,12 +29,12 @@ type remoteHarness struct {
 
 // What the thin client's remote call returned.
 type remoteSignOutcome struct {
-	res gpgsign.RemoteSignResponse
+	res gpgsign.SignOutcome
 	err error
 }
 
 func newRemoteHarness(t *testing.T) *remoteHarness {
-	return newRemoteHarnessExpiring(t, 5*time.Second)
+	return newRemoteHarnessExpiring(t, remoteTimeout)
 }
 
 // Like newRemoteHarness, with pending requests expiring after timeout.
@@ -39,7 +42,7 @@ func newRemoteHarnessExpiring(t *testing.T, timeout time.Duration) *remoteHarnes
 	t.Helper()
 	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = timeout })
 	h := testHandlers(t, mgr)
-	h.resolver.GPGRunner = &fakeGPGRunner{sig: []byte("SIG"), status: []byte("[GNUPG:] SIG_CREATED\n")}
+	h.resolver.GPGRunner = &fakeGPGRunner{res: approval.GPGResult{Signature: []byte("SIG"), Status: []byte("[GNUPG:] SIG_CREATED\n")}}
 	server := &Server{handlers: h, httpServer: &http.Server{}}
 	require.NoError(t, server.ServeAPISocket(config.RuntimeDir(t.TempDir())))
 	rs, err := server.ServeRemote("nb-home")
@@ -78,7 +81,7 @@ func TestRemoteSign_ApprovedReturnsSignature(t *testing.T) {
 	out := <-result
 	require.NoError(t, out.err)
 	assert.Equal(t, approval.ResolutionApproved, out.res.Result)
-	require.NotNil(t, out.res.GPGOutput)
+	require.NotNil(t, out.res.GPGResult)
 	assert.Equal(t, []byte("SIG"), out.res.Signature)
 	assert.Equal(t, []byte("[GNUPG:] SIG_CREATED\n"), out.res.Status)
 }
@@ -89,9 +92,9 @@ func TestRemoteSign_ClientReadsEveryResolution(t *testing.T) {
 		timeout time.Duration
 		resolve func(rh *remoteHarness, id string) error
 	}{
-		{approval.ResolutionApproved, 5 * time.Second, func(rh *remoteHarness, id string) error { return rh.h.resolver.Approve(id) }},
-		{approval.ResolutionDenied, 5 * time.Second, func(rh *remoteHarness, id string) error { return rh.h.resolver.Deny(id) }},
-		{approval.ResolutionCancelled, 5 * time.Second, func(rh *remoteHarness, id string) error { return rh.mgr.Cancel(id) }},
+		{approval.ResolutionApproved, remoteTimeout, func(rh *remoteHarness, id string) error { return rh.h.resolver.Approve(id) }},
+		{approval.ResolutionDenied, remoteTimeout, func(rh *remoteHarness, id string) error { return rh.h.resolver.Deny(id) }},
+		{approval.ResolutionCancelled, remoteTimeout, func(rh *remoteHarness, id string) error { return rh.mgr.Cancel(id) }},
 		{approval.ResolutionExpired, 500 * time.Millisecond, func(*remoteHarness, string) error { return nil }},
 	}
 	for _, c := range cases {
@@ -102,7 +105,7 @@ func TestRemoteSign_ClientReadsEveryResolution(t *testing.T) {
 			out := <-result
 			require.NoError(t, out.err)
 			assert.Equal(t, c.want, out.res.Result)
-			assert.Equal(t, c.want == approval.ResolutionApproved, out.res.GPGOutput != nil, "GPGOutput only on approval")
+			assert.Equal(t, c.want == approval.ResolutionApproved, out.res.GPGResult != nil, "GPGResult only on approval")
 		})
 	}
 }

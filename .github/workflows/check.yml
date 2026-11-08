@@ -71,6 +71,6 @@ jobs:
 
       - uses: ./.github/actions/setup-frontend
 
-      - run: make playwright-install BROWSER=${{ matrix.browser }}
+      - run: make playwright-install PLAYWRIGHT_BROWSER=${{ matrix.browser }}
 
-      - run: make test-e2e-browser BROWSER=${{ matrix.browser }}
+      - run: make test-e2e-browser PLAYWRIGHT_BROWSER=${{ matrix.browser }}

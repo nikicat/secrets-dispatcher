@@ -149,8 +149,9 @@ demo: backend-go
 	e2e/gnome/vm/run.sh destroy
 
 # Install Playwright browser with system deps (usage: make playwright-install PLAYWRIGHT_BROWSER=chromium)
-# --with-deps installs the browsers' libraries with apt; elsewhere (the dev container) the image has them
-PLAYWRIGHT_DEPS := $(if $(shell command -v apt-get),--with-deps)
+# CI's runner gets the browsers' libraries from --with-deps, which needs root; the dev container's
+# image has them already
+PLAYWRIGHT_DEPS := $(if $(CI),--with-deps)
 playwright-install: deps-frontend
 	$(PNPM) exec playwright install $(PLAYWRIGHT_DEPS) $(PLAYWRIGHT_BROWSER)
 

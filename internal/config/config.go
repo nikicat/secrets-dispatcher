@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -419,33 +420,49 @@ type SSHConfig struct {
 
 // Config is the top-level configuration file structure.
 type Config struct {
-	StateDir string      `yaml:"state_dir"`
+	StateDir StateDir    `yaml:"state_dir"`
 	Listen   string      `yaml:"listen"`
 	Serve    ServeConfig `yaml:"serve"`
 	SSH      *SSHConfig  `yaml:"ssh,omitempty"`
 }
 
-// DefaultPath returns the default config file path using XDG_CONFIG_HOME.
-func DefaultPath() string {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		configHome = filepath.Join(home, ".config")
+// Returns the default config file, under the XDG config home.
+func DefaultPath() (string, error) {
+	base, err := ConfigHome()
+	if err != nil {
+		return "", fmt.Errorf("find the config file: %w", err)
 	}
-	return filepath.Join(configHome, "secrets-dispatcher", "config.yaml")
+	return filepath.Join(base, appName, "config.yaml"), nil
 }
 
-// Load reads and parses a YAML config file. If the file does not exist,
-// it returns an empty Config and a nil error. Unknown keys are rejected.
+// Returns path, or DefaultPath when path is empty.
+func PathOrDefault(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	return DefaultPath()
+}
+
+// Loads the config file at DefaultPath, as Load does. A missing file gives an
+// empty config.
+func LoadDefault() (*Config, error) {
+	path, err := DefaultPath()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return &Config{}, nil
+	}
+	return cfg, err
+}
+
+// Reads and parses the YAML config file at path. Unknown keys are rejected.
+// Each error names path. Errors with os.ErrNotExist when the file does not
+// exist.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &Config{}, nil
-		}
 		return nil, err
 	}
 

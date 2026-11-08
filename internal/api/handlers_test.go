@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/stretchr/testify/require"
 )
 
 // mintSession mints a live browser session on auth and returns the matching
@@ -31,17 +32,57 @@ func mintSession(t *testing.T, auth *Auth) string {
 // testHandlers creates handlers with a test auth for use in tests.
 func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 	t.Helper()
-	tmpDir := t.TempDir()
-	auth, err := NewAuth(tmpDir)
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	auth := newTestAuth(t)
 	return NewHandlers(mgr, "/path/to/socket", "test-client", auth, false, nil, 0)
 }
 
+// Builds the approval manager the api tests share. Its requests wait five
+// minutes, so none expires mid-test, and its auto-approve rules last two
+// minutes. Each edit adjusts the config before the manager is built.
+func newTestManager(edits ...func(*approval.ManagerConfig)) *approval.Manager {
+	cfg := approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute}
+	for _, edit := range edits {
+		edit(&cfg)
+	}
+	return approval.NewManager(cfg)
+}
+
+// A get_secret request that a test started and that its manager holds pending.
+type pendingRequest struct {
+	ID string
+	// Done receives RequireApproval's error once the request is resolved.
+	Done <-chan error
+}
+
+// Starts a get_secret request from "test-client" for items on session
+// "/session/1" in the background, and returns the channel that receives
+// RequireApproval's error.
+func startRequest(ctx context.Context, mgr *approval.Manager, items ...approval.ItemInfo) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.RequireApproval(ctx, "test-client", items, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		done <- err
+	}()
+	return done
+}
+
+// Starts a request as startRequest does, and returns once mgr lists it as
+// pending. The request is cancelled when the test ends.
+func startPending(t *testing.T, mgr *approval.Manager, items ...approval.ItemInfo) pendingRequest {
+	t.Helper()
+	done := startRequest(t.Context(), mgr, items...)
+	var id string
+	require.Eventually(t, func() bool {
+		if reqs := mgr.List(); len(reqs) > 0 {
+			id = reqs[0].ID
+		}
+		return id != ""
+	}, time.Second, 10*time.Millisecond, "request did not appear")
+	return pendingRequest{ID: id, Done: done}
+}
+
 func TestHandleStatus(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	rr := httptest.NewRecorder()
@@ -83,8 +124,7 @@ func TestHandleStatus(t *testing.T) {
 }
 
 func TestHandleStatus_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
 	rr := httptest.NewRecorder()
@@ -97,8 +137,7 @@ func TestHandleStatus_WrongMethod(t *testing.T) {
 }
 
 func TestHandlePendingList_Empty(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending", nil)
 	rr := httptest.NewRecorder()
@@ -120,23 +159,10 @@ func TestHandlePendingList_Empty(t *testing.T) {
 }
 
 func TestHandlePendingList_WithRequests(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	// Start a pending request
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, "test-client", []approval.ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	}()
-
-	// Wait for request to appear
-	for range 100 {
-		if mgr.PendingCount() > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	startPending(t, mgr, approval.ItemInfo{Path: "/test/item1"}, approval.ItemInfo{Path: "/test/item2"})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending", nil)
 	rr := httptest.NewRecorder()
@@ -163,38 +189,18 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 	if len(r.Items) != 2 {
 		t.Errorf("expected 2 items, got %d", len(r.Items))
 	}
-	if r.Session != "/session/42" {
-		t.Errorf("expected session '/session/42', got '%s'", r.Session)
+	if r.Session != "/session/1" {
+		t.Errorf("expected session '/session/1', got '%s'", r.Session)
 	}
 }
 
 func TestHandleApprove_Success(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	// Start a pending request
-	done := make(chan error, 1)
-	go func() {
-		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-		done <- err
-	}()
+	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
-	// Wait for request to appear
-	var reqID string
-	for range 100 {
-		reqs := mgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+reqID+"/approve", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+pending.ID+"/approve", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleApprove(rr, req)
@@ -214,7 +220,7 @@ func TestHandleApprove_Success(t *testing.T) {
 
 	// Verify the approval unblocked the request
 	select {
-	case err := <-done:
+	case err := <-pending.Done:
 		if err != nil {
 			t.Errorf("RequireApproval should return nil on approve, got: %v", err)
 		}
@@ -224,8 +230,7 @@ func TestHandleApprove_Success(t *testing.T) {
 }
 
 func TestHandleApprove_NotFound(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/approve", nil)
 	rr := httptest.NewRecorder()
@@ -247,8 +252,7 @@ func TestHandleApprove_NotFound(t *testing.T) {
 }
 
 func TestHandleApprove_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/approve", nil)
 	rr := httptest.NewRecorder()
@@ -261,32 +265,12 @@ func TestHandleApprove_WrongMethod(t *testing.T) {
 }
 
 func TestHandleDeny_Success(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	// Start a pending request
-	done := make(chan error, 1)
-	go func() {
-		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-		done <- err
-	}()
+	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
-	// Wait for request to appear
-	var reqID string
-	for range 100 {
-		reqs := mgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+reqID+"/deny", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+pending.ID+"/deny", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleDeny(rr, req)
@@ -306,7 +290,7 @@ func TestHandleDeny_Success(t *testing.T) {
 
 	// Verify the denial unblocked the request
 	select {
-	case err := <-done:
+	case err := <-pending.Done:
 		if err != approval.ErrDenied {
 			t.Errorf("RequireApproval should return ErrDenied, got: %v", err)
 		}
@@ -316,32 +300,12 @@ func TestHandleDeny_Success(t *testing.T) {
 }
 
 func TestHandleCancel_Success(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	// Start a pending request
-	done := make(chan error, 1)
-	go func() {
-		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-		done <- err
-	}()
+	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
-	// Wait for request to appear
-	var reqID string
-	for range 100 {
-		reqs := mgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+reqID+"/cancel", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+pending.ID+"/cancel", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleCancel(rr, req)
@@ -361,8 +325,7 @@ func TestHandleCancel_Success(t *testing.T) {
 }
 
 func TestHandleCancel_NotFound(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/cancel", nil)
 	rr := httptest.NewRecorder()
@@ -375,8 +338,7 @@ func TestHandleCancel_NotFound(t *testing.T) {
 }
 
 func TestHandleCancel_WrongMethod(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/cancel", nil)
 	rr := httptest.NewRecorder()
@@ -389,8 +351,7 @@ func TestHandleCancel_WrongMethod(t *testing.T) {
 }
 
 func TestHandleLog_Empty(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	handlers := testHandlers(t, mgr)
+	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
 	rr := httptest.NewRecorder()
@@ -413,34 +374,14 @@ func TestHandleLog_Empty(t *testing.T) {
 }
 
 func TestHandleLog_WithHistory(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	// Start and approve a request to create history
-	done := make(chan error, 1)
-	go func() {
-		_, err := mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item", Label: "Test Item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-		done <- err
-	}()
-
-	// Wait for request to appear
-	var reqID string
-	for range 100 {
-		reqs := mgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
+	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item", Label: "Test Item"})
 
 	// Approve the request
-	mgr.Approve(reqID)
-	<-done
+	mgr.Approve(pending.ID)
+	<-pending.Done
 
 	// Give time for history to be recorded
 	time.Sleep(50 * time.Millisecond)
@@ -467,8 +408,8 @@ func TestHandleLog_WithHistory(t *testing.T) {
 	if entry.Resolution != "approved" {
 		t.Errorf("expected resolution 'approved', got '%s'", entry.Resolution)
 	}
-	if entry.Request.ID != reqID {
-		t.Errorf("expected request ID %s, got %s", reqID, entry.Request.ID)
+	if entry.Request.ID != pending.ID {
+		t.Errorf("expected request ID %s, got %s", pending.ID, entry.Request.ID)
 	}
 	if entry.Request.Client != "test-client" {
 		t.Errorf("expected client 'test-client', got '%s'", entry.Request.Client)

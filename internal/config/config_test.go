@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -113,12 +114,44 @@ serve:
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	cfg, err := Load("/nonexistent/path/config.yaml")
-	if err != nil {
-		t.Fatalf("Load: expected nil error for missing file, got %v", err)
+	path := "/nonexistent/path/config.yaml"
+	_, err := Load(path)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Load() error = %v, want os.ErrNotExist", err)
 	}
-	if cfg.StateDir != "" || cfg.Listen != "" {
-		t.Errorf("expected empty config, got %+v", cfg)
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("Load() error = %v, want it to name %s", err, path)
+	}
+}
+
+func TestLoadDefaultMissingFile(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg, err := LoadDefault()
+	if err != nil {
+		t.Fatalf("LoadDefault() error = %v", err)
+	}
+	if !reflect.DeepEqual(cfg, &Config{}) {
+		t.Errorf("LoadDefault() = %+v, want an empty config", cfg)
+	}
+}
+
+func TestPathOrDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	want, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath() error = %v", err)
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"/etc/custom.yaml", "/etc/custom.yaml"},
+		{"", want},
+	} {
+		got, err := PathOrDefault(tc.in)
+		if err != nil {
+			t.Fatalf("PathOrDefault(%q) error = %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("PathOrDefault(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -270,11 +303,12 @@ serve:
 }
 
 func TestDefaultPath(t *testing.T) {
-	// With XDG_CONFIG_HOME set
 	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
-	got := DefaultPath()
-	want := "/custom/config/secrets-dispatcher/config.yaml"
-	if got != want {
+	got, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath: %v", err)
+	}
+	if want := "/custom/config/secrets-dispatcher/config.yaml"; got != want {
 		t.Errorf("DefaultPath() = %q, want %q", got, want)
 	}
 }

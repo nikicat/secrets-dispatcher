@@ -176,11 +176,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return errors.Join(append(errs, s.httpServer.Shutdown(ctx))...)
 }
 
-// CookieFilePath returns the path to the authentication cookie file.
-func (s *Server) CookieFilePath() string {
-	return s.auth.FilePath()
-}
-
 // WSHandler returns the WebSocket handler for broadcasting client events.
 func (s *Server) WSHandler() *WSHandler {
 	return s.wsHandler

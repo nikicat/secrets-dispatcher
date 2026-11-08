@@ -8,17 +8,19 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 // Client communicates with the secrets-dispatcher API.
 type Client struct {
 	baseURL    string
-	token      string
+	token      config.AuthToken
 	httpClient *http.Client
 }
 
 // NewClient creates a new API client.
-func NewClient(serverAddr, token string) *Client {
+func NewClient(serverAddr string, token config.AuthToken) *Client {
 	return &Client{
 		baseURL: "http://" + serverAddr,
 		token:   token,
@@ -273,7 +275,7 @@ func (c *Client) get(path string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.token.Authorize(req.Header)
 	return c.httpClient.Do(req)
 }
 
@@ -282,7 +284,7 @@ func (c *Client) post(path string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	c.token.Authorize(req.Header)
 	return c.httpClient.Do(req)
 }
 

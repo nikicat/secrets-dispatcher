@@ -45,12 +45,9 @@ func resolveInstallInputs(opts Options) (installInputs, error) {
 		return installInputs{}, fmt.Errorf("resolve executable: %w", err)
 	}
 
-	configPath := opts.ConfigPath
-	if configPath == "" {
-		configPath = config.DefaultPath()
-		if configPath == "" {
-			return installInputs{}, fmt.Errorf("cannot determine config path (is HOME set?)")
-		}
+	configPath, err := config.PathOrDefault(opts.ConfigPath)
+	if err != nil {
+		return installInputs{}, err
 	}
 
 	return installInputs{

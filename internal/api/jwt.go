@@ -2,14 +2,14 @@ package api
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/randhex"
 )
 
 const (
@@ -35,8 +35,8 @@ type jwtClaims struct {
 func (a *Auth) GenerateJWT() (string, error) {
 	now := time.Now()
 
-	jtiBytes := make([]byte, 16)
-	if _, err := rand.Read(jtiBytes); err != nil {
+	nonce, err := randhex.String(16)
+	if err != nil {
 		return "", fmt.Errorf("generate jti: %w", err)
 	}
 
@@ -48,7 +48,7 @@ func (a *Auth) GenerateJWT() (string, error) {
 	claims := jwtClaims{
 		Iat: now.Unix(),
 		Exp: now.Add(jwtExpiry).Unix(),
-		Jti: hex.EncodeToString(jtiBytes),
+		Jti: nonce,
 	}
 
 	headerJSON, err := json.Marshal(header)

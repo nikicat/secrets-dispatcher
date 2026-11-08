@@ -37,7 +37,7 @@ func newRemoteHarness(t *testing.T) *remoteHarness {
 // Like newRemoteHarness, with pending requests expiring after timeout.
 func newRemoteHarnessExpiring(t *testing.T, timeout time.Duration) *remoteHarness {
 	t.Helper()
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: timeout, HistoryMax: 100})
+	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = timeout })
 	h := testHandlers(t, mgr)
 	h.resolver.GPGRunner = &fakeGPGRunner{sig: []byte("SIG"), status: []byte("[GNUPG:] SIG_CREATED\n")}
 	server := &Server{handlers: h, httpServer: &http.Server{}}

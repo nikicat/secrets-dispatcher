@@ -2,6 +2,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -130,16 +131,11 @@ var execOutputFunc = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).Output()
 }
 
-// unitDir returns the systemd user unit directory.
-// Uses $XDG_CONFIG_HOME/systemd/user/ with fallback to ~/.config/systemd/user/.
+// Returns the systemd user unit directory, under the XDG config home.
 func unitDir() (string, error) {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		configHome = filepath.Join(home, ".config")
+	configHome, err := config.ConfigHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(configHome, "systemd", "user"), nil
 }
@@ -300,8 +296,12 @@ func reportOwnership() {
 // Sets the serve upstream and downstream in the config file at in.configPath
 // to the topology of in.mode. Every other setting in the file is kept.
 func (in installInputs) writeTopology() error {
+	// A missing file is the first install, which writes a fresh config.
 	cfg, err := config.Load(in.configPath)
-	if err != nil {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		cfg = &config.Config{}
+	case err != nil:
 		return fmt.Errorf("load config: %w", err)
 	}
 
@@ -398,16 +398,11 @@ func systemctlExec(args ...string) error {
 	return nil
 }
 
-// dbusServiceDir returns the user D-Bus service directory.
-// Uses $XDG_DATA_HOME/dbus-1/services/ with fallback to ~/.local/share/dbus-1/services/.
+// Returns the user D-Bus service directory, under the XDG data home.
 func dbusServiceDir() (string, error) {
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		dataHome = filepath.Join(home, ".local", "share")
+	dataHome, err := config.DataHome()
+	if err != nil {
+		return "", err
 	}
 	return filepath.Join(dataHome, "dbus-1", "services"), nil
 }

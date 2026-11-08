@@ -14,6 +14,11 @@ in `runLogin`, `runCLI` and `runServe` (nine settings for serve). Around it, in
   subcommand;
 - `--start` and `--no-start` are two bools for one setting.
 
+- the config file path is a bare string resolved by `config.PathOrDefault`,
+  `config.LoadDefault` and main's `loadConfig`, while the state directory has
+  its own type with `OrDefault`. A `config.Path` type with `OrDefault` and
+  `Load` would replace the three.
+
 Done when each subcommand has one settings type, filled flags over config over
 defaults, with shared flag definitions.
 

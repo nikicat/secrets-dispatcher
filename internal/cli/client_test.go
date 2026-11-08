@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 func TestClient_List(t *testing.T) {
@@ -25,7 +27,7 @@ func TestClient_List(t *testing.T) {
 		if r.URL.Path != "/api/v1/pending" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer test-token" {
+		if token, err := config.ParseAuthorization(r.Header); err != nil || token != "test-token" {
 			t.Errorf("missing or invalid auth header")
 		}
 		json.NewEncoder(w).Encode(PendingResponse{Requests: requests})

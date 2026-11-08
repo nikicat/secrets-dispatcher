@@ -12,15 +12,14 @@ type RuntimeDir string
 
 // The runtime directory as a systemd user unit writes it, where %t stands for
 // $XDG_RUNTIME_DIR.
-const SystemdRuntimeDir RuntimeDir = "%t/" + runtimeDirName
+const SystemdRuntimeDir RuntimeDir = "%t/" + appName
 
 // Reports that the current user has no runtime directory for the daemon's
 // sockets.
 var ErrNoRuntimeDir = errors.New("XDG_RUNTIME_DIR is not set to an absolute path")
 
-// The directory's name under $XDG_RUNTIME_DIR, and the file names in it.
+// The file names in the runtime directory.
 const (
-	runtimeDirName        = "secrets-dispatcher"
 	apiSocketName         = "api.sock"
 	sshAgentSocketName    = "ssh-agent.sock"
 	clientSocketsName     = "sockets"
@@ -31,14 +30,14 @@ const (
 )
 
 // Returns the runtime directory of the current user. Errors with
-// ErrNoRuntimeDir when XDG_RUNTIME_DIR is unset or not absolute, which the XDG
-// base directory spec says to ignore.
+// ErrNoRuntimeDir when XDG_RUNTIME_DIR is unset or not absolute. The XDG base
+// directory spec gives this directory no fallback under the home directory.
 func LookupRuntimeDir() (RuntimeDir, error) {
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if !filepath.IsAbs(base) {
 		return "", ErrNoRuntimeDir
 	}
-	return RuntimeDir(filepath.Join(base, runtimeDirName)), nil
+	return RuntimeDir(filepath.Join(base, appName)), nil
 }
 
 // Returns the socket where the daemon serves its API to clients of the same

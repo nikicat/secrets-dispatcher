@@ -41,9 +41,9 @@ func Try(ctx context.Context, opts TryOptions) error {
 		return err
 	}
 	trialConfig := runtimeDir.TrialConfig()
-	baseConfig := opts.ConfigPath
-	if baseConfig == "" {
-		baseConfig = config.DefaultPath()
+	baseConfig, err := config.PathOrDefault(opts.ConfigPath)
+	if err != nil {
+		return err
 	}
 	installOpts := Options{ConfigPath: trialConfig, Start: true, Mode: "local", BackendPath: opts.BackendPath}
 

@@ -3,6 +3,7 @@ package gpgsign
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -29,13 +30,9 @@ const (
 func Run(args []string, stdin io.Reader) int {
 	c := thinClient{debug: os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"}
 
-	// Delegate non-signing invocations to the real gpg. git also calls
-	// gpg.program to *verify* signatures (verify-commit, verify-tag, log
-	// --show-signature, merge/pull verification) and to list keys or probe
-	// --version; this proxy only knows how to create signatures via the daemon.
-	// Anything that is not a sign request goes straight to real gpg, so those
-	// operations work exactly as if gpg.program were plain gpg (see
-	// passThroughToGPG).
+	// Git also calls gpg.program to verify signatures, list keys and print the
+	// version. Only signing goes through the daemon, so every other call goes to
+	// the real gpg unchanged.
 	if !isSignRequest(args) {
 		c.debugf("non-signing invocation, delegating to real gpg: %v", args)
 		return passThroughToGPG(args, stdin)
@@ -118,9 +115,19 @@ func (c thinClient) collectSignInfo(args []string, stdin io.Reader) (*approval.G
 // Signs info through the local daemon's API socket and returns the process exit code.
 func (c thinClient) runLocal(info *approval.GPGSignInfo) int {
 	// Load auth token (ERR-01 if missing).
-	token, err := loadAuthToken()
+	stateDir, err := daemonStateDir()
 	if err != nil {
+		errorf("cannot find the daemon's auth token: %v", err)
+		return exitSystemError
+	}
+	c.debugf("state dir=%s", stateDir)
+	token, err := stateDir.ReadToken()
+	if errors.Is(err, os.ErrNotExist) {
 		errorf("daemon not running (cannot read auth token): %v", err)
+		return exitSystemError
+	}
+	if err != nil {
+		errorf("cannot read the daemon's auth token: %v", err)
 		return exitSystemError
 	}
 
@@ -215,6 +222,18 @@ func (c thinClient) runRemote(socketPath string, info *approval.GPGSignInfo) int
 	return exitSystemError
 }
 
+// Returns the state directory that holds the daemon's API auth token. It is the
+// state_dir that the default config file sets, or the default state directory
+// when the file sets none. git runs gpg-sign without our flags, so a daemon
+// started with another state directory or config file is not found.
+func daemonStateDir() (config.StateDir, error) {
+	cfg, err := config.LoadDefault()
+	if err != nil {
+		return "", err
+	}
+	return cfg.StateDir.OrDefault()
+}
+
 // gpg's result for one sign request, as the thin client hands it back to git.
 type GPGOutput struct {
 	Signature []byte `json:"signature,omitempty"`
@@ -263,33 +282,8 @@ func (c thinClient) collectChangedFiles() []string {
 	return files
 }
 
-// loadAuthToken reads the daemon's auth token from the cookie file at:
-//
-//	$XDG_STATE_HOME/secrets-dispatcher/.cookie
-//
-// Falls back to ~/.local/state/secrets-dispatcher/.cookie if XDG_STATE_HOME is unset.
-func loadAuthToken() (string, error) {
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("get home dir: %w", err)
-		}
-		stateHome = filepath.Join(home, ".local", "state")
-	}
-	cookiePath := filepath.Join(stateHome, "secrets-dispatcher", ".cookie")
-	data, err := os.ReadFile(cookiePath)
-	if err != nil {
-		return "", fmt.Errorf("read cookie file %s: %w", cookiePath, err)
-	}
-	token := strings.TrimSpace(string(data))
-	if token == "" {
-		return "", fmt.Errorf("cookie file is empty: %s", cookiePath)
-	}
-	return token, nil
-}
-
-// runGitCommand runs a git subcommand and returns trimmed stdout output.
+// Returns the standard output of git run with the given arguments, untrimmed.
+// Errors when git cannot start or exits non-zero.
 func runGitCommand(args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	var out bytes.Buffer

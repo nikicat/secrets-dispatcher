@@ -6,14 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
 
 // mockClientProvider implements ClientProvider for testing.
@@ -25,78 +28,79 @@ func (m *mockClientProvider) Clients() []proxy.ClientInfo {
 	return m.clients
 }
 
-func TestWSHandler_Unauthorized(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+// A WSHandler served over HTTP for the length of one test, and the deadline
+// that bounds the test's dials and reads.
+type wsFixture struct {
+	t       *testing.T
+	ctx     context.Context
+	mgr     *approval.Manager
+	auth    *Auth
+	handler *WSHandler
+	url     string
+}
 
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
-
-	// Create test server
+// Serves a WSHandler over mgr until the test ends. A nil provider makes the
+// handler report the single client "test-client".
+func newWSFixture(t *testing.T, mgr *approval.Manager, provider ClientProvider) *wsFixture {
+	t.Helper()
+	auth := newTestAuth(t)
+	handler := NewWSHandler(mgr, provider, auth, "/test/socket", "test-client")
+	// No middleware: the handler checks auth itself.
 	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	// Try to connect without auth - should fail
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	_, _, err = websocket.Dial(ctx, wsURL, nil)
-	if err == nil {
-		t.Error("expected connection to fail without auth")
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
+	return &wsFixture{
+		t:       t,
+		ctx:     ctx,
+		mgr:     mgr,
+		auth:    auth,
+		handler: handler,
+		url:     "ws" + strings.TrimPrefix(server.URL, "http"),
 	}
 }
 
-func TestWSHandler_Snapshot(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+// Opens a WebSocket with a fresh session cookie, closed when the test ends.
+func (f *wsFixture) dial() *websocket.Conn {
+	f.t.Helper()
+	conn, _, err := websocket.Dial(f.ctx, f.url, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Cookie": []string{mintSession(f.t, f.auth)}},
+	})
+	require.NoError(f.t, err, "dial")
+	f.t.Cleanup(func() { conn.Close(websocket.StatusNormalClosure, "") })
+	return conn
+}
 
+// Reads the next message on conn and fails the test unless it decodes as a
+// WSMessage of type want.
+func (f *wsFixture) read(conn *websocket.Conn, want wsmsg.Type) WSMessage {
+	f.t.Helper()
+	_, data, err := conn.Read(f.ctx)
+	require.NoError(f.t, err, "read message")
+	var msg WSMessage
+	require.NoError(f.t, json.Unmarshal(data, &msg), "decode message")
+	require.Equal(f.t, want, msg.Type)
+	return msg
+}
+
+func TestWSHandler_Unauthorized(t *testing.T) {
+	f := newWSFixture(t, newTestManager(), nil)
+
+	_, _, err := websocket.Dial(f.ctx, f.url, nil)
+	assert.Error(t, err, "expected connection to fail without auth")
+}
+
+func TestWSHandler_Snapshot(t *testing.T) {
 	provider := &mockClientProvider{
 		clients: []proxy.ClientInfo{
 			{Name: "client1", SocketPath: "/socket1"},
 			{Name: "client2", SocketPath: "/socket2"},
 		},
 	}
-	handler := NewWSHandler(mgr, provider, auth, "", "")
+	f := newWSFixture(t, newTestManager(), provider)
 
-	// Create test server (no middleware - handler does its own auth)
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
+	msg := f.read(f.dial(), wsmsg.Snapshot)
 
-	// Connect with session cookie
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read snapshot message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
-
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "snapshot" {
-		t.Errorf("expected snapshot message, got %s", msg.Type)
-	}
 	if len(msg.Clients) != 2 {
 		t.Errorf("expected 2 clients, got %d", len(msg.Clients))
 	}
@@ -110,366 +114,104 @@ func TestWSHandler_Snapshot(t *testing.T) {
 }
 
 func TestWSHandler_RequestCreated(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
 
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
+	reqCtx, reqCancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer reqCancel()
+	done := startRequest(reqCtx, f.mgr, approval.ItemInfo{Path: "/test/item"})
 
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
+	msg := f.read(conn, wsmsg.RequestCreated)
 
-	// Connect
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, err = conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read snapshot: %v", err)
-	}
-
-	// Create a request in background
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		reqCtx, reqCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer reqCancel()
-		_, _ = mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	})
-
-	// Read request_created message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
-
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "request_created" {
-		t.Errorf("expected request_created message, got %s", msg.Type)
-	}
-	if msg.Request == nil {
-		t.Error("expected request in message")
-	}
+	require.NotNil(t, msg.Request, "expected request in message")
 	if msg.Request.Client != "test-client" {
 		t.Errorf("expected client 'test-client', got '%s'", msg.Request.Client)
 	}
 
-	wg.Wait()
+	<-done
 }
 
 func TestWSHandler_RequestResolved(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
+	f := newWSFixture(t, newTestManager(), nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
+
+	done := startRequest(t.Context(), f.mgr, approval.ItemInfo{Path: "/test/item"})
+
+	created := f.read(conn, wsmsg.RequestCreated)
+	require.NotNil(t, created.Request, "expected request in message")
+	f.mgr.Approve(created.Request.ID)
+
+	msg := f.read(conn, wsmsg.RequestResolved)
+
+	if msg.ID != created.Request.ID {
+		t.Errorf("expected ID '%s', got '%s'", created.Request.ID, msg.ID)
 	}
-
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
-
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	// Connect
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, _ = conn.Read(ctx)
-
-	// Create a request
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	})
-
-	// Read request_created
-	_, _, _ = conn.Read(ctx)
-
-	// Get the request ID and approve it
-	reqs := mgr.List()
-	if len(reqs) == 0 {
-		t.Fatal("no pending requests")
-	}
-	mgr.Approve(reqs[0].ID)
-
-	// Read request_resolved message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
-
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "request_resolved" {
-		t.Errorf("expected request_resolved message, got %s", msg.Type)
-	}
-	if msg.ID != reqs[0].ID {
-		t.Errorf("expected ID '%s', got '%s'", reqs[0].ID, msg.ID)
-	}
-	if msg.Result != "approved" {
+	if msg.Result != approval.ResolutionApproved {
 		t.Errorf("expected result 'approved', got '%s'", msg.Result)
 	}
 
-	wg.Wait()
+	<-done
 }
 
 func TestWSHandler_RequestExpired(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = 100 * time.Millisecond })
+	f := newWSFixture(t, mgr, nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
 
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
+	done := startRequest(t.Context(), mgr, approval.ItemInfo{Path: "/test/item"})
 
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
+	f.read(conn, wsmsg.RequestCreated)
+	f.read(conn, wsmsg.RequestExpired)
 
-	// Connect
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, _ = conn.Read(ctx)
-
-	// Create a request that will timeout
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	})
-
-	// Read request_created
-	_, _, _ = conn.Read(ctx)
-
-	// Read request_expired message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
-
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "request_expired" {
-		t.Errorf("expected request_expired message, got %s", msg.Type)
-	}
-
-	wg.Wait()
+	<-done
 }
 
 func TestWSHandler_RequestCancelled(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
 
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
+	reqCtx, reqCancel := context.WithCancel(t.Context())
+	done := startRequest(reqCtx, f.mgr, approval.ItemInfo{Path: "/test/item"})
 
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	// Connect
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, _ = conn.Read(ctx)
-
-	// Create a request with a cancellable context
-	reqCtx, reqCancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(reqCtx, "test-client", []approval.ItemInfo{{Path: "/test/item"}}, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
-	})
-
-	// Read request_created
-	_, _, _ = conn.Read(ctx)
-
-	// Cancel the request context
+	f.read(conn, wsmsg.RequestCreated)
 	reqCancel()
+	f.read(conn, wsmsg.RequestCancelled)
 
-	// Read request_cancelled message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
-
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "request_cancelled" {
-		t.Errorf("expected request_cancelled message, got %s", msg.Type)
-	}
-
-	wg.Wait()
+	<-done
 }
 
 func TestWSHandler_BroadcastClient(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
 
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
-
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	// Connect
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, _ = conn.Read(ctx)
-
-	// Broadcast client connected
 	client := proxy.ClientInfo{Name: "new-client", SocketPath: "/new/socket"}
-	handler.BroadcastClientConnected(client)
+	f.handler.BroadcastClientConnected(client)
 
-	// Read client_connected message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
+	msg := f.read(conn, wsmsg.ClientConnected)
 
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "client_connected" {
-		t.Errorf("expected client_connected message, got %s", msg.Type)
-	}
-	if msg.Client == nil {
-		t.Error("expected client in message")
-	}
+	require.NotNil(t, msg.Client, "expected client in message")
 	if msg.Client.Name != "new-client" {
 		t.Errorf("expected client name 'new-client', got '%s'", msg.Client.Name)
 	}
 }
 
 func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
 
 	// Add a rule before connecting
-	req := &approval.Request{
+	f.mgr.AddAutoApproveRule(&approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
-	}
-	mgr.AddAutoApproveRule(req)
-
-	handler := NewWSHandler(mgr, nil, auth, "", "")
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
 	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// Read snapshot
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read snapshot: %v", err)
-	}
+	msg := f.read(f.dial(), wsmsg.Snapshot)
 
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "snapshot" {
-		t.Fatalf("expected snapshot, got %s", msg.Type)
-	}
 	if len(msg.AutoApproveRules) != 1 {
 		t.Fatalf("expected 1 auto-approve rule in snapshot, got %d", len(msg.AutoApproveRules))
 	}
@@ -482,55 +224,18 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 }
 
 func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
 
-	handler := NewWSHandler(mgr, nil, auth, "", "")
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, _ = conn.Read(ctx)
-
-	// Add an auto-approve rule
-	req := &approval.Request{
+	f.mgr.AddAutoApproveRule(&approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
 		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
-	}
-	mgr.AddAutoApproveRule(req)
+	})
 
-	// Read auto_approve_rule_added message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
+	msg := f.read(conn, wsmsg.AutoApproveRuleAdded)
 
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "auto_approve_rule_added" {
-		t.Errorf("expected auto_approve_rule_added, got %s", msg.Type)
-	}
 	if msg.AutoApproveRule == nil {
 		t.Fatal("expected auto_approve_rule in message")
 	}
@@ -549,127 +254,73 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 }
 
 func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
 
-	handler := NewWSHandler(mgr, nil, auth, "", "")
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{
-			"Cookie": []string{mintSession(t, auth)},
-		},
-	})
-	if err != nil {
-		t.Fatalf("failed to connect: %v", err)
-	}
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	// Read and discard snapshot
-	_, _, _ = conn.Read(ctx)
-
-	// Add a rule
-	req := &approval.Request{
+	ruleID := f.mgr.AddAutoApproveRule(&approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
-	}
-	ruleID := mgr.AddAutoApproveRule(req)
+	})
+	f.read(conn, wsmsg.AutoApproveRuleAdded)
 
-	// Read and discard the rule_added message
-	_, _, _ = conn.Read(ctx)
-
-	// Remove the rule
-	if err := mgr.RemoveAutoApproveRule(ruleID); err != nil {
+	if err := f.mgr.RemoveAutoApproveRule(ruleID); err != nil {
 		t.Fatalf("failed to remove rule: %v", err)
 	}
 
-	// Read auto_approve_rule_removed message
-	_, data, err := conn.Read(ctx)
-	if err != nil {
-		t.Fatalf("failed to read message: %v", err)
-	}
+	msg := f.read(conn, wsmsg.AutoApproveRuleRemoved)
 
-	var msg WSMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		t.Fatalf("failed to parse message: %v", err)
-	}
-
-	if msg.Type != "auto_approve_rule_removed" {
-		t.Errorf("expected auto_approve_rule_removed, got %s", msg.Type)
-	}
 	if msg.ID != ruleID {
 		t.Errorf("expected rule ID '%s', got '%s'", ruleID, msg.ID)
 	}
 }
 
 func TestWSHandler_MultipleConnections(t *testing.T) {
-	mgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	auth, err := NewAuth(t.TempDir())
-	if err != nil {
-		t.Fatalf("failed to create auth: %v", err)
-	}
+	f := newWSFixture(t, newTestManager(), nil)
 
-	handler := NewWSHandler(mgr, nil, auth, "/test/socket", "test-client")
-
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Connect multiple clients
 	var conns []*websocket.Conn
-	for i := range 3 {
-		conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-			HTTPHeader: http.Header{
-				"Cookie": []string{mintSession(t, auth)},
-			},
-		})
-		if err != nil {
-			t.Fatalf("failed to connect client %d: %v", i, err)
-		}
+	for range 3 {
+		conn := f.dial()
+		f.read(conn, wsmsg.Snapshot)
 		conns = append(conns, conn)
-		// Read and discard snapshot
-		_, _, _ = conn.Read(ctx)
 	}
 
-	defer func() {
-		for _, conn := range conns {
-			conn.Close(websocket.StatusNormalClosure, "")
-		}
-	}()
-
-	// Broadcast to all
-	client := proxy.ClientInfo{Name: "broadcast-client", SocketPath: "/broadcast"}
-	handler.BroadcastClientConnected(client)
+	f.handler.BroadcastClientConnected(proxy.ClientInfo{Name: "broadcast-client", SocketPath: "/broadcast"})
 
 	// All connections should receive the message
-	for i, conn := range conns {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			t.Errorf("client %d failed to read: %v", i, err)
-			continue
-		}
+	for _, conn := range conns {
+		f.read(conn, wsmsg.ClientConnected)
+	}
+}
 
-		var msg WSMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			t.Errorf("client %d failed to parse: %v", i, err)
-			continue
-		}
+// Checks that the gpgsign thin client reads how the server resolved a gpg_sign
+// request: approved, denied or cancelled. The client loops past a message
+// whose type or result it does not recognize, so a drift between the two sides
+// shows up as a read that runs out of time.
+func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
+	tests := []struct {
+		name       string
+		resolve    func(mgr *approval.Manager, id string) error
+		wantDenied bool
+	}{
+		{"approved", (*approval.Manager).Approve, false},
+		{"denied", (*approval.Manager).Deny, true},
+		{"cancelled", (*approval.Manager).Cancel, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newWSFixture(t, newTestManager(), nil)
+			conn := f.dial()
+			f.read(conn, wsmsg.Snapshot)
 
-		if msg.Type != "client_connected" {
-			t.Errorf("client %d expected client_connected, got %s", i, msg.Type)
-		}
+			id, err := f.mgr.CreateGPGSignRequest("test-client", &approval.GPGSignInfo{KeyID: "ABCD1234", CommitObject: "tree 0\n"}, approval.SenderInfo{})
+			require.NoError(t, err, "create gpg_sign request")
+			require.NoError(t, tt.resolve(f.mgr, id), "resolve request")
+
+			_, _, _, denied, err := (&gpgsign.DaemonClient{}).WaitForResolution(f.ctx, conn, id)
+			require.NoError(t, err, "wait for resolution")
+			assert.Equal(t, tt.wantDenied, denied)
+		})
 	}
 }

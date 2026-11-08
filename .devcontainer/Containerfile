@@ -1,0 +1,17 @@
+# The development image: what building and testing this repo needs, nothing
+# about whoever runs it. Arch packages as of one day, so a rebuild gets the same
+# versions; bump the date (and the base) to update.
+FROM docker.io/library/archlinux:base-devel-20261101.0.620205
+
+# nodejs: .nvmrc's version on that date; pnpm switches itself to packageManager's.
+# nss … libcups: what Playwright's chromium and firefox load, which
+# `playwright install --with-deps` installs only with apt.
+ARG ARCHIVE_DATE=2026/11/05
+RUN echo "Server = https://archive.archlinux.org/repos/${ARCHIVE_DATE}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist \
+ && pacman -Syuu --noconfirm --needed \
+      git go nodejs pnpm \
+      nss gtk3 mesa alsa-lib libcups \
+ && pacman -Scc --noconfirm
+
+# the user VS Code connects as (devcontainer.json's remoteUser)
+RUN useradd -m -u 1000 -U vscode

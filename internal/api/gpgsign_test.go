@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -303,7 +302,7 @@ func (o *wsEventObserver) OnEvent(event approval.Event) {
 		Result: approval.ResolutionApproved,
 	}
 	if event.Request.Type == approval.RequestTypeGPGSign {
-		msg.Signature = base64.StdEncoding.EncodeToString([]byte("PLACEHOLDER_SIGNATURE"))
+		msg.GPGResult = &approval.GPGResult{Signature: []byte("PLACEHOLDER_SIGNATURE")}
 	}
 	o.mu.Lock()
 	o.msgs = append(o.msgs, msg)
@@ -329,13 +328,12 @@ func (o *wsEventObserver) WaitForMessages(count int, timeout time.Duration) []WS
 // fakeGPGRunner is a stub GPGRunner for tests that need
 // HandleGPGSignRequest to take the auto-approved path without invoking real gpg.
 type fakeGPGRunner struct {
-	sig    []byte
-	status []byte
+	res approval.GPGResult
 }
 
 func (f *fakeGPGRunner) FindGPG() (string, error) { return "/fake/gpg", nil }
-func (f *fakeGPGRunner) RunGPG(_ /* path */, _ /* keyID */ string, _ /* commit */ []byte) ([]byte, []byte, int, error) {
-	return f.sig, f.status, 0, nil
+func (f *fakeGPGRunner) RunGPG(_ /* path */, _ /* keyID */ string, _ /* commit */ []byte) (approval.GPGResult, error) {
+	return f.res, nil
 }
 
 // TestHandleGPGSignRequest_UnverifiableInvokerStaysPending guards the
@@ -349,10 +347,10 @@ func (f *fakeGPGRunner) RunGPG(_ /* path */, _ /* keyID */ string, _ /* commit *
 func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
 	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
-	handlers.resolver.GPGRunner = &fakeGPGRunner{
-		sig:    []byte("FAKE_SIG"),
-		status: []byte("[GNUPG:] SIG_CREATED D"),
-	}
+	handlers.resolver.GPGRunner = &fakeGPGRunner{res: approval.GPGResult{
+		Signature: []byte("FAKE_SIG"),
+		Status:    []byte("[GNUPG:] SIG_CREATED D"),
+	}}
 
 	// A rule whose invoker exe is unset (as ApproveAndAutoApprove would record
 	// for a caller whose exe could not be resolved) must never match, since exe
@@ -472,16 +470,7 @@ func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
 	if msg.Result != approval.ResolutionApproved {
 		t.Errorf("expected result 'approved', got %q", msg.Result)
 	}
-	if msg.Signature == "" {
-		t.Error("expected non-empty Signature for gpg_sign approval, got empty string")
-	}
-
-	// Verify the signature decodes to valid base64 bytes.
-	decoded, err := base64.StdEncoding.DecodeString(msg.Signature)
-	if err != nil {
-		t.Errorf("Signature is not valid base64: %v", err)
-	}
-	if len(decoded) == 0 {
-		t.Error("decoded Signature is empty")
+	if msg.GPGResult == nil || len(msg.Signature) == 0 {
+		t.Error("expected a non-empty Signature for gpg_sign approval")
 	}
 }

@@ -3,7 +3,6 @@ package gpgsign
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -26,6 +25,11 @@ type DaemonClient struct {
 
 // Placeholder host of URLs sent over a unix socket. The dialer ignores it.
 const socketHost = "localhost"
+
+// Largest WebSocket message read from the daemon. The default limit (32KB) is
+// too small for snapshot messages that carry large commit objects. 1MB holds
+// any realistic commit.
+const wsReadLimit = 1 << 20
 
 // Builds the http URL of path on a server reached through UnixSocketClient.
 func SocketURL(path string) string { return "http://" + socketHost + path }
@@ -65,7 +69,7 @@ func postJSON(ctx context.Context, client *http.Client, path string, header http
 	return nil
 }
 
-// NewDaemonClient creates a client connected to the daemon's Unix socket.
+// Returns a client of the daemon API at socketPath.
 func NewDaemonClient(socketPath string, token config.AuthToken) *DaemonClient {
 	return &DaemonClient{
 		socketPath: socketPath,
@@ -74,9 +78,7 @@ func NewDaemonClient(socketPath string, token config.AuthToken) *DaemonClient {
 	}
 }
 
-// DialWebSocket opens a WebSocket connection to the daemon's /api/v1/ws endpoint
-// using the Unix socket transport with Bearer token authentication.
-// The caller must close the connection when done.
+// Opens the daemon's event WebSocket. The caller closes it.
 func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, error) {
 	header := http.Header{}
 	c.token.Authorize(header)
@@ -87,20 +89,17 @@ func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, erro
 	if err != nil {
 		return nil, err
 	}
-	// The default read limit (32KB) is too small for snapshot messages
-	// containing large commit objects. 1MB accommodates any realistic commit.
-	conn.SetReadLimit(1 << 20)
+	conn.SetReadLimit(wsReadLimit)
 	return conn, nil
 }
 
-// PostSigningRequest sends a gpg_sign approval request to the daemon and returns
-// the request ID. The caller must have already established a WebSocket connection
-// to receive the resolution event.
-func (c *DaemonClient) PostSigningRequest(ctx context.Context, client string, info *approval.GPGSignInfo) (string, error) {
+// Files info as a gpg-sign approval request on behalf of requester, and
+// returns its id.
+func (c *DaemonClient) PostSigningRequest(ctx context.Context, requester string, info *approval.GPGSignInfo) (string, error) {
 	body := struct {
 		Client      string                `json:"client"`
 		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
-	}{Client: client, GPGSignInfo: info}
+	}{Client: requester, GPGSignInfo: info}
 
 	var result struct {
 		RequestID string `json:"request_id"`
@@ -116,8 +115,8 @@ func (c *DaemonClient) PostSigningRequest(ctx context.Context, client string, in
 	return result.RequestID, nil
 }
 
-// CancelSigningRequest sends a cancel request to the daemon for a pending GPG sign request.
-// Best-effort: errors are returned but callers may choose to ignore them (process is exiting).
+// Cancels the pending request with requestID. Errors when the daemon is
+// unreachable or does not cancel it.
 func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL("/api/v1/pending/"+requestID+"/cancel"), nil)
 	if err != nil {
@@ -137,70 +136,85 @@ func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID strin
 	return nil
 }
 
+// A gpg-sign request filed with the daemon, with the event WebSocket that
+// reports how it ends.
+type pendingSignRequest struct {
+	client *DaemonClient
+	conn   *websocket.Conn
+	id     string
+}
+
+// Files info as a gpg-sign request on behalf of requester. The event
+// WebSocket opens first, so the resolution event cannot come before anyone
+// listens. The caller closes the request. Errors when the daemon does not
+// answer or refuses the request.
+func (c *DaemonClient) startSignRequest(ctx context.Context, requester string, info *approval.GPGSignInfo) (*pendingSignRequest, error) {
+	conn, err := c.DialWebSocket(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("daemon unreachable at %s (is secrets-dispatcher running?): %w", c.socketPath, err)
+	}
+	id, err := c.PostSigningRequest(ctx, requester, info)
+	if err != nil {
+		conn.CloseNow()
+		return nil, fmt.Errorf("failed to send signing request: %w", err)
+	}
+	return &pendingSignRequest{client: c, conn: conn, id: id}, nil
+}
+
+// Blocks until the request is resolved, expires or is cancelled, and returns
+// how it ended. Errors as WaitForResolution does.
+func (r *pendingSignRequest) Wait(ctx context.Context) (SignOutcome, error) {
+	return WaitForResolution(ctx, r.conn, r.id)
+}
+
+// Cancels the request on the daemon. Errors when the daemon does not answer
+// or does not find it.
+func (r *pendingSignRequest) Cancel(ctx context.Context) error {
+	return r.client.CancelSigningRequest(ctx, r.id)
+}
+
+// Closes the event WebSocket.
+func (r *pendingSignRequest) Close() { r.conn.CloseNow() }
+
 // The fields of a daemon WebSocket message that the thin client reads. They
 // mirror part of api.WSMessage. The wsmsg package doc says why the client
 // cannot import api.
 type wsMsg struct {
-	Type      wsmsg.Type          `json:"type"`
-	ID        string              `json:"id,omitempty"`
-	Result    approval.Resolution `json:"result,omitempty"`
-	Signature string              `json:"signature,omitempty"`
-	GPGStatus string              `json:"gpg_status,omitempty"`
-	ExitCode  int                 `json:"exit_code,omitempty"`
+	Type wsmsg.Type `json:"type"`
+	ID   string     `json:"id,omitempty"`
+	SignOutcome
 }
 
-// WaitForResolution reads WebSocket messages until the request with the given ID
-// is resolved (approved or denied) or expires.
-//
-// On success (approved, gpg exit 0): returns (signature, gpgStatus, 0, false, nil).
-// On gpg failure (approved, gpg exit != 0): returns (nil, gpgStatus, exitCode, false, nil).
-// On denial: returns (nil, nil, 0, true, nil).
-// On expiry: returns (nil, nil, 0, false, error).
-func (c *DaemonClient) WaitForResolution(ctx context.Context, conn *websocket.Conn, requestID string) (signature, gpgStatus []byte, exitCode int, denied bool, err error) {
+// Reads WebSocket messages from conn until the request with requestID is
+// resolved, expires or is cancelled, and returns how it ended. Errors when
+// conn fails, which includes ctx ending, and when a message for the request
+// does not decode.
+func WaitForResolution(ctx context.Context, conn *websocket.Conn, requestID string) (SignOutcome, error) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
-			return nil, nil, 0, false, fmt.Errorf("websocket read: %w", err)
+			return SignOutcome{}, fmt.Errorf("websocket read: %w", err)
 		}
 
 		var msg wsMsg
-		if err := json.Unmarshal(data, &msg); err != nil {
-			// Ignore malformed messages and keep reading.
+		// Unmarshal fills the fields it can before it reports a bad value, so
+		// the id of a message whose signature does not decode is known.
+		err = json.Unmarshal(data, &msg)
+		if msg.ID != requestID {
+			// Another request's message, or one too broken to tell.
 			continue
+		}
+		if err != nil {
+			return SignOutcome{}, fmt.Errorf("decode message for request %s: %w", requestID, err)
 		}
 
 		switch msg.Type {
 		case wsmsg.RequestResolved:
-			if msg.ID != requestID {
-				continue
-			}
-			switch msg.Result {
-			case approval.ResolutionDenied:
-				return nil, nil, 0, true, nil
-			case approval.ResolutionApproved, approval.ResolutionAutoApproved:
-				if msg.ExitCode != 0 {
-					// gpg ran but failed — propagate its exit code.
-					return nil, []byte(msg.GPGStatus), msg.ExitCode, false, nil
-				}
-				// Decode base64 signature.
-				sig, err := base64.StdEncoding.DecodeString(msg.Signature)
-				if err != nil {
-					return nil, nil, 0, false, fmt.Errorf("decode signature: %w", err)
-				}
-				return sig, []byte(msg.GPGStatus), 0, false, nil
-			}
-
+			return msg.SignOutcome, msg.SignOutcome.check()
 		case wsmsg.RequestExpired:
-			if msg.ID != requestID {
-				continue
-			}
-			return nil, nil, 0, false, fmt.Errorf("signing request timed out (request_id=%s)", requestID)
-
+			return SignOutcome{Result: approval.ResolutionExpired}, nil
 		case wsmsg.RequestCancelled:
-			if msg.ID != requestID {
-				continue
-			}
-			return nil, nil, 0, true, nil
+			return SignOutcome{Result: approval.ResolutionCancelled}, nil
 		}
 		// Other message types (snapshot, request_created, etc.) — keep reading.
 	}

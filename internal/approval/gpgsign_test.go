@@ -309,7 +309,7 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.RecordAutoApprovedGPGSign("test-client", sampleGPGSignInfo(), SenderInfo{}, []byte("sig"), []byte("status"))
+	id, err := mgr.RecordAutoApprovedGPGSign("test-client", sampleGPGSignInfo(), SenderInfo{}, GPGResult{Signature: []byte("sig"), Status: []byte("status")})
 	if err != nil {
 		t.Fatalf("RecordAutoApprovedGPGSign returned unexpected error: %v", err)
 	}
@@ -339,5 +339,34 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 	}
 	if history[0].Resolution != ResolutionAutoApproved {
 		t.Errorf("expected resolution %q, got %q", ResolutionAutoApproved, history[0].Resolution)
+	}
+}
+
+func TestRequestGPGOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		reqType    RequestType
+		resolution Resolution
+		want       bool
+	}{
+		{"gpg_sign approved", RequestTypeGPGSign, ResolutionApproved, true},
+		{"gpg_sign auto-approved", RequestTypeGPGSign, ResolutionAutoApproved, true},
+		{"gpg_sign denied", RequestTypeGPGSign, ResolutionDenied, false},
+		{"gpg_sign cancelled", RequestTypeGPGSign, ResolutionCancelled, false},
+		{"gpg_sign expired", RequestTypeGPGSign, ResolutionExpired, false},
+		{"gpg_sign pending", RequestTypeGPGSign, "", false},
+		{"get_secret approved", RequestTypeGetSecret, ResolutionApproved, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &Request{Type: tt.reqType, resolution: tt.resolution, GPGResult: GPGResult{Signature: []byte("sig")}}
+			got := req.GPGOutput()
+			if (got != nil) != tt.want {
+				t.Fatalf("GPGOutput() = %v, want non-nil %v", got, tt.want)
+			}
+			if got != nil && got != &req.GPGResult {
+				t.Errorf("GPGOutput() = %p, want the request's own GPGResult %p", got, &req.GPGResult)
+			}
+		})
 	}
 }

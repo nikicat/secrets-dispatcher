@@ -39,7 +39,7 @@ func TestJWTGenerateAndValidate(t *testing.T) {
 		t.Errorf("iat claim should be approximately now")
 	}
 
-	expectedExp := now + int64(jwtExpiry.Seconds())
+	expectedExp := now + int64(LoginLinkLifetime.Seconds())
 	if claims.Exp > expectedExp || claims.Exp < expectedExp-1 {
 		t.Errorf("exp claim should be approximately %d, got %d", expectedExp, claims.Exp)
 	}
@@ -72,7 +72,7 @@ func TestJWTExpired(t *testing.T) {
 
 	expired := time.Now().Add(-time.Minute)
 	token := signJWT(auth, fmt.Sprintf(`{"iat":%d,"exp":%d,"jti":"expired"}`,
-		expired.Add(-jwtExpiry).Unix(), expired.Unix()))
+		expired.Add(-LoginLinkLifetime).Unix(), expired.Unix()))
 
 	_, err := auth.ValidateJWT(token)
 	require.ErrorContains(t, err, "token expired")

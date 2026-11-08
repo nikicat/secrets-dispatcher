@@ -97,15 +97,9 @@ type Request struct {
 	// GPGSignInfo contains signing context for gpg_sign requests; nil for other types.
 	GPGSignInfo *GPGSignInfo `json:"gpg_sign_info,omitempty"`
 
-	// Signature holds the ASCII-armored PGP signature bytes produced by real gpg
-	// on approval of a gpg_sign request. Set by ApproveWithSignature.
-	Signature []byte `json:"-"`
-	// GPGStatus holds the raw [GNUPG:] status lines from gpg --status-fd=2.
-	// Set by ApproveWithSignature or ApproveGPGFailed.
-	GPGStatus []byte `json:"-"`
-	// GPGExitCode holds the gpg process exit code. Non-zero on failure.
-	// Set by ApproveGPGFailed.
-	GPGExitCode int `json:"-"`
+	// Handed back to the thin client once a gpg_sign request is approved. Set by
+	// ApproveGPGSign and RecordAutoApprovedGPGSign.
+	GPGResult GPGResult `json:"-"`
 
 	// Internal: channel closed when the request is resolved
 	done       chan struct{}
@@ -123,6 +117,11 @@ const (
 	ResolutionAutoApproved Resolution = "auto_approved"
 	ResolutionIgnored      Resolution = "ignored"
 )
+
+// Checks whether the request was approved, by the user or by a rule.
+func (r Resolution) Approves() bool {
+	return r == ResolutionApproved || r == ResolutionAutoApproved
+}
 
 // HistoryEntry represents a resolved approval request.
 type HistoryEntry struct {
@@ -438,7 +437,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 
 	select {
 	case <-req.done:
-		if req.resolution == ResolutionApproved {
+		if req.resolution.Approves() {
 			return false, nil
 		}
 		return false, ErrDenied
@@ -564,9 +563,10 @@ func (m *Manager) GetPending(id string) *Request {
 	return m.pending[id]
 }
 
-// ApproveWithSignature stores the real gpg signature and status on the request,
-// then approves it. Used by HandleApprove for gpg_sign requests after real gpg succeeds.
-func (m *Manager) ApproveWithSignature(id string, sig, status []byte) error {
+// Approves a pending gpg_sign request with what gpg produced. A failed gpg run
+// is approved too, and the thin client then exits with its ExitCode.
+// Errors with ErrNotFound when no request with that id is pending.
+func (m *Manager) ApproveGPGSign(id string, res GPGResult) error {
 	m.mu.Lock()
 	req, ok := m.pending[id]
 	if !ok {
@@ -574,31 +574,7 @@ func (m *Manager) ApproveWithSignature(id string, sig, status []byte) error {
 		return ErrNotFound
 	}
 
-	req.Signature = sig
-	req.GPGStatus = status
-	req.resolution = ResolutionApproved
-	delete(m.pending, id)
-	close(req.done)
-	m.mu.Unlock()
-
-	m.notify(Event{Type: EventRequestApproved, Request: req})
-	m.cacheApproval(req)
-	return nil
-}
-
-// ApproveGPGFailed stores the gpg failure status and exit code, then signals
-// the request as approved so the done channel fires. The WebSocket message will
-// carry the non-zero ExitCode; the thin client exits with it.
-func (m *Manager) ApproveGPGFailed(id string, status []byte, exitCode int) error {
-	m.mu.Lock()
-	req, ok := m.pending[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
-	}
-
-	req.GPGStatus = status
-	req.GPGExitCode = exitCode
+	req.GPGResult = res
 	req.resolution = ResolutionApproved
 	delete(m.pending, id)
 	close(req.done)

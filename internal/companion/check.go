@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"syscall"
 )
@@ -14,6 +15,20 @@ type CheckResult struct {
 	Name    string // Short human-readable check name
 	Pass    bool   // true if the check passed
 	Message string // On failure: actionable fix hint. On pass: brief confirmation.
+}
+
+// Returns the result as one report line, such as "[PASS] name: message".
+func (r CheckResult) String() string {
+	status := "[PASS]"
+	if !r.Pass {
+		status = "[FAIL]"
+	}
+	return fmt.Sprintf("%s %s: %s", status, r.Name, r.Message)
+}
+
+// Checks whether every result passed.
+func AllPass(results []CheckResult) bool {
+	return !slices.ContainsFunc(results, func(r CheckResult) bool { return !r.Pass })
 }
 
 // Check validates the full companion user deployment and returns a slice of

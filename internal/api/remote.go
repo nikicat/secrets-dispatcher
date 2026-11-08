@@ -60,9 +60,5 @@ func (rs *RemoteServer) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("remote gpg sign request resolved", "request_id", resolved.ID, "remote", rs.name, "repo", req.GPGSignInfo.RepoName, "resolution", resolution)
-	res := gpgsign.RemoteSignResponse{Result: resolution}
-	if resolution == approval.ResolutionApproved {
-		res.GPGOutput = &gpgsign.GPGOutput{Signature: resolved.Signature, Status: resolved.GPGStatus, ExitCode: resolved.GPGExitCode}
-	}
-	writeJSON(w, res)
+	writeJSON(w, gpgsign.SignOutcome{Result: resolution, GPGResult: resolved.GPGOutput()})
 }

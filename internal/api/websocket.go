@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -50,15 +49,8 @@ type WSMessage struct {
 	// For request_resolved
 	ID     string              `json:"id,omitempty"`
 	Result approval.Resolution `json:"result,omitempty"`
-	// Signature carries base64-encoded signature bytes for gpg_sign request_resolved events.
-	// Empty for all other event types.
-	Signature string `json:"signature,omitempty"`
-	// GPGStatus carries the raw [GNUPG:] status lines from gpg --status-fd=2.
-	// Written to thin client's stderr so git can parse gpg status.
-	GPGStatus string `json:"gpg_status,omitempty"`
-	// ExitCode carries gpg's exit code for failed signing attempts.
-	// Non-zero only when real gpg exited with an error.
-	ExitCode int `json:"exit_code,omitempty"`
+	// Set when a gpg_sign request is approved or auto-approved.
+	*approval.GPGResult
 
 	// For client_connected/client_disconnected
 	Client *proxy.ClientInfo `json:"client,omitempty"`
@@ -72,12 +64,12 @@ type WSMessage struct {
 
 // WSHandler handles WebSocket connections for real-time updates.
 type WSHandler struct {
-	manager             *approval.Manager
-	clientProvider      ClientProvider
-	auth                *Auth
-	remoteSocket        string
-	clientName          string
-	notificationDelayMS int
+	manager           *approval.Manager
+	clientProvider    ClientProvider
+	auth              *Auth
+	remoteSocket      string
+	clientName        string
+	notificationDelay time.Duration
 
 	// Active connections
 	connsMu sync.RWMutex
@@ -165,19 +157,12 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Request: convertRequest(event.Request),
 		})
 	case approval.EventRequestApproved:
-		msg := WSMessage{
-			Type:   wsmsg.RequestResolved,
-			ID:     event.Request.ID,
-			Result: approval.ResolutionApproved,
-		}
-		if event.Request.Type == approval.RequestTypeGPGSign {
-			msg.Signature = base64.StdEncoding.EncodeToString(event.Request.Signature)
-			msg.GPGStatus = string(event.Request.GPGStatus)
-			if event.Request.GPGExitCode != 0 {
-				msg.ExitCode = event.Request.GPGExitCode
-			}
-		}
-		msgs = append(msgs, msg)
+		msgs = append(msgs, WSMessage{
+			Type:      wsmsg.RequestResolved,
+			ID:        event.Request.ID,
+			Result:    approval.ResolutionApproved,
+			GPGResult: event.Request.GPGOutput(),
+		})
 		entry := makeHistoryEntry(event.Request, "approved")
 		msgs = append(msgs, WSMessage{
 			Type:         wsmsg.HistoryEntry,
@@ -216,18 +201,13 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		})
 	case approval.EventRequestAutoApproved:
 		// GPG sign auto-approvals carry signature data that the thin client needs.
-		if event.Request.Type == approval.RequestTypeGPGSign {
-			msg := WSMessage{
-				Type:   wsmsg.RequestResolved,
-				ID:     event.Request.ID,
-				Result: approval.ResolutionAutoApproved,
-			}
-			msg.Signature = base64.StdEncoding.EncodeToString(event.Request.Signature)
-			msg.GPGStatus = string(event.Request.GPGStatus)
-			if event.Request.GPGExitCode != 0 {
-				msg.ExitCode = event.Request.GPGExitCode
-			}
-			msgs = append(msgs, msg)
+		if out := event.Request.GPGOutput(); out != nil {
+			msgs = append(msgs, WSMessage{
+				Type:      wsmsg.RequestResolved,
+				ID:        event.Request.ID,
+				Result:    approval.ResolutionAutoApproved,
+				GPGResult: out,
+			})
 		}
 		entry := makeHistoryEntry(event.Request, "auto_approved")
 		msgs = append(msgs, WSMessage{
@@ -355,7 +335,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		TrustedSigners:             trustedSigners,
 		TrustRules:                 trustRules,
 		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
-		NotificationDelayMS:        h.notificationDelayMS,
+		NotificationDelayMS:        int(h.notificationDelay.Milliseconds()),
 	}
 
 	data, err := json.Marshal(msg)
@@ -482,9 +462,9 @@ func isConnClosedErr(err error) bool {
 	return false
 }
 
-// SetNotificationDelay sets the notification delay (in ms) sent to browser clients.
-func (h *WSHandler) SetNotificationDelay(ms int) {
-	h.notificationDelayMS = ms
+// Sets the notification delay that the snapshot sends to browser clients.
+func (h *WSHandler) SetNotificationDelay(d time.Duration) {
+	h.notificationDelay = d
 }
 
 // BroadcastClientConnected sends a client_connected message to all connections.

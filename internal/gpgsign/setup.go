@@ -8,9 +8,32 @@ import (
 	"strings"
 )
 
-// SetupGitConfig writes a shell wrapper script and configures git's gpg.program.
-// scope is "global" (default) or "local" (per-repo). A non-empty remoteSocket
-// makes the wrapper sign through that forwarded socket (remoteSocketEnv).
+// Selects the git config file that SetupGitConfig writes gpg.program into.
+type GitConfigScope int
+
+const (
+	// The user's global git config.
+	ScopeGlobal GitConfigScope = iota
+	// The current repository's git config.
+	ScopeLocal
+)
+
+// Returns the scope's name as git spells it: "global" or "local".
+func (s GitConfigScope) String() string {
+	if s == ScopeLocal {
+		return "local"
+	}
+	return "global"
+}
+
+// Returns the git config option that selects the scope.
+func (s GitConfigScope) flag() string {
+	return "--" + s.String()
+}
+
+// Writes a shell wrapper script and sets git's gpg.program to it in scope.
+// A non-empty remoteSocket makes the wrapper sign through that forwarded
+// socket (remoteSocketEnv).
 //
 // A wrapper script is required because git does NOT shell-split gpg.program —
 // it uses execvp, so "secrets-dispatcher gpg-sign" (with a space) would fail.
@@ -18,8 +41,7 @@ import (
 //
 // Per CONTEXT.md locked decisions:
 //   - Setup only sets gpg.program; does NOT enable commit.gpgsign=true
-//   - Defaults to --global; caller can pass "local" for per-repo config
-func SetupGitConfig(scope, remoteSocket string) error {
+func SetupGitConfig(scope GitConfigScope, remoteSocket string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("find executable: %w", err)
@@ -52,14 +74,7 @@ func SetupGitConfig(scope, remoteSocket string) error {
 	}
 
 	// Configure git gpg.program to point at the wrapper.
-	gitArgs := []string{"config"}
-	if scope == "local" {
-		gitArgs = append(gitArgs, "--local")
-	} else {
-		gitArgs = append(gitArgs, "--global")
-	}
-	gitArgs = append(gitArgs, "gpg.program", wrapperPath)
-	if err := exec.Command("git", gitArgs...).Run(); err != nil {
+	if err := exec.Command("git", "config", scope.flag(), "gpg.program", wrapperPath).Run(); err != nil {
 		return fmt.Errorf("git config: %w", err)
 	}
 

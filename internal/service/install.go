@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -107,19 +108,63 @@ type Options struct {
 	// path, a keyword ("gopass", "gnome-keyring"), or empty for the
 	// detection-driven default. See resolveBackendExec.
 	BackendPath string
+	// How much of its work Install prints. Plan ignores it.
+	Narration Narration
 }
 
-// Verbose gates the per-change narration (Wrote/Enabled/Removed/… lines and
-// systemctl's own output) printed by Install, Uninstall, and the trial.
-// Milestone lines (provider detection, ownership, ✓ summaries, warnings)
-// always print. Set from the CLI's --verbose flag.
-var Verbose bool
+// How much of its work the service setup prints. Milestones always print.
+type Narration int
 
-// verbosef prints per-change narration only when Verbose is set.
-func verbosef(format string, args ...any) {
-	if Verbose {
+const (
+	// Prints provider detection, ownership, ✓ summaries and warnings.
+	NarrateMilestones Narration = iota
+	// Also prints every file and unit change and systemctl's own output.
+	NarrateChanges
+)
+
+// Returns "true" under NarrateChanges, "false" otherwise, as a bool flag shows.
+func (n Narration) String() string {
+	return strconv.FormatBool(n.changes())
+}
+
+// Parses a bool flag value: true selects NarrateChanges, false
+// NarrateMilestones. Errors when s is not a bool.
+func (n *Narration) Set(s string) error {
+	changes, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	*n = NarrateMilestones
+	if changes {
+		*n = NarrateChanges
+	}
+	return nil
+}
+
+// Reports true, so the flag works without a value.
+func (*Narration) IsBoolFlag() bool { return true }
+
+// Reports whether every change prints, not only the milestones.
+func (n Narration) changes() bool {
+	return n == NarrateChanges
+}
+
+// Prints a per-change line, only under NarrateChanges.
+func (n Narration) printf(format string, args ...any) {
+	if n.changes() {
 		fmt.Printf(format, args...)
 	}
+}
+
+// The user's systemd and D-Bus session that the service is installed into.
+type host struct {
+	// How much of the changes to the session print.
+	narration Narration
+}
+
+// Runs `systemctl --user` with args.
+func (h host) systemctl(args ...string) error {
+	return systemctlFunc(h.narration, args...)
 }
 
 // lookPathFunc is the function used to find binaries on PATH.
@@ -157,11 +202,12 @@ func Install(opts Options) error {
 	if err != nil {
 		return err
 	}
+	h := host{narration: opts.Narration}
 
 	if err := in.writeTopology(); err != nil {
 		return err
 	}
-	verbosef("Wrote config: %s\n", in.configPath)
+	h.narration.printf("Wrote config: %s\n", in.configPath)
 
 	// Detect the current provider BEFORE taking over — masking and stopping
 	// the D-Bus-activated owner below destroy the evidence.
@@ -174,20 +220,20 @@ func Install(opts Options) error {
 	// Mask/unmask D-Bus activation based on mode.
 	switch in.mode {
 	case "local", "full":
-		if err := maskDBusActivation(); err != nil {
+		if err := h.maskDBusActivation(); err != nil {
 			return err
 		}
 		if provider.Kind == ProviderGnomeKeyring {
-			if err := demoteGnomeKeyring(); err != nil {
+			if err := h.demoteGnomeKeyring(); err != nil {
 				return err
 			}
 		}
-		stopDBusActivatedService()
+		h.stopDBusActivatedService()
 	case "remote":
-		if err := unmaskDBusActivation(); err != nil {
+		if err := h.unmaskDBusActivation(); err != nil {
 			return err
 		}
-		if err := restoreGnomeKeyring(); err != nil {
+		if err := h.restoreGnomeKeyring(); err != nil {
 			return err
 		}
 	}
@@ -213,46 +259,46 @@ func Install(opts Options) error {
 			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 				return fmt.Errorf("write %s: %w", name, err)
 			}
-			verbosef("Wrote unit file: %s\n", path)
+			h.narration.printf("Wrote unit file: %s\n", path)
 		} else {
 			// Clean up units from a previous mode if they exist.
 			if _, statErr := os.Stat(path); statErr == nil {
-				_ = systemctlFunc("stop", name)
-				_ = systemctlFunc("disable", name)
+				_ = h.systemctl("stop", name)
+				_ = h.systemctl("disable", name)
 				if rmErr := os.Remove(path); rmErr != nil {
 					return fmt.Errorf("remove stale %s: %w", name, rmErr)
 				}
-				verbosef("Removed stale unit: %s\n", path)
+				h.narration.printf("Removed stale unit: %s\n", path)
 			}
 		}
 	}
 
 	// Reload and enable.
-	if err := systemctlFunc("daemon-reload"); err != nil {
+	if err := h.systemctl("daemon-reload"); err != nil {
 		return err
 	}
 	if in.mode != "remote" {
-		if err := systemctlFunc("enable", busSocketUnit); err != nil {
+		if err := h.systemctl("enable", busSocketUnit); err != nil {
 			return err
 		}
-		verbosef("Enabled %s\n", busSocketUnit)
+		h.narration.printf("Enabled %s\n", busSocketUnit)
 	}
-	if err := systemctlFunc("enable", proxyServiceUnit); err != nil {
+	if err := h.systemctl("enable", proxyServiceUnit); err != nil {
 		return err
 	}
-	verbosef("Enabled %s\n", proxyServiceUnit)
+	h.narration.printf("Enabled %s\n", proxyServiceUnit)
 
 	if opts.Start {
 		if in.mode != "remote" {
-			if err := systemctlFunc("start", busSocketUnit); err != nil {
+			if err := h.systemctl("start", busSocketUnit); err != nil {
 				return err
 			}
-			verbosef("Started %s\n", busSocketUnit)
+			h.narration.printf("Started %s\n", busSocketUnit)
 		}
-		if err := systemctlFunc("start", proxyServiceUnit); err != nil {
+		if err := h.systemctl("start", proxyServiceUnit); err != nil {
 			return err
 		}
-		verbosef("Started %s\n", proxyServiceUnit)
+		h.narration.printf("Started %s\n", proxyServiceUnit)
 
 		if in.mode != "remote" {
 			reportOwnership()
@@ -340,11 +386,12 @@ func (in installInputs) writeTopology() error {
 }
 
 // Uninstall stops and disables all service units, removes unit files, and reloads systemd.
-func Uninstall() error {
+func Uninstall(n Narration) error {
+	h := host{narration: n}
 	// Stop and disable all known units (ignore errors for missing ones).
 	for _, name := range allUnitNames {
-		_ = systemctlFunc("stop", name)
-		_ = systemctlFunc("disable", name)
+		_ = h.systemctl("stop", name)
+		_ = h.systemctl("disable", name)
 	}
 
 	dir, err := unitDir()
@@ -360,28 +407,28 @@ func Uninstall() error {
 			}
 			continue
 		}
-		verbosef("Removed %s\n", path)
+		h.narration.printf("Removed %s\n", path)
 	}
 
-	if err := unmaskDBusActivation(); err != nil {
+	if err := h.unmaskDBusActivation(); err != nil {
 		return err
 	}
 
-	if err := restoreGnomeKeyring(); err != nil {
+	if err := h.restoreGnomeKeyring(); err != nil {
 		return err
 	}
 
-	return systemctlFunc("daemon-reload")
+	return h.systemctl("daemon-reload")
 }
 
 // systemctlFunc is the function used to run systemctl commands.
 // Replaced in tests to avoid requiring a real systemd.
 var systemctlFunc = systemctlExec
 
-func systemctlExec(args ...string) error {
+func systemctlExec(n Narration, args ...string) error {
 	fullArgs := append([]string{"--user"}, args...)
 	cmd := exec.Command("systemctl", fullArgs...)
-	if Verbose {
+	if n.changes() {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
@@ -413,7 +460,7 @@ func reloadDBus() {
 		"org.freedesktop.DBus", "ReloadConfig")
 }
 
-func maskDBusActivation() error {
+func (h host) maskDBusActivation() error {
 	dir, err := dbusServiceDir()
 	if err != nil {
 		return err
@@ -426,7 +473,7 @@ func maskDBusActivation() error {
 		if err := os.Rename(path, backupPath); err != nil {
 			return fmt.Errorf("backup %s: %w", dbusServiceFile, err)
 		}
-		verbosef("Backed up %s\n", path)
+		h.narration.printf("Backed up %s\n", path)
 	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -436,13 +483,13 @@ func maskDBusActivation() error {
 	if err := os.WriteFile(path, []byte(dbusActivationMask), 0644); err != nil {
 		return fmt.Errorf("write dbus mask: %w", err)
 	}
-	verbosef("Masked D-Bus activation: %s\n", path)
+	h.narration.printf("Masked D-Bus activation: %s\n", path)
 
 	reloadDBus()
 	return nil
 }
 
-func unmaskDBusActivation() error {
+func (h host) unmaskDBusActivation() error {
 	dir, err := dbusServiceDir()
 	if err != nil {
 		return err
@@ -462,19 +509,19 @@ func unmaskDBusActivation() error {
 		if err := os.Rename(backupPath, path); err != nil {
 			return fmt.Errorf("restore %s: %w", dbusServiceFile, err)
 		}
-		verbosef("Restored %s from backup\n", path)
+		h.narration.printf("Restored %s from backup\n", path)
 	} else {
 		if err := os.Remove(path); err != nil {
 			return fmt.Errorf("remove dbus mask: %w", err)
 		}
-		verbosef("Removed D-Bus activation mask: %s\n", path)
+		h.narration.printf("Removed D-Bus activation mask: %s\n", path)
 	}
 
 	reloadDBus()
 	return nil
 }
 
-func stopDBusActivatedService() {
+func (h host) stopDBusActivatedService() {
 	// Find the PID of the process currently owning org.freedesktop.secrets on the session bus.
 	out, err := execOutputFunc("busctl", "--user", "call",
 		"org.freedesktop.DBus", "/org/freedesktop/DBus",
@@ -492,6 +539,6 @@ func stopDBusActivatedService() {
 	if err != nil {
 		return
 	}
-	verbosef("Stopping D-Bus activated owner of %s (PID %d)\n", dbusServiceFile, pid)
+	h.narration.printf("Stopping D-Bus activated owner of %s (PID %d)\n", dbusServiceFile, pid)
 	_ = p.Signal(syscall.SIGTERM)
 }

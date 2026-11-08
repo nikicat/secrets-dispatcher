@@ -107,7 +107,7 @@ func TestFindRealGPG(t *testing.T) {
 	})
 }
 
-func TestExtractKeyID(t *testing.T) {
+func TestParseGPGArgsKeyID(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -142,9 +142,9 @@ func TestExtractKeyID(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractKeyID(tc.args)
+			got := parseGPGArgs(tc.args).keyID
 			if got != tc.want {
-				t.Errorf("extractKeyID(%v) = %q, want %q", tc.args, got, tc.want)
+				t.Errorf("parseGPGArgs(%v).keyID = %q, want %q", tc.args, got, tc.want)
 			}
 		})
 	}

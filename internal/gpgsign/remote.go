@@ -19,19 +19,16 @@ type RemoteSignRequest struct {
 	GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
 }
 
-// RemoteSignPath's answer. GPGOutput is set when Result is approved.
-type RemoteSignResponse struct {
-	Result approval.Resolution `json:"result"`
-	*GPGOutput
-}
-
-// SignRemote submits info through the remote socket and blocks until the
-// request is resolved. Cancelling ctx drops the connection, which cancels the
-// request on the daemon.
-func SignRemote(ctx context.Context, socketPath string, info *approval.GPGSignInfo) (RemoteSignResponse, error) {
-	var res RemoteSignResponse
+// Submits info through the remote socket and blocks until the request is
+// resolved. Cancelling ctx drops the connection, which cancels the request on
+// the daemon. Errors when the socket approves the request without gpg's output.
+func SignRemote(ctx context.Context, socketPath string, info *approval.GPGSignInfo) (SignOutcome, error) {
+	var res SignOutcome
 	if err := postJSON(ctx, UnixSocketClient(socketPath), RemoteSignPath, nil, RemoteSignRequest{GPGSignInfo: info}, &res); err != nil {
 		return res, fmt.Errorf("remote socket %s: %w", socketPath, err)
+	}
+	if err := res.check(); err != nil {
+		return SignOutcome{}, fmt.Errorf("remote socket %s: %w", socketPath, err)
 	}
 	return res, nil
 }

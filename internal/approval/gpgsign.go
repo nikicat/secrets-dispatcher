@@ -39,6 +39,39 @@ type GPGSignInfo struct {
 	CommitObject string `json:"commit_object,omitempty"`
 }
 
+// What real gpg produced for one approved gpg_sign request.
+type GPGResult struct {
+	Signature []byte `json:"signature,omitempty"`
+	Status    []byte `json:"gpg_status,omitempty"`
+	// Sent even when zero, so that a result with no signature and no status
+	// still decodes as a result.
+	ExitCode GPGExitCode `json:"exit_code"`
+}
+
+// Checks whether gpg ran and produced a signature.
+func (r GPGResult) Succeeded() bool { return r.ExitCode == 0 }
+
+// The exit code of a gpg sign request: the real gpg process's own, or one of
+// the codes below when gpg did not run. Zero means gpg succeeded.
+type GPGExitCode int
+
+// Exit codes the daemon reports when it could not run gpg.
+const (
+	// gpg was found but did not start.
+	GPGNotStarted GPGExitCode = 1
+	// No gpg binary was found.
+	GPGNotFound GPGExitCode = 2
+)
+
+// Returns what gpg produced for an approved or auto-approved gpg_sign request,
+// and nil for any other request or resolution.
+func (r *Request) GPGOutput() *GPGResult {
+	if r.Type != RequestTypeGPGSign || !r.resolution.Approves() {
+		return nil
+	}
+	return &r.GPGResult
+}
+
 // Errors for a sign request with no bytes to sign.
 var (
 	ErrNoGPGSignInfo  = errors.New("gpg sign info is required")
@@ -60,8 +93,8 @@ func (i *GPGSignInfo) RequireSignedBytes() error {
 // WebSocket delivery WITHOUT firing EventRequestCreated (so no desktop notification
 // appears). Fires EventRequestAutoApproved so the history entry shows "auto_approved".
 // The request is never added to pending and no timeout goroutine is started.
-// sig and status are the gpg output to deliver to the thin client via WebSocket.
-func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, senderInfo SenderInfo, sig, status []byte) (string, error) {
+// res is the gpg output to deliver to the thin client via WebSocket.
+func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, senderInfo SenderInfo, res GPGResult) (string, error) {
 	if err := info.RequireSignedBytes(); err != nil {
 		return "", err
 	}
@@ -75,8 +108,7 @@ func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, se
 		Type:        RequestTypeGPGSign,
 		GPGSignInfo: info,
 		SenderInfo:  senderInfo,
-		Signature:   sig,
-		GPGStatus:   status,
+		GPGResult:   res,
 		done:        make(chan struct{}),
 		resolution:  ResolutionAutoApproved,
 	}

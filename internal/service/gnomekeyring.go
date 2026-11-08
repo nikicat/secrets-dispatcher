@@ -66,7 +66,7 @@ func autostartDir() (string, error) {
 // (still full-component) daemon is handled by the caller: try-restart below
 // picks up the drop-in for a unit-managed daemon; stopDBusActivatedService
 // catches an unmanaged (PAM-spawned) owner.
-func demoteGnomeKeyring() error {
+func (h host) demoteGnomeKeyring() error {
 	gkDaemon, err := lookPathFunc("gnome-keyring-daemon")
 	if err != nil {
 		return fmt.Errorf("find gnome-keyring-daemon: %w", err)
@@ -84,7 +84,7 @@ func demoteGnomeKeyring() error {
 	if err := os.WriteFile(dropIn, fmt.Appendf(nil, gkDropInTemplate, gkDaemon), 0644); err != nil {
 		return fmt.Errorf("write drop-in: %w", err)
 	}
-	verbosef("Wrote gnome-keyring drop-in: %s\n", dropIn)
+	h.narration.printf("Wrote gnome-keyring drop-in: %s\n", dropIn)
 
 	asDir, err := autostartDir()
 	if err != nil {
@@ -101,19 +101,19 @@ func demoteGnomeKeyring() error {
 		if err := os.Rename(shadow, shadow+dbusBackupSuffix); err != nil {
 			return fmt.Errorf("backup %s: %w", gkAutostartName, err)
 		}
-		verbosef("Backed up %s\n", shadow)
+		h.narration.printf("Backed up %s\n", shadow)
 	}
 	if err := os.WriteFile(shadow, []byte(gkAutostartShadow), 0644); err != nil {
 		return fmt.Errorf("write autostart shadow: %w", err)
 	}
-	verbosef("Hid gnome-keyring secrets autostart: %s\n", shadow)
+	h.narration.printf("Hid gnome-keyring secrets autostart: %s\n", shadow)
 
-	if err := systemctlFunc("daemon-reload"); err != nil {
+	if err := h.systemctl("daemon-reload"); err != nil {
 		return err
 	}
 	// Only touches a unit-managed daemon that is actually running; releases
 	// org.freedesktop.secrets by restarting it without the secrets component.
-	if err := systemctlFunc("try-restart", gkServiceUnit); err != nil {
+	if err := h.systemctl("try-restart", gkServiceUnit); err != nil {
 		// Non-fatal: the unit may not exist on non-systemd-keyring distros.
 		fmt.Printf("note: try-restart %s: %v\n", gkServiceUnit, err)
 	}
@@ -123,7 +123,7 @@ func demoteGnomeKeyring() error {
 // restoreGnomeKeyring reverses demoteGnomeKeyring. Safe to call when the
 // demotion was never applied: it removes only files we wrote (checked by the
 // managed marker/content) and restores any backup.
-func restoreGnomeKeyring() error {
+func (h host) restoreGnomeKeyring() error {
 	unitsDir, err := unitDir()
 	if err != nil {
 		return err
@@ -135,7 +135,7 @@ func restoreGnomeKeyring() error {
 			return fmt.Errorf("remove drop-in: %w", err)
 		}
 		_ = os.Remove(filepath.Dir(dropIn)) // rmdir if now empty
-		verbosef("Removed gnome-keyring drop-in: %s\n", dropIn)
+		h.narration.printf("Removed gnome-keyring drop-in: %s\n", dropIn)
 		changed = true
 	}
 
@@ -148,23 +148,23 @@ func restoreGnomeKeyring() error {
 		if err := os.Remove(shadow); err != nil {
 			return fmt.Errorf("remove autostart shadow: %w", err)
 		}
-		verbosef("Removed gnome-keyring autostart shadow: %s\n", shadow)
+		h.narration.printf("Removed gnome-keyring autostart shadow: %s\n", shadow)
 		changed = true
 		if _, err := os.Stat(shadow + dbusBackupSuffix); err == nil {
 			if err := os.Rename(shadow+dbusBackupSuffix, shadow); err != nil {
 				return fmt.Errorf("restore %s: %w", gkAutostartName, err)
 			}
-			verbosef("Restored %s from backup\n", shadow)
+			h.narration.printf("Restored %s from backup\n", shadow)
 		}
 	}
 
 	if !changed {
 		return nil
 	}
-	if err := systemctlFunc("daemon-reload"); err != nil {
+	if err := h.systemctl("daemon-reload"); err != nil {
 		return err
 	}
-	if err := systemctlFunc("try-restart", gkServiceUnit); err != nil {
+	if err := h.systemctl("try-restart", gkServiceUnit); err != nil {
 		fmt.Printf("note: try-restart %s: %v\n", gkServiceUnit, err)
 	}
 	return nil

@@ -1,17 +1,20 @@
 package gpgsign
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsSignRequest(t *testing.T) {
+func TestParseGPGArgsSign(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
@@ -37,7 +40,7 @@ func TestIsSignRequest(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, isSignRequest(tc.args), "args=%v", tc.args)
+			assert.Equal(t, tc.want, parseGPGArgs(tc.args).sign, "args=%v", tc.args)
 		})
 	}
 }
@@ -82,7 +85,7 @@ func TestRunDelegatesVerificationToRealGPG(t *testing.T) {
 		isolate(t, dir)
 
 		exit := Run(verifyArgs, strings.NewReader(payload))
-		require.Equal(t, 0, exit)
+		require.Equal(t, exitOK, exit)
 
 		got, err := os.ReadFile(capture)
 		require.NoError(t, err, "real gpg was never called — Run did not delegate verification")
@@ -97,7 +100,7 @@ func TestRunDelegatesVerificationToRealGPG(t *testing.T) {
 		isolate(t, dir)
 
 		exit := Run(verifyArgs, strings.NewReader(payload))
-		assert.Equal(t, 1, exit, "gpg's failing exit code must propagate so git reports a bad signature")
+		assert.Equal(t, ExitStatus(1), exit, "gpg's failing exit code must propagate so git reports a bad signature")
 	})
 }
 
@@ -121,4 +124,34 @@ func TestDaemonStateDirWithoutConfig(t *testing.T) {
 	dir, err := daemonStateDir()
 	require.NoError(t, err)
 	assert.Equal(t, config.StateDir("/home/u/.state/secrets-dispatcher"), dir)
+}
+
+func TestSignOutcomeReport(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome SignOutcome
+		want    ExitStatus
+	}{
+		{"approved", SignOutcome{Result: approval.ResolutionApproved, GPGResult: &approval.GPGResult{Signature: []byte("SIG")}}, exitOK},
+		{"auto-approved", SignOutcome{Result: approval.ResolutionAutoApproved, GPGResult: &approval.GPGResult{}}, exitOK},
+		{"approved, gpg failed", SignOutcome{Result: approval.ResolutionApproved, GPGResult: &approval.GPGResult{ExitCode: 3}}, 3},
+		{"denied", SignOutcome{Result: approval.ResolutionDenied}, exitRefused},
+		{"cancelled", SignOutcome{Result: approval.ResolutionCancelled}, exitRefused},
+		{"expired", SignOutcome{Result: approval.ResolutionExpired}, exitRefused},
+		{"unknown", SignOutcome{Result: "bogus"}, exitSystemError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.outcome.report())
+		})
+	}
+}
+
+func TestReportFailure(t *testing.T) {
+	err := errors.New("daemon unreachable")
+	assert.Equal(t, exitSystemError, reportFailure(context.Background(), err))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.Equal(t, exitRefused, reportFailure(ctx, err))
 }

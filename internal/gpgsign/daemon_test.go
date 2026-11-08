@@ -2,10 +2,11 @@ package gpgsign
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // roundTripFunc is an adapter to allow the use of ordinary functions as http.RoundTripper.
@@ -210,188 +213,112 @@ func dialTestWS(t *testing.T, srvURL string) *websocket.Conn {
 	if err != nil {
 		t.Fatalf("dial websocket: %v", err)
 	}
-	conn.SetReadLimit(1 << 20)
+	conn.SetReadLimit(wsReadLimit)
 	return conn
 }
 
-func TestWaitForResolution_Approved(t *testing.T) {
-	wantSig := []byte("-----BEGIN PGP SIGNATURE-----\ntest\n-----END PGP SIGNATURE-----")
-	srv := wsTestServer(t, []any{
-		wsMsg{
-			Type:      wsmsg.RequestResolved,
-			ID:        "req-1",
-			Result:    approval.ResolutionApproved,
-			Signature: base64.StdEncoding.EncodeToString(wantSig),
-			GPGStatus: "[GNUPG:] SIG_CREATED",
+// The request that the WaitForResolution tests wait for.
+const testRequestID = "req"
+
+// Returns how the request testRequestID ends when the WebSocket sends msgs.
+func waitForTestResolution(t *testing.T, ctx context.Context, msgs ...any) (SignOutcome, error) {
+	t.Helper()
+	srv := wsTestServer(t, msgs)
+	defer srv.Close()
+	conn := dialTestWS(t, srv.URL)
+	defer conn.CloseNow()
+	return WaitForResolution(ctx, conn, testRequestID)
+}
+
+// Returns the request_resolved message for request testRequestID.
+func resolved(result approval.Resolution, out *approval.GPGResult) wsMsg {
+	return wsMsg{Type: wsmsg.RequestResolved, ID: testRequestID, SignOutcome: SignOutcome{Result: result, GPGResult: out}}
+}
+
+func TestWaitForResolution(t *testing.T) {
+	sig := []byte("-----BEGIN PGP SIGNATURE-----\ntest\n-----END PGP SIGNATURE-----")
+	tests := []struct {
+		name string
+		msgs []any
+		want SignOutcome
+	}{
+		{
+			name: "approved",
+			msgs: []any{resolved(approval.ResolutionApproved, &approval.GPGResult{Signature: sig, Status: []byte("[GNUPG:] SIG_CREATED")})},
+			want: SignOutcome{Result: approval.ResolutionApproved,
+				GPGResult: &approval.GPGResult{Signature: sig, Status: []byte("[GNUPG:] SIG_CREATED")}},
 		},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
-	client := &DaemonClient{}
-	sig, gpgStatus, exitCode, denied, err := client.WaitForResolution(context.Background(), conn, "req-1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if denied {
-		t.Error("denied = true, want false")
-	}
-	if exitCode != 0 {
-		t.Errorf("exitCode = %d, want 0", exitCode)
-	}
-	if string(sig) != string(wantSig) {
-		t.Errorf("signature = %q, want %q", sig, wantSig)
-	}
-	if string(gpgStatus) != "[GNUPG:] SIG_CREATED" {
-		t.Errorf("gpgStatus = %q, want %q", gpgStatus, "[GNUPG:] SIG_CREATED")
-	}
-}
-
-func TestWaitForResolution_Denied(t *testing.T) {
-	srv := wsTestServer(t, []any{
-		wsMsg{Type: wsmsg.RequestResolved, ID: "req-2", Result: approval.ResolutionDenied},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
-	client := &DaemonClient{}
-	sig, _, _, denied, err := client.WaitForResolution(context.Background(), conn, "req-2")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !denied {
-		t.Error("denied = false, want true")
-	}
-	if sig != nil {
-		t.Errorf("signature = %q, want nil", sig)
-	}
-}
-
-func TestWaitForResolution_Expired(t *testing.T) {
-	srv := wsTestServer(t, []any{
-		wsMsg{Type: wsmsg.RequestExpired, ID: "req-3"},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
-	client := &DaemonClient{}
-	_, _, _, _, err := client.WaitForResolution(context.Background(), conn, "req-3")
-	if err == nil {
-		t.Fatal("expected error for expired request, got nil")
-	}
-	if !strings.Contains(err.Error(), "timed out") {
-		t.Errorf("error = %q, want to contain 'timed out'", err.Error())
-	}
-}
-
-func TestWaitForResolution_Cancelled(t *testing.T) {
-	srv := wsTestServer(t, []any{
-		wsMsg{Type: wsmsg.RequestCancelled, ID: "req-4"},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
-	client := &DaemonClient{}
-	_, _, _, denied, err := client.WaitForResolution(context.Background(), conn, "req-4")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !denied {
-		t.Error("denied = false, want true (cancelled treated as denial)")
-	}
-}
-
-func TestWaitForResolution_GPGFailure(t *testing.T) {
-	srv := wsTestServer(t, []any{
-		wsMsg{
-			Type:      wsmsg.RequestResolved,
-			ID:        "req-5",
-			Result:    approval.ResolutionApproved,
-			ExitCode:  2,
-			GPGStatus: "[GNUPG:] ERROR",
+		{
+			name: "auto-approved",
+			msgs: []any{resolved(approval.ResolutionAutoApproved, &approval.GPGResult{Signature: sig})},
+			want: SignOutcome{Result: approval.ResolutionAutoApproved, GPGResult: &approval.GPGResult{Signature: sig}},
 		},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
-	client := &DaemonClient{}
-	sig, gpgStatus, exitCode, denied, err := client.WaitForResolution(context.Background(), conn, "req-5")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		{
+			name: "approved, gpg failed",
+			msgs: []any{resolved(approval.ResolutionApproved, &approval.GPGResult{Status: []byte("[GNUPG:] ERROR"), ExitCode: 2})},
+			want: SignOutcome{Result: approval.ResolutionApproved,
+				GPGResult: &approval.GPGResult{Status: []byte("[GNUPG:] ERROR"), ExitCode: 2}},
+		},
+		{
+			name: "denied",
+			msgs: []any{resolved(approval.ResolutionDenied, nil)},
+			want: SignOutcome{Result: approval.ResolutionDenied},
+		},
+		{
+			name: "expired",
+			msgs: []any{wsMsg{Type: wsmsg.RequestExpired, ID: testRequestID}},
+			want: SignOutcome{Result: approval.ResolutionExpired},
+		},
+		{
+			name: "cancelled",
+			msgs: []any{wsMsg{Type: wsmsg.RequestCancelled, ID: testRequestID}},
+			want: SignOutcome{Result: approval.ResolutionCancelled},
+		},
+		{
+			name: "skips other requests and message types",
+			msgs: []any{
+				wsMsg{Type: wsmsg.RequestResolved, ID: "other-req", SignOutcome: SignOutcome{Result: approval.ResolutionDenied}},
+				wsMsg{Type: wsmsg.RequestExpired, ID: "other-req-2"},
+				wsMsg{Type: wsmsg.Snapshot, ID: testRequestID},
+				wsMsg{Type: wsmsg.RequestCancelled, ID: testRequestID},
+			},
+			want: SignOutcome{Result: approval.ResolutionCancelled},
+		},
 	}
-	if denied {
-		t.Error("denied = true, want false")
-	}
-	if exitCode != 2 {
-		t.Errorf("exitCode = %d, want 2", exitCode)
-	}
-	if sig != nil {
-		t.Errorf("signature = %q, want nil", sig)
-	}
-	if string(gpgStatus) != "[GNUPG:] ERROR" {
-		t.Errorf("gpgStatus = %q, want %q", gpgStatus, "[GNUPG:] ERROR")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := waitForTestResolution(t, context.Background(), tt.msgs...)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 
-func TestWaitForResolution_IgnoresOtherRequests(t *testing.T) {
-	wantSig := []byte("real-sig")
-	srv := wsTestServer(t, []any{
-		// Messages for other request IDs should be skipped.
-		wsMsg{Type: wsmsg.RequestResolved, ID: "other-req", Result: approval.ResolutionDenied},
-		wsMsg{Type: wsmsg.RequestExpired, ID: "other-req-2"},
-		wsMsg{Type: wsmsg.Snapshot, ID: "req-6"}, // non-resolution message type
-		// The real resolution for our request.
-		wsMsg{
-			Type:      wsmsg.RequestResolved,
-			ID:        "req-6",
-			Result:    approval.ResolutionApproved,
-			Signature: base64.StdEncoding.EncodeToString(wantSig),
-		},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
-	client := &DaemonClient{}
-	sig, _, _, denied, err := client.WaitForResolution(context.Background(), conn, "req-6")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if denied {
-		t.Error("denied = true, want false")
-	}
-	if string(sig) != string(wantSig) {
-		t.Errorf("signature = %q, want %q", sig, wantSig)
-	}
+func TestWaitForResolution_BadSignature(t *testing.T) {
+	_, err := waitForTestResolution(t, context.Background(),
+		json.RawMessage(`{"type":"request_resolved","id":"other-req","result":"approved","signature":"not base64!"}`),
+		json.RawMessage(`{"type":"request_resolved","id":"`+testRequestID+`","result":"approved","signature":"not base64!"}`))
+	assert.ErrorContains(t, err, "decode message for request "+testRequestID)
 }
 
 func TestWaitForResolution_ContextCancelled(t *testing.T) {
-	// Server that never sends our message — the context will cancel first.
-	srv := wsTestServer(t, []any{
-		wsMsg{Type: wsmsg.Snapshot, ID: "req-7"},
-	})
-	defer srv.Close()
-
-	conn := dialTestWS(t, srv.URL)
-	defer conn.CloseNow()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	_, err := waitForTestResolution(t, ctx, wsMsg{Type: wsmsg.Snapshot, ID: testRequestID})
+	assert.Error(t, err)
+}
 
-	client := &DaemonClient{}
-	_, _, _, _, err := client.WaitForResolution(ctx, conn, "req-7")
-	if err == nil {
-		t.Fatal("expected error for cancelled context, got nil")
-	}
+func TestSignRemote_ApprovedWithoutOutput(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "remote.sock")
+	ln, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"result":"approved"}`)) //nolint:errcheck
+	}))
+	srv.Listener = ln
+	srv.Start()
+	defer srv.Close()
+
+	_, err = SignRemote(context.Background(), socket, &approval.GPGSignInfo{})
+	assert.ErrorContains(t, err, "without gpg output")
 }

@@ -73,7 +73,7 @@ func (o SignOutcome) emit() ExitStatus {
 	if len(o.Status) > 0 {
 		os.Stderr.Write(o.Status) //nolint:errcheck
 	}
-	if o.ExitCode != 0 {
+	if !o.Succeeded() {
 		return ExitStatus(o.ExitCode)
 	}
 	os.Stdout.Write(o.Signature) //nolint:errcheck

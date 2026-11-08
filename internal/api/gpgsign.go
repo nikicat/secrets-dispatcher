@@ -47,7 +47,7 @@ func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) (a
 		}
 	}
 	res := approval.GPGResult{Status: statusBuf.Bytes(), ExitCode: exitCode}
-	if exitCode == 0 {
+	if res.Succeeded() {
 		res.Signature = sigBuf.Bytes()
 	}
 	return res, nil
@@ -173,17 +173,12 @@ func bindDisplayToSignedPayload(info *approval.GPGSignInfo, senderInfo approval.
 // both want the same outcome — sign without showing a notification — and differ
 // only in the log line.
 func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSignRequest, senderInfo approval.SenderInfo, commitSubject, reason string) {
-	gpgPath, findErr := h.resolver.GPGRunner.FindGPG()
-	if findErr != nil {
-		writeError(w, fmt.Sprintf("gpg exec failed: %v", findErr), http.StatusInternalServerError)
+	res, err := h.resolver.signGPG(req.GPGSignInfo, senderInfo)
+	if err != nil {
+		writeError(w, fmt.Sprintf("gpg exec failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-	res, runErr := h.resolver.runGPGWithNotify(gpgPath, req.GPGSignInfo.KeyID, []byte(req.GPGSignInfo.CommitObject), req.GPGSignInfo, senderInfo)
-	if runErr != nil {
-		writeError(w, fmt.Sprintf("gpg exec failed: %v", runErr), http.StatusInternalServerError)
-		return
-	}
-	if res.ExitCode != 0 {
+	if !res.Succeeded() {
 		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.ExitCode)
 	}
 

@@ -48,6 +48,9 @@ type GPGResult struct {
 	ExitCode GPGExitCode `json:"exit_code"`
 }
 
+// Checks whether gpg ran and produced a signature.
+func (r GPGResult) Succeeded() bool { return r.ExitCode == 0 }
+
 // The exit code of a gpg sign request: the real gpg process's own, or one of
 // the codes below when gpg did not run. Zero means gpg succeeded.
 type GPGExitCode int

@@ -157,7 +157,7 @@ playwright-install: deps-frontend
 
 # Generate screenshots for docs (output: docs/screenshots/)
 screenshots: backend-dev
-	$(PNPM) test:e2e --project=chromium tests/screenshots.spec.ts
+	SCREENSHOTS=1 $(PNPM) test:e2e --project=chromium tests/screenshots.spec.ts
 
 # Show the version that will be embedded
 version:

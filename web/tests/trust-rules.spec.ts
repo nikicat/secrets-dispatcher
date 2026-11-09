@@ -97,6 +97,45 @@ test.describe("Trust Rules WebSocket", () => {
     await expect(page.getByText("Ignore Write")).toBeVisible();
   });
 
+  test("each trust rule shows its own action", async ({ page }) => {
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        trust_rules: [
+          {
+            name: "Approve gh",
+            action: "approve",
+            request_types: ["search"],
+          },
+          {
+            name: "Ignore Chrome",
+            action: "ignore",
+            request_types: ["write"],
+          },
+          {
+            name: "Deny everyone",
+            action: "deny",
+            request_types: ["delete"],
+          },
+        ],
+      }),
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    const toggle = page.getByText("Trust Rules");
+    await expect(toggle).toBeVisible({ timeout: 10000 });
+    await toggle.click();
+
+    const badge = (name: string) =>
+      page.locator(".rule-entry", { hasText: name }).locator(".history-type");
+    await expect(badge("Approve gh")).toHaveText("Approve Search");
+    await expect(badge("Ignore Chrome")).toHaveText("Ignore Write");
+    await expect(badge("Deny everyone")).toHaveText("Deny Delete");
+    await expect(badge("Deny everyone")).toHaveClass(/rule-action--deny/);
+  });
+
   test("multiple trust rules render in order", async ({ page }) => {
     await routeSnapshot(page, {
       rewrite: (s) => ({

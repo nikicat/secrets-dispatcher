@@ -127,9 +127,12 @@ export interface SecretMatcher {
   attributes?: Record<string, string>;
 }
 
+// What a matching trust rule does with a request (approval.RuleAction).
+export type RuleAction = "approve" | "ignore" | "deny";
+
 export interface TrustRule {
   name?: string;
-  action?: string;
+  action: RuleAction;
   request_types?: string[];
   process?: ProcessMatcher;
   secret?: SecretMatcher;

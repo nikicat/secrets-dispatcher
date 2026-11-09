@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -28,6 +29,8 @@ type Server struct {
 	runtimeDir config.RuntimeDir
 	// The remote sockets ServeRemote opened. Shutdown closes them under its deadline.
 	remotes []*RemoteServer
+	// The serve loops still running. Shutdown waits for them to exit.
+	serving sync.WaitGroup
 }
 
 // Creates an API server for single-socket mode, listening on addr.
@@ -124,7 +127,7 @@ func (s *Server) ServeAPISocket(dir config.RuntimeDir) error {
 		return err
 	}
 	s.runtimeDir = dir
-	serveInBackground(s.httpServer, unixListener, "Unix socket server error")
+	s.serveInBackground(s.httpServer, unixListener, "Unix socket server error")
 	return nil
 }
 
@@ -146,18 +149,19 @@ func listenUnix(path string) (net.Listener, error) {
 	return listener, nil
 }
 
-// Serves srv on listener in the background and logs any failure other than shutdown.
-func serveInBackground(srv *http.Server, listener net.Listener, failure string, logArgs ...any) {
-	go func() {
-		if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+// Serves srv on listener in the background until Shutdown, and logs any
+// failure other than shutdown.
+func (s *Server) serveInBackground(srv *http.Server, listener net.Listener, failure string, logArgs ...any) {
+	s.serving.Go(func() {
+		if err := srv.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 			slog.Error(failure, append(logArgs, "error", err)...)
 		}
-	}()
+	})
 }
 
 // Begins serving HTTP requests in the background.
 func (s *Server) Start() error {
-	serveInBackground(s.httpServer, s.listener, "HTTP server error")
+	s.serveInBackground(s.httpServer, s.listener, "HTTP server error")
 	return nil
 }
 
@@ -166,14 +170,17 @@ func (s *Server) Addr() string {
 	return s.listener.Addr().String()
 }
 
-// Gracefully shuts down the server and its remote sockets. Errors when ctx ends
-// before the requests in flight finish.
+// Gracefully shuts down the server and its remote sockets, and returns once
+// their serve loops have exited. Errors when ctx ends before the requests in
+// flight finish.
 func (s *Server) Shutdown(ctx context.Context) error {
 	var errs []error
 	for _, rs := range s.remotes {
 		errs = append(errs, rs.httpServer.Shutdown(ctx))
 	}
-	return errors.Join(append(errs, s.httpServer.Shutdown(ctx))...)
+	errs = append(errs, s.httpServer.Shutdown(ctx))
+	s.serving.Wait()
+	return errors.Join(errs...)
 }
 
 // WSHandler returns the WebSocket handler for broadcasting client events.

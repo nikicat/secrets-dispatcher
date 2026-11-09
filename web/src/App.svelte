@@ -7,6 +7,7 @@
     HistoryEntry,
     AutoApproveRule,
     TrustedSigner,
+    RuleAction,
     TrustRule,
   } from "./lib/types";
   import {
@@ -31,6 +32,12 @@
   let autoApproveRules = $state<AutoApproveRule[]>([]);
   let trustedSigners = $state<TrustedSigner[]>([]);
   let trustRules = $state<TrustRule[]>([]);
+
+  const ruleActionLabels: Record<RuleAction, string> = {
+    approve: "Approve",
+    ignore: "Ignore",
+    deny: "Deny",
+  };
   let loading = $state(true);
   let error = $state<string | null>(null);
   let connected = $state(false);
@@ -797,9 +804,9 @@
                   <div class="rule-header">
                     <span
                       class="history-type history-type--{(rule.request_types ??
-                        [])[0] ?? 'get_secret'}"
+                        [])[0] ?? 'get_secret'} rule-action--{rule.action}"
                     >
-                      {#if (rule.action ?? "approve") === "ignore"}Ignore{:else}Approve{/if}
+                      {ruleActionLabels[rule.action]}
                       {#if rule.request_types?.length}{rule.request_types
                           .map((t) =>
                             t === "get_secret"
@@ -1215,6 +1222,13 @@
     color: var(--color-danger);
     border-color: var(--color-danger);
     background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  }
+
+  /* A deny rule refuses: solid red, so it never reads like an approval. */
+  .history-type.rule-action--deny {
+    color: white;
+    border-color: var(--color-danger);
+    background-color: var(--color-danger);
   }
 
   .trust-rules-section {

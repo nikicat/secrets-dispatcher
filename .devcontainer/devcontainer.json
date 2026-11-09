@@ -1,0 +1,6 @@
+{
+  "name": "secrets-dispatcher",
+  "build": { "dockerfile": "Containerfile" },
+  "remoteUser": "vscode",
+  "customizations": { "vscode": { "extensions": ["golang.go", "svelte.svelte-vscode"] } }
+}

@@ -79,10 +79,11 @@ test-e2e: backend-dev
 test-e2e-all: backend-dev
 	ALL_BROWSERS=1 $(PNPM) test:e2e
 
-# E2E tests for a single browser (usage: make test-e2e-browser BROWSER=firefox)
-BROWSER ?= chromium
+# E2E tests for a single browser (usage: make test-e2e-browser PLAYWRIGHT_BROWSER=firefox)
+# not BROWSER: that is the environment's URL opener, which VS Code and others set
+PLAYWRIGHT_BROWSER ?= chromium
 test-e2e-browser: backend-dev
-	ALL_BROWSERS=1 $(PNPM) test:e2e --project=$(BROWSER)
+	ALL_BROWSERS=1 $(PNPM) test:e2e --project=$(PLAYWRIGHT_BROWSER)
 
 # Go-only dev binary (no frontend, no Node). Distinct output so it can't race
 # a parallel backend-dev build of .build/secrets-dispatcher.
@@ -147,13 +148,16 @@ demo: backend-go
 	e2e/gnome/vm/demo.sh .build/demos .build/secrets-dispatcher-go
 	e2e/gnome/vm/run.sh destroy
 
-# Install Playwright browser with system deps (usage: make playwright-install BROWSER=chromium)
+# Install Playwright browser with system deps (usage: make playwright-install PLAYWRIGHT_BROWSER=chromium)
+# CI's runner gets the browsers' libraries from --with-deps, which needs root; the dev container's
+# image has them already
+PLAYWRIGHT_DEPS := $(if $(CI),--with-deps)
 playwright-install: deps-frontend
-	$(PNPM) exec playwright install --with-deps $(BROWSER)
+	$(PNPM) exec playwright install $(PLAYWRIGHT_DEPS) $(PLAYWRIGHT_BROWSER)
 
 # Generate screenshots for docs (output: docs/screenshots/)
 screenshots: backend-dev
-	$(PNPM) test:e2e --project=chromium tests/screenshots.spec.ts
+	SCREENSHOTS=1 $(PNPM) test:e2e --project=chromium tests/screenshots.spec.ts
 
 # Show the version that will be embedded
 version:

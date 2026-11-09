@@ -1,0 +1,40 @@
+# The development image: what building and testing this repo needs, nothing about whoever runs
+# it. Debian as of one day, for amd64 and arm64 alike, so a rebuild gets the same versions; bump
+# the snapshot (and the base) to update.
+FROM docker.io/library/debian:trixie-20261104-slim
+
+ARG SNAPSHOT=20261105T000000Z
+ARG DEBIAN_FRONTEND=noninteractive
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/%s/%s\nSuites: %s\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\n' \
+      debian "$SNAPSHOT" 'trixie trixie-updates' debian-security "$SNAPSHOT" trixie-security \
+      > /etc/apt/sources.list.d/debian.sources \
+ && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/snapshot \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# go and node from their own releases, at go.mod's and .nvmrc's versions, which Debian's predate
+ARG GO=1.27.3
+ARG GO_SHA256_amd64=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG GO_SHA256_arm64=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+ARG NODE=26.13.0
+ARG NODE_SHA256_amd64=d28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997
+ARG NODE_SHA256_arm64=406fe3fbde1c054adff8b297c16fdb5af6659db327c1ac8acd46b56ef1af9a92
+RUN set -e; arch=$(dpkg --print-architecture); \
+    case $arch in amd64) node=x64 go=$GO_SHA256_amd64 nsum=$NODE_SHA256_amd64 ;; \
+                  arm64) node=arm64 go=$GO_SHA256_arm64 nsum=$NODE_SHA256_arm64 ;; esac; \
+    curl -fsSLo /tmp/go.tgz "https://go.dev/dl/go$GO.linux-$arch.tar.gz"; \
+    echo "$go  /tmp/go.tgz" | sha256sum -c -; tar -C /usr/local -xzf /tmp/go.tgz; \
+    curl -fsSLo /tmp/node.txz "https://nodejs.org/dist/v$NODE/node-v$NODE-linux-$node.tar.xz"; \
+    echo "$nsum  /tmp/node.txz" | sha256sum -c -; mkdir /usr/local/node; \
+    tar -C /usr/local/node --strip-components=1 -xJf /tmp/node.txz; rm /tmp/go.tgz /tmp/node.txz
+ENV PATH=/usr/local/go/bin:/usr/local/node/bin:$PATH
+
+# pnpm switches itself to packageManager's version
+RUN npm install -g pnpm@12.18.0
+# the libraries Playwright's chromium and firefox load, at web/package.json's version
+ARG PLAYWRIGHT=1.65.0
+RUN apt-get update && npx -y "playwright@$PLAYWRIGHT" install-deps chromium firefox && rm -rf /var/lib/apt/lists/*
+
+# the user VS Code connects as (devcontainer.json's remoteUser)
+RUN useradd -m -u 1000 -U vscode

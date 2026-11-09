@@ -33,7 +33,7 @@ func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc(gpgsign.RemoteSignPath, rs.handleSign)
 	rs.httpServer = &http.Server{Handler: mux}
-	serveInBackground(rs.httpServer, listener, "remote socket server error", "remote", name)
+	s.serveInBackground(rs.httpServer, listener, "remote socket server error", "remote", name)
 	s.remotes = append(s.remotes, rs)
 	return rs, nil
 }

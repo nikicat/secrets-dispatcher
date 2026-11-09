@@ -1,14 +1,20 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 func TestServer_Integration(t *testing.T) {
@@ -124,4 +130,23 @@ func TestServer_Integration(t *testing.T) {
 			t.Error("RequireApproval did not unblock")
 		}
 	})
+}
+
+// Checks that shutting down a server serving TCP, the API socket and a remote
+// socket logs no error: a clean stop must not look like a failure in the journal.
+func TestServer_ShutdownLogsNoError(t *testing.T) {
+	var logs bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	server, err := NewServer("127.0.0.1:0", newTestManager(), "/remote/socket", "test-client", newTestAuth(t), false, nil, 0)
+	require.NoError(t, err)
+	require.NoError(t, server.Start())
+	require.NoError(t, server.ServeAPISocket(config.RuntimeDir(t.TempDir())))
+	_, err = server.ServeRemote("nb-home")
+	require.NoError(t, err)
+
+	require.NoError(t, server.Shutdown(context.Background()))
+
+	assert.Empty(t, logs.String())
 }

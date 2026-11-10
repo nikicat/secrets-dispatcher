@@ -18,7 +18,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 	var approvalErr error
 
 	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, approvalErr = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -55,7 +55,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 	var approvalErr error
 
 	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, approvalErr = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -88,7 +88,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 func TestManager_RequireApproval_Timeout(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: 100})
 
-	_, err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+	_, err := mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	if err != ErrTimeout {
 		t.Errorf("expected ErrTimeout, got: %v", err)
@@ -104,7 +104,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 	var approvalErr error
 
 	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, approvalErr = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -136,7 +136,7 @@ func TestManager_List(t *testing.T) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
-			_, _ = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+			_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		}(i)
 	}
 
@@ -163,7 +163,7 @@ func TestManager_Cancel_Success(t *testing.T) {
 	var approvalErr error
 
 	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, approvalErr = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -241,7 +241,7 @@ func TestManager_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_, results[n] = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+			_, results[n] = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		}(i)
 	}
 
@@ -286,7 +286,7 @@ func TestManager_Disabled(t *testing.T) {
 	mgr := NewDisabledManager()
 
 	// Should auto-approve immediately
-	_, err := mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+	_, err := mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	if err != nil {
 		t.Errorf("disabled manager should auto-approve, got: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestManager_RequestFields(t *testing.T) {
 	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, "/session/42", RequestTypeGetSecret, nil, SenderInfo{Client: "test-client"})
 	})
 
 	// Wait for request to appear
@@ -351,7 +351,7 @@ func TestManager_CleanupAfterApproval(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -419,7 +419,7 @@ func TestManager_Observer_Created(t *testing.T) {
 	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for created event
@@ -445,7 +445,7 @@ func TestManager_Observer_Approved(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -490,7 +490,7 @@ func TestManager_Observer_Denied(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -527,7 +527,7 @@ func TestManager_Observer_Expired(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	// This will timeout
-	_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+	_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	// Wait for events
 	events := obs.WaitForEvents(2, time.Second)
@@ -552,7 +552,7 @@ func TestManager_Observer_CancelMethod(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -599,7 +599,7 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, err := mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		if err != context.Canceled {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
@@ -641,7 +641,7 @@ func TestManager_Observer_Unsubscribe(t *testing.T) {
 	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	wg.Wait()
@@ -664,7 +664,7 @@ func TestManager_Observer_MultipleObservers(t *testing.T) {
 	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for created event on both observers
@@ -710,7 +710,7 @@ func TestHistory_RecordsApproved(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -753,7 +753,7 @@ func TestHistory_RecordsDenied(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -788,7 +788,7 @@ func TestHistory_RecordsExpired(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: 100})
 
 	// This will timeout
-	_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+	_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	// Give time for history to be recorded
 	time.Sleep(50 * time.Millisecond)
@@ -810,7 +810,7 @@ func TestHistory_RecordsCancelled(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(ctx, "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	// Wait for request to appear
@@ -844,7 +844,7 @@ func TestHistory_LimitEnforced(t *testing.T) {
 
 	// Create more requests than the history limit
 	for i := 0; i < historyMax+3; i++ {
-		_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 	}
 
 	// Check history is limited
@@ -861,7 +861,7 @@ func TestHistory_NewestFirst(t *testing.T) {
 	for range 3 {
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			_, _ = mgr.RequireApproval(context.Background(), "test-client", []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
+			_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 		})
 
 		// Wait for request to appear
@@ -907,7 +907,7 @@ func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
 	// First request: must be manually approved
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, sender)
 	})
 
 	var reqID string
@@ -926,7 +926,7 @@ func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
 	wg.Wait()
 
 	// Second request: same sender+item within window → auto-approved (no pending)
-	_, err := mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	_, err := mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, sender)
 	if err != nil {
 		t.Fatalf("expected auto-approval from cache, got: %v", err)
 	}
@@ -944,7 +944,7 @@ func TestApprovalCache_Expired(t *testing.T) {
 	// Approve first request
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, sender)
 	})
 
 	var reqID string
@@ -965,7 +965,7 @@ func TestApprovalCache_Expired(t *testing.T) {
 	// Second request should NOT be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	_, err := mgr.RequireApproval(ctx, items, "/s/1", RequestTypeGetSecret, nil, sender)
 	if err == nil {
 		t.Fatal("expected approval to be required after cache expiry")
 	}
@@ -979,7 +979,7 @@ func TestApprovalCache_DifferentSender(t *testing.T) {
 	// Approve for sender1
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.100"})
+		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.100"})
 	})
 
 	var reqID string
@@ -997,7 +997,7 @@ func TestApprovalCache_DifferentSender(t *testing.T) {
 	// Different sender should NOT be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.999"})
+	_, err := mgr.RequireApproval(ctx, items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.999"})
 	if err == nil {
 		t.Fatal("different sender should not be auto-approved from cache")
 	}
@@ -1012,7 +1012,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 	// Approve a GetSecret request first — populates cache
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, sender)
 	})
 
 	var reqID string
@@ -1031,7 +1031,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 	wg.Wait()
 
 	// Verify GetSecret is cached (auto-approved)
-	_, err := mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+	_, err := mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, sender)
 	if err != nil {
 		t.Fatalf("GetSecret should be auto-approved from cache, got: %v", err)
 	}
@@ -1039,7 +1039,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 	// Delete should NOT use cache — must create a pending request
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err = mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeDelete, nil, sender)
+	_, err = mgr.RequireApproval(ctx, items, "/s/1", RequestTypeDelete, nil, sender)
 	if err == nil {
 		t.Fatal("Delete should not be auto-approved from cache")
 	}
@@ -1054,7 +1054,7 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 	// Approve a GetSecret request first — populates cache
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "client", items, "/s/1", RequestTypeGetSecret, nil, sender)
+		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, sender)
 	})
 
 	var reqID string
@@ -1075,7 +1075,7 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 	// Write should NOT use cache
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, "client", items, "/s/1", RequestTypeWrite, nil, sender)
+	_, err := mgr.RequireApproval(ctx, items, "/s/1", RequestTypeWrite, nil, sender)
 	if err == nil {
 		t.Fatal("Write should not be auto-approved from cache")
 	}
@@ -1088,12 +1088,12 @@ func TestCacheItemForSender_AutoApprovesRead(t *testing.T) {
 	itemPath := "/org/freedesktop/secrets/collection/default/i123"
 
 	// Manually cache the item (simulates post-CreateItem caching)
-	mgr.CacheItemForSender(sender.Sender, itemPath)
+	mgr.CacheItemForSender(sender, itemPath)
 
 	// GetSecret for the same item should be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, sender)
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, sender)
 	if err != nil {
 		t.Fatalf("GetSecret should be auto-approved after CacheItemForSender, got: %v", err)
 	}
@@ -1105,14 +1105,57 @@ func TestCacheItemForSender_DifferentSenderNotCached(t *testing.T) {
 	itemPath := "/org/freedesktop/secrets/collection/default/i123"
 
 	// Cache for sender :1.200
-	mgr.CacheItemForSender(":1.200", itemPath)
+	mgr.CacheItemForSender(SenderInfo{Sender: ":1.200"}, itemPath)
 
 	// Different sender should NOT be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.300"})
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.300"})
 	if err == nil {
 		t.Fatal("different sender should not be auto-approved")
+	}
+}
+
+// Each bus numbers its own senders, so an approval on one client must not cover
+// the same unique name on another.
+func TestCacheItemForSender_DifferentClientNotCached(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+
+	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+	mgr.CacheItemForSender(SenderInfo{Client: "a", Sender: ":1.200"}, itemPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Client: "b", Sender: ":1.200"})
+	if err == nil {
+		t.Fatal("the same sender name on another client should not be auto-approved")
+	}
+}
+
+// A bus that claims a released name numbers its senders afresh, so the old
+// bus's approvals must not cover them.
+func TestReleaseClient_DropsCachedApprovals(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Minute})
+
+	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+	sender := SenderInfo{Client: "vm", Sender: ":1.5"}
+	if !mgr.ClaimClient("vm") {
+		t.Fatal("first claim of vm failed")
+	}
+	if mgr.ClaimClient("vm") {
+		t.Fatal("vm claimed twice")
+	}
+	mgr.CacheItemForSender(sender, itemPath)
+	mgr.ReleaseClient("vm")
+	if !mgr.ClaimClient("vm") {
+		t.Fatal("released name could not be claimed again")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, sender)
+	if err == nil {
+		t.Fatal("an approval cached for the released bus approved the new one")
 	}
 }
 
@@ -1124,7 +1167,7 @@ func TestApprovalCache_DifferentItem(t *testing.T) {
 	// Approve for item1
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), "client", []ItemInfo{{Path: "/test/item1"}}, "/s/1", RequestTypeGetSecret, nil, sender)
+		_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item1"}}, "/s/1", RequestTypeGetSecret, nil, sender)
 	})
 
 	var reqID string
@@ -1142,7 +1185,7 @@ func TestApprovalCache_DifferentItem(t *testing.T) {
 	// Different item should NOT be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: "/test/item2"}}, "/s/1", RequestTypeGetSecret, nil, sender)
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item2"}}, "/s/1", RequestTypeGetSecret, nil, sender)
 	if err == nil {
 		t.Fatal("different item should not be auto-approved from cache")
 	}
@@ -1161,7 +1204,7 @@ func TestManager_EventOrder_CancelledContext(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // pre-cancel so select fires ctx.Done() immediately
 
-		_, _ = mgr.RequireApproval(ctx, "client", []ItemInfo{{Path: "/test/item"}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{})
+		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 		events := obs.WaitForEvents(2, time.Second)
 		if len(events) < 2 {
@@ -1227,7 +1270,7 @@ func TestRecordIgnored(t *testing.T) {
 		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
 	}}
 
-	mgr.RecordIgnored("test-client", items, "/session/1", SenderInfo{})
+	mgr.RecordIgnored(items, "/session/1", SenderInfo{Client: "test-client"})
 
 	// Check event fired
 	events := obs.WaitForEvents(1, time.Second)
@@ -1326,12 +1369,12 @@ func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
 	items := []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}}
 
 	// Genuine caller: comm is "firefox", real systemd unit is "firefox.service".
-	genuine := SenderInfo{InvokerName: "firefox", SystemdUnit: "firefox.service"}
+	genuine := SenderInfo{Client: ClientLocal, InvokerName: "firefox", SystemdUnit: "firefox.service"}
 	assert.NotNil(t, mgr.CheckTrustRules(genuine, items, RequestTypeGetSecret, nil),
 		"unit rule should match the real systemd unit")
 
 	// Spoofer: sets its comm to "firefox.service" but has no such systemd unit.
-	spoofed := SenderInfo{InvokerName: "firefox.service", SystemdUnit: ""}
+	spoofed := SenderInfo{Client: ClientLocal, InvokerName: "firefox.service", SystemdUnit: ""}
 	assert.Nil(t, mgr.CheckTrustRules(spoofed, items, RequestTypeGetSecret, nil),
 		"unit rule must not match a comm spoofed to look like a unit name")
 }
@@ -1430,11 +1473,11 @@ func TestCheckTrustRules(t *testing.T) {
 
 	ghChain := []ProcessInfo{{Name: "gh", PID: 100, Exe: "/usr/bin/gh"}}
 	chromeChain := []ProcessInfo{{Name: "chrome", PID: 200, Exe: "/opt/google/chrome/chrome"}}
-	gopassSender := SenderInfo{InvokerName: "gopass", SystemdUnit: "gopass-secret-service.service", ProcessChain: []ProcessInfo{{Name: "gopass", PID: 300}}}
+	gopassSender := SenderInfo{Client: ClientLocal, InvokerName: "gopass", SystemdUnit: "gopass-secret-service.service", ProcessChain: []ProcessInfo{{Name: "gopass", PID: 300}}}
 
 	t.Run("match process name + request type", func(t *testing.T) {
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: ghChain},
+			SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 			nil,
 			RequestTypeSearch,
 			nil,
@@ -1446,7 +1489,7 @@ func TestCheckTrustRules(t *testing.T) {
 
 	t.Run("no match wrong request type", func(t *testing.T) {
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: ghChain},
+			SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 			nil,
 			RequestTypeGetSecret,
 			nil,
@@ -1465,7 +1508,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Label: "Chrome Safe Storage",
 		}}
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: chromeChain},
+			SenderInfo{Client: ClientLocal, ProcessChain: chromeChain},
 			items,
 			RequestTypeWrite,
 			nil,
@@ -1481,7 +1524,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Label: "Chrome Safe Storage",
 		}}
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: chromeChain},
+			SenderInfo{Client: ClientLocal, ProcessChain: chromeChain},
 			items,
 			RequestTypeWrite,
 			nil,
@@ -1510,7 +1553,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Label: "GitHub Token",
 		}}
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: []ProcessInfo{{Name: "random-app", PID: 999}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "random-app", PID: 999}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1522,7 +1565,7 @@ func TestCheckTrustRules(t *testing.T) {
 
 	t.Run("match search attributes", func(t *testing.T) {
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: []ProcessInfo{{Name: "app", PID: 1}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "app", PID: 1}}},
 			nil,
 			RequestTypeSearch,
 			map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
@@ -1539,7 +1582,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.NetworkPassword", "ssid": "home"},
 		}}
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: []ProcessInfo{{Name: "nm-applet", PID: 500}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "nm-applet", PID: 500}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1567,7 +1610,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Attributes: map[string]string{"username": "kubelogin/tokencache/e91d908"},
 		}}
 		rule := m.CheckTrustRules(
-			SenderInfo{ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1578,7 +1621,7 @@ func TestCheckTrustRules(t *testing.T) {
 		// Non-matching value
 		items[0].Attributes["username"] = "other/path"
 		rule = m.CheckTrustRules(
-			SenderInfo{ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1591,7 +1634,7 @@ func TestCheckTrustRules(t *testing.T) {
 	t.Run("first match wins", func(t *testing.T) {
 		// gh doing search matches rule 0 (approve-gh-search), not rule 4 (approve-search-attrs)
 		rule := mgr.CheckTrustRules(
-			SenderInfo{ProcessChain: ghChain},
+			SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 			nil,
 			RequestTypeSearch,
 			map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
@@ -1675,10 +1718,10 @@ func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	_, err := mgr.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		nil, "/s/1",
 		RequestTypeSearch, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
 	)
 	if err != nil {
 		t.Fatalf("expected nil (auto-approved), got %v", err)
@@ -1722,10 +1765,10 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
 	}}
 	_, err := mgr.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		items, "/s/1",
 		RequestTypeWrite, nil,
-		SenderInfo{},
+		SenderInfo{Client: ClientLocal},
 	)
 	if err != ErrIgnored {
 		t.Fatalf("expected ErrIgnored, got %v", err)
@@ -1763,10 +1806,10 @@ func TestTrustRules_RequireApproval_Deny(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	_, err := mgr.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{{Name: "epiphany-search", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "epiphany-search", PID: 1}}},
 	)
 	if err != ErrDeniedByRule {
 		t.Fatalf("expected ErrDeniedByRule, got %v", err)
@@ -1803,7 +1846,7 @@ func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
 
 	// Non-matching request should go to pending and eventually timeout
 	_, err := mgr.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		[]ItemInfo{{Path: "/test/item"}}, "/s/1",
 		RequestTypeGetSecret, nil,
 		SenderInfo{ProcessChain: []ProcessInfo{{Name: "curl", PID: 1}}},
@@ -1827,10 +1870,10 @@ func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
 	})
 
 	_, err := mgr.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		nil, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{{Name: "test", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "test", PID: 1}}},
 	)
 	if err != nil {
 		t.Fatalf("expected nil (default action approve), got %v", err)
@@ -1854,10 +1897,10 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 
 	// Matching CWD in process chain → auto-approve
 	_, err := mgr.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{
+		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{
 			{Name: "electron", PID: 100, Exe: "/usr/lib/electron39/electron", CWD: "/usr/lib/visual-studio-code-electron"},
 			{Name: "systemd", PID: 1},
 		}},
@@ -1873,10 +1916,10 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 		TrustRules: mgr.trustRules,
 	})
 	_, err = mgr2.RequireApproval(
-		context.Background(), "client",
+		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{
+		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{
 			{Name: "electron", PID: 100, Exe: "/usr/lib/electron39/electron", CWD: "/opt/something-else"},
 		}},
 	)
@@ -1887,7 +1930,7 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 
 func TestRequireApproval_AutoApproved_Disabled(t *testing.T) {
 	mgr := NewDisabledManager()
-	autoApproved, err := mgr.RequireApproval(context.Background(), "c", nil, "", RequestTypeGetSecret, nil, SenderInfo{})
+	autoApproved, err := mgr.RequireApproval(context.Background(), nil, "", RequestTypeGetSecret, nil, SenderInfo{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1902,9 +1945,9 @@ func TestRequireApproval_AutoApproved_Cache(t *testing.T) {
 	items := []ItemInfo{{Path: "/test/item"}}
 
 	// Manually cache
-	mgr.CacheItemForSender(sender.Sender, items[0].Path)
+	mgr.CacheItemForSender(sender, items[0].Path)
 
-	autoApproved, err := mgr.RequireApproval(context.Background(), "c", items, "", RequestTypeGetSecret, nil, sender)
+	autoApproved, err := mgr.RequireApproval(context.Background(), items, "", RequestTypeGetSecret, nil, sender)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1925,10 +1968,10 @@ func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
 	})
 
 	autoApproved, err := mgr.RequireApproval(
-		context.Background(), "c",
+		context.Background(),
 		[]ItemInfo{{Path: "/test/item"}}, "",
 		RequestTypeGetSecret, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1948,7 +1991,7 @@ func TestRequireApproval_AutoApproved_AutoApproveRule(t *testing.T) {
 	})
 
 	autoApproved, err := mgr.RequireApproval(
-		context.Background(), "c",
+		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i2"}}, "",
 		RequestTypeGetSecret, nil,
 		testSender("gh", "/usr/bin/gh"),
@@ -1968,7 +2011,7 @@ func TestRequireApproval_NotAutoApproved_ManualApproval(t *testing.T) {
 	var approvalErr error
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		autoApproved, approvalErr = mgr.RequireApproval(context.Background(), "c", []ItemInfo{{Path: "/test/item"}}, "", RequestTypeGetSecret, nil, SenderInfo{})
+		autoApproved, approvalErr = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	var reqID string
@@ -2001,9 +2044,9 @@ func TestRecordPassthrough(t *testing.T) {
 
 	items := []ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}
 	searchAttrs := map[string]string{"xdg:schema": "org.gnome.keyring.Note"}
-	sender := SenderInfo{Sender: ":1.42", InvokerName: "app.service", PID: 123}
+	sender := SenderInfo{Sender: ":1.42", Client: "test-client", InvokerName: "app.service", PID: 123}
 
-	mgr.RecordPassthrough("test-client", items, "", RequestTypeSearch, searchAttrs, sender)
+	mgr.RecordPassthrough(items, "", RequestTypeSearch, searchAttrs, sender)
 
 	// Check event fired
 	events := obs.WaitForEvents(1, time.Second)
@@ -2048,7 +2091,7 @@ func TestRecordPassthrough(t *testing.T) {
 	mgr2.Subscribe(obs2)
 
 	unlockItems := []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login", Label: "Login"}}
-	mgr2.RecordPassthrough("test-client", unlockItems, "", RequestTypeUnlock, nil, sender)
+	mgr2.RecordPassthrough(unlockItems, "", RequestTypeUnlock, nil, sender)
 
 	history2 := mgr2.History()
 	if len(history2) != 1 {
@@ -2071,7 +2114,7 @@ func TestRequireApproval_NotAutoApproved_Denied(t *testing.T) {
 	var approvalErr error
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		autoApproved, approvalErr = mgr.RequireApproval(context.Background(), "c", []ItemInfo{{Path: "/test/item"}}, "", RequestTypeGetSecret, nil, SenderInfo{})
+		autoApproved, approvalErr = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "", RequestTypeGetSecret, nil, SenderInfo{})
 	})
 
 	var reqID string
@@ -2112,4 +2155,64 @@ func TestResolution_Approves(t *testing.T) {
 	for _, tt := range tests {
 		assert.Equal(t, tt.want, tt.resolution.Approves(), tt.resolution)
 	}
+}
+
+func TestCheckTrustRules_Client(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{Name: "symbiosis", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeGetSecret}, Client: "symbiosis"},
+			{Name: "dev-search", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeSearch}, Client: "dev-*"},
+			{Name: "no-client", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeDelete}},
+			{Name: "no-client-deny", Action: RuleDeny, RequestTypes: []RequestType{RequestTypeWrite}},
+			{Name: "any-client", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeUnlock}, Client: "*"},
+		},
+	})
+
+	cases := []struct {
+		client string
+		typ    RequestType
+		want   string
+	}{
+		{"symbiosis", RequestTypeGetSecret, "symbiosis"},
+		{ClientLocal, RequestTypeGetSecret, ""},
+		{"symbiosis-2", RequestTypeGetSecret, ""},
+		{"dev-proto", RequestTypeSearch, "dev-search"},
+		{ClientLocal, RequestTypeSearch, ""},
+		{ClientLocal, RequestTypeDelete, "no-client"},
+		{"symbiosis", RequestTypeDelete, ""},
+		{ClientLocal, RequestTypeWrite, "no-client-deny"},
+		{"symbiosis", RequestTypeWrite, "no-client-deny"},
+		{ClientLocal, RequestTypeUnlock, "any-client"},
+		{"symbiosis", RequestTypeUnlock, "any-client"},
+	}
+	for _, c := range cases {
+		rule := mgr.CheckTrustRules(SenderInfo{Client: c.client}, nil, c.typ, nil)
+		got := ""
+		if rule != nil {
+			got = rule.Name
+		}
+		assert.Equal(t, c.want, got, "client %q, type %q", c.client, c.typ)
+	}
+}
+
+// A forwarded bus's sender has no local process, so no process block matches
+// it, not even one that would match anything.
+func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
+	mgr := NewManager(ManagerConfig{
+		Timeout:    5 * time.Second,
+		HistoryMax: 100,
+		TrustRules: []TrustRule{
+			{Name: "any-unit", Action: RuleApprove, Client: "*", RequestTypes: []RequestType{RequestTypeGetSecret}, Process: &ProcessMatcher{Unit: "*"}},
+			{Name: "empty-process", Action: RuleApprove, Client: "*", RequestTypes: []RequestType{RequestTypeSearch}, Process: &ProcessMatcher{}},
+		},
+	})
+
+	forwarded := SenderInfo{Client: "symbiosis", Sender: ":1.7", PID: 42}
+	assert.Nil(t, mgr.CheckTrustRules(forwarded, nil, RequestTypeGetSecret, nil), `unit "*"`)
+	assert.Nil(t, mgr.CheckTrustRules(forwarded, nil, RequestTypeSearch, nil), "empty process")
+
+	local := SenderInfo{Client: ClientLocal, SystemdUnit: "app.service"}
+	assert.NotNil(t, mgr.CheckTrustRules(local, nil, RequestTypeGetSecret, nil), `unit "*" on a local sender`)
 }

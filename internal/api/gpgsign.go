@@ -73,7 +73,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if req.Client == "" {
-		req.Client = "unknown"
+		req.Client = approval.ClientUnknown
 	}
 	senderInfo := resolvePeerInfo(r.Context(), h.trimProcessChain)
 

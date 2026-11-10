@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -18,7 +19,7 @@ import (
 // org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
 	clientName            string
-	trimProcessChain      bool
+	local                 *localProcs
 	upstreamNotifier      UpstreamNotifier
 	upstreamSlowThreshold time.Duration
 
@@ -42,19 +43,33 @@ type Proxy struct {
 
 // Config holds configuration for the proxy.
 type Config struct {
-	ClientName            string
+	ClientName string
+	// True only for the session bus, whose callers are processes on this
+	// machine. Any other front bus is forwarded (see SenderInfoResolver).
+	LocalProcesses bool
+	// Applies only with LocalProcesses.
+	TrimProcessChain      bool
 	LogLevel              slog.Level
 	Approval              *approval.Manager
-	TrimProcessChain      bool
 	UpstreamNotifier      UpstreamNotifier
 	UpstreamSlowThreshold time.Duration
+}
+
+// Returns what the resolver needs to describe local processes, or nil for a
+// forwarded bus.
+func (cfg Config) localProcs() *localProcs {
+	if !cfg.LocalProcesses {
+		return nil
+	}
+	selfExe, _ := os.Executable()
+	return &localProcs{trimProcessChain: cfg.TrimProcessChain, selfExe: selfExe}
 }
 
 // New creates a new Proxy with the given configuration.
 func New(cfg Config) *Proxy {
 	clientName := cfg.ClientName
 	if clientName == "" {
-		clientName = "unknown"
+		clientName = approval.ClientUnknown
 	}
 
 	approvalMgr := cfg.Approval
@@ -65,7 +80,7 @@ func New(cfg Config) *Proxy {
 
 	return &Proxy{
 		clientName:            clientName,
-		trimProcessChain:      cfg.TrimProcessChain,
+		local:                 cfg.localProcs(),
 		sessions:              NewSessionManager(),
 		logger:                logging.New(cfg.LogLevel, clientName),
 		approval:              approvalMgr,
@@ -89,12 +104,12 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 	}
 
 	// Create sender info resolver
-	p.resolver = NewSenderInfoResolver(p.frontConn, p.trimProcessChain)
+	p.resolver = newSenderInfoResolver(p.frontConn, p.clientName, p.local)
 
 	// Create handlers — they talk to the backend
-	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.clientName, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.prompt = NewPromptHandler(p.backendConn, p.logger)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 

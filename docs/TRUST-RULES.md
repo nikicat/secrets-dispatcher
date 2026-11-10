@@ -92,9 +92,10 @@ serve:
     - exe_path: /usr/bin/nvim
 ```
 
-Rules match on process attributes (`exe`, `name`, `args`, `cwd`, systemd `unit`)
-and secret attributes (`collection`, `label`, custom `attributes`). All patterns
-are globs (`path.Match`, **not** regex), and all non-empty matchers are AND-ed.
+Rules match on the client the request came through (`client`), process
+attributes (`exe`, `name`, `args`, `cwd`, systemd `unit`) and secret attributes
+(`collection`, `label`, custom `attributes`). All patterns are globs
+(`path.Match`, **not** regex), and all non-empty matchers are AND-ed.
 Process matching checks the **full process chain**, not just the immediate D-Bus
 caller — `args` is matched against each individual cmdline argument of each
 process in the chain, which is how you identify interpreter-run scripts (whose
@@ -111,12 +112,37 @@ its argv after exec) — advisory only. **`unit`** matches the caller's real
 systemd unit (resolved via `GetUnitByPID`), which is authoritative for
 systemd-managed services.
 
+### Forwarded buses
+
+A bus forwarded from another machine or container (a `socket` or `sockets`
+downstream) reports PIDs from there, so the dispatcher looks none of them up: a
+request from it has no process chain or unit, and `process` matchers never
+match it. Match it by `client`, the name the forward gives its socket. That
+name identifies the tunnel, not a process on the far side, so a client rule
+trusts everything that can reach that bus. An `approve` or `ignore` rule that
+names no `client` covers only the session bus, and a `deny` rule that names
+none covers every bus. The names `local`, `ssh-agent` and `unknown` are
+reserved. The sockets directory skips a socket named after one, and a `socket`
+downstream named after one fails to load.
+
+```yaml
+    - name: symbiosis-gh
+      action: approve
+      request_types: [get_secret]
+      client: symbiosis
+      secret:
+        collection: default
+        attributes:
+          service: "gh:github.com"
+```
+
 ## Matcher reference
 
 | Field | Notes |
 |---|---|
 | `action` | `approve` · `deny` · `ignore` (`ignore` is valid only for `write`) |
 | `request_types` | `get_secret` · `search` · `delete` · `write` · `unlock` — omit to match all |
+| `client` | glob; the client the request came through: `local` for the session bus, the socket's name (without `.sock`) for a forwarded bus — omitted, `deny` matches every client and other actions only `local` |
 | `process.exe` | glob; kernel-resolved `/proc/PID/exe` — **preferred** |
 | `process.name` | glob; `comm`, 15-char, spoofable — advisory |
 | `process.args` | glob; matched per cmdline arg — for interpreter-run scripts |

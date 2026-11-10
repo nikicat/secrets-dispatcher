@@ -179,10 +179,10 @@ func TestSenderInfoResolver_Resolve_PartialInfo(t *testing.T) {
 }
 
 func TestNewSenderInfoResolver(t *testing.T) {
-	// Test that NewSenderInfoResolver creates a valid resolver
-	resolver := NewSenderInfoResolver(nil, false)
+	// Test that newSenderInfoResolver creates a valid resolver
+	resolver := newSenderInfoResolver(nil, approval.ClientLocal, nil)
 	if resolver == nil {
-		t.Fatal("NewSenderInfoResolver returned nil")
+		t.Fatal("newSenderInfoResolver returned nil")
 	}
 	if resolver.client == nil {
 		t.Error("expected non-nil client")
@@ -249,7 +249,7 @@ func TestSenderInfoResolver_Resolve_FiltersSelfExe(t *testing.T) {
 	}
 
 	// With selfExe set, our binary should be filtered out.
-	resolver.selfExe = selfExe
+	resolver.local.selfExe = selfExe
 	info = resolver.Resolve(":1.99")
 	for _, p := range info.ProcessChain {
 		if p.Exe == selfExe {
@@ -277,4 +277,28 @@ func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
 	if info.PID != absentPID {
 		t.Errorf("expected PID %d, got %d", absentPID, info.PID)
 	}
+}
+
+// A forwarded PID that also exists here, as this test's own does, must not lend
+// its process chain or unit to the request.
+func TestSenderInfoResolver_Resolve_Forwarded(t *testing.T) {
+	client := &mockDBusClient{pid: uint32(os.Getpid()), uid: 1000, unitName: "local.service"}
+	resolver := newSenderInfoResolverWithClient(client)
+	resolver.clientName = "symbiosis"
+	resolver.local = nil
+
+	info := resolver.Resolve(":1.7")
+
+	assert.Equal(t, "symbiosis", info.Client)
+	assert.Equal(t, uint32(os.Getpid()), info.PID)
+	assert.Equal(t, uint32(1000), info.UID)
+	assert.Empty(t, info.ProcessChain)
+	assert.Empty(t, info.SystemdUnit)
+	assert.Empty(t, info.InvokerName)
+}
+
+// A proxy built without LocalProcesses treats its bus as forwarded.
+func TestConfig_LocalProcsDefaultsToForwarded(t *testing.T) {
+	assert.Nil(t, Config{TrimProcessChain: true}.localProcs())
+	assert.NotNil(t, Config{LocalProcesses: true}.localProcs())
 }

@@ -181,9 +181,20 @@ func (cfg *Config) Validate() error {
 	}
 
 	hasSessionBusDown := false
+	clients := map[string]bool{}
 	for i, d := range s.Downstream {
 		if err := d.validate(); err != nil {
 			return fmt.Errorf("downstream[%d]: %w", i, err)
+		}
+		if d.Type == BusSocket {
+			client, err := approval.ClientFromSocket(d.Path)
+			if err != nil {
+				return fmt.Errorf("downstream[%d]: %w", i, err)
+			}
+			if clients[client] {
+				return fmt.Errorf("downstream[%d]: another socket downstream already has the client name %q", i, client)
+			}
+			clients[client] = true
 		}
 		if d.Type == BusSessionBus {
 			if hasSessionBusDown {
@@ -261,6 +272,7 @@ func (r TrustRule) globs() []namedGlob {
 			out = append(out, namedGlob{field, value})
 		}
 	}
+	add("client", r.Client)
 	if p := r.Process; p != nil {
 		add("process.exe", p.Exe)
 		add("process.name", p.Name)
@@ -367,11 +379,13 @@ type TrustRule struct {
 	Name string `yaml:"name,omitempty"`
 	// What the rule does with a matching request. WithDefaults fills in
 	// approval.RuleApprove when the file names no action.
-	Action           approval.RuleAction    `yaml:"action,omitempty"`
-	RequestTypes     []approval.RequestType `yaml:"request_types,omitempty"`
-	Process          *ProcessMatcher        `yaml:"process,omitempty"`
-	Secret           *SecretMatcher         `yaml:"secret,omitempty"`
-	SearchAttributes map[string]string      `yaml:"search_attributes,omitempty"`
+	Action       approval.RuleAction    `yaml:"action,omitempty"`
+	RequestTypes []approval.RequestType `yaml:"request_types,omitempty"`
+	// As approval.TrustRule.Client.
+	Client           string            `yaml:"client,omitempty"`
+	Process          *ProcessMatcher   `yaml:"process,omitempty"`
+	Secret           *SecretMatcher    `yaml:"secret,omitempty"`
+	SearchAttributes map[string]string `yaml:"search_attributes,omitempty"`
 }
 
 // ProcessMatcher matches against sender process attributes.

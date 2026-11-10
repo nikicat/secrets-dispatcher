@@ -1,35 +1,17 @@
 package proxy
 
 import (
+	"context"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
-
-func TestClientNameFromSocket(t *testing.T) {
-	tests := []struct {
-		path     string
-		expected string
-	}{
-		{"/path/to/myserver.sock", "myserver"},
-		{"/path/to/server1.sock", "server1"},
-		{"relative/path.sock", "path"},
-		{"just.sock", "just"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.path, func(t *testing.T) {
-			result := clientNameFromSocket(tc.path)
-			if result != tc.expected {
-				t.Errorf("clientNameFromSocket(%q) = %q, want %q", tc.path, result, tc.expected)
-			}
-		})
-	}
-}
 
 func TestIsSocketFile(t *testing.T) {
 	tests := []struct {
@@ -57,7 +39,7 @@ func TestNewManager(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, false, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -80,7 +62,7 @@ func TestManager_ClientsEmpty(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, false, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -96,7 +78,7 @@ func TestManager_ScanExistingSockets_NoSockets(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, false, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -132,5 +114,63 @@ func TestClientInfo(t *testing.T) {
 	}
 	if info.SocketPath != "/path/to/socket.sock" {
 		t.Errorf("expected socket_path '/path/to/socket.sock', got '%s'", info.SocketPath)
+	}
+}
+
+func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
+	tempDir := t.TempDir()
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr, err := NewManager(tempDir, "unix:path="+filepath.Join(tempDir, "no-upstream"), approvalMgr, slog.LevelInfo, nil, 0)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer mgr.watcher.Close()
+	socketPath := filepath.Join(tempDir, "vm.sock")
+
+	// Another bus holds "vm", so the socket is skipped and the name stays with its holder.
+	approvalMgr.ClaimClient("vm")
+	mgr.startProxy(t.Context(), socketPath)
+	if approvalMgr.ClaimClient("vm") {
+		t.Fatal("skipped socket released a name another bus holds")
+	}
+
+	// A proxy that fails to start gives its name back.
+	approvalMgr.ReleaseClient("vm")
+	mgr.startProxy(t.Context(), socketPath)
+	if !approvalMgr.ClaimClient("vm") {
+		t.Fatal("failed proxy kept its client name")
+	}
+}
+
+func TestManager_StopProxy_WaitsForName(t *testing.T) {
+	tempDir := t.TempDir()
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer mgr.watcher.Close()
+	socketPath := filepath.Join(tempDir, "vm.sock")
+
+	// A proxy whose downstream stays open runs until it is stopped.
+	front, _ := net.Pipe()
+	frontConn, err := dbus.NewConn(front)
+	if err != nil {
+		t.Fatalf("NewConn failed: %v", err)
+	}
+	p := New(Config{ClientName: "vm", Approval: approvalMgr})
+	p.frontConn = frontConn
+	approvalMgr.ClaimClient("vm")
+	ctx, cancel := context.WithCancel(t.Context())
+	inst := &proxyInstance{proxy: p, cancel: cancel, done: make(chan struct{})}
+	mgr.proxies.add(socketPath, inst)
+	go mgr.serve(ctx, socketPath, inst)
+
+	mgr.stopProxy(socketPath)
+	if !approvalMgr.ClaimClient("vm") {
+		t.Fatal("stopProxy returned before the client name was free")
+	}
+	if len(mgr.Clients()) != 0 {
+		t.Fatal("stopped proxy is still listed")
 	}
 }

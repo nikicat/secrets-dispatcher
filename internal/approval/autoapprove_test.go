@@ -150,7 +150,6 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 	// RequireApproval should return nil immediately (auto-approved)
 	_, err := mgr.RequireApproval(
 		context.Background(),
-		"test-client",
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i99", Attributes: map[string]string{"service": "gh:github.com"}}},
 		"session",
 		RequestTypeGetSecret,

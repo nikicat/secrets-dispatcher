@@ -62,7 +62,7 @@ func TestBatchGetSecrets_DenyRuleFiresOnAnyItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	rule := mgr.CheckTrustRules(SenderInfo{}, batch, RequestTypeGetSecret, nil)
+	rule := mgr.CheckTrustRules(SenderInfo{Client: ClientLocal}, batch, RequestTypeGetSecret, nil)
 	require.NotNil(t, rule, "deny rule scoped to 'login' must fire on a batch containing a 'login' item")
 	assert.Equal(t, "deny-login", rule.Name)
 }
@@ -83,14 +83,14 @@ func TestBatchGetSecrets_ApproveRuleRequiresEveryItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	assert.Nil(t, mgr.CheckTrustRules(SenderInfo{}, mixed, RequestTypeGetSecret, nil),
+	assert.Nil(t, mgr.CheckTrustRules(SenderInfo{Client: ClientLocal}, mixed, RequestTypeGetSecret, nil),
 		"approve rule scoped to 'public' must not cover a batch that also reads 'login'")
 
 	allPublic := []ItemInfo{
 		itemInCollection("public", "x"),
 		itemInCollection("public", "y"),
 	}
-	rule := mgr.CheckTrustRules(SenderInfo{}, allPublic, RequestTypeGetSecret, nil)
+	rule := mgr.CheckTrustRules(SenderInfo{Client: ClientLocal}, allPublic, RequestTypeGetSecret, nil)
 	require.NotNil(t, rule, "approve rule scoped to 'public' should cover an all-'public' batch")
 	assert.Equal(t, "approve-public", rule.Name)
 }

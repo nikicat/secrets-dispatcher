@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"log/slog"
-	"os"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -28,20 +27,28 @@ type dbusClient interface {
 
 // SenderInfoResolver resolves D-Bus sender information (PID, UID, systemd unit).
 type SenderInfoResolver struct {
-	client           dbusClient
+	client     dbusClient
+	clientName string // set as every resolved SenderInfo's Client
+	// Nil when the bus is forwarded from another machine or container. Its PIDs
+	// belong to another PID namespace, so /proc and systemd here would describe
+	// an unrelated process.
+	local *localProcs
+}
+
+// How a resolver reads the process chain of a caller on this machine.
+type localProcs struct {
 	trimProcessChain bool
 	selfExe          string // our own binary path, filtered from process chains
 }
 
-// NewSenderInfoResolver creates a new resolver using the given D-Bus connection.
-func NewSenderInfoResolver(conn *dbus.Conn, trimProcessChain bool) *SenderInfoResolver {
-	selfExe, _ := os.Executable()
-	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, trimProcessChain: trimProcessChain, selfExe: selfExe}
+// Returns a resolver that asks conn about senders and names them clientName.
+func newSenderInfoResolver(conn *dbus.Conn, clientName string, local *localProcs) *SenderInfoResolver {
+	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, clientName: clientName, local: local}
 }
 
 // newSenderInfoResolverWithClient creates a resolver with a custom client (for testing).
 func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
-	return &SenderInfoResolver{client: client}
+	return &SenderInfoResolver{client: client, local: &localProcs{}}
 }
 
 // Resolve retrieves sender information for a D-Bus sender.
@@ -51,7 +58,7 @@ func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
 // GetConnectionCredentials to avoid ProcessFD which cannot be forwarded
 // over SSH tunneled sockets (dbus-broker v34+ includes ProcessFD).
 func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
-	info := approval.SenderInfo{Sender: string(sender)}
+	info := approval.SenderInfo{Sender: string(sender), Client: r.clientName}
 
 	// Get PID
 	pid, err := r.client.GetConnectionUnixProcessID(sender)
@@ -69,6 +76,11 @@ func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
 		info.UID = uid
 	}
 
+	// A forwarded caller keeps only the PID and UID its bus reports.
+	if r.local == nil {
+		return info
+	}
+
 	// Resolve the caller's real systemd unit (authoritative and non-spoofable for
 	// systemd-managed services). Stored separately from InvokerName (the spoofable
 	// comm) and consulted by the `unit` process matcher.
@@ -83,12 +95,12 @@ func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
 	// Resolve the user-facing invoker process via /proc.
 	// Falls back to the systemd unit as the display name if /proc walking fails.
 	if info.PID != 0 {
-		chain := procutil.ReadProcessChain(int32(info.PID), r.trimProcessChain)
+		chain := procutil.ReadProcessChain(int32(info.PID), r.local.trimProcessChain)
 		if len(chain) > 0 {
 			// Populate the full process chain, filtering out our own binary.
 			info.ProcessChain = make([]approval.ProcessInfo, 0, len(chain))
 			for _, entry := range chain {
-				if r.selfExe != "" && entry.Exe == r.selfExe {
+				if r.local.selfExe != "" && entry.Exe == r.local.selfExe {
 					continue
 				}
 				info.ProcessChain = append(info.ProcessChain, approval.ProcessInfo{
@@ -104,8 +116,7 @@ func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
 			info.InvokerName = comm
 			info.PID = invokerPID
 		} else {
-			// No /proc chain (e.g. remote/tunneled caller): use the systemd unit
-			// as the display name too.
+			// No readable /proc chain: use the systemd unit as the display name too.
 			info.InvokerName = info.SystemdUnit
 		}
 	}

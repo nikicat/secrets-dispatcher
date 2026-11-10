@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,18 +33,50 @@ type ClientObserver interface {
 type proxyInstance struct {
 	proxy  *Proxy
 	cancel context.CancelFunc
+	done   chan struct{} // closed once the proxy has closed and its name is free
+}
+
+// The running proxies by socket path. Only the manager's event loop adds one, and a proxy removes itself
+// once it has stopped, so nothing else holds this lock.
+type proxySet struct {
+	mu     sync.RWMutex
+	byPath map[string]*proxyInstance
+}
+
+func (s *proxySet) get(path string) (*proxyInstance, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	inst, ok := s.byPath[path]
+	return inst, ok
+}
+
+func (s *proxySet) add(path string, inst *proxyInstance) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.byPath[path] = inst
+}
+
+func (s *proxySet) remove(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.byPath, path)
+}
+
+// Returns a copy that later changes do not affect.
+func (s *proxySet) snapshot() map[string]*proxyInstance {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return maps.Clone(s.byPath)
 }
 
 // Manager watches a directory for socket files and manages proxy connections.
 type Manager struct {
 	socketsDir            string
-	upstreamAddr          string                    // D-Bus address for upstream (empty = session bus)
-	proxies               map[string]*proxyInstance // socketPath -> proxyInstance
-	mu                    sync.RWMutex
+	upstreamAddr          string // D-Bus address for upstream (empty = session bus)
+	proxies               proxySet
 	watcher               *fsnotify.Watcher
 	approval              *approval.Manager
 	logLevel              slog.Level
-	trimProcessChain      bool
 	upstreamNotifier      UpstreamNotifier
 	upstreamSlowThreshold time.Duration
 
@@ -52,7 +86,8 @@ type Manager struct {
 
 // NewManager creates a new proxy manager.
 // upstreamAddr is the D-Bus address for the upstream backend; empty means session bus.
-func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, logLevel slog.Level, trimProcessChain bool, upstreamNotifier UpstreamNotifier, upstreamSlowThreshold time.Duration) (*Manager, error) {
+// A socket whose client name another bus holds is skipped.
+func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, logLevel slog.Level, upstreamNotifier UpstreamNotifier, upstreamSlowThreshold time.Duration) (*Manager, error) {
 	// Create the sockets directory if it doesn't exist
 	if err := os.MkdirAll(socketsDir, 0755); err != nil {
 		return nil, fmt.Errorf("create sockets directory: %w", err)
@@ -66,11 +101,10 @@ func NewManager(socketsDir, upstreamAddr string, approval *approval.Manager, log
 	return &Manager{
 		socketsDir:            socketsDir,
 		upstreamAddr:          upstreamAddr,
-		proxies:               make(map[string]*proxyInstance),
+		proxies:               proxySet{byPath: make(map[string]*proxyInstance)},
 		watcher:               watcher,
 		approval:              approval,
 		logLevel:              logLevel,
-		trimProcessChain:      trimProcessChain,
 		upstreamNotifier:      upstreamNotifier,
 		upstreamSlowThreshold: upstreamSlowThreshold,
 	}, nil
@@ -114,11 +148,9 @@ func (m *Manager) Run(ctx context.Context) error {
 
 // Clients returns information about all connected clients.
 func (m *Manager) Clients() []ClientInfo {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	clients := make([]ClientInfo, 0, len(m.proxies))
-	for path, inst := range m.proxies {
+	proxies := m.proxies.snapshot()
+	clients := make([]ClientInfo, 0, len(proxies))
+	for path, inst := range proxies {
 		clients = append(clients, ClientInfo{
 			Name:       inst.proxy.clientName,
 			SocketPath: path,
@@ -211,35 +243,75 @@ func isSocketFile(name string) bool {
 	return strings.HasSuffix(name, ".sock")
 }
 
-// clientNameFromSocket derives a client name from a socket filename.
-func clientNameFromSocket(socketPath string) string {
-	base := filepath.Base(socketPath)
-	return strings.TrimSuffix(base, ".sock")
-}
-
 // startProxy starts a new proxy for the given socket.
 func (m *Manager) startProxy(ctx context.Context, socketPath string) {
-	m.mu.Lock()
-	if _, exists := m.proxies[socketPath]; exists {
-		m.mu.Unlock()
+	if _, exists := m.proxies.get(socketPath); exists {
 		return
 	}
-	m.mu.Unlock()
 
-	clientName := clientNameFromSocket(socketPath)
+	clientName, err := approval.ClientFromSocket(socketPath)
+	if err != nil {
+		slog.Warn("skipping socket", "error", err)
+		return
+	}
+	if !m.approval.ClaimClient(clientName) {
+		slog.Warn("skipping socket, another bus has its client name", "socket", socketPath, "client", clientName)
+		return
+	}
 
 	p := New(Config{
 		ClientName:            clientName,
 		LogLevel:              m.logLevel,
 		Approval:              m.approval,
-		TrimProcessChain:      m.trimProcessChain,
 		UpstreamNotifier:      m.upstreamNotifier,
 		UpstreamSlowThreshold: m.upstreamSlowThreshold,
 	})
+	if err := m.connect(p, socketPath); err != nil {
+		m.approval.ReleaseClient(clientName)
+		slog.Error("failed to start proxy",
+			"socket", socketPath,
+			"client", clientName,
+			"error", err)
+		return
+	}
 
 	proxyCtx, cancel := context.WithCancel(ctx)
+	inst := &proxyInstance{proxy: p, cancel: cancel, done: make(chan struct{})}
+	m.proxies.add(socketPath, inst)
 
-	// Connect to upstream (backend)
+	slog.Info("started proxy",
+		"socket", socketPath,
+		"client", clientName)
+
+	m.notifyConnected(ClientInfo{Name: clientName, SocketPath: socketPath})
+	go m.serve(proxyCtx, socketPath, inst)
+}
+
+// Runs inst until ctx ends or its socket closes, then gives its client name back.
+func (m *Manager) serve(ctx context.Context, socketPath string, inst *proxyInstance) {
+	defer close(inst.done)
+	p := inst.proxy
+	err := p.Run(ctx)
+	if err != nil && err != context.Canceled {
+		slog.Error("proxy error",
+			"socket", socketPath,
+			"client", p.clientName,
+			"error", err)
+	}
+	p.Close()
+
+	slog.Info("stopped proxy",
+		"socket", socketPath,
+		"client", p.clientName)
+
+	m.notifyDisconnected(ClientInfo{Name: p.clientName, SocketPath: socketPath})
+	m.approval.ReleaseClient(p.clientName)
+	// Last, so that stopProxy still finds the entry, and waits on done, until the name is free.
+	m.proxies.remove(socketPath)
+}
+
+// Connects p to the upstream bus and to the downstream socket.
+func (m *Manager) connect(p *Proxy, socketPath string) error {
 	var backendConn *dbus.Conn
 	var err error
 	if m.upstreamAddr == "" {
@@ -248,100 +320,32 @@ func (m *Manager) startProxy(ctx context.Context, socketPath string) {
 		backendConn, err = dbus.Connect(m.upstreamAddr)
 	}
 	if err != nil {
-		slog.Error("failed to connect to upstream",
-			"upstream", m.upstreamAddr,
-			"error", err)
-		cancel()
-		return
+		return fmt.Errorf("connect to upstream %q: %w", m.upstreamAddr, err)
 	}
-
-	// Connect to downstream socket (front)
 	frontConn, err := dbus.Connect("unix:path=" + socketPath)
 	if err != nil {
 		backendConn.Close()
-		slog.Error("failed to connect to downstream socket",
-			"socket", socketPath,
-			"error", err)
-		cancel()
-		return
+		return fmt.Errorf("connect to downstream socket: %w", err)
 	}
-
-	if err := p.ConnectWith(frontConn, backendConn); err != nil {
-		slog.Error("failed to connect proxy",
-			"socket", socketPath,
-			"client", clientName,
-			"error", err)
-		cancel()
-		return
-	}
-
-	m.mu.Lock()
-	m.proxies[socketPath] = &proxyInstance{
-		proxy:  p,
-		cancel: cancel,
-	}
-	m.mu.Unlock()
-
-	client := ClientInfo{Name: clientName, SocketPath: socketPath}
-
-	slog.Info("started proxy",
-		"socket", socketPath,
-		"client", clientName)
-
-	// Notify observers of new client
-	m.notifyConnected(client)
-
-	// Run the proxy in a goroutine
-	go func() {
-		err := p.Run(proxyCtx)
-		if err != nil && err != context.Canceled {
-			slog.Error("proxy error",
-				"socket", socketPath,
-				"client", clientName,
-				"error", err)
-		}
-		p.Close()
-
-		// Remove from map when done
-		m.mu.Lock()
-		delete(m.proxies, socketPath)
-		m.mu.Unlock()
-
-		slog.Info("stopped proxy",
-			"socket", socketPath,
-			"client", clientName)
-
-		// Notify observers of client disconnect
-		m.notifyDisconnected(client)
-	}()
+	return p.ConnectWith(frontConn, backendConn)
 }
 
-// stopProxy stops the proxy for the given socket.
+// Stops the proxy for socketPath and returns once its client name is free.
 func (m *Manager) stopProxy(socketPath string) {
-	m.mu.Lock()
-	inst, exists := m.proxies[socketPath]
-	if exists {
-		delete(m.proxies, socketPath)
-	}
-	m.mu.Unlock()
-
-	if exists {
+	if inst, exists := m.proxies.get(socketPath); exists {
 		inst.cancel()
-		// Proxy cleanup happens in the goroutine
+		<-inst.done
 	}
 }
 
-// stopAllProxies stops all running proxies.
+// Stops all running proxies and returns once their client names are free.
 func (m *Manager) stopAllProxies() {
-	m.mu.Lock()
-	proxies := make([]*proxyInstance, 0, len(m.proxies))
-	for _, inst := range m.proxies {
-		proxies = append(proxies, inst)
-	}
-	m.proxies = make(map[string]*proxyInstance)
-	m.mu.Unlock()
+	proxies := slices.Collect(maps.Values(m.proxies.snapshot()))
 
 	for _, inst := range proxies {
 		inst.cancel()
+	}
+	for _, inst := range proxies {
+		<-inst.done
 	}
 }

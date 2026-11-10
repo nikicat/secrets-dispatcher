@@ -87,7 +87,6 @@ func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agen
 
 	if _, err := p.approval.RequireApproval(
 		context.TODO(),
-		"ssh-agent",
 		items,
 		"",
 		approval.RequestTypeSSHSign,

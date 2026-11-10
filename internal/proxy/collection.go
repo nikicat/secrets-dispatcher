@@ -19,7 +19,6 @@ type CollectionHandler struct {
 	sessions         *SessionManager
 	logger           *logging.Logger
 	approval         *approval.Manager
-	clientName       string
 	tracker          *clientTracker
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
@@ -27,13 +26,12 @@ type CollectionHandler struct {
 }
 
 // NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *CollectionHandler {
+func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *CollectionHandler {
 	return &CollectionHandler{
 		localConn:        localConn,
 		sessions:         sessions,
 		logger:           logger,
 		approval:         approvalMgr,
-		clientName:       clientName,
 		tracker:          tracker,
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
@@ -112,7 +110,7 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 
 	// Require approval before deleting
 	items := []approval.ItemInfo{collectionInfo}
-	if _, err := c.approval.RequireApproval(ctx, c.clientName, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+	if _, err := c.approval.RequireApproval(ctx, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
 		c.logger.LogMethod(ctx, "Collection.Delete", map[string]any{"collection": string(path)}, "denied", err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -188,11 +186,11 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 
 	// Check if request should be denied by a trust rule
 	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == approval.RuleDeny {
-		c.approval.RecordDenied(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+		c.approval.RecordDenied(infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
 
-	c.approval.RecordPassthrough(c.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+	c.approval.RecordPassthrough(infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
 		Items:         infos,
@@ -238,7 +236,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	// Short-circuit Chrome dummy secret writes
 	items := []approval.ItemInfo{itemInfo}
 	if c.approval.ShouldIgnore(items, approval.RequestTypeWrite) {
-		c.approval.RecordIgnored(c.clientName, items, string(secret.Session), senderInfo)
+		c.approval.RecordIgnored(items, string(secret.Session), senderInfo)
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
 			"collection": string(path), "ignored": true,
 		}, "ignored", nil)
@@ -246,7 +244,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	// Require approval before creating item
-	if _, err := c.approval.RequireApproval(ctx, c.clientName, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+	if _, err := c.approval.RequireApproval(ctx, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
 		if errors.Is(err, approval.ErrIgnored) {
 			c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
 				"collection": string(path), "ignored": true,
@@ -286,7 +284,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	// Cache the new item path so immediate read-back (e.g., gh verification) is auto-approved.
-	c.approval.CacheItemForSender(string(sender), string(item))
+	c.approval.CacheItemForSender(senderInfo, string(item))
 
 	c.logger.LogMethod(context.Background(), "Collection.CreateItem", map[string]any{
 		"collection": string(path),

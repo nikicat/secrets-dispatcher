@@ -161,7 +161,7 @@ func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		items := []approval.ItemInfo{{Path: "/test/item", Label: "Test"}}
-		_, err := approvalMgr.RequireApproval(ctx, "test-client", items, "session", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
+		_, err := approvalMgr.RequireApproval(ctx, items, "session", approval.RequestTypeGetSecret, nil, approval.SenderInfo{})
 		done <- err
 	}()
 

@@ -170,7 +170,8 @@ type Manager struct {
 
 	approvalWindow time.Duration
 	cacheMu        sync.Mutex
-	cache          map[string]time.Time // key = sender + "\x00" + itemPath
+	cache          map[approvalCacheKey]time.Time
+	clients        map[string]bool // names held by running buses
 
 	autoApproveMu       sync.Mutex
 	autoApproveRules    []AutoApproveRule
@@ -208,7 +209,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		observers:           make(map[Observer]struct{}),
 		historyMax:          cfg.HistoryMax,
 		approvalWindow:      cfg.ApprovalWindow,
-		cache:               make(map[string]time.Time),
+		cache:               make(map[approvalCacheKey]time.Time),
 		autoApproveDuration: cfg.AutoApproveDuration,
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
@@ -338,7 +339,7 @@ func (m *Manager) AddHistoryEntry(entry HistoryEntry) {
 // Returns (autoApproved, nil) if approved — autoApproved is true when the request was
 // resolved without showing a notification (cache hit, auto-approve rule, trust rule, or
 // disabled manager). Returns (false, err) on denial, timeout, or cancellation.
-func (m *Manager) RequireApproval(ctx context.Context, client string, items []ItemInfo,
+func (m *Manager) RequireApproval(ctx context.Context, items []ItemInfo,
 	session string, reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) (bool, error) {
 	if m.disabled {
 		return true, nil
@@ -347,7 +348,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 	// Check approval cache: if all items were recently approved for this sender, skip.
 	// Delete and write requests always require explicit approval — never use cached approvals.
 	if reqType != RequestTypeDelete && reqType != RequestTypeWrite && m.approvalWindow > 0 && len(items) > 0 {
-		if m.checkApprovalCache(senderInfo.Sender, items) {
+		if m.checkApprovalCache(senderInfo, items) {
 			return true, nil
 		}
 	}
@@ -361,7 +362,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		now := time.Now()
 		req := &Request{
 			ID:               uuid.New().String(),
-			Client:           client,
+			Client:           senderInfo.Client,
 			Items:            items,
 			Session:          session,
 			CreatedAt:        now,
@@ -382,7 +383,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 		now := time.Now()
 		req := &Request{
 			ID:               uuid.New().String(),
-			Client:           client,
+			Client:           senderInfo.Client,
 			Items:            items,
 			Session:          session,
 			CreatedAt:        now,
@@ -406,7 +407,7 @@ func (m *Manager) RequireApproval(ctx context.Context, client string, items []It
 	now := time.Now()
 	req := &Request{
 		ID:               uuid.New().String(),
-		Client:           client,
+		Client:           senderInfo.Client,
 		Items:            items,
 		Session:          session,
 		CreatedAt:        now,
@@ -584,14 +585,19 @@ func (m *Manager) ApproveGPGSign(id string, res GPGResult) error {
 	return nil
 }
 
-// approvalCacheKey returns the cache key for a (sender, itemPath) pair.
-func approvalCacheKey(sender, itemPath string) string {
-	return sender + "\x00" + itemPath
+// Identifies an item approved for a sender. Each bus numbers its own senders,
+// so the client is part of the key.
+type approvalCacheKey struct {
+	client, sender, itemPath string
+}
+
+func (s SenderInfo) cacheKey(itemPath string) approvalCacheKey {
+	return approvalCacheKey{s.Client, s.Sender, itemPath}
 }
 
 // checkApprovalCache returns true if ALL items have a valid cache entry for the sender.
 // Expired entries encountered during the check are lazily deleted.
-func (m *Manager) checkApprovalCache(sender string, items []ItemInfo) bool {
+func (m *Manager) checkApprovalCache(senderInfo SenderInfo, items []ItemInfo) bool {
 	if m.approvalWindow <= 0 {
 		return false
 	}
@@ -602,7 +608,7 @@ func (m *Manager) checkApprovalCache(sender string, items []ItemInfo) bool {
 	defer m.cacheMu.Unlock()
 
 	for _, item := range items {
-		key := approvalCacheKey(sender, item.Path)
+		key := senderInfo.cacheKey(item.Path)
 		ts, ok := m.cache[key]
 		if !ok || ts.Before(cutoff) {
 			if ok {
@@ -617,7 +623,7 @@ func (m *Manager) checkApprovalCache(sender string, items []ItemInfo) bool {
 // CacheItemForSender records an item approval in the cache for a specific sender.
 // This allows auto-approving a subsequent read of an item that was just written
 // (e.g., gh verifies keyring storage by reading back a secret right after CreateItem).
-func (m *Manager) CacheItemForSender(sender, itemPath string) {
+func (m *Manager) CacheItemForSender(senderInfo SenderInfo, itemPath string) {
 	if m.approvalWindow <= 0 || m.disabled {
 		return
 	}
@@ -625,8 +631,36 @@ func (m *Manager) CacheItemForSender(sender, itemPath string) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 
-	key := approvalCacheKey(sender, itemPath)
+	key := senderInfo.cacheKey(itemPath)
 	m.cache[key] = time.Now()
+}
+
+// Takes name for a bus and reports whether no other bus held it. One name never
+// stands for two buses while approvals for it can be cached.
+func (m *Manager) ClaimClient(name string) bool {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	if m.clients[name] {
+		return false
+	}
+	if m.clients == nil {
+		m.clients = map[string]bool{}
+	}
+	m.clients[name] = true
+	return true
+}
+
+// Gives name back once its bus has stopped, and forgets the approvals cached
+// for it, since the next bus to claim the name numbers its senders afresh.
+func (m *Manager) ReleaseClient(name string) {
+	m.cacheMu.Lock()
+	defer m.cacheMu.Unlock()
+	delete(m.clients, name)
+	for key := range m.cache {
+		if key.client == name {
+			delete(m.cache, key)
+		}
+	}
 }
 
 // AutoApproveDuration returns the configured auto-approve rule duration.
@@ -949,6 +983,10 @@ func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, re
 		}
 	}
 
+	if ok, _ := path.Match(rule.clientGlob(), senderInfo.Client); !ok {
+		return false
+	}
+
 	// Check process matcher
 	if rule.Process != nil {
 		if !matchProcess(rule.Process, senderInfo) {
@@ -974,9 +1012,15 @@ func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, re
 	return true
 }
 
-// matchProcess checks if the sender matches the process matcher.
-// At least one non-empty field must be set, and all non-empty fields must match.
+// Reports whether every non-empty field of pm matches the sender's process. An
+// empty matcher matches any sender that has a local process.
 func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
+	// Fail closed when nothing here describes the sender's process, even for
+	// an empty matcher or a unit glob that matches "".
+	if !senderInfo.hasLocalProcess() {
+		return false
+	}
+
 	if pm.Exe != "" {
 		matched := false
 		for _, proc := range senderInfo.ProcessChain {
@@ -1129,12 +1173,12 @@ func (m *Manager) ShouldIgnore(items []ItemInfo, reqType RequestType) bool {
 
 // RecordPassthrough creates a history entry for a request that bypasses approval entirely.
 // Used for methods like SearchItems and Unlock that are proxied directly to the upstream.
-func (m *Manager) RecordPassthrough(client string, items []ItemInfo, session string,
+func (m *Manager) RecordPassthrough(items []ItemInfo, session string,
 	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
 	now := time.Now()
 	req := &Request{
 		ID:               uuid.New().String(),
-		Client:           client,
+		Client:           senderInfo.Client,
 		Items:            items,
 		Session:          session,
 		CreatedAt:        now,
@@ -1147,11 +1191,11 @@ func (m *Manager) RecordPassthrough(client string, items []ItemInfo, session str
 }
 
 // RecordIgnored creates a history entry for an ignored request without blocking.
-func (m *Manager) RecordIgnored(client string, items []ItemInfo, session string, senderInfo SenderInfo) {
+func (m *Manager) RecordIgnored(items []ItemInfo, session string, senderInfo SenderInfo) {
 	now := time.Now()
 	req := &Request{
 		ID:         uuid.New().String(),
-		Client:     client,
+		Client:     senderInfo.Client,
 		Items:      items,
 		Session:    session,
 		CreatedAt:  now,
@@ -1163,12 +1207,12 @@ func (m *Manager) RecordIgnored(client string, items []ItemInfo, session string,
 }
 
 // RecordDenied creates a history entry for a request denied by a trust rule.
-func (m *Manager) RecordDenied(client string, items []ItemInfo, session string,
+func (m *Manager) RecordDenied(items []ItemInfo, session string,
 	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
 	now := time.Now()
 	req := &Request{
 		ID:               uuid.New().String(),
-		Client:           client,
+		Client:           senderInfo.Client,
 		Items:            items,
 		Session:          session,
 		CreatedAt:        now,
@@ -1191,7 +1235,7 @@ func (m *Manager) cacheApproval(req *Request) {
 	defer m.cacheMu.Unlock()
 
 	for _, item := range req.Items {
-		key := approvalCacheKey(req.SenderInfo.Sender, item.Path)
+		key := req.SenderInfo.cacheKey(item.Path)
 		m.cache[key] = now
 	}
 }

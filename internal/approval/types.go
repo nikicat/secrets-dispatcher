@@ -1,7 +1,42 @@
 // Package approval manages pending secret access requests requiring user approval.
 package approval
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"slices"
+	"strings"
+)
+
+// Client names the dispatcher gives its own clients. No forwarded bus may take one.
+const (
+	// The session bus.
+	ClientLocal = "local"
+	// The SSH agent socket.
+	ClientSSHAgent = "ssh-agent"
+	// A client that was given no name.
+	ClientUnknown = "unknown"
+)
+
+// Returns the client name of the bus forwarded through socketPath, the file's
+// name without ".sock". Errors when that name is empty or one the dispatcher
+// reserves.
+func ClientFromSocket(socketPath string) (string, error) {
+	name := strings.TrimSuffix(filepath.Base(socketPath), ".sock")
+	if name == "" {
+		return "", fmt.Errorf("socket %s has no client name", socketPath)
+	}
+	if slices.Contains([]string{ClientLocal, ClientSSHAgent, ClientUnknown}, name) {
+		return "", fmt.Errorf("socket %s takes the reserved client name %q", socketPath, name)
+	}
+	return name, nil
+}
+
+// Reports whether anything on this machine describes the sender's process. A
+// sender on a forwarded bus has neither a process chain nor a unit.
+func (s SenderInfo) hasLocalProcess() bool {
+	return len(s.ProcessChain) > 0 || s.SystemdUnit != ""
+}
 
 // ProcessInfo represents a single process in the process chain.
 type ProcessInfo struct {
@@ -14,12 +49,28 @@ type ProcessInfo struct {
 
 // TrustRule defines a persistent declarative rule from config for auto-approving, ignoring, or denying requests.
 type TrustRule struct {
-	Name             string            `json:"name,omitempty"`
-	Action           RuleAction        `json:"action,omitempty"`
-	RequestTypes     []RequestType     `json:"request_types,omitempty"`
+	Name         string        `json:"name,omitempty"`
+	Action       RuleAction    `json:"action,omitempty"`
+	RequestTypes []RequestType `json:"request_types,omitempty"`
+	// A glob matched against the client the request came through. The session bus
+	// is ClientLocal, and ClientFromSocket names a forwarded bus. When empty, a
+	// deny rule matches every client and any other rule only the session bus.
+	Client           string            `json:"client,omitempty"`
 	Process          *ProcessMatcher   `json:"process,omitempty"`
 	Secret           *SecretMatcher    `json:"secret,omitempty"`
 	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
+}
+
+// Returns the glob a request's client must match.
+func (r *TrustRule) clientGlob() string {
+	switch {
+	case r.Client != "":
+		return r.Client
+	case r.Action == RuleDeny:
+		return "*"
+	default:
+		return ClientLocal
+	}
 }
 
 // RuleAction is what a matching trust rule does with a request.
@@ -72,6 +123,7 @@ type SecretMatcher struct {
 // SenderInfo contains information about the D-Bus sender process.
 type SenderInfo struct {
 	Sender       string        `json:"sender"`                  // D-Bus unique name (":1.123")
+	Client       string        `json:"-"`                       // The client the request came through, matched by TrustRule.Client
 	PID          uint32        `json:"pid"`                     // Process ID
 	UID          uint32        `json:"uid"`                     // User ID
 	UserName     string        `json:"user_name"`               // Username (may be empty if lookup fails)

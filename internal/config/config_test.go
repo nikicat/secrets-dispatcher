@@ -477,6 +477,22 @@ func TestValidate(t *testing.T) {
 			wantErr: "cannot both be session_bus",
 		},
 		{
+			name: "socket downstream named like the session bus",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "socket", Path: "/run/local.sock"}},
+			}},
+			wantErr: `reserved client name "local"`,
+		},
+		{
+			name: "two socket downstreams with one client name",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   BusConfig{Type: "session_bus"},
+				Downstream: []BusConfig{{Type: "socket", Path: "/a/vm.sock"}, {Type: "socket", Path: "/b/vm.sock"}},
+			}},
+			wantErr: `already has the client name "vm"`,
+		},
+		{
 			name: "duplicate session_bus downstream",
 			cfg: Config{Serve: ServeConfig{
 				Upstream:   BusConfig{Type: "socket", Path: "/up.sock"},

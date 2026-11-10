@@ -73,6 +73,7 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	defer clientConn.Close()
 
 	senderInfo := s.extractSenderInfo(clientConn)
+	senderInfo.Client = approval.ClientSSHAgent
 
 	// Resolve SSH destination from the connecting process
 	destination := procutil.ResolveSSHDestination(int32(senderInfo.PID))

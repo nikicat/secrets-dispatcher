@@ -347,6 +347,7 @@ func runServe(args []string) {
 			Name:             r.Name,
 			Action:           r.Action,
 			RequestTypes:     r.RequestTypes,
+			Client:           r.Client,
 			SearchAttributes: r.SearchAttributes,
 		}
 		if r.Process != nil {
@@ -439,10 +440,11 @@ func runServe(args []string) {
 
 	var runners []downstreamRunner
 
+	// Each bus holds its client name while it runs.
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
 		case config.BusSockets:
-			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
+			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, slowUpstreamNotifier, upstreamSlowThreshold)
 			if mgrErr != nil {
 				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
 				os.Exit(1)
@@ -453,7 +455,11 @@ func runServe(args []string) {
 			})
 
 		case config.BusSessionBus:
-			sp := &staticProvider{info: proxy.ClientInfo{Name: "local", SocketPath: "session_bus"}}
+			if !approvalMgr.ClaimClient(approval.ClientLocal) {
+				fmt.Fprintf(os.Stderr, "error: client %q claimed twice (should be caught by validation)\n", approval.ClientLocal)
+				os.Exit(1)
+			}
+			sp := &staticProvider{info: proxy.ClientInfo{Name: approval.ClientLocal, SocketPath: "session_bus"}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
 				if upstreamAddr == "" {
@@ -463,7 +469,8 @@ func runServe(args []string) {
 				backoff := time.Second
 				for {
 					p := proxy.New(proxy.Config{
-						ClientName:            "local",
+						ClientName:            approval.ClientLocal,
+						LocalProcesses:        true,
 						LogLevel:              level,
 						Approval:              approvalMgr,
 						TrimProcessChain:      *cfg.Serve.TrimProcessChain,
@@ -500,12 +507,19 @@ func runServe(args []string) {
 			})
 
 		case config.BusSocket:
-			clientName := filepath.Base(ds.Path)
+			clientName, err := approval.ClientFromSocket(ds.Path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+			if !approvalMgr.ClaimClient(clientName) {
+				fmt.Fprintf(os.Stderr, "error: client %q claimed twice (should be caught by validation)\n", clientName)
+				os.Exit(1)
+			}
 			p := proxy.New(proxy.Config{
 				ClientName:            clientName,
 				LogLevel:              level,
 				Approval:              approvalMgr,
-				TrimProcessChain:      *cfg.Serve.TrimProcessChain,
 				UpstreamNotifier:      slowUpstreamNotifier,
 				UpstreamSlowThreshold: upstreamSlowThreshold,
 			})

@@ -17,7 +17,6 @@ type Service struct {
 	sessions         *SessionManager
 	logger           *logging.Logger
 	approval         *approval.Manager
-	clientName       string
 	tracker          *clientTracker
 	resolver         *SenderInfoResolver
 	upstreamNotifier UpstreamNotifier
@@ -25,13 +24,12 @@ type Service struct {
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, clientName string, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *Service {
 	return &Service{
 		localConn:        localConn,
 		sessions:         sessions,
 		logger:           logger,
 		approval:         approvalMgr,
-		clientName:       clientName,
 		tracker:          tracker,
 		resolver:         resolver,
 		upstreamNotifier: upstreamNotifier,
@@ -94,11 +92,11 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 
 	// Check if request should be denied by a trust rule
 	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == approval.RuleDeny {
-		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+		s.approval.RecordDenied(infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 		return nil, nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
 
-	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+	s.approval.RecordPassthrough(infos, "", approval.RequestTypeSearch, attributes, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
 		Items:         infos,
@@ -141,7 +139,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 
 	// Require approval before accessing secrets
 	itemStrs := objectPathsToStrings(items)
-	_, err := s.approval.RequireApproval(ctx, s.clientName, itemInfos, string(session), approval.RequestTypeGetSecret, nil, senderInfo)
+	_, err := s.approval.RequireApproval(ctx, itemInfos, string(session), approval.RequestTypeGetSecret, nil, senderInfo)
 	if err != nil {
 		s.logger.LogGetSecrets(ctx, itemStrs, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
@@ -200,11 +198,11 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 
 	// Check if request should be denied by a trust rule
 	if rule := s.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeUnlock, nil); rule != nil && rule.Action == approval.RuleDeny {
-		s.approval.RecordDenied(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
+		s.approval.RecordDenied(infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 		return nil, "/", dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
 
-	s.approval.RecordPassthrough(s.clientName, infos, "", approval.RequestTypeUnlock, nil, senderInfo)
+	s.approval.RecordPassthrough(infos, "", approval.RequestTypeUnlock, nil, senderInfo)
 	call := s.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeUnlock,
 		Items:         infos,

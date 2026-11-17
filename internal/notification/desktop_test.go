@@ -1,19 +1,17 @@
 package notification
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -940,55 +938,21 @@ func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
 	}
 }
 
-// startTestDBus launches a private dbus-daemon for integration tests.
-// Returns the bus address. Skips if dbus-daemon is not available.
-func startTestDBus(t *testing.T) string {
+// Points DBUS_SESSION_BUS_ADDRESS at a private bus for the test.
+// Skips the test when dbus-daemon is not installed.
+func useTestSessionBus(t *testing.T) {
 	t.Helper()
-
-	path, err := exec.LookPath("dbus-daemon")
-	if err != nil {
+	if _, err := exec.LookPath("dbus-daemon"); err != nil {
 		t.Skipf("dbus-daemon not found: %v", err)
 	}
-
-	cmd := exec.Command(path, "--session", "--print-address=1", "--nofork")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatalf("pipe stdout: %v", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dbus-daemon: %v", err)
-	}
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-	})
-
-	scanner := bufio.NewScanner(stdout)
-	if !scanner.Scan() {
-		t.Fatal("dbus-daemon produced no output")
-	}
-	addr := strings.TrimSpace(scanner.Text())
-	if addr == "" {
-		t.Fatal("dbus-daemon returned empty address")
-	}
-	return addr
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", testutil.StartDBusDaemon(t))
 }
 
 // newTestDBusNotifier creates a DBusNotifier connected to a private test bus.
 func newTestDBusNotifier(t *testing.T) *DBusNotifier {
 	t.Helper()
 
-	addr := startTestDBus(t)
-	prev := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
-	os.Setenv("DBUS_SESSION_BUS_ADDRESS", addr)
-	t.Cleanup(func() {
-		if prev != "" {
-			os.Setenv("DBUS_SESSION_BUS_ADDRESS", prev)
-		} else {
-			os.Unsetenv("DBUS_SESSION_BUS_ADDRESS")
-		}
-	})
+	useTestSessionBus(t)
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {

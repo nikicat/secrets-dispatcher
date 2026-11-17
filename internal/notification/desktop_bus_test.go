@@ -1,7 +1,6 @@
 package notification
 
 import (
-	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -9,8 +8,6 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 // notifyArgs records one org.freedesktop.Notifications.Notify call as the
@@ -62,15 +59,10 @@ func (s *stubNotificationServer) last(t *testing.T) notifyArgs {
 	return s.calls[len(s.calls)-1]
 }
 
-// newNotificationBus starts a private dbus-daemon with the stub server on it
-// and points DBUS_SESSION_BUS_ADDRESS at it.
+// Returns a stub notification server on a private session bus.
 func newNotificationBus(t *testing.T) *stubNotificationServer {
 	t.Helper()
-	if _, err := exec.LookPath("dbus-daemon"); err != nil {
-		t.Skip("dbus-daemon not available")
-	}
-
-	t.Setenv("DBUS_SESSION_BUS_ADDRESS", testutil.StartDBusDaemon(t))
+	useTestSessionBus(t)
 
 	conn, err := dbus.ConnectSessionBus()
 	require.NoError(t, err)

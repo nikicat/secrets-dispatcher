@@ -3,9 +3,6 @@ package main
 import (
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -21,51 +18,17 @@ import (
 // testEnv holds the test environment with two isolated D-Bus daemons.
 type testEnv struct {
 	t          *testing.T
-	tmpDir     string
 	localAddr  string
 	remoteAddr string
-	localCmd   *exec.Cmd
-	remoteCmd  *exec.Cmd
+	killRemote func()
 }
 
 // newTestEnv creates a new test environment with isolated D-Bus daemons.
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-
-	tmpDir, err := os.MkdirTemp("", "secrets-dispatcher-test-*")
-	if err != nil {
-		t.Fatalf("create temp dir: %v", err)
-	}
-
-	env := &testEnv{
-		t:      t,
-		tmpDir: tmpDir,
-	}
-
-	// Start local D-Bus daemon
-	localSocket := filepath.Join(tmpDir, "local.sock")
-	env.localCmd, env.localAddr = startDBusDaemon(t, localSocket)
-
-	// Start remote D-Bus daemon
-	remoteSocket := filepath.Join(tmpDir, "remote.sock")
-	env.remoteCmd, env.remoteAddr = startDBusDaemon(t, remoteSocket)
-
+	env := &testEnv{t: t, localAddr: testutil.StartDBusDaemon(t)}
+	env.remoteAddr, env.killRemote = testutil.StartKillableDBusDaemon(t)
 	return env
-}
-
-// cleanup stops the D-Bus daemons and removes temp files.
-func (e *testEnv) cleanup() {
-	if e.localCmd != nil && e.localCmd.Process != nil {
-		e.localCmd.Process.Kill()
-		e.localCmd.Wait()
-	}
-	if e.remoteCmd != nil && e.remoteCmd.Process != nil {
-		e.remoteCmd.Process.Kill()
-		e.remoteCmd.Wait()
-	}
-	if e.tmpDir != "" {
-		os.RemoveAll(e.tmpDir)
-	}
 }
 
 // localConn connects to the local D-Bus.
@@ -86,45 +49,8 @@ func (e *testEnv) remoteConn() *dbus.Conn {
 	return conn
 }
 
-// remoteSocketPath returns the path to the remote socket file.
-func (e *testEnv) remoteSocketPath() string {
-	return filepath.Join(e.tmpDir, "remote.sock")
-}
-
-// startDBusDaemon starts a dbus-daemon on the given socket path.
-func startDBusDaemon(t *testing.T, socketPath string) (*exec.Cmd, string) {
-	t.Helper()
-
-	addr := "unix:path=" + socketPath
-
-	cmd := exec.Command("dbus-daemon",
-		"--session",
-		"--nofork",
-		"--address="+addr,
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dbus-daemon: %v", err)
-	}
-
-	// Wait for socket to be created
-	for range 50 {
-		if _, err := os.Stat(socketPath); err == nil {
-			return cmd, addr
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	cmd.Process.Kill()
-	t.Fatalf("dbus-daemon socket not created: %s", socketPath)
-	return nil, ""
-}
-
 func TestProxyBasicOperations(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	// Connect to local D-Bus and register mock service
 	localConn := env.localConn()
@@ -144,7 +70,7 @@ func TestProxyBasicOperations(t *testing.T) {
 		LogLevel:   slog.LevelDebug,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -281,7 +207,6 @@ func TestProxyBasicOperations(t *testing.T) {
 
 func TestProxyItemOperations(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -298,7 +223,7 @@ func TestProxyItemOperations(t *testing.T) {
 		LogLevel:   slog.LevelDebug,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -361,7 +286,6 @@ func TestProxyItemOperations(t *testing.T) {
 
 func TestProxyCollectionOperations(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -376,7 +300,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 		LogLevel:   slog.LevelDebug,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -469,7 +393,6 @@ func TestProxyCollectionOperations(t *testing.T) {
 // which is how libsecret (secret-tool) accesses collections.
 func TestProxyAliasPathOperations(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -486,7 +409,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 		LogLevel:   slog.LevelDebug,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -582,13 +505,13 @@ func TestProxyAliasPathOperations(t *testing.T) {
 }
 
 // connectProxyWithConns connects the proxy using isolated D-Bus connections.
-func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteSocketPath string) error {
+func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteAddr string) error {
 	backendConn, err := dbus.Connect(localAddr)
 	if err != nil {
 		return fmt.Errorf("connect to backend dbus: %w", err)
 	}
 
-	frontConn, err := dbus.Connect("unix:path=" + remoteSocketPath)
+	frontConn, err := dbus.Connect(remoteAddr)
 	if err != nil {
 		backendConn.Close()
 		return fmt.Errorf("connect to front socket: %w", err)
@@ -601,7 +524,6 @@ func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteSocketPath string) e
 // while waiting for approval, the pending request is automatically removed.
 func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -623,7 +545,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -702,7 +624,6 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 // TestProxyItemDeleteRequiresApproval tests that Item.Delete is gated by approval.
 func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -722,7 +643,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -778,7 +699,6 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 // TestProxyItemDeleteDenied tests that denying Item.Delete returns an access denied error.
 func TestProxyItemDeleteDenied(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -798,7 +718,7 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -849,7 +769,6 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 // TestProxyCollectionDeleteRequiresApproval tests that Collection.Delete is gated by approval.
 func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -867,7 +786,7 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -932,7 +851,6 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 // auto-approve a subsequent Delete for the same item (cache bypass).
 func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -953,7 +871,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1040,7 +958,6 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 // TestProxySetSecretRequiresApproval tests that Item.SetSecret is gated by approval.
 func TestProxySetSecretRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1060,7 +977,7 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1127,7 +1044,6 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 // TestProxyCreateItemRequiresApproval tests that Collection.CreateItem is gated by approval.
 func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1145,7 +1061,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1220,7 +1136,6 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 // secret schema is silently ignored (not forwarded to backend, no pending request).
 func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1244,7 +1159,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1318,7 +1233,6 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 // it does not implement (anything other than "plain" or the DH algorithm).
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1333,7 +1247,7 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 		LogLevel:   slog.LevelDebug,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1390,7 +1304,6 @@ func openDHSession(t *testing.T, serviceObj dbus.BusObject) (*dhcrypto.Session, 
 // the proxy before reaching the (plain) upstream backend.
 func TestProxyDHSession(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1405,7 +1318,7 @@ func TestProxyDHSession(t *testing.T) {
 		ClientName: "test-client",
 		LogLevel:   slog.LevelDebug,
 	})
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1550,7 +1463,6 @@ func TestProxyDHSession(t *testing.T) {
 // D-Bus daemon is killed (simulating SSH tunnel disconnect).
 func TestProxyDetectsSocketDisconnect(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1567,7 +1479,7 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 		LogLevel:   slog.LevelDebug,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1581,13 +1493,8 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 	// Verify proxy is running (give it a moment to start)
 	time.Sleep(100 * time.Millisecond)
 
-	// Kill the remote D-Bus daemon to simulate disconnect
-	if env.remoteCmd != nil && env.remoteCmd.Process != nil {
-		t.Log("Killing remote D-Bus daemon to simulate disconnect")
-		env.remoteCmd.Process.Kill()
-		env.remoteCmd.Wait()
-		env.remoteCmd = nil // Prevent double-kill in cleanup
-	}
+	t.Log("Killing remote D-Bus daemon to simulate disconnect")
+	env.killRemote()
 
 	// Proxy should detect the disconnect and return an error
 	select {
@@ -1604,7 +1511,6 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 
 func TestSearchItemsDenyRule(t *testing.T) {
 	env := newTestEnv(t)
-	defer env.cleanup()
 
 	localConn := env.localConn()
 	defer localConn.Close()
@@ -1633,7 +1539,7 @@ func TestSearchItemsDenyRule(t *testing.T) {
 		Approval:   approvalMgr,
 	})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteSocketPath()); err != nil {
+	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()

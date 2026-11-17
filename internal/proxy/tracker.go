@@ -154,11 +154,7 @@ func (t *clientTracker) contextForSender(parent context.Context, sender senderNa
 	// 2. NameOwnerChanged signal is processed before we added sender to clients map
 	// 3. We miss the disconnect signal because sender wasn't tracked yet
 	// By checking now, we detect this case and cancel this request immediately.
-	var owner string
-	err := t.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus").
-		Call("org.freedesktop.DBus.GetNameOwner", 0, string(sender)).
-		Store(&owner)
-	if err != nil {
+	if _, err := nameOwner(t.conn, string(sender)); err != nil {
 		// Client already disconnected - cancel this request immediately.
 		release()
 	}

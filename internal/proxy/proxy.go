@@ -3,6 +3,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -89,105 +90,103 @@ func New(cfg Config) *Proxy {
 	}
 }
 
-// ConnectWith sets up the proxy using pre-created D-Bus connections.
-// frontConn is where clients connect; backendConn is where the real Secret Service lives.
-func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
+// Serves the Secret Service from backendConn to clients on frontConn.
+// On a forwarded bus it may return while the bus name is still queued (ADR 0001).
+// When it errors, it closes the proxy and both connections.
+func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) (err error) {
+	defer func() {
+		if err != nil {
+			p.Close()
+		}
+	}()
 	p.frontConn = frontConn
 	p.backendConn = backendConn
 
-	// Create client tracker to detect disconnects
-	var err error
 	p.tracker, err = newClientTracker(p.frontConn)
 	if err != nil {
-		p.Close()
 		return fmt.Errorf("create client tracker: %w", err)
 	}
 
-	// Create sender info resolver
 	p.resolver = newSenderInfoResolver(p.frontConn, p.clientName, p.local)
 
-	// Create handlers — they talk to the backend
 	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
 	p.prompt = NewPromptHandler(p.backendConn, p.logger)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 
-	// Export interfaces on the front connection (where clients call us)
 	if err := p.frontConn.Export(p.service, dbustypes.ServicePath, dbustypes.ServiceInterface); err != nil {
-		p.Close()
 		return fmt.Errorf("export Service interface: %w", err)
 	}
 
 	if err := p.frontConn.Export(p.service, dbustypes.ServicePath, "org.freedesktop.DBus.Properties"); err != nil {
-		p.Close()
 		return fmt.Errorf("export Properties interface for Service: %w", err)
 	}
 
 	if err := p.frontConn.Export(introspectable{p.service.Introspect}, dbustypes.ServicePath, "org.freedesktop.DBus.Introspectable"); err != nil {
-		p.Close()
 		return fmt.Errorf("export Introspectable interface: %w", err)
 	}
 
-	// Export subtree handlers for both /collection and /aliases prefixes.
-	// libsecret (secret-tool) calls methods on alias paths like
+	// libsecret (secret-tool) calls methods on alias paths such as
 	// /org/freedesktop/secrets/aliases/default directly.
 	for _, prefix := range []string{"/org/freedesktop/secrets/collection", "/org/freedesktop/secrets/aliases"} {
 		if err := p.frontConn.ExportSubtree(p.collection, dbus.ObjectPath(prefix), dbustypes.CollectionInterface); err != nil {
-			p.Close()
 			return fmt.Errorf("export Collection subtree at %s: %w", prefix, err)
 		}
 
 		if err := p.frontConn.ExportSubtree(p.subtreeProperties, dbus.ObjectPath(prefix), "org.freedesktop.DBus.Properties"); err != nil {
-			p.Close()
 			return fmt.Errorf("export Properties subtree at %s: %w", prefix, err)
 		}
 
 		if err := p.frontConn.ExportSubtree(p.item, dbus.ObjectPath(prefix), dbustypes.ItemInterface); err != nil {
-			p.Close()
 			return fmt.Errorf("export Item subtree at %s: %w", prefix, err)
 		}
 	}
 
-	// Export the prompt handler so clients can act on prompt paths returned by
-	// Unlock/Lock/CreateCollection/CreateItem/Delete. Without this, a locked
-	// collection is a dead end: the client gets a prompt path from us but the
-	// object "does not implement org.freedesktop.Secret.Prompt".
+	// Unlock, Lock, CreateCollection, CreateItem and Delete return prompt paths.
+	// Without this export a client cannot act on them, and a locked collection
+	// is a dead end.
 	if err := p.frontConn.ExportSubtree(p.prompt, "/org/freedesktop/secrets/prompt", dbustypes.PromptInterface); err != nil {
-		p.Close()
 		return fmt.Errorf("export Prompt subtree: %w", err)
 	}
 
-	// Request the bus name on the front connection
-	reply, err := p.frontConn.RequestName(dbustypes.BusName, dbus.NameFlagReplaceExisting)
-	if err != nil {
-		p.Close()
-		return fmt.Errorf("request bus name: %w", err)
-	}
-	if reply != dbus.RequestNameReplyPrimaryOwner {
-		p.Close()
-		return fmt.Errorf("failed to become primary owner of %s (reply=%d)", dbustypes.BusName, reply)
+	if err := p.claimBusName(); err != nil {
+		return err
 	}
 
-	// Forward signals from backend to frontend so clients see live updates
 	p.signals, err = newSignalForwarder(p.backendConn, p.frontConn, p.logger)
 	if err != nil {
-		p.Close()
 		return fmt.Errorf("start signal forwarder: %w", err)
 	}
 
-	// Bridge the backend keyring's unlock prompter to the session prompter
-	// (gnome-shell), so a locked-collection unlock renders a real dialog
-	// instead of hanging on the display-less fallback. No-op when the
-	// topology doesn't need it (returns nil, nil).
 	p.prompter, err = newPrompterBridge(p.frontConn, p.backendConn, p.logger)
 	if err != nil {
-		p.Close()
 		return fmt.Errorf("start prompter bridge: %w", err)
 	}
 
 	return nil
 }
+
+// Claims org.freedesktop.secrets on the front bus, or queues for it on a forwarded bus (ADR 0001).
+// Errors with errBusNameTaken when another connection holds it on the session bus.
+func (p *Proxy) claimBusName() error {
+	reply, err := p.frontConn.RequestName(dbustypes.BusName, dbus.NameFlagReplaceExisting)
+	if err != nil {
+		return fmt.Errorf("request bus name: %w", err)
+	}
+	switch reply {
+	case dbus.RequestNameReplyPrimaryOwner, dbus.RequestNameReplyAlreadyOwner:
+		return nil
+	case dbus.RequestNameReplyInQueue:
+		if p.local == nil {
+			p.logger.Warn("bus name taken, queued until its owner leaves", "name", dbustypes.BusName)
+			return nil
+		}
+	}
+	return fmt.Errorf("%w of %s (reply=%d)", errBusNameTaken, dbustypes.BusName, reply)
+}
+
+var errBusNameTaken = errors.New("failed to become primary owner")
 
 // Run blocks until the context is cancelled or the front connection is closed.
 func (p *Proxy) Run(ctx context.Context) error {

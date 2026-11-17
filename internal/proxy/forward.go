@@ -76,3 +76,10 @@ func nameHasOwner(conn *dbus.Conn, name string) bool {
 	}
 	return has
 }
+
+// Errors when name has no owner on conn.
+func nameOwner(conn *dbus.Conn, name string) (senderName, error) {
+	var owner string
+	err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, name).Store(&owner)
+	return senderName(owner), err
+}

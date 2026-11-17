@@ -3,44 +3,14 @@ package proxy
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
-
-// startTestDBusDaemon starts a dbus-daemon on the given socket path.
-func startTestDBusDaemon(t *testing.T, socketPath string) (*exec.Cmd, string) {
-	t.Helper()
-
-	addr := "unix:path=" + socketPath
-
-	cmd := exec.Command("dbus-daemon",
-		"--session",
-		"--nofork",
-		"--address="+addr,
-	)
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dbus-daemon: %v", err)
-	}
-
-	// Wait for socket to be created
-	for range 50 {
-		if _, err := os.Stat(socketPath); err == nil {
-			return cmd, addr
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	cmd.Process.Kill()
-	t.Fatalf("dbus-daemon socket not created: %s", socketPath)
-	return nil, ""
-}
 
 // TestTrackerContextForDisconnectedClient verifies that when contextForSender
 // is called for a client that has already disconnected, the returned context
@@ -53,15 +23,7 @@ func startTestDBusDaemon(t *testing.T, socketPath string) (*exec.Cmd, string) {
 // 4. Handler runs and calls contextForSender
 // 5. Without the fix, the context would never be cancelled
 func TestTrackerContextForDisconnectedClient(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	cmd, addr := startTestDBusDaemon(t, socketPath)
-	defer func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	}()
+	addr := testutil.StartDBusDaemon(t)
 
 	// Connect the main connection for the tracker
 	trackerConn, err := dbus.Connect(addr)
@@ -82,7 +44,7 @@ func TestTrackerContextForDisconnectedClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect client: %v", err)
 	}
-	clientUniqueName := senderName(clientConn.Names()[0]) // unique name like ":1.123"
+	clientUniqueName := uniqueName(clientConn)
 	t.Logf("Client unique name: %s", clientUniqueName)
 
 	// Disconnect the client
@@ -111,15 +73,7 @@ func TestTrackerContextForDisconnectedClient(t *testing.T) {
 // has already disconnected before contextForSender is called, the approval
 // request is immediately cancelled and removed from pending.
 func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	cmd, addr := startTestDBusDaemon(t, socketPath)
-	defer func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	}()
+	addr := testutil.StartDBusDaemon(t)
 
 	// Connect the main connection for the tracker
 	trackerConn, err := dbus.Connect(addr)
@@ -143,7 +97,7 @@ func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect client: %v", err)
 	}
-	clientUniqueName := senderName(clientConn.Names()[0])
+	clientUniqueName := uniqueName(clientConn)
 	t.Logf("Client unique name: %s", clientUniqueName)
 
 	// Disconnect the client BEFORE we start tracking
@@ -188,15 +142,7 @@ func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 // TestTrackerContextCancelledOnDisconnect verifies the normal case where
 // a client disconnects while being tracked, and the context is cancelled.
 func TestTrackerContextCancelledOnDisconnect(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	cmd, addr := startTestDBusDaemon(t, socketPath)
-	defer func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	}()
+	addr := testutil.StartDBusDaemon(t)
 
 	// Connect the main connection for the tracker
 	trackerConn, err := dbus.Connect(addr)
@@ -217,7 +163,7 @@ func TestTrackerContextCancelledOnDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect client: %v", err)
 	}
-	clientUniqueName := senderName(clientConn.Names()[0])
+	clientUniqueName := uniqueName(clientConn)
 	t.Logf("Client unique name: %s", clientUniqueName)
 
 	// Create context for the client WHILE it's still connected
@@ -275,15 +221,7 @@ func requireCancelled(t *testing.T, ctx context.Context, d time.Duration, msg st
 // concurrent request cancelled the first (its approval notification vanished),
 // and one request's cleanup cancelled the other.
 func TestTrackerConcurrentRequestsFromSameSender(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	cmd, addr := startTestDBusDaemon(t, socketPath)
-	defer func() {
-		if cmd.Process != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-		}
-	}()
+	addr := testutil.StartDBusDaemon(t)
 
 	// Connect the main connection for the tracker
 	trackerConn, err := dbus.Connect(addr)
@@ -304,7 +242,7 @@ func TestTrackerConcurrentRequestsFromSameSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect client: %v", err)
 	}
-	clientUniqueName := senderName(clientConn.Names()[0])
+	clientUniqueName := uniqueName(clientConn)
 	t.Logf("Client unique name: %s", clientUniqueName)
 
 	// Two overlapping requests from the SAME still-connected sender.

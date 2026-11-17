@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"log/slog"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -51,19 +49,7 @@ type promptTestEnv struct {
 
 func newPromptTestEnv(t *testing.T) *promptTestEnv {
 	t.Helper()
-	tmpDir := t.TempDir()
-
-	backendCmd, backendAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "backend.sock"))
-	t.Cleanup(func() {
-		backendCmd.Process.Kill()
-		backendCmd.Wait()
-	})
-
-	frontCmd, frontAddr := startTestDBusDaemon(t, filepath.Join(tmpDir, "front.sock"))
-	t.Cleanup(func() {
-		frontCmd.Process.Kill()
-		frontCmd.Wait()
-	})
+	frontAddr, backendAddr := testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t)
 
 	mockConn, err := dbus.Connect(backendAddr)
 	require.NoError(t, err, "connect mock to backend bus")
@@ -72,14 +58,7 @@ func newPromptTestEnv(t *testing.T) *promptTestEnv {
 	mock := testutil.NewMockSecretService()
 	require.NoError(t, mock.Register(mockConn), "register mock service")
 
-	proxyBackendConn, err := dbus.Connect(backendAddr)
-	require.NoError(t, err, "connect proxy to backend bus")
-	proxyFrontConn, err := dbus.Connect(frontAddr)
-	require.NoError(t, err, "connect proxy to front bus")
-
-	p := New(Config{ClientName: "prompt-test", LogLevel: slog.LevelDebug})
-	require.NoError(t, p.ConnectWith(proxyFrontConn, proxyBackendConn), "connect proxy")
-	t.Cleanup(func() { p.Close() })
+	startTestProxy(t, frontAddr, backendAddr)
 
 	client, err := dbus.Connect(frontAddr)
 	require.NoError(t, err, "connect client to front bus")

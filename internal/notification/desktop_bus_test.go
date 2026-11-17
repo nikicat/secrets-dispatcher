@@ -1,9 +1,7 @@
 package notification
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +9,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 // notifyArgs records one org.freedesktop.Notifications.Notify call as the
@@ -70,19 +70,7 @@ func newNotificationBus(t *testing.T) *stubNotificationServer {
 		t.Skip("dbus-daemon not available")
 	}
 
-	socketPath := filepath.Join(t.TempDir(), "bus.sock")
-	addr := "unix:path=" + socketPath
-	cmd := exec.Command("dbus-daemon", "--session", "--nofork", "--address="+addr)
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		cmd.Process.Kill()
-		cmd.Wait()
-	})
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(socketPath)
-		return err == nil
-	}, 5*time.Second, 50*time.Millisecond, "dbus-daemon socket")
-	t.Setenv("DBUS_SESSION_BUS_ADDRESS", addr)
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", testutil.StartDBusDaemon(t))
 
 	conn, err := dbus.ConnectSessionBus()
 	require.NoError(t, err)

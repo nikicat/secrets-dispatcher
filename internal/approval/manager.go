@@ -30,6 +30,10 @@ var ErrIgnored = errors.New("request ignored by trust rule")
 // ErrDeniedByRule is returned when a request is denied by a trust rule with action "deny".
 var ErrDeniedByRule = errors.New("access denied by trust rule")
 
+// Reports a request that Request.AutoApprovable rejects, so no auto-approve
+// rule is made from it.
+var ErrNotAutoApprovable = errors.New("request has no local executable for an auto-approve rule to match")
+
 // EventType represents the type of approval event.
 type EventType int
 
@@ -104,6 +108,37 @@ type Request struct {
 	// Internal: channel closed when the request is resolved
 	done       chan struct{}
 	resolution Resolution // set before done is closed
+}
+
+// Checks whether an auto-approve rule made from r could match a later request.
+// Rules match only on the invoker's executable (ADR 0005), and a request that
+// came over a tunnel, or whose invoker was not resolved, has none.
+func (r *Request) AutoApprovable() bool {
+	return invokerExePath(r.SenderInfo) != ""
+}
+
+// Returns a temporary rule that auto-approves requests like r (ADR 0004) once
+// Manager.AddAutoApproveRule installs it. Errors with ErrNotAutoApprovable when
+// r is not AutoApprovable.
+func (r *Request) AutoApproveRule() (AutoApproveRule, error) {
+	if !r.AutoApprovable() {
+		return AutoApproveRule{}, ErrNotAutoApprovable
+	}
+	rule := AutoApproveRule{
+		ID:          uuid.New().String(),
+		InvokerName: r.SenderInfo.InvokerName,
+		InvokerExe:  invokerExePath(r.SenderInfo),
+		RequestType: r.Type,
+	}
+
+	if len(r.Items) > 0 {
+		rule.Collection = extractCollection(r.Items[0].Path)
+		rule.Attributes = r.Items[0].Attributes
+	}
+	if r.Type == RequestTypeSearch && len(r.SearchAttributes) > 0 {
+		rule.Attributes = r.SearchAttributes
+	}
+	return rule, nil
 }
 
 // Resolution represents how a request was resolved.
@@ -486,14 +521,21 @@ func (m *Manager) Approve(id string) error {
 	return nil
 }
 
-// ApproveAndAutoApprove approves a pending request and creates an auto-approve
-// rule for similar future requests.
+// Approves the pending request with that id, as Approve does, and adds an
+// auto-approve rule for later requests like it (ADR 0004). Errors with
+// ErrNotFound when no such request is pending, and with ErrNotAutoApprovable
+// when it is not AutoApprovable. The request then stays pending.
 func (m *Manager) ApproveAndAutoApprove(id string) error {
 	m.mu.Lock()
 	req, ok := m.pending[id]
 	if !ok {
 		m.mu.Unlock()
 		return ErrNotFound
+	}
+	rule, err := req.AutoApproveRule()
+	if err != nil {
+		m.mu.Unlock()
+		return err
 	}
 
 	req.resolution = ResolutionApproved
@@ -503,7 +545,7 @@ func (m *Manager) ApproveAndAutoApprove(id string) error {
 
 	m.notify(Event{Type: EventRequestApproved, Request: req})
 	m.cacheApproval(req)
-	m.AddAutoApproveRule(req)
+	m.AddAutoApproveRule(rule)
 	return nil
 }
 
@@ -675,49 +717,32 @@ func (m *Manager) AutoApproveDuration() time.Duration {
 // extractCollection extracts the collection name from a Secret Service item path.
 var extractCollection = dbustypes.ExtractCollection
 
-// AddAutoApproveRule creates a temporary auto-approve rule from a cancelled request.
-// Returns the rule ID.
-func (m *Manager) AddAutoApproveRule(req *Request) string {
-	duration := m.autoApproveDuration
-	if duration <= 0 {
-		duration = 2 * time.Minute
-	}
+func (r AutoApproveRule) sameScope(o AutoApproveRule) bool {
+	return r.InvokerExe == o.InvokerExe &&
+		r.RequestType == o.RequestType &&
+		r.Collection == o.Collection &&
+		attributesEqual(r.Attributes, o.Attributes)
+}
 
-	rule := AutoApproveRule{
-		ID:          uuid.New().String(),
-		InvokerName: req.SenderInfo.InvokerName,
-		InvokerExe:  invokerExePath(req.SenderInfo),
-		RequestType: req.Type,
-		ExpiresAt:   time.Now().Add(duration),
-	}
-
-	// Extract collection and attributes from first item
-	if len(req.Items) > 0 {
-		rule.Collection = extractCollection(req.Items[0].Path)
-		rule.Attributes = req.Items[0].Attributes
-	}
-
-	// For search requests, use search attributes
-	if req.Type == RequestTypeSearch && len(req.SearchAttributes) > 0 {
-		rule.Attributes = req.SearchAttributes
-	}
+// Adds the given rule for the duration that Manager.AutoApproveDuration
+// returns, and returns its ID. When a rule with the same scope exists, extends
+// that rule's expiry instead and returns its ID.
+func (m *Manager) AddAutoApproveRule(rule AutoApproveRule) string {
+	rule.ExpiresAt = time.Now().Add(m.AutoApproveDuration())
 
 	m.autoApproveMu.Lock()
-	// Dedup: if a matching rule already exists, refresh its expiry
 	for i := range m.autoApproveRules {
 		existing := &m.autoApproveRules[i]
-		if existing.InvokerExe == rule.InvokerExe &&
-			existing.RequestType == rule.RequestType &&
-			existing.Collection == rule.Collection &&
-			attributesEqual(existing.Attributes, rule.Attributes) {
+		if existing.sameScope(rule) {
 			existing.ExpiresAt = rule.ExpiresAt
+			refreshed := *existing
 			m.autoApproveMu.Unlock()
-			m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: existing})
+			m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: &refreshed})
 			slog.Info("auto-approve rule refreshed",
-				"rule_id", existing.ID,
-				"invoker", existing.InvokerName,
-				"expires_at", existing.ExpiresAt)
-			return existing.ID
+				"rule_id", refreshed.ID,
+				"invoker", refreshed.InvokerName,
+				"expires_at", refreshed.ExpiresAt)
+			return refreshed.ID
 		}
 	}
 	m.autoApproveRules = append(m.autoApproveRules, rule)
@@ -730,7 +755,6 @@ func (m *Manager) AddAutoApproveRule(req *Request) string {
 		"type", rule.RequestType,
 		"collection", rule.Collection,
 		"expires_at", rule.ExpiresAt)
-
 	return rule.ID
 }
 

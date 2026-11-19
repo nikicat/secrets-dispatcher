@@ -352,12 +352,12 @@ func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
 		Status:    []byte("[GNUPG:] SIG_CREATED D"),
 	}}
 
-	// A rule whose invoker exe is unset (as ApproveAndAutoApprove would record
-	// for a caller whose exe could not be resolved) must never match, since exe
-	// is the sole identity and an empty exe fails closed.
-	mgr.AddAutoApproveRule(&approval.Request{
-		Type:       approval.RequestTypeGPGSign,
-		SenderInfo: approval.SenderInfo{},
+	// A rule with no invoker exe must never match, because exe is the sole
+	// identity and an empty exe fails closed. No request can produce such a
+	// rule, so the test writes one by hand.
+	mgr.AddAutoApproveRule(approval.AutoApproveRule{
+		ID:          "no-exe",
+		RequestType: approval.RequestTypeGPGSign,
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
@@ -379,24 +379,15 @@ func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
 func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
 	mgr := newTestManager()
 
-	const pid = 4242
-	exeSender := approval.SenderInfo{
-		PID:          pid,
-		InvokerName:  "git",
-		ProcessChain: []approval.ProcessInfo{{Name: "git", PID: pid, Exe: "/usr/bin/git"}},
-	}
-	mgr.AddAutoApproveRule(&approval.Request{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender})
+	exeSender := localSender("git", "/usr/bin/git")
+	mustAddRule(t, mgr, &approval.Request{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender})
 
 	// Same exe → matches.
 	assert.NotNil(t, mgr.CheckAutoApproveRules(exeSender, nil, approval.RequestTypeGPGSign),
 		"rule should match a caller with the same invoker exe")
 
 	// Same spoofable comm but a different real exe → must NOT match.
-	spoofed := approval.SenderInfo{
-		PID:          pid,
-		InvokerName:  "git", // attacker set comm to "git"
-		ProcessChain: []approval.ProcessInfo{{Name: "git", PID: pid, Exe: "/tmp/malware"}},
-	}
+	spoofed := localSender("git", "/tmp/malware") // attacker set comm to "git"
 	assert.Nil(t, mgr.CheckAutoApproveRules(spoofed, nil, approval.RequestTypeGPGSign),
 		"rule must not match a caller that only spoofed the comm")
 }
@@ -410,9 +401,9 @@ func TestHandleGPGSignRequest_NoMatchingRuleStaysPending(t *testing.T) {
 	handlers.resolver.GPGRunner = &fakeGPGRunner{}
 
 	// Rule for a different invoker name.
-	mgr.AddAutoApproveRule(&approval.Request{
+	mustAddRule(t, mgr, &approval.Request{
 		Type:       approval.RequestTypeGPGSign,
-		SenderInfo: approval.SenderInfo{InvokerName: "some-other-process.service"},
+		SenderInfo: localSender("some-other-process.service", "/usr/lib/some-other-process"),
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",

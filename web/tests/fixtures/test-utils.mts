@@ -135,6 +135,7 @@ export function pendingRequest({
     },
     created_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 300_000).toISOString(),
+    auto_approvable: true,
     ...fields,
   };
 }

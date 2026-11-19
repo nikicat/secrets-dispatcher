@@ -30,8 +30,8 @@ func TestSlowUpstreamNotifier_SingleItem(t *testing.T) {
 	if call.icon != "dialog-password" {
 		t.Errorf("unexpected icon: %q", call.icon)
 	}
-	if call.actions != nil {
-		t.Errorf("expected nil actions (informational), got %v", call.actions)
+	if call.buttons != nil {
+		t.Errorf("expected nil buttons (informational), got %v", call.buttons)
 	}
 	notifID := mock.nextID
 	mock.mu.Unlock()

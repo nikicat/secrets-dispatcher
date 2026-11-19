@@ -24,7 +24,7 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 	sender := testSender("someapp", "/usr/bin/someapp")
 
 	// The user auto-approved a read scoped to the "public" collection.
-	mgr.AddAutoApproveRule(&Request{
+	mustAddRule(t, mgr, &Request{
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{itemInCollection("public", "x")},
 		SenderInfo: sender,

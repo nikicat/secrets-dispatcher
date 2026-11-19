@@ -83,8 +83,8 @@ func TestNotifySendsNeverExpiringCritical(t *testing.T) {
 	require.NoError(t, err)
 	defer n.Stop()
 
-	actions := []string{"approve", "Approve", "deny", "Deny"}
-	id, err := n.Notify("Secret requested", "body text", "dialog-password", actions)
+	buttons := []Button{{"approve", "Approve"}, {"deny", "Deny"}}
+	id, err := n.Notify("Secret requested", "body text", "dialog-password", buttons)
 	require.NoError(t, err)
 	assert.NotZero(t, id)
 
@@ -93,7 +93,7 @@ func TestNotifySendsNeverExpiringCritical(t *testing.T) {
 	// critical notifications ~2s after display. Approvals must never expire.
 	assert.Equal(t, int32(0), got.ExpireTimeout)
 	assert.Equal(t, dbus.MakeVariant(byte(2)), got.Hints["urgency"])
-	assert.Equal(t, actions, got.Actions)
+	assert.Equal(t, []string{"approve", "Approve", "deny", "Deny"}, got.Actions)
 	assert.Equal(t, "secrets-dispatcher", got.AppName)
 	assert.Equal(t, "Secret requested", got.Summary)
 }
@@ -145,7 +145,7 @@ func TestActionDeliverySurvivesUndrainedClosedBuffer(t *testing.T) {
 	select {
 	case a := <-n.Actions():
 		assert.Equal(t, uint32(999), a.NotificationID)
-		assert.Equal(t, "approve", a.ActionKey)
+		assert.Equal(t, actionKey("approve"), a.ActionKey)
 	case <-time.After(5 * time.Second):
 		t.Fatal("ActionInvoked was not delivered — processSignals wedged on the undrained closed buffer")
 	}

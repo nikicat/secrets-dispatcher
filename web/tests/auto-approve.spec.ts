@@ -1,12 +1,15 @@
 import { expect, test } from "@playwright/test";
 import {
+  pendingRequest,
   routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
-import type { WSSnapshotMessage } from "../src/lib/types.ts";
-
-// These tests verify auto-approve rule WebSocket notifications and timer display.
+import type {
+  HistoryEntry,
+  PendingRequest,
+  WSSnapshotMessage,
+} from "../src/lib/types.ts";
 
 let backend: TestBackend;
 
@@ -326,5 +329,65 @@ test.describe("Auto-Approve Rule Timer", () => {
     await expect(page.getByText("expiring-test")).not.toBeVisible({
       timeout: 5000,
     });
+  });
+});
+
+test.describe("Approve and auto-approve", () => {
+  const localAndRemote = () => [
+    pendingRequest({ id: "local-req" }),
+    pendingRequest({ id: "remote-req", auto_approvable: false }),
+  ];
+
+  test("is offered only on a request a rule could match", async ({ page }) => {
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        requests: localAndRemote(),
+      }),
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    const card = (id: string) =>
+      page
+        .locator(".card")
+        .filter({ has: page.locator(`.request-id[title="${id}"]`) });
+    await expect(card("local-req").locator(".btn-approve-auto")).toBeVisible({
+      timeout: 10000,
+    });
+    const remote = card("remote-req");
+    await expect(remote.locator(".btn-approve")).toBeVisible();
+    await expect(remote.locator(".btn-approve-auto")).toHaveCount(0);
+  });
+
+  test("of similar requests is offered on history only for a request a rule could match", async ({
+    page,
+  }) => {
+    const cancelled = (request: PendingRequest): HistoryEntry => ({
+      request,
+      resolution: "cancelled",
+      resolved_at: new Date().toISOString(),
+    });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: localAndRemote().map(cancelled),
+      }),
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    const entry = (id: string) =>
+      page
+        .locator(".history-entry")
+        .filter({ has: page.locator(`.history-request-id[title="${id}"]`) });
+    await expect(entry("local-req").locator(".btn-auto-approve")).toBeVisible({
+      timeout: 10000,
+    });
+    const remote = entry("remote-req");
+    await expect(remote.locator(".history-resolution")).toBeVisible();
+    await expect(remote.locator(".btn-auto-approve")).toHaveCount(0);
   });
 });

@@ -62,6 +62,9 @@ type PendingRequest struct {
 	SearchAttributes map[string]string     `json:"search_attributes,omitempty"`
 	SenderInfo       SenderInfo            `json:"sender_info"`
 	GPGSignInfo      *approval.GPGSignInfo `json:"gpg_sign_info,omitempty"`
+	// True if approval.Request.AutoApprovable accepts the request. False
+	// otherwise.
+	AutoApprovable bool `json:"auto_approvable"`
 }
 
 // ActionResponse is returned by approve/deny endpoints.

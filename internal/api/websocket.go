@@ -152,9 +152,10 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 
 	switch event.Type {
 	case approval.EventRequestCreated:
+		req := convertRequest(event.Request)
 		msgs = append(msgs, WSMessage{
 			Type:    wsmsg.RequestCreated,
-			Request: convertRequest(event.Request),
+			Request: &req,
 		})
 	case approval.EventRequestApproved:
 		msgs = append(msgs, WSMessage{
@@ -253,27 +254,8 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 
 // makeHistoryEntry creates a HistoryEntry for WebSocket messages.
 func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
-	items := make([]ItemInfo, len(req.Items))
-	for i, item := range req.Items {
-		items[i] = ItemInfo{
-			Path:       item.Path,
-			Label:      item.Label,
-			Attributes: item.Attributes,
-		}
-	}
 	return HistoryEntry{
-		Request: PendingRequest{
-			ID:               req.ID,
-			Client:           req.Client,
-			Items:            items,
-			Session:          req.Session,
-			CreatedAt:        req.CreatedAt,
-			ExpiresAt:        req.ExpiresAt,
-			Type:             string(req.Type),
-			SearchAttributes: req.SearchAttributes,
-			SenderInfo:       convertSenderInfo(req.SenderInfo),
-			GPGSignInfo:      req.GPGSignInfo,
-		},
+		Request:    convertRequest(req),
 		Resolution: resolution,
 		ResolvedAt: time.Now(),
 	}
@@ -283,12 +265,7 @@ func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
 func (wsc *wsConnection) sendSnapshot() error {
 	h := wsc.handler
 
-	// Get pending requests
-	pending := h.manager.List()
-	requests := make([]PendingRequest, len(pending))
-	for i, req := range pending {
-		requests[i] = *convertRequest(req)
-	}
+	requests := pendingRequests(h.manager)
 
 	// Get clients
 	var clients []proxy.ClientInfo
@@ -300,12 +277,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		}
 	}
 
-	// Get history
-	historyEntries := h.manager.History()
-	history := make([]HistoryEntry, len(historyEntries))
-	for i, entry := range historyEntries {
-		history[i] = convertHistoryEntry(entry)
-	}
+	history := historyEntries(h.manager)
 
 	// Get auto-approve rules
 	autoApproveRules := h.manager.ListAutoApproveRules()
@@ -425,7 +397,7 @@ func (wsc *wsConnection) close() {
 }
 
 // convertRequest converts an approval.Request to an API PendingRequest.
-func convertRequest(req *approval.Request) *PendingRequest {
+func convertRequest(req *approval.Request) PendingRequest {
 	items := make([]ItemInfo, len(req.Items))
 	for i, item := range req.Items {
 		items[i] = ItemInfo{
@@ -434,7 +406,7 @@ func convertRequest(req *approval.Request) *PendingRequest {
 			Attributes: item.Attributes,
 		}
 	}
-	return &PendingRequest{
+	return PendingRequest{
 		ID:               req.ID,
 		Client:           req.Client,
 		Items:            items,
@@ -445,7 +417,28 @@ func convertRequest(req *approval.Request) *PendingRequest {
 		SearchAttributes: req.SearchAttributes,
 		SenderInfo:       convertSenderInfo(req.SenderInfo),
 		GPGSignInfo:      req.GPGSignInfo,
+		AutoApprovable:   req.AutoApprovable(),
 	}
+}
+
+// The slice is never nil, so it encodes as [] in JSON.
+func pendingRequests(m *approval.Manager) []PendingRequest {
+	pending := m.List()
+	requests := make([]PendingRequest, len(pending))
+	for i, req := range pending {
+		requests[i] = convertRequest(req)
+	}
+	return requests
+}
+
+// The slice is never nil, so it encodes as [] in JSON.
+func historyEntries(m *approval.Manager) []HistoryEntry {
+	history := m.History()
+	entries := make([]HistoryEntry, len(history))
+	for i, entry := range history {
+		entries[i] = convertHistoryEntry(entry)
+	}
+	return entries
 }
 
 // isConnClosedErr returns true if the error indicates a connection that was

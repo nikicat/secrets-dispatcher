@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -29,17 +30,17 @@ type notifyCall struct {
 	summary string
 	body    string
 	icon    string
-	actions []string
+	buttons []Button
 }
 
-func (m *mockNotifier) Notify(summary, body, icon string, actions []string) (uint32, error) {
+func (m *mockNotifier) Notify(summary, body, icon string, buttons []Button) (uint32, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.notifyErr != nil {
 		return 0, m.notifyErr
 	}
 	m.nextID++
-	m.notified = append(m.notified, notifyCall{summary, body, icon, actions})
+	m.notified = append(m.notified, notifyCall{summary, body, icon, buttons})
 	return m.nextID, nil
 }
 
@@ -177,27 +178,48 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 	}
 }
 
+// A sender whose invoker has an executable, so Request.AutoApprovable accepts
+// its requests.
+var localSender = approval.SenderInfo{
+	PID:          4242,
+	InvokerName:  "gh",
+	ProcessChain: []approval.ProcessInfo{{Name: "gh", PID: 4242, Exe: "/usr/bin/gh"}},
+}
+
+// A sender with no process chain. A remote client's requests carry one like it
+// (ADR 0011), and Request.AutoApprovable rejects them.
+var remoteSender = approval.SenderInfo{InvokerName: "gh"}
+
+// Checks that the notification offers "Approve 2m" only for a request that
+// Request.AutoApprovable accepts.
 func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
-	req := &approval.Request{
-		ID:     "test-actions",
-		Client: "user@remote",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
+	tests := []struct {
+		name        string
+		sender      approval.SenderInfo
+		wantButtons []Button
+	}{
+		{"local", localSender,
+			[]Button{{"default", ""}, {"approve", "Approve"}, {"approve_and_auto_approve", "Approve 2m"}, {"deny", "Deny"}}},
+		{"remote", remoteSender,
+			[]Button{{"default", ""}, {"approve", "Approve"}, {"deny", "Deny"}}},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, mock, _ := newTestHandler()
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+			req := &approval.Request{
+				ID:         "test-actions",
+				Type:       approval.RequestTypeGetSecret,
+				Items:      []approval.ItemInfo{{Label: "Secret"}},
+				SenderInfo: tt.sender,
+			}
 
-	call := mock.lastNotify()
-	wantActions := []string{"default", "", "approve", "Approve", "approve_and_auto_approve", "Approve 2m", "deny", "Deny"}
-	if len(call.actions) != len(wantActions) {
-		t.Fatalf("expected %d actions, got %d: %v", len(wantActions), len(call.actions), call.actions)
-	}
-	for i, a := range wantActions {
-		if call.actions[i] != a {
-			t.Errorf("action[%d]: want %q, got %q", i, a, call.actions[i])
-		}
+			h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+
+			if got := mock.lastNotify().buttons; !slices.Equal(got, tt.wantButtons) {
+				t.Errorf("buttons = %q, want %q", got, tt.wantButtons)
+			}
+		})
 	}
 }
 
@@ -909,13 +931,11 @@ func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
 	h, mock, _ := newTestHandlerWithDelay(20 * time.Millisecond)
 
 	req := &approval.Request{
-		ID:     "cancel-after-shown-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-		SenderInfo: approval.SenderInfo{
-			InvokerName: "test-unit",
-		},
+		ID:         "cancel-after-shown-1",
+		Client:     "user@host",
+		Type:       approval.RequestTypeGetSecret,
+		Items:      []approval.ItemInfo{{Label: "Secret"}},
+		SenderInfo: localSender,
 	}
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
@@ -1005,5 +1025,29 @@ func TestDBusNotifier_CloseReconnectsOnClosedConn(t *testing.T) {
 	err := n.Close(999)
 	if errors.Is(err, dbus.ErrClosed) {
 		t.Errorf("Close should have reconnected, but got ErrClosed: %v", err)
+	}
+}
+
+// Checks that a cancelled request that Request.AutoApprovable rejects closes
+// its notification and gets no auto-approve follow-up.
+func TestHandler_CancelledRemoteRequest_NoFollowUp(t *testing.T) {
+	h, mock, _ := newTestHandler()
+
+	req := &approval.Request{
+		ID:         "cancel-remote-1",
+		Client:     "remote:laptop",
+		Type:       approval.RequestTypeGetSecret,
+		Items:      []approval.ItemInfo{{Label: "Secret"}},
+		SenderInfo: remoteSender,
+	}
+
+	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.OnEvent(approval.Event{Type: approval.EventRequestCancelled, Request: req})
+
+	if mock.notifyCount() != 1 {
+		t.Errorf("notifications = %d, want 1 (no follow-up)", mock.notifyCount())
+	}
+	if mock.closeCount() != 1 {
+		t.Errorf("closes = %d, want 1", mock.closeCount())
 	}
 }

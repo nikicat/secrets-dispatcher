@@ -91,33 +91,7 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pending := h.manager.List()
-	requests := make([]PendingRequest, len(pending))
-	for i, req := range pending {
-		// Convert approval.ItemInfo to api.ItemInfo
-		items := make([]ItemInfo, len(req.Items))
-		for j, item := range req.Items {
-			items[j] = ItemInfo{
-				Path:       item.Path,
-				Label:      item.Label,
-				Attributes: item.Attributes,
-			}
-		}
-		requests[i] = PendingRequest{
-			ID:               req.ID,
-			Client:           req.Client,
-			Items:            items,
-			Session:          req.Session,
-			CreatedAt:        req.CreatedAt,
-			ExpiresAt:        req.ExpiresAt,
-			Type:             string(req.Type),
-			SearchAttributes: req.SearchAttributes,
-			SenderInfo:       convertSenderInfo(req.SenderInfo),
-			GPGSignInfo:      req.GPGSignInfo,
-		}
-	}
-
-	resp := PendingListResponse{Requests: requests}
+	resp := PendingListResponse{Requests: pendingRequests(h.manager)}
 	writeJSON(w, resp)
 }
 
@@ -162,6 +136,10 @@ func (h *Handlers) HandleApproveAndAutoApprove(w http.ResponseWriter, r *http.Re
 	if err := h.resolver.ApproveAndAutoApprove(id); err != nil {
 		if err == approval.ErrNotFound {
 			writeError(w, "request not found or expired", http.StatusNotFound)
+			return
+		}
+		if err == approval.ErrNotAutoApprovable {
+			writeError(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
 		writeError(w, err.Error(), http.StatusInternalServerError)
@@ -249,6 +227,10 @@ func (h *Handlers) HandleAutoApproveCreate(w http.ResponseWriter, r *http.Reques
 			writeError(w, "cancelled request not found", http.StatusNotFound)
 			return
 		}
+		if err == approval.ErrNotAutoApprovable {
+			writeError(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -288,13 +270,7 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	history := h.manager.History()
-	entries := make([]HistoryEntry, len(history))
-	for i, entry := range history {
-		entries[i] = convertHistoryEntry(entry)
-	}
-
-	resp := HistoryResponse{Entries: entries}
+	resp := HistoryResponse{Entries: historyEntries(h.manager)}
 	writeJSON(w, resp)
 }
 
@@ -325,27 +301,8 @@ func convertSenderInfo(s approval.SenderInfo) SenderInfo {
 
 // convertHistoryEntry converts an approval.HistoryEntry to an API HistoryEntry.
 func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
-	items := make([]ItemInfo, len(entry.Request.Items))
-	for i, item := range entry.Request.Items {
-		items[i] = ItemInfo{
-			Path:       item.Path,
-			Label:      item.Label,
-			Attributes: item.Attributes,
-		}
-	}
 	return HistoryEntry{
-		Request: PendingRequest{
-			ID:               entry.Request.ID,
-			Client:           entry.Request.Client,
-			Items:            items,
-			Session:          entry.Request.Session,
-			CreatedAt:        entry.Request.CreatedAt,
-			ExpiresAt:        entry.Request.ExpiresAt,
-			Type:             string(entry.Request.Type),
-			SearchAttributes: entry.Request.SearchAttributes,
-			SenderInfo:       convertSenderInfo(entry.Request.SenderInfo),
-			GPGSignInfo:      entry.Request.GPGSignInfo,
-		},
+		Request:    convertRequest(entry.Request),
 		Resolution: string(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,
 	}

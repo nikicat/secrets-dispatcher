@@ -435,20 +435,22 @@
         Approve
       {/if}
     </button>
-    <button
-      class="btn-approve-auto"
-      onclick={handleApproveAndAutoApprove}
-      disabled={loading !== null}
-      title="Approve and auto-approve similar requests for {formatDurationShort(
-        autoApproveDurationSeconds,
-      )}"
-    >
-      {#if loading === "approve_auto"}
-        Approving...
-      {:else}
-        Approve {formatDurationShort(autoApproveDurationSeconds)}
-      {/if}
-    </button>
+    {#if request.auto_approvable}
+      <button
+        class="btn-approve-auto"
+        onclick={handleApproveAndAutoApprove}
+        disabled={loading !== null}
+        title="Approve and auto-approve similar requests for {formatDurationShort(
+          autoApproveDurationSeconds,
+        )}"
+      >
+        {#if loading === "approve_auto"}
+          Approving...
+        {:else}
+          Approve {formatDurationShort(autoApproveDurationSeconds)}
+        {/if}
+      </button>
+    {/if}
     <button class="btn-deny" onclick={handleDeny} disabled={loading !== null}>
       {#if loading === "deny"}
         Denying...

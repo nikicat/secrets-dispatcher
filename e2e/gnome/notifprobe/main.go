@@ -155,7 +155,7 @@ func main() {
 	id, err := notifier.Notify("Secret access requested (notifprobe)",
 		"production-path notification: must survive untouched",
 		"dialog-password",
-		[]string{"approve", "Approve", "deny", "Deny"})
+		[]notification.Button{{Key: "approve", Label: "Approve"}, {Key: "deny", Label: "Deny"}})
 	if err != nil {
 		die("Notify: %v", err)
 	}

@@ -47,6 +47,22 @@ func newTestManager(edits ...func(*approval.ManagerConfig)) *approval.Manager {
 	return approval.NewManager(cfg)
 }
 
+func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) string {
+	t.Helper()
+	rule, err := req.AutoApproveRule()
+	require.NoError(t, err)
+	return mgr.AddAutoApproveRule(rule)
+}
+
+func localSender(comm, exe string) approval.SenderInfo {
+	const pid = 4242
+	return approval.SenderInfo{
+		PID:          pid,
+		InvokerName:  comm,
+		ProcessChain: []approval.ProcessInfo{{Name: comm, PID: pid, Exe: exe}},
+	}
+}
+
 // A get_secret request that a test started and that its manager holds pending.
 type pendingRequest struct {
 	ID string

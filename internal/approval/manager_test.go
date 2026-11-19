@@ -1983,7 +1983,7 @@ func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
 
 func TestRequireApproval_AutoApproved_AutoApproveRule(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
-	mgr.AddAutoApproveRule(&Request{
+	mustAddRule(t, mgr, &Request{
 		ID:         "r1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},

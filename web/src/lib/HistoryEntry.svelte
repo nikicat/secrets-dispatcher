@@ -197,7 +197,7 @@
     />
   </div>
   <PropsTable {...historyEntryProps(entry.request)} />
-  {#if entry.resolution === "cancelled"}
+  {#if entry.resolution === "cancelled" && entry.request.auto_approvable}
     <button
       class="btn-auto-approve"
       onclick={() => onAutoApprove(entry.request.id)}

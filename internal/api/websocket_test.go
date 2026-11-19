@@ -206,7 +206,31 @@ func ghSecretRequest() *approval.Request {
 	return &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: approval.SenderInfo{InvokerName: "gh"},
+		SenderInfo: localSender("gh", "/usr/bin/gh"),
+	}
+}
+
+func TestConvertRequest_EncodesAutoApprovable(t *testing.T) {
+	noExe := ghSecretRequest()
+	noExe.SenderInfo.ProcessChain[0].Exe = ""
+
+	tests := []struct {
+		name string
+		req  *approval.Request
+		want bool
+	}{
+		{"local process with exe", ghSecretRequest(), true},
+		{"process without exe", noExe, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(convertRequest(tt.req))
+			require.NoError(t, err)
+
+			var fields map[string]any
+			require.NoError(t, json.Unmarshal(data, &fields))
+			assert.Equal(t, tt.want, fields["auto_approvable"])
+		})
 	}
 }
 
@@ -214,7 +238,7 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 	f := newWSFixture(t, newTestManager(), nil)
 
 	// Add a rule before connecting
-	f.mgr.AddAutoApproveRule(ghSecretRequest())
+	mustAddRule(t, f.mgr, ghSecretRequest())
 
 	msg := f.read(f.dial(), wsmsg.Snapshot)
 
@@ -236,7 +260,7 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 
 	req := ghSecretRequest()
 	req.Items[0].Attributes = map[string]string{"service": "gh:github.com"}
-	f.mgr.AddAutoApproveRule(req)
+	mustAddRule(t, f.mgr, req)
 
 	msg := f.read(conn, wsmsg.AutoApproveRuleAdded)
 
@@ -262,7 +286,7 @@ func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
-	ruleID := f.mgr.AddAutoApproveRule(ghSecretRequest())
+	ruleID := mustAddRule(t, f.mgr, ghSecretRequest())
 	f.read(conn, wsmsg.AutoApproveRuleAdded)
 
 	if err := f.mgr.RemoveAutoApproveRule(ruleID); err != nil {

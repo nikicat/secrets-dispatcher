@@ -59,6 +59,9 @@ export interface PendingRequest {
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
   gpg_sign_info?: GPGSignInfo;
+  // True if the Go approval.Request.AutoApprovable accepts the request. False
+  // otherwise.
+  auto_approvable: boolean;
 }
 
 export interface ClientInfo {

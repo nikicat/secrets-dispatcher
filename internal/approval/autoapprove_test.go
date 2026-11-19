@@ -2,6 +2,8 @@ package approval
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -16,6 +18,78 @@ func testSender(comm, exe string) SenderInfo {
 		PID:          pid,
 		InvokerName:  comm,
 		ProcessChain: []ProcessInfo{{Name: comm, PID: pid, Exe: exe}},
+	}
+}
+
+// Adds an auto-approve rule made from req and returns its ID. Fails the test
+// when req is not AutoApprovable.
+func mustAddRule(t *testing.T, mgr *Manager, req *Request) string {
+	t.Helper()
+	rule, err := req.AutoApproveRule()
+	if err != nil {
+		t.Fatalf("AutoApproveRule: %v", err)
+	}
+	return mgr.AddAutoApproveRule(rule)
+}
+
+func newRuleManager() *Manager {
+	return NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+}
+
+func waitPendingID(t *testing.T, mgr *Manager) string {
+	t.Helper()
+	for range 100 {
+		if reqs := mgr.List(); len(reqs) > 0 {
+			return reqs[0].ID
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("request did not appear in pending list")
+	return ""
+}
+
+func TestRequestAutoApproveRule_RefusesRequestWithoutExe(t *testing.T) {
+	req := &Request{
+		ID:         "remote-1",
+		Client:     "remote:laptop",
+		Type:       RequestTypeGetSecret,
+		SenderInfo: SenderInfo{InvokerName: "gh"},
+	}
+
+	_, err := req.AutoApproveRule()
+	if !errors.Is(err, ErrNotAutoApprovable) {
+		t.Fatalf("err = %v, want ErrNotAutoApprovable", err)
+	}
+}
+
+func TestApproveAndAutoApprove_LeavesRequestWithoutExePending(t *testing.T) {
+	mgr := newRuleManager()
+
+	var wg sync.WaitGroup
+	var approvalErr error
+	wg.Go(func() {
+		_, approvalErr = mgr.RequireApproval(context.Background(), nil, "session",
+			RequestTypeGetSecret, nil, SenderInfo{InvokerName: "gh"})
+	})
+
+	id := waitPendingID(t, mgr)
+
+	if err := mgr.ApproveAndAutoApprove(id); !errors.Is(err, ErrNotAutoApprovable) {
+		t.Fatalf("err = %v, want ErrNotAutoApprovable", err)
+	}
+	if mgr.GetPending(id) == nil {
+		t.Fatal("request was resolved, want it still pending")
+	}
+	if rules := mgr.ListAutoApproveRules(); len(rules) != 0 {
+		t.Errorf("rules = %v, want none", rules)
+	}
+
+	if err := mgr.Approve(id); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	wg.Wait()
+	if approvalErr != nil {
+		t.Errorf("RequireApproval = %v, want nil", approvalErr)
 	}
 }
 
@@ -34,7 +108,7 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 		}},
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	mgr.AddAutoApproveRule(req)
+	mustAddRule(t, mgr, req)
 
 	// Retry with same invoker, type, collection, attributes → should match
 	rule := mgr.checkAutoApproveRules(
@@ -58,7 +132,7 @@ func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
 
 	// User approved "always allow" for the real node binary reading login secrets.
-	mgr.AddAutoApproveRule(&Request{
+	mustAddRule(t, mgr, &Request{
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
 		SenderInfo: testSender("node", "/usr/bin/node"),
@@ -95,7 +169,7 @@ func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	mgr.AddAutoApproveRule(req)
+	mustAddRule(t, mgr, req)
 
 	rule := mgr.checkAutoApproveRules(
 		testSender("seahorse", "/usr/bin/seahorse"),
@@ -116,7 +190,7 @@ func TestAutoApproveRule_Expiry(t *testing.T) {
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	mgr.AddAutoApproveRule(req)
+	mustAddRule(t, mgr, req)
 
 	time.Sleep(60 * time.Millisecond)
 
@@ -145,7 +219,7 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1", Attributes: map[string]string{"service": "gh:github.com"}}},
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	mgr.AddAutoApproveRule(req)
+	mustAddRule(t, mgr, req)
 
 	// RequireApproval should return nil immediately (auto-approved)
 	_, err := mgr.RequireApproval(
@@ -169,7 +243,7 @@ func TestAutoApproveRule_ListAndRemove(t *testing.T) {
 		Type:       RequestTypeGetSecret,
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	ruleID := mgr.AddAutoApproveRule(req)
+	ruleID := mustAddRule(t, mgr, req)
 
 	rules := mgr.ListAutoApproveRules()
 	if len(rules) != 1 {
@@ -199,7 +273,7 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 		}},
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	mgr.AddAutoApproveRule(req)
+	mustAddRule(t, mgr, req)
 
 	// Request with superset attributes → should match
 	rule := mgr.checkAutoApproveRules(
@@ -238,7 +312,7 @@ func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 
-	id1 := mgr.AddAutoApproveRule(req)
+	id1 := mustAddRule(t, mgr, req)
 
 	rules := mgr.ListAutoApproveRules()
 	if len(rules) != 1 {
@@ -248,7 +322,7 @@ func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
 
 	// Adding the same rule again should dedup
 	time.Sleep(10 * time.Millisecond)
-	id2 := mgr.AddAutoApproveRule(req)
+	id2 := mustAddRule(t, mgr, req)
 
 	if id1 != id2 {
 		t.Errorf("expected same rule ID %s, got %s", id1, id2)
@@ -285,8 +359,8 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
 
-	id1 := mgr.AddAutoApproveRule(req1)
-	id2 := mgr.AddAutoApproveRule(req2)
+	id1 := mustAddRule(t, mgr, req1)
+	id2 := mustAddRule(t, mgr, req2)
 
 	if id1 == id2 {
 		t.Error("expected different rule IDs for different attributes")
@@ -315,4 +389,44 @@ func TestExtractCollection(t *testing.T) {
 			t.Errorf("extractCollection(%q) = %q, want %q", tt.path, got, tt.want)
 		}
 	}
+}
+
+// Reads every rule it is told about, as the WebSocket broadcaster does when it
+// marshals one.
+type ruleReader struct{}
+
+func (ruleReader) OnEvent(e Event) {
+	if e.Rule != nil {
+		_ = *e.Rule
+	}
+}
+
+// A refreshed rule reaches observers as a copy: checkAutoApproveRules rewrites
+// the rule list in place while they read it. Run with -race.
+func TestAutoApproveRule_RefreshHandsObserversACopy(t *testing.T) {
+	mgr := newRuleManager()
+	mgr.Subscribe(ruleReader{})
+	req := &Request{
+		ID:         "req-1",
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
+	}
+	rule, err := req.AutoApproveRule()
+	if err != nil {
+		t.Fatalf("AutoApproveRule: %v", err)
+	}
+	mgr.AddAutoApproveRule(rule)
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for range 200 {
+			mgr.AddAutoApproveRule(rule)
+		}
+	})
+	wg.Go(func() {
+		for range 200 {
+			mgr.checkAutoApproveRules(testSender("gh", "/usr/bin/gh"), nil, RequestTypeGetSecret)
+		}
+	})
+	wg.Wait()
 }

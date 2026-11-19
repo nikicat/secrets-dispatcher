@@ -50,7 +50,10 @@ func (r *Resolver) Deny(id string) error {
 	return r.Manager.Deny(id)
 }
 
-// AutoApprove creates an auto-approve rule from a cancelled request.
+// Adds an auto-approve rule made from the cancelled request requestID, as
+// Manager.AddAutoApproveRule does. Errors with approval.ErrNotFound when no
+// cancelled request has that ID, and as approval.Request.AutoApproveRule does
+// otherwise.
 func (r *Resolver) AutoApprove(requestID string) error {
 	entry := r.Manager.GetHistoryEntry(requestID)
 	if entry == nil {
@@ -59,13 +62,17 @@ func (r *Resolver) AutoApprove(requestID string) error {
 	if entry.Resolution != approval.ResolutionCancelled {
 		return approval.ErrNotFound
 	}
-	r.Manager.AddAutoApproveRule(entry.Request)
+	rule, err := entry.Request.AutoApproveRule()
+	if err != nil {
+		return err
+	}
+	r.Manager.AddAutoApproveRule(rule)
 	return nil
 }
 
-// ApproveAndAutoApprove approves a pending request and creates an auto-approve
-// rule for similar future requests. For GPG signing requests, it runs the real
-// gpg binary to produce the signature before approving.
+// Approves the pending request id and adds an auto-approve rule, as
+// Manager.ApproveAndAutoApprove does, with the same errors. A gpg_sign request
+// is approved with gpg's result, and a failed signature earns no rule.
 func (r *Resolver) ApproveAndAutoApprove(id string) error {
 	req := r.Manager.GetPending(id)
 	if req == nil {
@@ -73,12 +80,15 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 	}
 
 	if req.Type == approval.RequestTypeGPGSign && req.GPGSignInfo != nil {
-		// A failed signature is approved too, but earns no rule.
+		rule, err := req.AutoApproveRule()
+		if err != nil {
+			return err
+		}
 		res, err := r.approveGPGSign(id, req)
 		if err != nil || !res.Succeeded() {
 			return err
 		}
-		r.Manager.AddAutoApproveRule(req)
+		r.Manager.AddAutoApproveRule(rule)
 		return nil
 	}
 

@@ -11,6 +11,7 @@ import (
 // Checks that approving a gpg_sign request "and auto-approve" approves it with
 // gpg's result, failure included, and records a rule only for a signature.
 func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
+	local := localSender("git", "/usr/bin/git")
 	tests := []struct {
 		name     string
 		res      approval.GPGResult
@@ -24,7 +25,7 @@ func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
 			mgr := newTestManager()
 			r := NewResolver(mgr, nil, 0)
 			r.GPGRunner = &fakeGPGRunner{res: tt.res}
-			id, err := mgr.CreateGPGSignRequest("test-client", &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}, approval.SenderInfo{})
+			id, err := mgr.CreateGPGSignRequest("test-client", &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}, local)
 			require.NoError(t, err)
 
 			require.NoError(t, r.ApproveAndAutoApprove(id))
@@ -33,4 +34,19 @@ func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
 			assert.Equal(t, tt.wantRule, len(mgr.ListAutoApproveRules()) == 1)
 		})
 	}
+}
+
+// Checks that a gpg_sign request that Request.AutoApprovable rejects is refused
+// before gpg runs, and that it stays pending.
+func TestResolverApproveAndAutoApprove_GPGSignWithoutExe(t *testing.T) {
+	mgr := newTestManager()
+	r := NewResolver(mgr, nil, 0)
+	r.GPGRunner = &fakeGPGRunner{res: approval.GPGResult{Signature: []byte("SIG")}}
+	id, err := mgr.CreateGPGSignRequest("remote:laptop", &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}, approval.SenderInfo{})
+	require.NoError(t, err)
+
+	require.ErrorIs(t, r.ApproveAndAutoApprove(id), approval.ErrNotAutoApprovable)
+
+	assert.NotNil(t, mgr.GetPending(id), "the request stays pending")
+	assert.Empty(t, mgr.ListAutoApproveRules())
 }

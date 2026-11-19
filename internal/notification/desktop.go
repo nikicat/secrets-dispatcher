@@ -25,8 +25,7 @@ const (
 // Notifier defines the interface for sending desktop notifications.
 type Notifier interface {
 	// Notify sends a notification and returns its ID.
-	// The actions parameter takes alternating (id, label) pairs per the FreeDesktop spec.
-	Notify(summary, body, icon string, actions []string) (uint32, error)
+	Notify(summary, body, icon string, buttons []Button) (uint32, error)
 	// Close closes a notification by ID.
 	Close(id uint32) error
 }
@@ -39,10 +38,30 @@ type Approver interface {
 	ApproveAndAutoApprove(id string) error
 }
 
+// An action's identifier on a notification. The notification server sends it
+// back in ActionInvoked when the user picks the action (ADR 0007).
+type actionKey string
+
+const (
+	// Invoked when the user clicks the notification body, per the freedesktop
+	// notification spec.
+	actionDefault               actionKey = "default"
+	actionApprove               actionKey = "approve"
+	actionApproveAndAutoApprove actionKey = "approve_and_auto_approve"
+	actionDeny                  actionKey = "deny"
+	actionAutoApprove           actionKey = "auto_approve"
+	actionDismiss               actionKey = "dismiss"
+)
+
+type Button struct {
+	Key   actionKey
+	Label string
+}
+
 // Action represents a user interaction with a notification button.
 type Action struct {
 	NotificationID uint32
-	ActionKey      string // "approve" or "deny"
+	ActionKey      actionKey
 }
 
 // Closed reports a NotificationClosed signal for a notification we sent.
@@ -181,7 +200,7 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 					continue
 				}
 				select {
-				case n.actions <- Action{NotificationID: id, ActionKey: key}:
+				case n.actions <- Action{NotificationID: id, ActionKey: actionKey(key)}:
 				case <-n.done:
 					return
 				default:
@@ -218,21 +237,27 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 // urgency + no transient hint that keep the notification alive (GNOME 46
 // sources, docs/adr/0007-approval-surfaces.md). Approvals are closed
 // explicitly via Close when resolved.
-func (n *DBusNotifier) Notify(summary, body, icon string, actions []string) (uint32, error) {
+func (n *DBusNotifier) Notify(summary, body, icon string, buttons []Button) (uint32, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	id, err := n.doNotifyFull(summary, body, icon, actions, 2, 0) // critical, never expire
+	id, err := n.doNotifyFull(summary, body, icon, buttons, 2, 0) // critical, never expire
 	if err != nil && errors.Is(err, dbus.ErrClosed) {
 		if reconnErr := n.reconnect(); reconnErr != nil {
 			return 0, fmt.Errorf("notify call: %w (reconnect failed: %v)", err, reconnErr)
 		}
-		id, err = n.doNotifyFull(summary, body, icon, actions, 2, 0)
+		id, err = n.doNotifyFull(summary, body, icon, buttons, 2, 0)
 	}
 	return id, err
 }
 
-func (n *DBusNotifier) doNotifyFull(summary, body, icon string, actions []string, urgency byte, expireTimeout int32) (uint32, error) {
+func (n *DBusNotifier) doNotifyFull(summary, body, icon string, buttons []Button, urgency byte, expireTimeout int32) (uint32, error) {
+	// The freedesktop notification spec takes actions as a flat list of
+	// alternating key, label pairs.
+	actions := make([]string, 0, 2*len(buttons))
+	for _, b := range buttons {
+		actions = append(actions, string(b.Key), b.Label)
+	}
 	obj := n.conn.Object(notifyDest, notifyPath)
 	call := obj.Call(
 		notifyInterface+".Notify",
@@ -242,7 +267,7 @@ func (n *DBusNotifier) doNotifyFull(summary, body, icon string, actions []string
 		icon,                 // app_icon
 		summary,              // summary
 		body,                 // body
-		actions,              // actions (alternating id, label pairs)
+		actions,              // actions
 		map[string]dbus.Variant{
 			"urgency": dbus.MakeVariant(urgency),
 		},
@@ -350,13 +375,14 @@ func (g *delayGroup) Cancel(key string) bool {
 // Handler receives approval events and shows desktop notifications.
 // It also processes notification action button clicks (Approve/Deny).
 type Handler struct {
-	notifier            Notifier
-	approver            Approver
-	baseURL             string
-	showPIDs            bool
-	autoApproveDuration time.Duration
-	notificationDelay   time.Duration
-	openURL             func(string) // injectable for testing; defaults to xdg-open
+	notifier Notifier
+	approver Approver
+	baseURL  string
+	showPIDs bool
+	// The auto-approve duration as notifications show it, such as "2m".
+	autoApproveLabel  string
+	notificationDelay time.Duration
+	openURL           func(string) // injectable for testing; defaults to xdg-open
 
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
@@ -381,17 +407,17 @@ type cancelledEntry struct {
 // requests cancelled within this window produce no notification at all.
 func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool, autoApproveDuration, notificationDelay time.Duration) *Handler {
 	return &Handler{
-		notifier:            notifier,
-		approver:            approver,
-		baseURL:             baseURL,
-		showPIDs:            showPIDs,
-		autoApproveDuration: autoApproveDuration,
-		notificationDelay:   notificationDelay,
-		openURL:             func(u string) { exec.Command("xdg-open", u).Start() },
-		notifications:       make(map[string]uint32),
-		requests:            make(map[uint32]string),
-		pending:             newDelayGroup(),
-		cancelledRequests:   make(map[string]cancelledEntry),
+		notifier:          notifier,
+		approver:          approver,
+		baseURL:           baseURL,
+		showPIDs:          showPIDs,
+		autoApproveLabel:  formatDurationShort(autoApproveDuration),
+		notificationDelay: notificationDelay,
+		openURL:           func(u string) { exec.Command("xdg-open", u).Start() },
+		notifications:     make(map[string]uint32),
+		requests:          make(map[uint32]string),
+		pending:           newDelayGroup(),
+		cancelledRequests: make(map[string]cancelledEntry),
 	}
 }
 
@@ -431,18 +457,18 @@ func (h *Handler) handleAction(action Action) {
 
 	var err error
 	switch action.ActionKey {
-	case "default":
+	case actionDefault:
 		h.openURL(h.baseURL + "?request=" + reqID)
 		return
-	case "approve":
+	case actionApprove:
 		err = h.approver.Approve(reqID)
-	case "approve_and_auto_approve":
+	case actionApproveAndAutoApprove:
 		err = h.approver.ApproveAndAutoApprove(reqID)
-	case "deny":
+	case actionDeny:
 		err = h.approver.Deny(reqID)
-	case "auto_approve":
+	case actionAutoApprove:
 		err = h.approver.AutoApprove(reqID)
-	case "dismiss":
+	case actionDismiss:
 		return // just close the notification, do nothing
 	default:
 		slog.Debug("unknown action key", "action", action.ActionKey, "request_id", reqID)
@@ -508,6 +534,14 @@ func formatDurationShort(d time.Duration) string {
 	return fmt.Sprintf("%ds", s)
 }
 
+func (h *Handler) approvalButtons(req *approval.Request) []Button {
+	buttons := []Button{{actionDefault, ""}, {actionApprove, "Approve"}}
+	if req.AutoApprovable() {
+		buttons = append(buttons, Button{actionApproveAndAutoApprove, "Approve " + h.autoApproveLabel})
+	}
+	return append(buttons, Button{actionDeny, "Deny"})
+}
+
 func (h *Handler) handleCreated(req *approval.Request) {
 	if h.notificationDelay <= 0 {
 		h.sendNotification(req)
@@ -521,15 +555,7 @@ func (h *Handler) handleCreated(req *approval.Request) {
 func (h *Handler) sendNotification(req *approval.Request) {
 	summary, icon := h.notificationMeta(req)
 	body := h.formatBody(req)
-	durLabel := formatDurationShort(h.autoApproveDuration)
-	actions := []string{
-		"default", "",
-		"approve", "Approve",
-		"approve_and_auto_approve", "Approve " + durLabel,
-		"deny", "Deny",
-	}
-
-	id, err := h.notifier.Notify(summary, body, icon, actions)
+	id, err := h.notifier.Notify(summary, body, icon, h.approvalButtons(req))
 	if err != nil {
 		slog.Error("failed to send notification", "error", err, "request_id", req.ID)
 		return
@@ -564,6 +590,11 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 		}
 	}
 
+	// The follow-up only offers an auto-approve rule.
+	if !req.AutoApprovable() {
+		return
+	}
+
 	// Store the cancelled request for auto-approve lookup
 	h.mu.Lock()
 	h.cancelledRequests[req.ID] = cancelledEntry{
@@ -585,10 +616,10 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 		invoker = "client"
 	}
 	summary := fmt.Sprintf("%s timed out", invoker)
-	body := fmt.Sprintf("Auto-approve similar requests for %s?", formatDurationShort(h.autoApproveDuration))
-	actions := []string{"auto_approve", "Auto-approve", "dismiss", "Dismiss"}
+	body := fmt.Sprintf("Auto-approve similar requests for %s?", h.autoApproveLabel)
+	buttons := []Button{{actionAutoApprove, "Auto-approve"}, {actionDismiss, "Dismiss"}}
 
-	newID, err := h.notifier.Notify(summary, body, "dialog-question", actions)
+	newID, err := h.notifier.Notify(summary, body, "dialog-question", buttons)
 	if err != nil {
 		slog.Error("failed to send auto-approve notification", "error", err, "request_id", req.ID)
 		return

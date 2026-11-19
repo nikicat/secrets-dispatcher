@@ -125,7 +125,8 @@ Run '%s <command> -h' for command-specific help.
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	listenAddr := fs.String("listen", config.DefaultListenAddr, "HTTP API listen address")
+	listenAddr := config.DefaultListenAddr
+	fs.Var(&listenAddr, "listen", "HTTP API listen `address`")
 	var stateDir config.StateDir
 	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	fs.Parse(args)
@@ -141,7 +142,7 @@ func runLogin(args []string) {
 		stateDir = cfg.StateDir
 	}
 	if !set["listen"] && cfg.Listen != "" {
-		*listenAddr = cfg.Listen
+		listenAddr = cfg.Listen
 	}
 
 	auth, err := loadClientAuth(stateDir)
@@ -150,7 +151,7 @@ func runLogin(args []string) {
 		os.Exit(1)
 	}
 
-	url, err := auth.GenerateLoginURL(*listenAddr)
+	url, err := auth.GenerateLoginURL(listenAddr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error generating login URL: %v\n", err)
 		os.Exit(1)
@@ -161,10 +162,8 @@ func runLogin(args []string) {
 	fmt.Println()
 	fmt.Printf("(Single-use link; expires in %d minutes)\n", int(api.LoginLinkLifetime.Minutes()))
 
-	// Try to open the URL in the default browser
-	if err := exec.Command("xdg-open", url).Start(); err != nil {
-		// Silently ignore errors - user can still copy the URL manually
-	}
+	// The URL is printed above, so a failed open needs no report.
+	_ = notification.OpenURL(url)
 }
 
 func runCLI(cmd string, args []string) {
@@ -172,7 +171,8 @@ func runCLI(cmd string, args []string) {
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	var stateDir config.StateDir
 	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
-	serverAddr := fs.String("server", config.DefaultListenAddr, "API server address")
+	serverAddr := config.DefaultListenAddr
+	fs.Var(&serverAddr, "server", "API server `address`")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Parse(args)
 
@@ -187,7 +187,7 @@ func runCLI(cmd string, args []string) {
 		stateDir = cfg.StateDir
 	}
 	if !set["server"] && cfg.Listen != "" {
-		*serverAddr = cfg.Listen
+		serverAddr = cfg.Listen
 	}
 
 	auth, err := loadClientAuth(stateDir)
@@ -196,7 +196,7 @@ func runCLI(cmd string, args []string) {
 		os.Exit(1)
 	}
 
-	client := cli.NewClient(*serverAddr, auth.Token())
+	client := cli.NewClient(serverAddr, auth.Token())
 	formatter := cli.NewFormatter(os.Stdout, *jsonOutput)
 
 	switch cmd {
@@ -259,7 +259,8 @@ func runServe(args []string) {
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	logLevel := fs.String("log-level", config.DefaultLogLevel, "Log level: debug, info, warn, error")
 	logFormat := fs.String("log-format", config.DefaultLogFormat, "Log format: text (colored) or json")
-	listenAddr := fs.String("listen", config.DefaultListenAddr, "HTTP API listen address")
+	listenAddr := config.DefaultListenAddr
+	fs.Var(&listenAddr, "listen", "HTTP API listen `address`")
 	timeout := fs.Duration("timeout", config.DefaultTimeout, "Approval timeout")
 	historyLimit := fs.Int("history-limit", config.DefaultHistoryLimit, "Maximum number of resolved requests to keep in history")
 	var stateDir config.StateDir
@@ -279,7 +280,7 @@ func runServe(args []string) {
 		stateDir = cfg.StateDir
 	}
 	if !set["listen"] && cfg.Listen != "" {
-		*listenAddr = cfg.Listen
+		listenAddr = cfg.Listen
 	}
 	if !set["log-level"] && cfg.Serve.LogLevel != "" {
 		*logLevel = cfg.Serve.LogLevel
@@ -380,21 +381,21 @@ func runServe(args []string) {
 	// Set up desktop notifications
 	var desktopNotifier *notification.DBusNotifier
 	var notifHandler *notification.Handler
-	var slowUpstreamNotifier proxy.UpstreamNotifier
+	slowUpstream := proxy.SlowUpstream{Threshold: time.Duration(*cfg.Serve.UpstreamSlowThreshold)}
 	if *notifications {
 		notifier, err := notification.NewDBusNotifier()
 		if err != nil {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
 		} else {
 			desktopNotifier = notifier
-			slowUpstreamNotifier = notification.NewSlowUpstreamNotifier(notifier)
+			slowUpstream.Notifier = notification.NewSlowUpstreamNotifier(notifier)
 			slog.Debug("desktop notifications enabled")
 		}
 	}
-	upstreamSlowThreshold := time.Duration(*cfg.Serve.UpstreamSlowThreshold)
+	resolver := api.NewResolver(approvalMgr, slowUpstream)
 	notificationDelay := time.Duration(cfg.Serve.NotificationDelay)
 	if desktopNotifier != nil {
-		notifHandler = notification.NewHandler(desktopNotifier, api.NewResolver(approvalMgr, slowUpstreamNotifier, upstreamSlowThreshold), "http://"+*listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
+		notifHandler = notification.NewHandler(desktopNotifier, resolver, listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
 		approvalMgr.Subscribe(notifHandler)
 	}
 
@@ -439,7 +440,7 @@ func runServe(args []string) {
 	for _, ds := range cfg.Serve.Downstream {
 		switch ds.Type {
 		case config.BusSockets:
-			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, slowUpstreamNotifier, upstreamSlowThreshold)
+			mgr, mgrErr := proxy.NewManager(ds.Path, upstreamAddr, approvalMgr, level, slowUpstream)
 			if mgrErr != nil {
 				fmt.Fprintf(os.Stderr, "error creating proxy manager: %v\n", mgrErr)
 				os.Exit(1)
@@ -450,10 +451,7 @@ func runServe(args []string) {
 			})
 
 		case config.BusSessionBus:
-			if !approvalMgr.ClaimClient(approval.ClientLocal) {
-				fmt.Fprintf(os.Stderr, "error: client %q claimed twice (should be caught by validation)\n", approval.ClientLocal)
-				os.Exit(1)
-			}
+			claimClient(approvalMgr, approval.ClientLocal)
 			sp := &staticProvider{info: proxy.ClientInfo{Name: approval.ClientLocal, SocketPath: string(config.BusSessionBus)}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
@@ -464,13 +462,12 @@ func runServe(args []string) {
 				backoff := time.Second
 				for {
 					p := proxy.New(proxy.Config{
-						ClientName:            approval.ClientLocal,
-						LocalProcesses:        true,
-						LogLevel:              level,
-						Approval:              approvalMgr,
-						TrimProcessChain:      *cfg.Serve.TrimProcessChain,
-						UpstreamNotifier:      slowUpstreamNotifier,
-						UpstreamSlowThreshold: upstreamSlowThreshold,
+						ClientName:       approval.ClientLocal,
+						LocalProcesses:   true,
+						LogLevel:         level,
+						Approval:         approvalMgr,
+						TrimProcessChain: *cfg.Serve.TrimProcessChain,
+						SlowUpstream:     slowUpstream,
 					})
 					frontConn, err := dbus.ConnectSessionBus()
 					if err == nil {
@@ -502,23 +499,14 @@ func runServe(args []string) {
 			})
 
 		case config.BusSocket:
-			clientName, err := approval.ClientFromSocket(ds.Path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", err)
-				os.Exit(1)
-			}
-			if !approvalMgr.ClaimClient(clientName) {
-				fmt.Fprintf(os.Stderr, "error: client %q claimed twice (should be caught by validation)\n", clientName)
-				os.Exit(1)
-			}
+			claimClient(approvalMgr, ds.Client)
 			p := proxy.New(proxy.Config{
-				ClientName:            clientName,
-				LogLevel:              level,
-				Approval:              approvalMgr,
-				UpstreamNotifier:      slowUpstreamNotifier,
-				UpstreamSlowThreshold: upstreamSlowThreshold,
+				ClientName:   ds.Client,
+				LogLevel:     level,
+				Approval:     approvalMgr,
+				SlowUpstream: slowUpstream,
 			})
-			sp := &staticProvider{info: proxy.ClientInfo{Name: clientName, SocketPath: ds.Path}}
+			sp := &staticProvider{info: proxy.ClientInfo{Name: ds.Client, SocketPath: ds.Path}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
 				// Connect front=socket, backend=upstream
@@ -559,16 +547,17 @@ func runServe(args []string) {
 	}
 
 	// Create API server
-	apiServer, err := api.NewServerWithProvider(*listenAddr, approvalMgr, &multiProvider{providers: providers}, auth, *cfg.Serve.TrimProcessChain, slowUpstreamNotifier, upstreamSlowThreshold)
+	apiServer, err := api.NewServer(api.ServerConfig{
+		Addr:              listenAddr,
+		Resolver:          resolver,
+		Auth:              auth,
+		TrimProcessChain:  *cfg.Serve.TrimProcessChain,
+		NotificationDelay: notificationDelay,
+		TestMode:          *apiOnly,
+	}, &multiProvider{providers: providers})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
 		os.Exit(1)
-	}
-	apiServer.WSHandler().SetNotificationDelay(notificationDelay)
-
-	// Enable test mode for API-only mode
-	if *apiOnly {
-		apiServer.SetTestMode(true)
 	}
 
 	// Serve the API socket in the runtime directory, except with --api-only.
@@ -590,7 +579,7 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 	slog.Info("API server started",
-		"url", "http://"+apiServer.Addr(),
+		"url", apiServer.Addr().BaseURL(),
 		"cookie_file", stateDir.Cookie())
 
 	// Graceful shutdown of API server
@@ -837,8 +826,8 @@ Show-only options:
 }
 
 // runService handles the "service" subcommand group (install/uninstall/status).
-// runTry handles the `try` command: a reversible trial of the takeover
-// (US-9). Ctrl-C (or SIGTERM) restores the original Secret Service.
+// Handles the `try` command: a reversible trial of the takeover. Ctrl-C (or
+// SIGTERM) restores the original Secret Service.
 func runTry(args []string) {
 	fs := flag.NewFlagSet("try", flag.ExitOnError)
 	dryRun := fs.Bool("dry-run", false, "Print what the trial would change, then exit without changing anything")
@@ -1065,9 +1054,18 @@ func parseLogLevel(s string) slog.Level {
 	}
 }
 
-// Loads the API auth token from dir, or from the default state directory when
-// dir is empty. Errors when the token file is missing. That error says the
-// daemon is not running.
+// Claims name for one downstream client of serve. Exits when name is already
+// claimed.
+func claimClient(mgr *approval.Manager, name string) {
+	if !mgr.ClaimClient(name) {
+		fmt.Fprintf(os.Stderr, "error: client %q claimed twice (should be caught by validation)\n", name)
+		os.Exit(1)
+	}
+}
+
+// Returns the Auth for the master token that serve keeps in dir, or in the
+// default state directory when dir is empty (ADR 0006). Errors when serve has
+// never written a token there.
 func loadClientAuth(dir config.StateDir) (*api.Auth, error) {
 	dir, err := dir.OrDefault()
 	if err != nil {
@@ -1075,7 +1073,7 @@ func loadClientAuth(dir config.StateDir) (*api.Auth, error) {
 	}
 	auth, err := api.LoadAuth(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%s is not running (no cookie file found)\nStart the service first with: %s serve", progName, progName)
+		return nil, fmt.Errorf("no cookie file at %s\nStart the service first with: %s serve", dir.Cookie(), progName)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load auth: %w", err)

@@ -1,12 +1,12 @@
 name: E2E GNOME
 
 # Tier-1 (fast) GNOME e2e: real gnome-keyring behind the proxy on private
-# D-Bus buses, no VM. Covers the US-6 prompt-forwarding regression (issue #1)
+# D-Bus buses, no VM. Covers the prompt-forwarding regression (issue #1)
 # and a secret round trip through the proxy against a real backend.
 #
 # Tier-2 (full) GNOME e2e: real Ubuntu desktop VM (qemu+KVM+cloud-init) with
 # gdm autologin — the only honest coverage for the takeover acceptance gates
-# (US-4 ownership, US-5 re-grab resistance across a session restart, US-9
+# (owning the bus name, resisting a re-grab across a session restart, full
 # reversal). One VM leg per supported Ubuntu series (24.04 LTS + 26.04 LTS),
 # in parallel on every PR (~1.5 min with warm image cache, ~4 min cold); the
 # weekly cache key forces a fresh provision so Ubuntu package drift in each

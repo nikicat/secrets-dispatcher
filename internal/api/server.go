@@ -12,15 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
-	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 // Server is the HTTP API server.
 type Server struct {
 	httpServer *http.Server
-	auth       *Auth
 	handlers   *Handlers
 	wsHandler  *WSHandler
 	listener   net.Listener
@@ -33,24 +30,45 @@ type Server struct {
 	serving sync.WaitGroup
 }
 
-// Creates an API server for single-socket mode, listening on addr.
-func NewServer(addr string, manager *approval.Manager, remoteSocket, clientName string, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) (*Server, error) {
-	handlers := NewHandlers(manager, remoteSocket, clientName, auth, trimProcessChain, upstreamNotifier, slowThreshold)
-	wsHandler := NewWSHandler(manager, nil, auth, remoteSocket, clientName)
-	return newServerWithHandlers(addr, handlers, wsHandler, auth)
+type ServerConfig struct {
+	Addr     config.ListenAddr
+	Resolver *Resolver
+	Auth     *Auth
+	// True if a GPG sign request's process chain stops at the first session
+	// leader. False otherwise.
+	TrimProcessChain bool
+	// How long browser clients wait before notifying of a new request. Zero
+	// notifies at once.
+	NotificationDelay time.Duration
+	// True if the test-only endpoints are served. False otherwise.
+	TestMode bool
 }
 
-// Creates an API server for multi-socket mode, listening on addr.
-func NewServerWithProvider(addr string, manager *approval.Manager, provider ClientProvider, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) (*Server, error) {
-	handlers := NewHandlersWithProvider(manager, provider, auth, trimProcessChain, upstreamNotifier, slowThreshold)
-	wsHandler := NewWSHandler(manager, provider, auth, "", "")
-	return newServerWithHandlers(addr, handlers, wsHandler, auth)
+// Creates an API server listening on cfg.Addr.
+func NewServer(cfg ServerConfig, provider ClientProvider) (*Server, error) {
+	handlers := NewHandlers(cfg, provider)
+	wsHandler := NewWSHandler(cfg.Resolver.Manager, provider, cfg.Auth, cfg.NotificationDelay)
+
+	// Create listener first to catch address-in-use errors early
+	listener, err := net.Listen("tcp", string(cfg.Addr))
+	if err != nil {
+		return nil, err
+	}
+
+	httpServer := &http.Server{
+		Handler:     newRouter(handlers, wsHandler, cfg.Auth),
+		ConnContext: connContext,
+	}
+
+	return &Server{
+		httpServer: httpServer,
+		handlers:   handlers,
+		wsHandler:  wsHandler,
+		listener:   listener,
+	}, nil
 }
 
-// Creates an API server listening on addr.
-func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler, auth *Auth) (*Server, error) {
-
-	// Create the main router
+func newRouter(handlers *Handlers, ws *WSHandler, auth *Auth) http.Handler {
 	rootMux := http.NewServeMux()
 
 	// API routes that require auth
@@ -58,7 +76,7 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	apiMux.HandleFunc("/api/v1/status", handlers.HandleStatus)
 	apiMux.HandleFunc("/api/v1/pending", handlers.HandlePendingList)
 	apiMux.HandleFunc("/api/v1/log", handlers.HandleLog)
-	apiMux.HandleFunc("/api/v1/ws", wsHandler.HandleWS)
+	apiMux.HandleFunc("/api/v1/ws", ws.HandleWS)
 	apiMux.HandleFunc("/api/v1/test/history", handlers.HandleTestInjectHistory)
 	apiMux.HandleFunc("/api/v1/gpg-sign/request", handlers.HandleGPGSignRequest)
 	apiMux.HandleFunc("/api/v1/auto-approve", func(w http.ResponseWriter, r *http.Request) {
@@ -99,24 +117,7 @@ func newServerWithHandlers(addr string, handlers *Handlers, wsHandler *WSHandler
 	// Static files (no auth required)
 	rootMux.Handle("/", NewSPAHandler())
 
-	// Create listener first to catch address-in-use errors early
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
-
-	httpServer := &http.Server{
-		Handler:     rootMux,
-		ConnContext: connContext,
-	}
-
-	return &Server{
-		httpServer: httpServer,
-		auth:       auth,
-		handlers:   handlers,
-		wsHandler:  wsHandler,
-		listener:   listener,
-	}, nil
+	return rootMux
 }
 
 // Opens the API socket in dir and serves the API on it in the background.
@@ -166,8 +167,8 @@ func (s *Server) Start() error {
 }
 
 // Addr returns the address the server is listening on.
-func (s *Server) Addr() string {
-	return s.listener.Addr().String()
+func (s *Server) Addr() config.ListenAddr {
+	return config.ListenAddr(s.listener.Addr().String())
 }
 
 // Gracefully shuts down the server and its remote sockets, and returns once
@@ -186,9 +187,4 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // WSHandler returns the WebSocket handler for broadcasting client events.
 func (s *Server) WSHandler() *WSHandler {
 	return s.wsHandler
-}
-
-// SetTestMode enables test-only endpoints.
-func (s *Server) SetTestMode(enabled bool) {
-	s.handlers.SetTestMode(enabled)
 }

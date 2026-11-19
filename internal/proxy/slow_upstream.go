@@ -10,12 +10,12 @@ import (
 // UpstreamCallContext carries caller and item information for slow upstream
 // notifications. SenderInfo is pre-filled for approval-gated calls;
 // ResolveSender is set for non-gated calls that have access to a D-Bus
-// message (resolved lazily only when the notification fires).
+// message.
 type UpstreamCallContext struct {
 	RequestType   approval.RequestType
 	Items         []approval.ItemInfo
 	SenderInfo    approval.SenderInfo
-	ResolveSender func() approval.SenderInfo // lazy; nil if unavailable
+	ResolveSender func() approval.SenderInfo // nil if unavailable
 }
 
 // UpstreamNotifier shows informational notifications about slow upstream calls.
@@ -25,18 +25,23 @@ type UpstreamNotifier interface {
 	NotifySlowUpstream(ctx UpstreamCallContext) func()
 }
 
-// propResult bundles a GetProperty return pair for use with withSlowNotify.
 type propResult struct {
 	v   dbus.Variant
 	err error
 }
 
-// WithSlowNotify wraps an arbitrary blocking call. If fn doesn't complete
-// within threshold, fires a notification via notifier. The notification is
-// dismissed when fn completes. SenderInfo is resolved lazily just before
-// the notification fires.
-func WithSlowNotify[T any](threshold time.Duration, notifier UpstreamNotifier, ctx UpstreamCallContext, fn func() T) T {
-	if notifier == nil || threshold <= 0 {
+// Where to report an upstream call that outlasts Threshold.
+// The zero value reports nothing.
+type SlowUpstream struct {
+	Notifier  UpstreamNotifier
+	Threshold time.Duration
+}
+
+// Returns fn's result. Shows a notification through slow.Notifier while fn runs
+// past slow.Threshold, and calls ctx.ResolveSender only when that notification
+// fires and ctx.SenderInfo is empty.
+func WithSlowNotify[T any](slow SlowUpstream, ctx UpstreamCallContext, fn func() T) T {
+	if slow.Notifier == nil || slow.Threshold <= 0 {
 		return fn()
 	}
 
@@ -45,7 +50,7 @@ func WithSlowNotify[T any](threshold time.Duration, notifier UpstreamNotifier, c
 		done <- fn()
 	}()
 
-	timer := time.NewTimer(threshold)
+	timer := time.NewTimer(slow.Threshold)
 	defer timer.Stop()
 
 	select {
@@ -55,14 +60,9 @@ func WithSlowNotify[T any](threshold time.Duration, notifier UpstreamNotifier, c
 		if ctx.SenderInfo.PID == 0 && len(ctx.SenderInfo.ProcessChain) == 0 && ctx.ResolveSender != nil {
 			ctx.SenderInfo = ctx.ResolveSender()
 		}
-		dismiss := notifier.NotifySlowUpstream(ctx)
+		dismiss := slow.Notifier.NotifySlowUpstream(ctx)
 		result := <-done
 		dismiss()
 		return result
 	}
-}
-
-// callWithSlowNotify is a convenience wrapper for *dbus.Call return type.
-func callWithSlowNotify(threshold time.Duration, notifier UpstreamNotifier, ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(threshold, notifier, ctx, fn)
 }

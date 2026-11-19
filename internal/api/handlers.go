@@ -17,43 +17,21 @@ type ClientProvider interface {
 
 // Handlers provides HTTP handlers for the REST API.
 type Handlers struct {
-	manager          *approval.Manager
 	resolver         *Resolver
 	clientProvider   ClientProvider
 	trimProcessChain bool
-	// For backward compatibility in single-socket mode
-	remoteSocket string
-	clientName   string
-	auth         *Auth
-	testMode     bool // When true, enables test-only endpoints
+	auth             *Auth
+	testMode         bool
 }
 
-// NewHandlers creates new API handlers for single-socket mode.
-func NewHandlers(manager *approval.Manager, remoteSocket, clientName string, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) *Handlers {
+func NewHandlers(cfg ServerConfig, provider ClientProvider) *Handlers {
 	return &Handlers{
-		manager:          manager,
-		resolver:         NewResolver(manager, upstreamNotifier, slowThreshold),
-		remoteSocket:     remoteSocket,
-		clientName:       clientName,
-		auth:             auth,
-		trimProcessChain: trimProcessChain,
-	}
-}
-
-// NewHandlersWithProvider creates new API handlers for multi-socket mode.
-func NewHandlersWithProvider(manager *approval.Manager, provider ClientProvider, auth *Auth, trimProcessChain bool, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) *Handlers {
-	return &Handlers{
-		manager:          manager,
-		resolver:         NewResolver(manager, upstreamNotifier, slowThreshold),
+		resolver:         cfg.Resolver,
 		clientProvider:   provider,
-		auth:             auth,
-		trimProcessChain: trimProcessChain,
+		auth:             cfg.Auth,
+		trimProcessChain: cfg.TrimProcessChain,
+		testMode:         cfg.TestMode,
 	}
-}
-
-// SetTestMode enables test-only endpoints.
-func (h *Handlers) SetTestMode(enabled bool) {
-	h.testMode = enabled
 }
 
 // HandleStatus handles GET /api/v1/status.
@@ -63,25 +41,11 @@ func (h *Handlers) HandleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := StatusResponse{
+	writeJSON(w, StatusResponse{
 		Running:      true,
-		PendingCount: h.manager.PendingCount(),
-	}
-
-	if h.clientProvider != nil {
-		// Multi-socket mode: get clients from provider
-		resp.Clients = h.clientProvider.Clients()
-	} else {
-		// Single-socket mode: use static client info
-		resp.Clients = []proxy.ClientInfo{
-			{Name: h.clientName, SocketPath: h.remoteSocket},
-		}
-		// Also set deprecated fields for backward compatibility
-		resp.Client = h.clientName
-		resp.RemoteSocket = h.remoteSocket
-	}
-
-	writeJSON(w, resp)
+		Clients:      h.clientProvider.Clients(),
+		PendingCount: h.resolver.Manager.PendingCount(),
+	})
 }
 
 // HandlePendingList handles GET /api/v1/pending.
@@ -91,7 +55,7 @@ func (h *Handlers) HandlePendingList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := PendingListResponse{Requests: pendingRequests(h.manager)}
+	resp := PendingListResponse{Requests: pendingRequests(h.resolver.Manager)}
 	writeJSON(w, resp)
 }
 
@@ -162,7 +126,7 @@ func (h *Handlers) HandleDeny(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.manager.Deny(id); err != nil {
+	if err := h.resolver.Deny(id); err != nil {
 		if err == approval.ErrNotFound {
 			writeError(w, "request not found or expired", http.StatusNotFound)
 			return
@@ -187,7 +151,7 @@ func (h *Handlers) HandleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.manager.Cancel(id); err != nil {
+	if err := h.resolver.Manager.Cancel(id); err != nil {
 		if err == approval.ErrNotFound {
 			writeError(w, "request not found or expired", http.StatusNotFound)
 			return
@@ -206,7 +170,7 @@ func (h *Handlers) HandleAutoApproveList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	rules := h.manager.ListAutoApproveRules()
+	rules := h.resolver.Manager.ListAutoApproveRules()
 	if rules == nil {
 		rules = []approval.AutoApproveRule{}
 	}
@@ -251,7 +215,7 @@ func (h *Handlers) HandleAutoApproveDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.manager.RemoveAutoApproveRule(id); err != nil {
+	if err := h.resolver.Manager.RemoveAutoApproveRule(id); err != nil {
 		if err == approval.ErrNotFound {
 			writeError(w, "rule not found", http.StatusNotFound)
 			return
@@ -270,7 +234,7 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := HistoryResponse{Entries: historyEntries(h.manager)}
+	resp := HistoryResponse{Entries: historyEntries(h.resolver.Manager)}
 	writeJSON(w, resp)
 }
 
@@ -376,10 +340,7 @@ func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce single use: a login token is redeemable exactly once, so a token
-	// captured from the launcher/browser argv cannot be replayed (the legitimate
-	// browser's own page-load exchange has already consumed it).
-	if !h.auth.consumeJTI(jti(claims.Jti), claims.Exp) {
+	if !h.auth.consumeJTI(jti(claims.Jti), time.Unix(claims.Exp, 0)) {
 		writeError(w, "invalid or expired token", http.StatusUnauthorized)
 		return
 	}
@@ -452,7 +413,7 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 		ResolvedAt: entry.ResolvedAt,
 	}
 
-	h.manager.AddHistoryEntry(approvalEntry)
+	h.resolver.Manager.AddHistoryEntry(approvalEntry)
 
 	writeJSON(w, ActionResponse{Status: "created"})
 }

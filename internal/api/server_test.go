@@ -15,6 +15,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 func TestServer_Integration(t *testing.T) {
@@ -22,7 +23,7 @@ func TestServer_Integration(t *testing.T) {
 	auth := newTestAuth(t)
 
 	// Use port 0 to get a random available port
-	server, err := NewServer("127.0.0.1:0", mgr, "/remote/socket", "test-client", auth, false, nil, 0)
+	server, err := NewServer(ServerConfig{Addr: "127.0.0.1:0", Resolver: NewResolver(mgr, proxy.SlowUpstream{}), Auth: auth}, oneClient("test-client", "/remote/socket"))
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -32,7 +33,7 @@ func TestServer_Integration(t *testing.T) {
 	}
 	defer server.Shutdown(context.Background())
 
-	baseURL := "http://" + server.Addr()
+	baseURL := server.Addr().BaseURL()
 	client := &http.Client{Timeout: 5 * time.Second}
 
 	// Test without auth
@@ -72,16 +73,11 @@ func TestServer_Integration(t *testing.T) {
 		if !status.Running {
 			t.Error("expected running=true")
 		}
-		// Check new clients field
 		if len(status.Clients) != 1 {
 			t.Fatalf("expected 1 client, got %d", len(status.Clients))
 		}
 		if status.Clients[0].Name != "test-client" {
 			t.Errorf("expected client name 'test-client', got '%s'", status.Clients[0].Name)
-		}
-		// Check deprecated field
-		if status.Client != "test-client" {
-			t.Errorf("expected client 'test-client', got '%s'", status.Client)
 		}
 	})
 
@@ -139,7 +135,7 @@ func TestServer_ShutdownLogsNoError(t *testing.T) {
 	defer slog.SetDefault(slog.Default())
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError})))
 
-	server, err := NewServer("127.0.0.1:0", newTestManager(), "/remote/socket", "test-client", newTestAuth(t), false, nil, 0)
+	server, err := NewServer(ServerConfig{Addr: "127.0.0.1:0", Resolver: NewResolver(newTestManager(), proxy.SlowUpstream{}), Auth: newTestAuth(t)}, oneClient("test-client", "/remote/socket"))
 	require.NoError(t, err)
 	require.NoError(t, server.Start())
 	require.NoError(t, server.ServeAPISocket(config.RuntimeDir(t.TempDir())))

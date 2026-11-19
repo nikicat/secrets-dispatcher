@@ -1,5 +1,5 @@
-// notifprobe is the Tier-2 US-7 acceptance gate, run inside the desktop VM
-// against REAL gnome-shell.
+// notifprobe is the Tier-2 acceptance gate for approval notifications
+// (ADR 0007), run inside the desktop VM against REAL gnome-shell.
 //
 // Platform model (read from gnome-shell 46 sources, verified empirically):
 // gnome-shell IGNORES expire_timeout entirely (the fdo daemon discards it).
@@ -169,7 +169,7 @@ func main() {
 				continue
 			}
 			die("production notification closed after <%s with reason=%d — "+
-				"approvals must persist until acted on (US-7)", window, c.Reason)
+				"approvals must persist until acted on", window, c.Reason)
 		case <-timer.C:
 			// Survived the window: clean up our banner and pass.
 			_ = notifier.Close(id)

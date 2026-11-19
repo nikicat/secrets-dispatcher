@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -15,27 +14,25 @@ import (
 // ItemHandler handles Item interface calls for item objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*/*.
 type ItemHandler struct {
-	localConn        *dbus.Conn
-	sessions         *SessionManager
-	logger           *logging.Logger
-	approval         *approval.Manager
-	tracker          *clientTracker
-	resolver         *SenderInfoResolver
-	upstreamNotifier UpstreamNotifier
-	slowThreshold    time.Duration
+	localConn    *dbus.Conn
+	sessions     *SessionManager
+	logger       *logging.Logger
+	approval     *approval.Manager
+	tracker      *clientTracker
+	resolver     *SenderInfoResolver
+	slowUpstream SlowUpstream
 }
 
 // NewItemHandler creates a new ItemHandler.
-func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *ItemHandler {
+func NewItemHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, slowUpstream SlowUpstream) *ItemHandler {
 	return &ItemHandler{
-		localConn:        localConn,
-		sessions:         sessions,
-		logger:           logger,
-		approval:         approvalMgr,
-		tracker:          tracker,
-		resolver:         resolver,
-		upstreamNotifier: upstreamNotifier,
-		slowThreshold:    slowThreshold,
+		localConn:    localConn,
+		sessions:     sessions,
+		logger:       logger,
+		approval:     approvalMgr,
+		tracker:      tracker,
+		resolver:     resolver,
+		slowUpstream: slowUpstream,
 	}
 }
 
@@ -53,14 +50,14 @@ func (i *ItemHandler) senderResolver(sender senderName) func() approval.SenderIn
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (i *ItemHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(i.slowThreshold, i.upstreamNotifier, ctx, fn)
+	return WithSlowNotify(i.slowUpstream, ctx, fn)
 }
 
 // upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier,
 // passing caller context to the notification so the user knows what triggered any
 // pinentry or keyring unlock prompt.
 func (i *ItemHandler) upstreamGetProperty(obj dbus.BusObject, prop string, ctx UpstreamCallContext) (dbus.Variant, error) {
-	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, ctx, func() propResult {
+	r := WithSlowNotify(i.slowUpstream, ctx, func() propResult {
 		v, err := obj.GetProperty(prop)
 		return propResult{v, err}
 	})
@@ -269,7 +266,7 @@ func (i *ItemHandler) Get(msg dbus.Message, iface, property string) (dbus.Varian
 
 	obj := i.upstream(path)
 	sender := senderOf(msg)
-	r := WithSlowNotify(i.slowThreshold, i.upstreamNotifier, UpstreamCallContext{
+	r := WithSlowNotify(i.slowUpstream, UpstreamCallContext{
 		ResolveSender: i.senderResolver(sender),
 	}, func() propResult {
 		v, err := obj.GetProperty(iface + "." + property)

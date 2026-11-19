@@ -4,7 +4,7 @@
 # gdm3 + gnome-shell + gnome-keyring with autologin for the e2e user. This is
 # the Tier-2 fidelity environment — the only place gnome-keyring's real
 # start/re-grab vectors (systemd user units, XDG autostart, D-Bus activation,
-# gnome-session) are honestly reproduced. See docs/plans/onboarding-and-e2e.md.
+# gnome-session) are honestly reproduced (ADR 0010).
 #
 # @SSH_PUBKEY@ is substituted by run.sh at seed-build time.
 

@@ -140,7 +140,7 @@ func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
 	// Zero delay for existing tests — notifications fire immediately.
-	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false, 2*time.Minute, 0)
+	h := NewHandler(mock, approver, "127.0.0.1:8484", false, 2*time.Minute, 0)
 	return h, mock, approver
 }
 
@@ -701,7 +701,7 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 	h, _, approver := newTestHandler()
 
 	var opened string
-	h.openURL = func(u string) { opened = u }
+	h.openURL = func(u string) error { opened = u; return nil }
 
 	req := &approval.Request{
 		ID:     "action-default-1",
@@ -730,7 +730,7 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 	cancel()
 	<-done
 
-	if opened != "http://127.0.0.1:8484?request=action-default-1" {
+	if opened != "http://127.0.0.1:8484/?request=action-default-1" {
 		t.Errorf("expected openURL called with request URL, got %q", opened)
 	}
 
@@ -851,7 +851,7 @@ func stringContains(s, substr string) bool {
 func newTestHandlerWithDelay(delay time.Duration) (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
-	h := NewHandler(mock, approver, "http://127.0.0.1:8484", false, 2*time.Minute, delay)
+	h := NewHandler(mock, approver, "127.0.0.1:8484", false, 2*time.Minute, delay)
 	return h, mock, approver
 }
 

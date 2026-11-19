@@ -84,8 +84,7 @@ func (in installInputs) units(provider Provider) (map[string]string, error) {
 }
 
 // A Change is one concrete action an install will perform: a file write, a
-// backup/restore, a removal, a command, or a signal. Plan returns the exact
-// list so --dry-run (US-1) can show what would happen without doing it.
+// backup/restore, a removal, a command, or a signal.
 type Change struct {
 	Op     string // "write", "backup", "restore", "remove", "run", "signal"
 	Target string
@@ -231,7 +230,7 @@ func execStartOf(unit string) string {
 	return "?"
 }
 
-// PrintPlan prints the changes Install(opts) would make (--dry-run, US-1).
+// Prints the changes that Install(opts) would make.
 func PrintPlan(opts Options) error {
 	changes, err := Plan(opts)
 	if err != nil {

@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"sort"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -13,27 +12,25 @@ import (
 
 // Service implements org.freedesktop.Secret.Service.
 type Service struct {
-	localConn        *dbus.Conn
-	sessions         *SessionManager
-	logger           *logging.Logger
-	approval         *approval.Manager
-	tracker          *clientTracker
-	resolver         *SenderInfoResolver
-	upstreamNotifier UpstreamNotifier
-	slowThreshold    time.Duration
+	localConn    *dbus.Conn
+	sessions     *SessionManager
+	logger       *logging.Logger
+	approval     *approval.Manager
+	tracker      *clientTracker
+	resolver     *SenderInfoResolver
+	slowUpstream SlowUpstream
 }
 
 // NewService creates a new Service handler.
-func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, upstreamNotifier UpstreamNotifier, slowThreshold time.Duration) *Service {
+func NewService(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, slowUpstream SlowUpstream) *Service {
 	return &Service{
-		localConn:        localConn,
-		sessions:         sessions,
-		logger:           logger,
-		approval:         approvalMgr,
-		tracker:          tracker,
-		resolver:         resolver,
-		upstreamNotifier: upstreamNotifier,
-		slowThreshold:    slowThreshold,
+		localConn:    localConn,
+		sessions:     sessions,
+		logger:       logger,
+		approval:     approvalMgr,
+		tracker:      tracker,
+		resolver:     resolver,
+		slowUpstream: slowUpstream,
 	}
 }
 
@@ -51,14 +48,14 @@ func (s *Service) senderResolver(sender senderName) func() approval.SenderInfo {
 // upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
 // passing caller and item context to the notification.
 func (s *Service) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(s.slowThreshold, s.upstreamNotifier, ctx, fn)
+	return WithSlowNotify(s.slowUpstream, ctx, fn)
 }
 
 // upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier,
 // passing caller context to the notification so the user knows what triggered any
 // pinentry or keyring unlock prompt.
 func (s *Service) upstreamGetProperty(obj dbus.BusObject, prop string, ctx UpstreamCallContext) (dbus.Variant, error) {
-	r := WithSlowNotify(s.slowThreshold, s.upstreamNotifier, ctx, func() propResult {
+	r := WithSlowNotify(s.slowUpstream, ctx, func() propResult {
 		v, err := obj.GetProperty(prop)
 		return propResult{v, err}
 	})

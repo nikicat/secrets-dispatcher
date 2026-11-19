@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// Status prints a doctor-style health report (US-11): who owns
-// org.freedesktop.secrets, which units are installed and whether they run,
-// and whether the mask/demotion state is consistent with the topology. It
-// returns an error when problems were found so the CLI exits non-zero.
+// Prints a doctor-style health report: who owns org.freedesktop.secrets,
+// which units are installed and whether they run, and whether the
+// mask/demotion state is consistent with the topology. Errors when the report
+// finds a problem.
 func Status() error {
 	unitsDir, err := unitDir()
 	if err != nil {

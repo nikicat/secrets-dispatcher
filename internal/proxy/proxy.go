@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -19,10 +18,9 @@ import (
 // D-Bus (where the real Secret Service lives), registering as
 // org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
-	clientName            string
-	local                 *localProcs
-	upstreamNotifier      UpstreamNotifier
-	upstreamSlowThreshold time.Duration
+	clientName   string
+	local        *localProcs
+	slowUpstream SlowUpstream
 
 	frontConn   *dbus.Conn // clients connect here (session bus or remote socket)
 	backendConn *dbus.Conn // real Secret Service lives here (session bus or private bus)
@@ -49,11 +47,10 @@ type Config struct {
 	// machine. Any other front bus is forwarded (see SenderInfoResolver).
 	LocalProcesses bool
 	// Applies only with LocalProcesses.
-	TrimProcessChain      bool
-	LogLevel              slog.Level
-	Approval              *approval.Manager
-	UpstreamNotifier      UpstreamNotifier
-	UpstreamSlowThreshold time.Duration
+	TrimProcessChain bool
+	LogLevel         slog.Level
+	Approval         *approval.Manager
+	SlowUpstream     SlowUpstream
 }
 
 // Returns what the resolver needs to describe local processes, or nil for a
@@ -80,13 +77,12 @@ func New(cfg Config) *Proxy {
 	}
 
 	return &Proxy{
-		clientName:            clientName,
-		local:                 cfg.localProcs(),
-		sessions:              NewSessionManager(),
-		logger:                logging.New(cfg.LogLevel, clientName),
-		approval:              approvalMgr,
-		upstreamNotifier:      cfg.UpstreamNotifier,
-		upstreamSlowThreshold: cfg.UpstreamSlowThreshold,
+		clientName:   clientName,
+		local:        cfg.localProcs(),
+		sessions:     NewSessionManager(),
+		logger:       logging.New(cfg.LogLevel, clientName),
+		approval:     approvalMgr,
+		slowUpstream: cfg.SlowUpstream,
 	}
 }
 
@@ -109,9 +105,9 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) (err error) {
 
 	p.resolver = newSenderInfoResolver(p.frontConn, p.clientName, p.local)
 
-	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
-	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.upstreamNotifier, p.upstreamSlowThreshold)
+	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.slowUpstream)
+	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.slowUpstream)
+	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.slowUpstream)
 	p.prompt = NewPromptHandler(p.backendConn, p.logger)
 	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
 

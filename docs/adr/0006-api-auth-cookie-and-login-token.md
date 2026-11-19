@@ -18,10 +18,12 @@ client, and the web UI in a browser, which cannot read files.
 - **Local unix socket.** The same API is also served on an owner-only socket,
   `$XDG_RUNTIME_DIR/secrets-dispatcher/api.sock`, for same-user clients.
 - **Browsers** authenticate with `secrets-dispatcher login`: the CLI mints a
-  one-time, short-lived token and opens the login URL; the server exchanges it
-  for an HttpOnly, SameSite=Strict session cookie. Sessions are independent
-  random IDs, never the master token, so a leaked session cookie does not leak
-  it.
+  short-lived login token and opens the login URL; the server exchanges the
+  token for an HttpOnly, SameSite=Strict session cookie. The URL rides in the
+  browser's argv, which any local process can read from `/proc`, so a token is
+  redeemable once. A process that reads it can then only race the browser's
+  page load to redeem it. Sessions are independent random IDs, never the
+  master token, so a leaked session cookie does not leak it.
 
 ## Consequences
 

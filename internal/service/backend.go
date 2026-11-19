@@ -11,7 +11,7 @@ import (
 // secrets-dispatcher-backend.service. Accepted forms:
 //
 //   - "" (unset): detection-driven default — gnome-keyring when it currently
-//     owns the name (stock GNOME just works, US-5), gopass otherwise.
+//     owns the name (stock GNOME just works, ADR 0009), gopass otherwise.
 //   - a path (contains "/"): used verbatim, advanced use.
 //   - a keyword naming a known backend: "gopass", "gnome-keyring".
 //

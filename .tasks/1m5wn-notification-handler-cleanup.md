@@ -22,7 +22,7 @@ Done when each item below is fixed as its "Fix" says.
   takes six parameters, among them a bool (showPIDs) and two adjacent
   durations (autoApproveDuration, notificationDelay) that transpose silently;
   its doc reads the parameters back.
-  Fix: a HandlerConfig struct for baseURL, showPIDs and the two durations; the
+  Fix: a HandlerConfig struct for listenAddr, showPIDs and the two durations; the
   doc goes
 - `internal/notification/desktop.go:702-744` (duplication). formatBody nests
   switch-in-if-in-switch, and the item label / item count / search attributes

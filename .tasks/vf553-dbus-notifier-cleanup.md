@@ -42,8 +42,7 @@ Done when each item below is fixed as its "Fix" says.
   `internal/notification/desktop.go:196-199` (duplicated knowledge). "Only the
   e2e notifprobe drains ClosedEvents and a full buffer drops events" is stated
   in ClosedEvents' doc, in processSignals' body and in desktop_bus_test.go;
-  ClosedEvents' doc is six lines, names its caller and uses the US-7 term
-  unexplained.
+  ClosedEvents' doc is eight lines and names its caller.
   Fix: processSignals' comment owns the drop rule; ClosedEvents' doc keeps one
   (b) fact ("Events are dropped while the buffer is full.") and the others
   point to it.

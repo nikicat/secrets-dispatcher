@@ -7,18 +7,18 @@
 #   secret-tool/busctl -> front bus (dbus-run-session) -> secrets-dispatcher
 #                      -> backend bus (private dbus-daemon) -> gnome-keyring
 #
-# The core assertion is the US-6 prompt-forwarding regression gate (issue #1):
+# The core assertion is the prompt-forwarding regression gate (issue #1):
 # Unlock on a locked collection returns a prompt path, and calling
 # org.freedesktop.Secret.Prompt.Dismiss on that path *through the proxy* must
 # succeed and propagate Completed to the front bus. Before the PromptHandler
 # existed this failed with "Object does not implement ... Prompt".
 # Dismiss is used (not Prompt) because it needs no gcr prompter GUI.
 #
-# With a notifstub binary as $2, also runs the US-7 fast-tier gate: a pending
-# approval request must produce a notification with expire_timeout=0 (never
-# expire — gnome-shell expires -1 even at critical urgency), critical urgency,
-# and Approve/Deny actions. The stub owns org.freedesktop.Notifications on the
-# front bus and records what the dispatcher actually sends.
+# With a notifstub binary as $2, also runs the notification gate: a pending
+# approval request must produce a notification with expire_timeout=0, critical
+# urgency and Approve/Deny actions (ADR 0007). The stub owns
+# org.freedesktop.Notifications on the front bus and records what the
+# dispatcher actually sends.
 #
 # Fully hermetic: private XDG dirs and buses; never touches the invoking
 # user's keyrings or session bus.
@@ -150,7 +150,7 @@ start_gnome_keyring() {
 
 # write_config <file> <notifications> [with_rules]: emit a serve config for the
 # front proxy. The rules block (approve the test tools) is included only when
-# with_rules is set — the US-7 gate needs a rule-less config so a lookup blocks
+# with_rules is set — the notification gate needs a rule-less config so a lookup blocks
 # pending approval.
 write_config() {
     local file=$1 notifications=$2 with_rules=${3:-}
@@ -203,7 +203,7 @@ stop_dispatcher() {
 # --- gates -----------------------------------------------------------------
 
 gate_roundtrip() {
-    log "secret round trip through the proxy (US-4 smoke)"
+    log "secret round trip through the proxy (takeover smoke)"
     printf 'tier1-secret' | secret-tool store --label="Tier1 Test" service tier1 user demo
     local looked_up
     looked_up=$(secret-tool lookup service tier1 user demo)
@@ -215,7 +215,7 @@ gate_roundtrip() {
 }
 
 gate_notification() {
-    log "US-7 gate: a pending approval must notify with expire_timeout=0 + actions"
+    log "notification gate: a pending approval must notify with expire_timeout=0 + actions"
     # The stub must own org.freedesktop.Notifications BEFORE the dispatcher
     # connects its notifier, so restart the dispatcher: once with rules removed
     # and notifications enabled (a pending request is what notifies), then back
@@ -242,9 +242,8 @@ gate_notification() {
     local notify_line
     notify_line=$(grep -m1 "^NOTIFY" "$WORK/notifstub.log")
     echo "   $notify_line"
-    # The US-7 regression gate: -1 lets gnome-shell expire the notification ~2s
-    # after display; approvals must send 0 (never expire), critical urgency, and
-    # actionable Approve/Deny buttons.
+    # Approvals must send expire_timeout=0, critical urgency and actionable
+    # Approve/Deny buttons (ADR 0007).
     grep -qE "expire_timeout=0( |$)" <<<"$notify_line" || {
         echo "error: approval notification does not send expire_timeout=0" >&2
         exit 1
@@ -296,7 +295,7 @@ gate_prompt() {
     PIDS+=($!)
     sleep 1 # let the monitor's match rule attach before triggering the signal
 
-    log "US-6 regression gate: Dismiss the prompt THROUGH the proxy"
+    log "prompt-forwarding gate: Dismiss the prompt THROUGH the proxy"
     # Pre-fix this failed with "Object does not implement org.freedesktop.Secret.Prompt".
     busctl --address="$FRONT_ADDR" call org.freedesktop.secrets "$prompt_path" \
         org.freedesktop.Secret.Prompt Dismiss

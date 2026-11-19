@@ -29,11 +29,11 @@ func (m *mockNotifier) NotifySlowUpstream(ctx UpstreamCallContext) func() {
 	}
 }
 
-func TestCallWithSlowNotify_FastCall(t *testing.T) {
+func TestWithSlowNotify_FastCall(t *testing.T) {
 	notifier := &mockNotifier{}
 	ctx := UpstreamCallContext{Items: []approval.ItemInfo{{Label: "test-secret"}}}
 
-	call := callWithSlowNotify(100*time.Millisecond, notifier, ctx, func() *dbus.Call {
+	call := WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 100 * time.Millisecond}, ctx, func() *dbus.Call {
 		// Completes instantly
 		return &dbus.Call{}
 	})
@@ -49,7 +49,7 @@ func TestCallWithSlowNotify_FastCall(t *testing.T) {
 	}
 }
 
-func TestCallWithSlowNotify_SlowCall(t *testing.T) {
+func TestWithSlowNotify_SlowCall(t *testing.T) {
 	notifier := &mockNotifier{}
 	ctx := UpstreamCallContext{
 		RequestType: approval.RequestTypeGetSecret,
@@ -57,7 +57,7 @@ func TestCallWithSlowNotify_SlowCall(t *testing.T) {
 		SenderInfo:  approval.SenderInfo{PID: 1234},
 	}
 
-	call := callWithSlowNotify(50*time.Millisecond, notifier, ctx, func() *dbus.Call {
+	call := WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
 		time.Sleep(150 * time.Millisecond)
 		return &dbus.Call{}
 	})
@@ -85,8 +85,8 @@ func TestCallWithSlowNotify_SlowCall(t *testing.T) {
 	}
 }
 
-func TestCallWithSlowNotify_NilNotifier(t *testing.T) {
-	call := callWithSlowNotify(50*time.Millisecond, nil, UpstreamCallContext{}, func() *dbus.Call {
+func TestWithSlowNotify_NilNotifier(t *testing.T) {
+	call := WithSlowNotify(SlowUpstream{Threshold: 50 * time.Millisecond}, UpstreamCallContext{}, func() *dbus.Call {
 		return &dbus.Call{}
 	})
 	if call == nil {
@@ -94,9 +94,9 @@ func TestCallWithSlowNotify_NilNotifier(t *testing.T) {
 	}
 }
 
-func TestCallWithSlowNotify_ZeroThreshold(t *testing.T) {
+func TestWithSlowNotify_ZeroThreshold(t *testing.T) {
 	notifier := &mockNotifier{}
-	call := callWithSlowNotify(0, notifier, UpstreamCallContext{}, func() *dbus.Call {
+	call := WithSlowNotify(SlowUpstream{Notifier: notifier}, UpstreamCallContext{}, func() *dbus.Call {
 		return &dbus.Call{}
 	})
 	if call == nil {
@@ -107,7 +107,7 @@ func TestCallWithSlowNotify_ZeroThreshold(t *testing.T) {
 	}
 }
 
-func TestCallWithSlowNotify_LazyResolution(t *testing.T) {
+func TestWithSlowNotify_LazyResolution(t *testing.T) {
 	resolved := false
 	notifier := &mockNotifier{}
 	ctx := UpstreamCallContext{
@@ -125,7 +125,7 @@ func TestCallWithSlowNotify_LazyResolution(t *testing.T) {
 	}
 
 	// Fast call: ResolveSender must NOT be called
-	callWithSlowNotify(100*time.Millisecond, notifier, ctx, func() *dbus.Call {
+	WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 100 * time.Millisecond}, ctx, func() *dbus.Call {
 		return &dbus.Call{}
 	})
 	if resolved {
@@ -133,7 +133,7 @@ func TestCallWithSlowNotify_LazyResolution(t *testing.T) {
 	}
 
 	// Slow call: ResolveSender must be called
-	callWithSlowNotify(50*time.Millisecond, notifier, ctx, func() *dbus.Call {
+	WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
 		time.Sleep(150 * time.Millisecond)
 		return &dbus.Call{}
 	})
@@ -151,7 +151,7 @@ func TestCallWithSlowNotify_LazyResolution(t *testing.T) {
 	}
 }
 
-func TestCallWithSlowNotify_PrefilledSenderSkipsResolve(t *testing.T) {
+func TestWithSlowNotify_PrefilledSenderSkipsResolve(t *testing.T) {
 	resolved := false
 	notifier := &mockNotifier{}
 	ctx := UpstreamCallContext{
@@ -164,7 +164,7 @@ func TestCallWithSlowNotify_PrefilledSenderSkipsResolve(t *testing.T) {
 	}
 
 	// Slow call with pre-filled SenderInfo: ResolveSender must NOT be called
-	callWithSlowNotify(50*time.Millisecond, notifier, ctx, func() *dbus.Call {
+	WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
 		time.Sleep(150 * time.Millisecond)
 		return &dbus.Call{}
 	})

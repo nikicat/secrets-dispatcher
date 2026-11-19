@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/stretchr/testify/require"
 )
 
-// mintSession mints a live browser session on auth and returns the matching
-// "session=<id>" Cookie header value. Session cookies are independent random IDs
-// (not the master token), so tests must obtain one this way rather than reusing
-// auth.Token().
+// Mints a live browser session on auth and returns its "session=<id>" Cookie
+// header value.
 func mintSession(t *testing.T, auth *Auth) string {
 	t.Helper()
 	rr := httptest.NewRecorder()
@@ -33,7 +32,7 @@ func mintSession(t *testing.T, auth *Auth) string {
 func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 	t.Helper()
 	auth := newTestAuth(t)
-	return NewHandlers(mgr, "/path/to/socket", "test-client", auth, false, nil, 0)
+	return NewHandlers(ServerConfig{Resolver: NewResolver(mgr, proxy.SlowUpstream{}), Auth: auth}, oneClient("test-client", "/path/to/socket"))
 }
 
 // Builds the approval manager the api tests share. Its requests wait five
@@ -120,7 +119,6 @@ func TestHandleStatus(t *testing.T) {
 	if resp.PendingCount != 0 {
 		t.Errorf("expected pending_count=0, got %d", resp.PendingCount)
 	}
-	// Check new clients field
 	if len(resp.Clients) != 1 {
 		t.Fatalf("expected 1 client, got %d", len(resp.Clients))
 	}
@@ -129,13 +127,6 @@ func TestHandleStatus(t *testing.T) {
 	}
 	if resp.Clients[0].SocketPath != "/path/to/socket" {
 		t.Errorf("expected socket_path '/path/to/socket', got '%s'", resp.Clients[0].SocketPath)
-	}
-	// Check deprecated fields for backward compatibility
-	if resp.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", resp.Client)
-	}
-	if resp.RemoteSocket != "/path/to/socket" {
-		t.Errorf("expected remote_socket '/path/to/socket', got '%s'", resp.RemoteSocket)
 	}
 }
 

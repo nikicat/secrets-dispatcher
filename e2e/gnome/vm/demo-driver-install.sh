@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs INSIDE the Tier-2 VM (scp'd in by demo.sh). Drives the *permanent*
-# install arc (US-10), the deliberate counterpart to demo-driver.sh's reversible
+# install arc, the deliberate counterpart to demo-driver.sh's reversible
 # `try`. It runs in two phases either side of a relogin that demo.sh triggers
 # between them (`systemctl restart gdm`) — the whole reason the recording is
 # host-side (VNC), so one continuous clip spans the session restart:
@@ -134,7 +134,7 @@ part1() {
     sleep 1
     type_cmd admin 'export PATH="$HOME/go/bin:$PATH"'
     sleep 1
-    # The permanent install: enable + start the user service (US-10).
+    # The permanent install: enable + start the user service.
     type_cmd admin "secrets-dispatcher service install"
     wait_for 30 owner_is secrets-dispatcher
     sleep 2

@@ -103,8 +103,8 @@ jobs:
         if: always()
         run: |
           mkdir -p out
-          # trial = reversible `try`; install = permanent `service install`
-          # (US-10); uninstall = the deliberate reversal. Tolerant copy so a
+          # trial = reversible `try`; install = permanent `service install`;
+          # uninstall = the deliberate reversal. Tolerant copy so a
           # partial run still uploads whatever recorded.
           for demo in trial install uninstall; do
             for ext in webm mp4 webp; do

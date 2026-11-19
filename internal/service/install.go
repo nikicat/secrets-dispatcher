@@ -320,7 +320,7 @@ func waitForOwner(kind ProviderKind, timeout time.Duration) (Provider, bool) {
 }
 
 // reportOwnership prints who owns org.freedesktop.secrets after a takeover
-// start, warning when the dispatcher did not end up in front (US-11).
+// start, warning when the dispatcher did not end up in front.
 func reportOwnership() {
 	p, ok := waitForOwner(ProviderDispatcher, ownerWaitTimeout)
 	if ok {

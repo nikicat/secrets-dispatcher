@@ -1,6 +1,6 @@
 // notifstub owns org.freedesktop.Notifications on the session bus and prints
 // one flat, greppable line per Notify call — the Tier-1 capture stub for the
-// US-7 gates (fast.sh): it asserts what the dispatcher actually sends
+// notification gates (fast.sh): it asserts what the dispatcher actually sends
 // (expire_timeout=0, urgency=critical, Approve/Deny actions) without any real
 // notification daemon in the loop.
 //

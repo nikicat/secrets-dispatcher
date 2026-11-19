@@ -204,9 +204,9 @@ func TestLoginJWTIsSingleUse(t *testing.T) {
 	require.NotEmpty(t, claims.Jti, "generated JWT must carry a jti nonce")
 
 	// First redemption succeeds.
-	assert.True(t, auth.consumeJTI(jti(claims.Jti), claims.Exp))
+	assert.True(t, auth.consumeJTI(jti(claims.Jti), time.Unix(claims.Exp, 0)))
 	// Replay of the same nonce is rejected.
-	assert.False(t, auth.consumeJTI(jti(claims.Jti), claims.Exp))
+	assert.False(t, auth.consumeJTI(jti(claims.Jti), time.Unix(claims.Exp, 0)))
 
 	// The signature/expiry are still valid — only single-use blocks the replay.
 	_, err = auth.ValidateJWT(token)

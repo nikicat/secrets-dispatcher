@@ -18,7 +18,7 @@ import (
 
 // Defaults for serve-subcommand settings.
 const (
-	DefaultListenAddr            = "127.0.0.1:8484"
+	DefaultListenAddr            = ListenAddr("127.0.0.1:8484")
 	DefaultTimeout               = 5 * time.Minute
 	DefaultHistoryLimit          = 100
 	DefaultLogLevel              = "info"
@@ -40,6 +40,9 @@ type BusConfig struct {
 	// The socket file for BusSocket, or the directory of sockets for
 	// BusSockets. BusSessionBus takes no path.
 	Path string `yaml:"path,omitempty"`
+	// The client name of a BusSocket downstream, derived from Path. Empty
+	// before Resolve.
+	Client string `yaml:"-"`
 }
 
 // BusType is how the daemon reaches a D-Bus endpoint.
@@ -130,6 +133,8 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 			return nil, fmt.Errorf("no default for serve.downstream: %w", err)
 		}
 		s.Downstream = []BusConfig{{Type: BusSockets, Path: dir.ClientSockets()}}
+	} else {
+		s.Downstream = slices.Clone(s.Downstream)
 	}
 	if len(s.Rules) > 0 {
 		s.Rules = slices.Clone(s.Rules)
@@ -156,21 +161,40 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 	return &out, nil
 }
 
-// Returns a copy of cfg with defaults filled in, ready to run. Errors as
-// WithDefaults and Validate do.
+// Returns a copy of cfg with defaults and socket client names filled in, ready
+// to run. Errors as WithDefaults, approval.ClientFromSocket and validate do.
 func (cfg *Config) Resolve() (*Config, error) {
 	out, err := cfg.WithDefaults()
 	if err != nil {
 		return nil, err
 	}
-	if err := out.Validate(); err != nil {
+	if err := out.Serve.setSocketClients(); err != nil {
+		return nil, err
+	}
+	if err := out.validate(); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// Validate checks the config for logical errors.
-func (cfg *Config) Validate() error {
+func (s *ServeConfig) setSocketClients() error {
+	for i := range s.Downstream {
+		d := &s.Downstream[i]
+		if d.Type != BusSocket {
+			continue
+		}
+		client, err := approval.ClientFromSocket(d.Path)
+		if err != nil {
+			return fmt.Errorf("downstream[%d]: %w", i, err)
+		}
+		d.Client = client
+	}
+	return nil
+}
+
+// Errors when the config is inconsistent. Expects the socket client names that
+// Resolve sets.
+func (cfg *Config) validate() error {
 	s := &cfg.Serve
 
 	if s.Upstream.Type == BusSockets {
@@ -187,14 +211,10 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("downstream[%d]: %w", i, err)
 		}
 		if d.Type == BusSocket {
-			client, err := approval.ClientFromSocket(d.Path)
-			if err != nil {
-				return fmt.Errorf("downstream[%d]: %w", i, err)
+			if clients[d.Client] {
+				return fmt.Errorf("downstream[%d]: another socket downstream already has the client name %q", i, d.Client)
 			}
-			if clients[client] {
-				return fmt.Errorf("downstream[%d]: another socket downstream already has the client name %q", i, client)
-			}
-			clients[client] = true
+			clients[d.Client] = true
 		}
 		if d.Type == BusSessionBus {
 			if hasSessionBusDown {
@@ -435,7 +455,7 @@ type SSHConfig struct {
 // Config is the top-level configuration file structure.
 type Config struct {
 	StateDir StateDir    `yaml:"state_dir"`
-	Listen   string      `yaml:"listen"`
+	Listen   ListenAddr  `yaml:"listen"`
 	Serve    ServeConfig `yaml:"serve"`
 	SSH      *SSHConfig  `yaml:"ssh,omitempty"`
 }

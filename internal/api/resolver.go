@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
@@ -13,19 +12,17 @@ import (
 // Resolver resolves approval requests, handling GPG signing when needed.
 // It implements the notification.Approver interface structurally.
 type Resolver struct {
-	Manager          *approval.Manager
-	GPGRunner        GPGRunner
-	UpstreamNotifier proxy.UpstreamNotifier
-	SlowThreshold    time.Duration
+	Manager      *approval.Manager
+	GPGRunner    GPGRunner
+	SlowUpstream proxy.SlowUpstream
 }
 
 // NewResolver creates a Resolver with the default GPG runner.
-func NewResolver(manager *approval.Manager, upstreamNotifier proxy.UpstreamNotifier, slowThreshold time.Duration) *Resolver {
+func NewResolver(manager *approval.Manager, slowUpstream proxy.SlowUpstream) *Resolver {
 	return &Resolver{
-		Manager:          manager,
-		GPGRunner:        &defaultGPGRunner{},
-		UpstreamNotifier: upstreamNotifier,
-		SlowThreshold:    slowThreshold,
+		Manager:      manager,
+		GPGRunner:    &defaultGPGRunner{},
+		SlowUpstream: slowUpstream,
 	}
 }
 
@@ -108,7 +105,7 @@ func (r *Resolver) signGPG(info *approval.GPGSignInfo, senderInfo approval.Sende
 		res approval.GPGResult
 		err error
 	}
-	out := proxy.WithSlowNotify(r.SlowThreshold, r.UpstreamNotifier, proxy.UpstreamCallContext{
+	out := proxy.WithSlowNotify(r.SlowUpstream, proxy.UpstreamCallContext{
 		RequestType: approval.RequestTypeGPGSign,
 		Items:       gpgSignItems(info),
 		SenderInfo:  senderInfo,

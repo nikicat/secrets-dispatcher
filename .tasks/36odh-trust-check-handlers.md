@@ -5,7 +5,7 @@ tags: [unsmell]
 # Service, CollectionHandler and ItemHandler repeat the trust-rule check
 
 ## Goal
-The trust-rule deny-or-passthrough block (CheckTrustRules, deny check, RecordDenied, ErrAccessDenied, RecordPassthrough) is written three times, and the changeset had to add `clientName` to each copy identically. Its root is that Service, CollectionHandler and ItemHandler share nine fields and four identical helper methods (upstream, senderResolver, upstreamWithContext, upstreamGetProperty) with no common receiver.
+The trust-rule deny-or-passthrough block (CheckTrustRules, deny check, RecordDenied, ErrAccessDenied, RecordPassthrough) is written three times, and the changeset had to add `clientName` to each copy identically. Its root is that Service, CollectionHandler and ItemHandler share seven fields and four identical helper methods (upstream, senderResolver, upstreamWithContext, upstreamGetProperty) with no common receiver.
 
 Where: internal/proxy/service.go:95-101, internal/proxy/service.go:201-207, internal/proxy/collection.go:189-195.
 

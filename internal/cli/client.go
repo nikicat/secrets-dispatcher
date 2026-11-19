@@ -20,9 +20,9 @@ type Client struct {
 }
 
 // NewClient creates a new API client.
-func NewClient(serverAddr string, token config.AuthToken) *Client {
+func NewClient(serverAddr config.ListenAddr, token config.AuthToken) *Client {
 	return &Client{
-		baseURL: "http://" + serverAddr,
+		baseURL: serverAddr.BaseURL(),
 		token:   token,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -125,7 +125,7 @@ type ErrorResponse struct {
 
 // List returns all pending requests.
 func (c *Client) List() ([]PendingRequest, error) {
-	resp, err := c.get("/api/v1/pending")
+	resp, err := c.do(http.MethodGet, "/api/v1/pending")
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +144,7 @@ func (c *Client) List() ([]PendingRequest, error) {
 
 // History returns resolved requests.
 func (c *Client) History() ([]HistoryEntry, error) {
-	resp, err := c.get("/api/v1/log")
+	resp, err := c.do(http.MethodGet, "/api/v1/log")
 	if err != nil {
 		return nil, err
 	}
@@ -192,47 +192,23 @@ func (c *Client) Show(id string) (*ShowResult, error) {
 		return nil, err
 	}
 
-	// Search both pending and history, exact match first
-	var matches []*ShowResult
-
-	for i := range requests {
-		if requests[i].ID == id {
-			return &ShowResult{Request: requests[i]}, nil
-		}
-		if strings.HasPrefix(requests[i].ID, id) {
-			matches = append(matches, &ShowResult{Request: requests[i]})
-		}
+	candidates := make([]ShowResult, 0, len(requests)+len(entries))
+	for _, req := range requests {
+		candidates = append(candidates, ShowResult{Request: req})
+	}
+	for _, e := range entries {
+		candidates = append(candidates, ShowResult(e))
 	}
 
-	for i := range entries {
-		if entries[i].Request.ID == id {
-			return &ShowResult{
-				Request:    entries[i].Request,
-				Resolution: entries[i].Resolution,
-				ResolvedAt: entries[i].ResolvedAt,
-			}, nil
-		}
-		if strings.HasPrefix(entries[i].Request.ID, id) {
-			matches = append(matches, &ShowResult{
-				Request:    entries[i].Request,
-				Resolution: entries[i].Resolution,
-				ResolvedAt: entries[i].ResolvedAt,
-			})
-		}
+	match, err := matchID(id, candidates, func(r ShowResult) string { return r.Request.ID })
+	if err != nil {
+		return nil, err
 	}
-
-	switch len(matches) {
-	case 0:
-		return nil, fmt.Errorf("no request found matching: %s", id)
-	case 1:
-		return matches[0], nil
-	default:
-		return nil, fmt.Errorf("ambiguous ID %q matches %d requests", id, len(matches))
-	}
+	return &match, nil
 }
 
 func (c *Client) action(id, action string) error {
-	resp, err := c.post("/api/v1/pending/" + id + "/" + action)
+	resp, err := c.do(http.MethodPost, "/api/v1/pending/"+id+"/"+action)
 	if err != nil {
 		return err
 	}
@@ -250,37 +226,40 @@ func (c *Client) resolveID(partial string) (string, error) {
 		return "", err
 	}
 
-	var matches []string
-	for _, req := range requests {
-		if req.ID == partial {
-			return partial, nil // exact match
+	match, err := matchID(partial, requests, func(r PendingRequest) string { return r.ID })
+	if err != nil {
+		return "", err
+	}
+	return match.ID, nil
+}
+
+// Returns the first item whose ID equals want, else the only item whose ID
+// starts with want. Errors when no ID starts with want, or when several do and
+// none equals it.
+func matchID[T any](want string, items []T, id func(T) string) (T, error) {
+	var zero T
+	var matches []T
+	for _, item := range items {
+		if id(item) == want {
+			return item, nil
 		}
-		if strings.HasPrefix(req.ID, partial) {
-			matches = append(matches, req.ID)
+		if strings.HasPrefix(id(item), want) {
+			matches = append(matches, item)
 		}
 	}
 
 	switch len(matches) {
 	case 0:
-		return "", fmt.Errorf("no request found matching: %s", partial)
+		return zero, fmt.Errorf("no request found matching: %s", want)
 	case 1:
 		return matches[0], nil
 	default:
-		return "", fmt.Errorf("ambiguous ID %q matches %d requests", partial, len(matches))
+		return zero, fmt.Errorf("ambiguous ID %q matches %d requests", want, len(matches))
 	}
 }
 
-func (c *Client) get(path string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.token.Authorize(req.Header)
-	return c.httpClient.Do(req)
-}
-
-func (c *Client) post(path string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, nil)
+func (c *Client) do(method, path string) (*http.Response, error) {
+	req, err := http.NewRequest(method, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}

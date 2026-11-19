@@ -91,7 +91,7 @@ backend-go:
 	@mkdir -p .build
 	CGO_ENABLED=0 go build -tags dev -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher-go .
 
-# US-7 e2e helpers: notifstub captures Notify args (Tier-1), notifprobe
+# Notification e2e helpers (ADR 0007): notifstub captures Notify args (Tier-1), notifprobe
 # asserts no expired-close against real gnome-shell (Tier-2, pushed into the VM).
 notifstub:
 	@mkdir -p .build

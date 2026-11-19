@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Tier-2 acceptance scenario for the GNOME takeover (PR B / issue #1-A) and
-# the reversible trial (PR C). Maps to docs/plans/onboarding-and-e2e.md
-# scenario steps 2, 3 and 6, plus the try legs:
-#   try. `try --dry-run` changes nothing; `try` takes over, SIGINT restores
-#      every user-level file byte-exact (US-1 + US-9).
-#   2. install --mode local --start on stock GNOME -> secrets-dispatcher owns
-#      org.freedesktop.secrets and the pre-takeover secret is visible through
-#      it (US-4 "take over the bus, keep my keyring").
-#   3. reboot (full gdm autologin session restart) -> gnome-keyring does NOT
-#      re-grab; the dispatcher is back in front (US-5).
-#   6. uninstall -> gnome-keyring owns again, secret still there, no leftover
-#      masks (US-9).
+# Tier-2 acceptance scenario on a real GNOME desktop VM (ADR 0010). It covers
+# the reversible trial and the takeover from gnome-keyring and its reversal
+# (ADR 0009). main runs these legs in order:
+#   leg_push_binary   copies the binaries into the VM.
+#   leg_baseline      stock gnome-keyring owns the name; seeds a secret.
+#   leg_notification  real gnome-shell keeps the approval notification.
+#   leg_try_dry_run   try --dry-run changes nothing.
+#   leg_trial         try takes over; SIGINT restores every user-level file
+#                     byte-exact.
+#   leg_takeover      service install --mode local --start; the dispatcher
+#                     owns the name and the pre-takeover secret is visible
+#                     through it.
+#   leg_prompt        Unlock then Dismiss through the dispatcher.
+#   leg_approval      a blocked GetSecret is approved via the CLI.
+#   leg_reboot        after a session restart gnome-keyring does not re-grab.
+#   leg_uninstall     gnome-keyring owns again, the secret is intact, no
+#                     dispatcher state is left.
 #
 # Autologin realism: PAM gets no password, so the login collection is LOCKED —
 # exactly like a stock autologin desktop. Non-interactive unlock of a running
@@ -18,8 +23,8 @@
 # becomes the daemon itself), so the data-continuity gate uses SearchItems:
 # item attributes live unencrypted in login.keyring, and SearchItems reports
 # matches in its locked[] array straight through dispatcher -> private backend
-# -> keyring files. The interactive unlock UX itself is covered by the PR A
-# prompt-forwarding gates (Tier-1) and Prompt.Dismiss here.
+# -> keyring files. The interactive unlock UX itself is covered by the Tier-1
+# prompt-forwarding gates (fast.sh) and Prompt.Dismiss here.
 #
 # Usage: scenario.sh <secrets-dispatcher-binary> [leg...]
 #   With no legs, the full scenario runs in order. Naming legs (the leg_*
@@ -38,7 +43,7 @@ RUN=$(dirname "$0")/run.sh
 KEYRING_PW=tier2-keyring-password
 ITEM_ATTRS="service tier2 user demo"
 # NOTIFPROBE (env, optional): path to the notifprobe binary for
-# leg_notification — the US-7 no-auto-expire gate against real gnome-shell.
+# leg_notification — the no-auto-expire gate (ADR 0007) against real gnome-shell.
 NOTIFPROBE=${NOTIFPROBE:+$(readlink -f "$NOTIFPROBE")}
 
 # --- helpers ---
@@ -82,7 +87,7 @@ wait_owner() {
 }
 
 # Byte-exact fingerprint of every user-level file the takeover touches (plus
-# the user's own config, which must never change). The trial (US-9) must leave
+# the user's own config, which must never change). The reversible trial must leave
 # this identical. find fails on dirs that don't exist yet on a stock desktop
 # (e.g. ~/.config/autostart) — that's fine, absent stays absent.
 state_snapshot() {
@@ -134,7 +139,7 @@ leg_push_binary() {
 }
 
 leg_notification() {
-    log "US-7: real gnome-shell must not auto-expire the approval notification"
+    log "real gnome-shell must not auto-expire the approval notification"
     [[ -n "$NOTIFPROBE" ]] || {
         echo "error: leg_notification needs NOTIFPROBE=<path to notifprobe binary>" >&2
         exit 1
@@ -189,7 +194,7 @@ EOF'
 }
 
 leg_try_dry_run() {
-    log "TRY (US-1): --dry-run prints the plan and changes nothing"
+    log "TRY: --dry-run prints the plan and changes nothing"
     local before dryrun_out
     before=$(state_snapshot)
     dryrun_out=$(vmssh '~/.local/bin/secrets-dispatcher try --dry-run')
@@ -202,7 +207,7 @@ leg_try_dry_run() {
 }
 
 leg_trial() {
-    log "TRY (US-9): reversible trial — takeover, then Ctrl-C restores byte-exact"
+    log "TRY: reversible trial — takeover, then Ctrl-C restores byte-exact"
     local before after
     before=$(state_snapshot)
     # Plain `nohup cmd &` (no compound list): $! must be the dispatcher
@@ -228,16 +233,16 @@ leg_trial() {
         exit 1
     fi
     vmssh '! test -e "$XDG_RUNTIME_DIR/secrets-dispatcher/try-config.yaml"'
-    echo "   trial reversed byte-exact, trial config gone (US-9)"
+    echo "   trial reversed byte-exact, trial config gone"
 }
 
 leg_takeover() {
-    log "STEP 2 (US-4): service install --mode local --start"
+    log "TAKEOVER: service install --mode local --start"
     vmssh '~/.local/bin/secrets-dispatcher service install --mode local --start'
     sleep 3
     expect_owner secrets-dispatcher
 
-    log "status doctor reports a healthy takeover (US-11)"
+    log "status doctor reports a healthy takeover"
     vmssh '~/.local/bin/secrets-dispatcher service status'
 
     log "session gnome-keyring demoted to pkcs11-only, private backend running"
@@ -245,12 +250,12 @@ leg_takeover() {
         pgrep -f "components=pkcs11 --control-directory=/run/user/[0-9]*/keyring" >/dev/null
         pgrep -f "components=secrets --control-directory=/run/user/[0-9]*/secrets-dispatcher/keyring" >/dev/null'
 
-    log "pre-takeover secret visible THROUGH the dispatcher (US-4)"
+    log "pre-takeover secret visible THROUGH the dispatcher"
     expect_item_visible
 }
 
 leg_prompt() {
-    log "prompt plumbing works in the real topology (US-6): Unlock -> Dismiss"
+    log "prompt plumbing works in the real topology: Unlock -> Dismiss"
     vmssh '
         prompt=$(timeout 10 busctl --user call org.freedesktop.secrets /org/freedesktop/secrets \
             org.freedesktop.Secret.Service Unlock ao 1 /org/freedesktop/secrets/collection/login \
@@ -261,7 +266,7 @@ leg_prompt() {
 }
 
 leg_approval() {
-    log "US-8: a blocked GetSecret is APPROVED via the CLI (leg_prompt only Dismisses)"
+    log "a blocked GetSecret is APPROVED via the CLI (leg_prompt only Dismisses)"
     # Assumes leg_takeover's end-state: the dispatcher is installed and in front.
     # Only GetSecret/GetSecrets are approval-gated (SearchItems/OpenSession are
     # not), and approval runs BEFORE the session is validated — so a GetSecret on
@@ -302,20 +307,20 @@ EOF
     vmssh '[ "$(~/.local/bin/secrets-dispatcher list --json 2>/dev/null \
         | python3 -c "import sys,json;print(len(json.load(sys.stdin)))")" = 0 ]' \
         || { echo "error: pending queue not empty after approve" >&2; exit 1; }
-    echo "   CLI approve resolved the request, client unblocked (US-8)"
+    echo "   CLI approve resolved the request, client unblocked"
 }
 
 leg_reboot() {
-    log "STEP 3 (US-5): reboot — gnome-keyring must NOT re-grab"
+    log "REBOOT: gnome-keyring must NOT re-grab"
     reboot_and_wait
     sleep 5
     expect_owner secrets-dispatcher
     expect_item_visible
-    echo "   still in front after a full session restart (US-5)"
+    echo "   still in front after a full session restart"
 }
 
 leg_uninstall() {
-    log "STEP 6 (US-9): uninstall — full reversal"
+    log "UNINSTALL: full reversal"
     vmssh '~/.local/bin/secrets-dispatcher service uninstall'
     sleep 3
     # Poke the name so D-Bus activation (now unmasked) can restart
@@ -324,7 +329,7 @@ leg_uninstall() {
         org.freedesktop.DBus.Properties Get ss org.freedesktop.Secret.Service Collections >/dev/null'
     expect_owner gnome-keyring-daemon
     expect_item_visible
-    echo "   gnome-keyring restored as owner, secret intact (US-9)"
+    echo "   gnome-keyring restored as owner, secret intact"
 
     log "no leftover dispatcher state"
     vmssh '
@@ -332,7 +337,7 @@ leg_uninstall() {
         ! test -e ~/.config/autostart/gnome-keyring-secrets.desktop
         ! test -e ~/.local/share/dbus-1/services/org.freedesktop.secrets.service'
 
-    log "status doctor reports clean after uninstall (US-11)"
+    log "status doctor reports clean after uninstall"
     vmssh '~/.local/bin/secrets-dispatcher service status'
 }
 

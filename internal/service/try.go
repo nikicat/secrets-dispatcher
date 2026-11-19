@@ -10,7 +10,6 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
-// TryOptions configures the reversible trial (US-9).
 type TryOptions struct {
 	// ConfigPath is the base config the trial copies its settings (rules,
 	// listen address) from. Default: config.DefaultPath(). Never modified.
@@ -23,10 +22,8 @@ type TryOptions struct {
 	Narration Narration
 }
 
-// Try puts secrets-dispatcher in front of the current Secret Service for as
-// long as ctx lives, then restores the original setup exactly (US-9). It
-// composes the proven primitives: Install (local mode, detection-driven
-// backend) against a throwaway config, an ownership watch, and Uninstall.
+// Puts secrets-dispatcher in front of the current Secret Service for as long
+// as ctx lives, then restores the original setup exactly.
 func Try(ctx context.Context, opts TryOptions) error {
 	unitsDir, err := unitDir()
 	if err != nil {
@@ -55,13 +52,7 @@ func Try(ctx context.Context, opts TryOptions) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(cBold("Dry run — the trial would:"))
-		fmt.Printf("  %s\n", Change{"copy", baseConfig + " -> " + trialConfig, "trial config; your config is never modified"})
-		for _, c := range changes {
-			fmt.Println("  " + c.String())
-		}
-		fmt.Println(cDim("On Ctrl-C every change is reverted: units stopped and removed, D-Bus"))
-		fmt.Println(cDim("activation and gnome-keyring restored, trial config deleted."))
+		printTrialPlan(baseConfig, trialConfig, changes)
 		return nil
 	}
 
@@ -89,22 +80,49 @@ func Try(ctx context.Context, opts TryOptions) error {
 		return err
 	}
 
-	listen := config.DefaultListenAddr
-	if cfg, err := config.Load(trialConfig); err == nil && cfg.Listen != "" {
-		listen = cfg.Listen
-	}
-	fmt.Println()
-	fmt.Printf("%s Web UI: %s\n", cOK("✓"), cBold("http://"+listen))
-	fmt.Printf("%s See it work (requests ask for approval in the web UI unless a rule matches):\n", cInfo("→"))
-	fmt.Printf("    %s   %s\n", cBold("secret-tool store --label=demo service demo"), cDim("# then:"))
-	fmt.Printf("    %s\n", cBold("secret-tool lookup service demo"))
-	fmt.Printf("%s stops the trial and fully restores the original setup.\n", cBold("Ctrl-C"))
-
+	announceTrial(trialConfig)
 	watchOwnership(ctx)
 
 	fmt.Println()
 	fmt.Println(cDim("Stopping the trial — restoring the original Secret Service…"))
 	return h.restoreTrial(trialConfig, orig)
+}
+
+func printTrialPlan(baseConfig, trialConfig string, changes []Change) {
+	fmt.Println(cBold("Dry run — the trial would:"))
+	fmt.Printf("  %s\n", Change{"copy", baseConfig + " -> " + trialConfig, "trial config; your config is never modified"})
+	for _, c := range changes {
+		fmt.Println("  " + c.String())
+	}
+	fmt.Println(cDim("On Ctrl-C every change is reverted: units stopped and removed, D-Bus"))
+	fmt.Println(cDim("activation and gnome-keyring restored, trial config deleted."))
+}
+
+// Prints the web UI address from the config at trialConfig, or a warning when
+// that config does not load, and the commands that exercise the trial.
+func announceTrial(trialConfig string) {
+	fmt.Println()
+	if listen, err := listenAddr(trialConfig); err != nil {
+		fmt.Printf("%s Web UI address unknown: %v\n", cWarn("WARNING:"), err)
+	} else {
+		fmt.Printf("%s Web UI: %s\n", cOK("✓"), cBold(listen.BaseURL()))
+	}
+	fmt.Printf("%s See it work (requests ask for approval in the web UI unless a rule matches):\n", cInfo("→"))
+	fmt.Printf("    %s   %s\n", cBold("secret-tool store --label=demo service demo"), cDim("# then:"))
+	fmt.Printf("    %s\n", cBold("secret-tool lookup service demo"))
+	fmt.Printf("%s stops the trial and fully restores the original setup.\n", cBold("Ctrl-C"))
+}
+
+// Returns the address serve listens on under the config file at path.
+func listenAddr(path string) (config.ListenAddr, error) {
+	cfg, err := config.Load(path)
+	if err != nil {
+		return "", err
+	}
+	if cfg, err = cfg.WithDefaults(); err != nil {
+		return "", err
+	}
+	return cfg.Listen, nil
 }
 
 // watchOwnership blocks until ctx is done, reporting when the dispatcher

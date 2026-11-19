@@ -89,8 +89,8 @@ func TestNotifySendsNeverExpiringCritical(t *testing.T) {
 	assert.NotZero(t, id)
 
 	got := stub.last(t)
-	// The US-7 regression: -1 (server default) lets gnome-shell expire even
-	// critical notifications ~2s after display. Approvals must never expire.
+	// Spec-honoring daemons close a -1 (server default) notification after
+	// their own timeout, so approvals send 0 (ADR 0007).
 	assert.Equal(t, int32(0), got.ExpireTimeout)
 	assert.Equal(t, dbus.MakeVariant(byte(2)), got.Hints["urgency"])
 	assert.Equal(t, []string{"approve", "Approve", "deny", "Deny"}, got.Actions)

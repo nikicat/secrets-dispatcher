@@ -67,8 +67,6 @@ type WSHandler struct {
 	manager           *approval.Manager
 	clientProvider    ClientProvider
 	auth              *Auth
-	remoteSocket      string
-	clientName        string
 	notificationDelay time.Duration
 
 	// Active connections
@@ -76,15 +74,13 @@ type WSHandler struct {
 	conns   map[*wsConnection]struct{}
 }
 
-// NewWSHandler creates a new WebSocket handler.
-func NewWSHandler(manager *approval.Manager, clientProvider ClientProvider, auth *Auth, remoteSocket, clientName string) *WSHandler {
+func NewWSHandler(manager *approval.Manager, clientProvider ClientProvider, auth *Auth, notificationDelay time.Duration) *WSHandler {
 	return &WSHandler{
-		manager:        manager,
-		clientProvider: clientProvider,
-		auth:           auth,
-		remoteSocket:   remoteSocket,
-		clientName:     clientName,
-		conns:          make(map[*wsConnection]struct{}),
+		manager:           manager,
+		clientProvider:    clientProvider,
+		auth:              auth,
+		notificationDelay: notificationDelay,
+		conns:             make(map[*wsConnection]struct{}),
 	}
 }
 
@@ -267,15 +263,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 
 	requests := pendingRequests(h.manager)
 
-	// Get clients
-	var clients []proxy.ClientInfo
-	if h.clientProvider != nil {
-		clients = h.clientProvider.Clients()
-	} else {
-		clients = []proxy.ClientInfo{
-			{Name: h.clientName, SocketPath: h.remoteSocket},
-		}
-	}
+	clients := h.clientProvider.Clients()
 
 	history := historyEntries(h.manager)
 
@@ -453,11 +441,6 @@ func isConnClosedErr(err error) bool {
 		return true
 	}
 	return false
-}
-
-// Sets the notification delay that the snapshot sends to browser clients.
-func (h *WSHandler) SetNotificationDelay(d time.Duration) {
-	h.notificationDelay = d
 }
 
 // BroadcastClientConnected sends a client_connected message to all connections.

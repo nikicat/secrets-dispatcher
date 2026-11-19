@@ -111,11 +111,8 @@ func waitCompleted(t *testing.T, ch chan *dbus.Signal, promptPath dbus.ObjectPat
 	}
 }
 
-// TestPromptForwardingUnlockFlow is the US-6 regression test: a locked
-// collection returns a prompt path from Unlock, and the client must be able to
-// call Prompt on that path *through the proxy* and see Completed. Before the
-// PromptHandler existed the call failed with "Object does not implement
-// org.freedesktop.Secret.Prompt", locking users out of their own secrets.
+// Regression test for issue #1. A client calls Prompt, through the proxy, on
+// the path that Unlock returns for a locked collection, and sees Completed.
 func TestPromptForwardingUnlockFlow(t *testing.T) {
 	env := newPromptTestEnv(t)
 	itemPath := env.mock.AddItem("Locked Secret", map[string]string{"app": "prompt-test"}, []byte("hunter2"))
@@ -138,7 +135,7 @@ func TestPromptForwardingUnlockFlow(t *testing.T) {
 	assert.Equal(t, "window-42", env.mock.LastWindowID(), "window ID must reach the backend prompt")
 	assert.False(t, env.mock.Locked(), "collection must be unlocked after the prompt")
 
-	// The point of US-6: after the prompt flow the secret is actually reachable.
+	// The point of prompt forwarding: after the prompt flow the secret is actually reachable.
 	var output dbus.Variant
 	var sessionPath dbus.ObjectPath
 	err = env.client.Object(dbustypes.BusName, dbustypes.ServicePath).

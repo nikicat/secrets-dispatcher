@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tier-2 GNOME desktop VM harness: raw QEMU + Ubuntu cloud image + cloud-init.
 # Chosen for true local<->CI parity (same script/image/accel both places, KVM
-# available on GitHub ubuntu-latest runners) — see docs/plans/onboarding-and-e2e.md.
+# available on GitHub ubuntu-latest runners) (ADR 0010).
 #
 # Subcommands:
 #   provision      build the cached desktop base image (one-time, ~10 min)

@@ -24,15 +24,6 @@ Done when each item below is fixed as its "Fix" says.
   reports the two Go copies; the TS copy is a third. All unchanged.
   Fix: As b3-8 (approval.GPGSignInfo.Subject()); the plan entry also names the
   TS copy, which the API could make redundant by sending the subject.
-- `internal/api/handlers.go:71-82`, `internal/api/websocket.go:276-282`
-  (missing receiver). Handlers and WSHandler both hold manager,
-  clientProvider, auth, remoteSocket and clientName. Each writes the
-  single-socket rule "no provider means one static client {clientName,
-  remoteSocket}" (HandleStatus, sendSnapshot).
-  Fix: One client source that both hold, which returns []proxy.ClientInfo. A
-  static provider is built in main for single-socket mode, so clientName,
-  remoteSocket and the nil check leave both handlers. HandleStatus keeps the
-  deprecated fields from that source.
 - `internal/api/websocket.go:468-476` (pass-through). OnClientConnected and
   OnClientDisconnected (proxy.ClientObserver) each only call
   BroadcastClientConnected and BroadcastClientDisconnected. The Broadcast

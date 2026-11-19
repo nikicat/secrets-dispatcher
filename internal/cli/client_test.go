@@ -11,6 +11,14 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
+// Closes the server when the test ends.
+func newTestClient(t *testing.T, token config.AuthToken, handler http.HandlerFunc) *Client {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return NewClient(config.ListenAddr(server.Listener.Addr().String()), token)
+}
+
 func TestClient_List(t *testing.T) {
 	requests := []PendingRequest{
 		{
@@ -23,7 +31,7 @@ func TestClient_List(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/pending" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -31,10 +39,7 @@ func TestClient_List(t *testing.T) {
 			t.Errorf("missing or invalid auth header")
 		}
 		json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	result, err := client.List()
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
@@ -57,15 +62,12 @@ func TestClient_History(t *testing.T) {
 		},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/log" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		json.NewEncoder(w).Encode(HistoryResponse{Entries: entries})
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	result, err := client.History()
 	if err != nil {
 		t.Fatalf("History failed: %v", err)
@@ -80,7 +82,7 @@ func TestClient_History(t *testing.T) {
 }
 
 func TestClient_Approve(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pending":
 			json.NewEncoder(w).Encode(PendingResponse{
@@ -94,10 +96,7 @@ func TestClient_Approve(t *testing.T) {
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	err := client.Approve("abc-123-def")
 	if err != nil {
 		t.Fatalf("Approve failed: %v", err)
@@ -105,7 +104,7 @@ func TestClient_Approve(t *testing.T) {
 }
 
 func TestClient_Deny(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pending":
 			json.NewEncoder(w).Encode(PendingResponse{
@@ -119,10 +118,7 @@ func TestClient_Deny(t *testing.T) {
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	err := client.Deny("xyz-789")
 	if err != nil {
 		t.Fatalf("Deny failed: %v", err)
@@ -130,7 +126,7 @@ func TestClient_Deny(t *testing.T) {
 }
 
 func TestClient_PartialID_ExactMatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pending":
 			json.NewEncoder(w).Encode(PendingResponse{
@@ -144,10 +140,7 @@ func TestClient_PartialID_ExactMatch(t *testing.T) {
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	// "abc" should match exactly, not be ambiguous with "abcdef"
 	err := client.Approve("abc")
 	if err != nil {
@@ -156,7 +149,7 @@ func TestClient_PartialID_ExactMatch(t *testing.T) {
 }
 
 func TestClient_PartialID_PrefixMatch(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pending":
 			json.NewEncoder(w).Encode(PendingResponse{
@@ -170,10 +163,7 @@ func TestClient_PartialID_PrefixMatch(t *testing.T) {
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	err := client.Approve("abc")
 	if err != nil {
 		t.Fatalf("Approve with prefix failed: %v", err)
@@ -181,17 +171,14 @@ func TestClient_PartialID_PrefixMatch(t *testing.T) {
 }
 
 func TestClient_PartialID_Ambiguous(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(PendingResponse{
 			Requests: []PendingRequest{
 				{ID: "abc-123"},
 				{ID: "abc-456"},
 			},
 		})
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	err := client.Approve("abc")
 	if err == nil {
 		t.Fatal("expected error for ambiguous ID")
@@ -202,14 +189,11 @@ func TestClient_PartialID_Ambiguous(t *testing.T) {
 }
 
 func TestClient_PartialID_NotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(PendingResponse{
 			Requests: []PendingRequest{{ID: "xyz-123"}},
 		})
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 	err := client.Approve("abc")
 	if err == nil {
 		t.Fatal("expected error for not found")
@@ -225,17 +209,14 @@ func TestClient_Show_Pending(t *testing.T) {
 		{ID: "req-222", Client: "client2"},
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pending":
 			json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
 		case "/api/v1/log":
 			json.NewEncoder(w).Encode(HistoryResponse{})
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 
 	result, err := client.Show("req-222")
 	if err != nil {
@@ -252,7 +233,7 @@ func TestClient_Show_Pending(t *testing.T) {
 func TestClient_Show_History(t *testing.T) {
 	resolvedAt := time.Now().Add(-time.Minute)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pending":
 			json.NewEncoder(w).Encode(PendingResponse{})
@@ -261,10 +242,7 @@ func TestClient_Show_History(t *testing.T) {
 				{Request: PendingRequest{ID: "old-req", Client: "client3"}, Resolution: "approved", ResolvedAt: resolvedAt},
 			}})
 		}
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "test-token")
+	})
 
 	result, err := client.Show("old-req")
 	if err != nil {
@@ -279,13 +257,10 @@ func TestClient_Show_History(t *testing.T) {
 }
 
 func TestClient_Unauthorized(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := newTestClient(t, "bad-token", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		json.NewEncoder(w).Encode(ErrorResponse{Error: "unauthorized"})
-	}))
-	defer server.Close()
-
-	client := NewClient(strings.TrimPrefix(server.URL, "http://"), "bad-token")
+	})
 	_, err := client.List()
 	if err == nil {
 		t.Fatal("expected error for unauthorized")

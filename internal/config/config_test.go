@@ -227,6 +227,11 @@ serve:
 `,
 			wantErr: `got "system_bus"`,
 		},
+		{
+			name:    "listen address",
+			yaml:    "listen: \"8484\"\n",
+			wantErr: `listen address "8484"`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
@@ -407,7 +412,7 @@ func TestWithDefaultsDownstreamWithoutRuntimeDir(t *testing.T) {
 	}
 }
 
-func TestValidate(t *testing.T) {
+func TestResolveValidates(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     Config
@@ -554,19 +559,42 @@ func TestValidate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.cfg.Validate()
+			_, err := tc.cfg.Resolve()
 			if tc.wantErr == "" {
 				if err != nil {
-					t.Errorf("Validate() = %v, want nil", err)
+					t.Errorf("Resolve() = %v, want nil", err)
 				}
 			} else {
 				if err == nil {
-					t.Fatalf("Validate() = nil, want error containing %q", tc.wantErr)
+					t.Fatalf("Resolve() = nil, want error containing %q", tc.wantErr)
 				}
 				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Errorf("Validate() = %q, want containing %q", err, tc.wantErr)
+					t.Errorf("Resolve() = %q, want containing %q", err, tc.wantErr)
 				}
 			}
 		})
+	}
+}
+
+func TestResolveSetsSocketClient(t *testing.T) {
+	cfg := &Config{Serve: ServeConfig{
+		Upstream: BusConfig{Type: BusSessionBus},
+		Downstream: []BusConfig{
+			{Type: BusSocket, Path: "/run/vm.sock"},
+			{Type: BusSockets, Path: "/run/socks"},
+		},
+	}}
+	out, err := cfg.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := out.Serve.Downstream[0].Client; got != "vm" {
+		t.Errorf("Downstream[0].Client = %q, want vm", got)
+	}
+	if got := out.Serve.Downstream[1].Client; got != "" {
+		t.Errorf("Downstream[1].Client = %q, want empty", got)
+	}
+	if got := cfg.Serve.Downstream[0].Client; got != "" {
+		t.Errorf("Resolve changed the input's downstream in place: Client = %q", got)
 	}
 }

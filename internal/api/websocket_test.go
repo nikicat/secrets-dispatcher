@@ -28,6 +28,11 @@ func (m *mockClientProvider) Clients() []proxy.ClientInfo {
 	return m.clients
 }
 
+// Returns a provider that reports one client.
+func oneClient(name, socketPath string) *mockClientProvider {
+	return &mockClientProvider{clients: []proxy.ClientInfo{{Name: name, SocketPath: socketPath}}}
+}
+
 // A WSHandler served over HTTP for the length of one test, and the deadline
 // that bounds the test's dials and reads.
 type wsFixture struct {
@@ -39,12 +44,18 @@ type wsFixture struct {
 	url     string
 }
 
-// Serves a WSHandler over mgr until the test ends. A nil provider makes the
-// handler report the single client "test-client".
-func newWSFixture(t *testing.T, mgr *approval.Manager, provider ClientProvider) *wsFixture {
+// Serves a WSHandler over mgr, with a ClientProvider that reports one proxy
+// client, until the test ends.
+func newWSFixture(t *testing.T, mgr *approval.Manager) *wsFixture {
+	t.Helper()
+	return newWSFixtureWith(t, mgr, oneClient("test-client", "/test/socket"))
+}
+
+// Serves a WSHandler over mgr and provider until the test ends.
+func newWSFixtureWith(t *testing.T, mgr *approval.Manager, provider ClientProvider) *wsFixture {
 	t.Helper()
 	auth := newTestAuth(t)
-	handler := NewWSHandler(mgr, provider, auth, "/test/socket", "test-client")
+	handler := NewWSHandler(mgr, provider, auth, 0)
 	// No middleware: the handler checks auth itself.
 	server := httptest.NewServer(http.HandlerFunc(handler.HandleWS))
 	t.Cleanup(server.Close)
@@ -84,7 +95,7 @@ func (f *wsFixture) read(conn *websocket.Conn, want wsmsg.Type) WSMessage {
 }
 
 func TestWSHandler_Unauthorized(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 
 	_, _, err := websocket.Dial(f.ctx, f.url, nil)
 	assert.Error(t, err, "expected connection to fail without auth")
@@ -97,7 +108,7 @@ func TestWSHandler_Snapshot(t *testing.T) {
 			{Name: "client2", SocketPath: "/socket2"},
 		},
 	}
-	f := newWSFixture(t, newTestManager(), provider)
+	f := newWSFixtureWith(t, newTestManager(), provider)
 
 	msg := f.read(f.dial(), wsmsg.Snapshot)
 
@@ -114,7 +125,7 @@ func TestWSHandler_Snapshot(t *testing.T) {
 }
 
 func TestWSHandler_RequestCreated(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -133,7 +144,7 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 }
 
 func TestWSHandler_RequestResolved(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -157,7 +168,7 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 
 func TestWSHandler_RequestExpired(t *testing.T) {
 	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = 100 * time.Millisecond })
-	f := newWSFixture(t, mgr, nil)
+	f := newWSFixture(t, mgr)
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -170,7 +181,7 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 }
 
 func TestWSHandler_RequestCancelled(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -185,7 +196,7 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 }
 
 func TestWSHandler_BroadcastClient(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -235,7 +246,7 @@ func TestConvertRequest_EncodesAutoApprovable(t *testing.T) {
 }
 
 func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 
 	// Add a rule before connecting
 	mustAddRule(t, f.mgr, ghSecretRequest())
@@ -254,7 +265,7 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 }
 
 func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -282,7 +293,7 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 }
 
 func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -301,7 +312,7 @@ func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
 }
 
 func TestWSHandler_MultipleConnections(t *testing.T) {
-	f := newWSFixture(t, newTestManager(), nil)
+	f := newWSFixture(t, newTestManager())
 
 	var conns []*websocket.Conn
 	for range 3 {
@@ -333,7 +344,7 @@ func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.want), func(t *testing.T) {
-			f := newWSFixture(t, newTestManager(), nil)
+			f := newWSFixture(t, newTestManager())
 			conn := f.dial()
 			f.read(conn, wsmsg.Snapshot)
 

@@ -25,7 +25,7 @@ func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
 	if s.runtimeDir == "" {
 		return nil, fmt.Errorf("remote %s: the API server has no API socket", name)
 	}
-	rs := &RemoteServer{name: name, SocketPath: s.runtimeDir.RemoteSocket(name), manager: s.handlers.manager}
+	rs := &RemoteServer{name: name, SocketPath: s.runtimeDir.RemoteSocket(name), manager: s.handlers.resolver.Manager}
 	listener, err := listenUnix(rs.SocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("remote %s: %w", name, err)

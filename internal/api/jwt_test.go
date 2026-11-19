@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -136,24 +137,16 @@ func TestJWTDifferentSecrets(t *testing.T) {
 func TestGenerateLoginURL(t *testing.T) {
 	auth := newTestAuth(t)
 
-	addr := "127.0.0.1:8484"
-	url, err := auth.GenerateLoginURL(addr)
+	loginURL, err := auth.GenerateLoginURL("127.0.0.1:8484")
 	if err != nil {
 		t.Fatalf("GenerateLoginURL failed: %v", err)
 	}
 
-	// Check URL format
-	if !strings.HasPrefix(url, "http://127.0.0.1:8484/?token=") {
-		t.Errorf("URL should start with http://127.0.0.1:8484/?token=, got: %s", url)
+	u, err := url.Parse(loginURL)
+	if err != nil {
+		t.Fatalf("login URL does not parse: %v", err)
 	}
-
-	// Extract and validate the token
-	parts := strings.SplitN(url, "?token=", 2)
-	if len(parts) != 2 {
-		t.Fatalf("URL should contain ?token=")
-	}
-
-	token := parts[1]
+	token := u.Query().Get("token")
 	_, err = auth.ValidateJWT(token)
 	if err != nil {
 		t.Errorf("Token from login URL should be valid: %v", err)

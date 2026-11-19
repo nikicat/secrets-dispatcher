@@ -73,9 +73,6 @@ export interface StatusResponse {
   running: boolean;
   clients: ClientInfo[];
   pending_count: number;
-  // Deprecated fields for backward compatibility
-  client?: string;
-  remote_socket?: string;
 }
 
 export interface PendingListResponse {

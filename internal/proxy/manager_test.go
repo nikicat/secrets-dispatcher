@@ -39,7 +39,7 @@ func TestNewManager(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestManager_ClientsEmpty(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestManager_ScanExistingSockets_NoSockets(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestClientInfo(t *testing.T) {
 func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	mgr, err := NewManager(tempDir, "unix:path="+filepath.Join(tempDir, "no-upstream"), approvalMgr, slog.LevelInfo, nil, 0)
+	mgr, err := NewManager(tempDir, "unix:path="+filepath.Join(tempDir, "no-upstream"), approvalMgr, slog.LevelInfo, SlowUpstream{})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
 func TestManager_StopProxy_WaitsForName(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, nil, 0)
+	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}

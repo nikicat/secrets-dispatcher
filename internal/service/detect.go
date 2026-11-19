@@ -20,8 +20,8 @@ const (
 
 // Provider describes the current owner of org.freedesktop.secrets on the
 // session bus, plus the desktop environment it runs in. It drives the
-// install-time decision of which masking/topology to apply (US-5) and which
-// private backend to default to (US-4).
+// install-time decision of which masking/topology to apply and which
+// private backend to default to (ADR 0009).
 type Provider struct {
 	Kind    ProviderKind
 	PID     int

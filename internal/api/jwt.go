@@ -21,16 +21,16 @@ type jwtHeader struct {
 	Typ string `json:"typ"`
 }
 
-// jwtClaims contains the JWT claims we use. Jti is a random per-token nonce that
-// makes the login token single-use: HandleAuth records the jti on redemption and
-// rejects any later presentation of the same token (see Auth.consumeJTI).
+// The claims of a login token. Exp and Iat are in unix seconds. Jti is a random
+// nonce, so that the server can redeem each token once (ADR 0006).
 type jwtClaims struct {
 	Exp int64  `json:"exp"`
 	Iat int64  `json:"iat"`
 	Jti string `json:"jti"`
 }
 
-// GenerateJWT creates a short-lived, single-use JWT signed with the auth token.
+// Returns a new login token, valid for LoginLinkLifetime and redeemable once
+// (ADR 0006).
 func (a *Auth) GenerateJWT() (string, error) {
 	now := time.Now()
 

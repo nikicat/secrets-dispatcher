@@ -25,11 +25,11 @@
 #
 # demo_trial is the reversible-`try` arc with two client-request beats:
 #   go install -> try (live takeover) -> secret-tool lookup raises the GNOME
-#   unlock dialog (US-6/prompter-bridge) -> type the keyring password -> the
+#   unlock dialog (forwarded prompt) -> type the keyring password -> the
 #   GetSecret approval notification pops -> click DENY (blocked) -> a second
 #   lookup -> click APPROVE (secret prints) -> Ctrl-C restores.
 #
-# demo_install is the *permanent* counterpart (US-10): go install ->
+# demo_install is the *permanent* counterpart: go install ->
 #   `service install --mode local --start` -> status -> a relogin (the recording
 #   spans it) -> still in front -> unlock + APPROVE. The relogin is why recording
 #   is host-side (record.sh/VNC): the in-guest screencast would die with the

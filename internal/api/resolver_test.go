@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +24,7 @@ func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mgr := newTestManager()
-			r := NewResolver(mgr, nil, 0)
+			r := NewResolver(mgr, proxy.SlowUpstream{})
 			r.GPGRunner = &fakeGPGRunner{res: tt.res}
 			id, err := mgr.CreateGPGSignRequest("test-client", &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}, local)
 			require.NoError(t, err)
@@ -40,7 +41,7 @@ func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
 // before gpg runs, and that it stays pending.
 func TestResolverApproveAndAutoApprove_GPGSignWithoutExe(t *testing.T) {
 	mgr := newTestManager()
-	r := NewResolver(mgr, nil, 0)
+	r := NewResolver(mgr, proxy.SlowUpstream{})
 	r.GPGRunner = &fakeGPGRunner{res: approval.GPGResult{Signature: []byte("SIG")}}
 	id, err := mgr.CreateGPGSignRequest("remote:laptop", &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}, approval.SenderInfo{})
 	require.NoError(t, err)

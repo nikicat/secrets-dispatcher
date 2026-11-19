@@ -14,6 +14,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 const (
@@ -154,7 +155,8 @@ func (n *DBusNotifier) Actions() <-chan Action {
 
 // ClosedEvents returns a channel that receives NotificationClosed signals for
 // notifications sent on this connection. Reason 1 (expired) on an approval
-// notification means the server auto-dismissed it — the US-7 failure mode.
+// notification means the server took it down before the user acted on it,
+// which ADR 0007 rules out.
 //
 // Only the e2e notifprobe consumes this; the daemon does not. A caller that
 // never drains it will NOT stall the notifier — processSignals drops closed
@@ -232,8 +234,8 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 //
 // expire_timeout must be 0 (never expire): spec-honoring daemons (dunst,
 // mako, KDE) close a -1 ("server default") notification after their default
-// timeout — the user would have to race the banner to approve anything
-// (US-7). gnome-shell ignores the field entirely; there it is critical
+// timeout — the user would have to race the banner to approve anything.
+// gnome-shell ignores the field entirely; there it is critical
 // urgency + no transient hint that keep the notification alive (GNOME 46
 // sources, docs/adr/0007-approval-surfaces.md). Approvals are closed
 // explicitly via Close when resolved.
@@ -375,14 +377,14 @@ func (g *delayGroup) Cancel(key string) bool {
 // Handler receives approval events and shows desktop notifications.
 // It also processes notification action button clicks (Approve/Deny).
 type Handler struct {
-	notifier Notifier
-	approver Approver
-	baseURL  string
-	showPIDs bool
+	notifier   Notifier
+	approver   Approver
+	listenAddr config.ListenAddr
+	showPIDs   bool
 	// The auto-approve duration as notifications show it, such as "2m".
 	autoApproveLabel  string
 	notificationDelay time.Duration
-	openURL           func(string) // injectable for testing; defaults to xdg-open
+	openURL           func(string) error
 
 	mu            sync.Mutex
 	notifications map[string]uint32 // request ID -> notification ID
@@ -399,21 +401,31 @@ type cancelledEntry struct {
 	expiresAt time.Time
 }
 
+// Opens url in the user's browser with xdg-open, without waiting for it to exit.
+// Errors when xdg-open cannot be started.
+func OpenURL(url string) error {
+	cmd := exec.Command("xdg-open", url)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go cmd.Wait() // Reaps the child, so it leaves no zombie.
+	return nil
+}
+
 // NewHandler creates a notification handler.
-// baseURL is the web UI URL opened when the user clicks the notification body.
 // autoApproveDuration controls the label shown on the "Approve Nm" button and
 // the body text of the post-timeout auto-approve notification.
 // notificationDelay is the grace period before showing a desktop notification;
 // requests cancelled within this window produce no notification at all.
-func NewHandler(notifier Notifier, approver Approver, baseURL string, showPIDs bool, autoApproveDuration, notificationDelay time.Duration) *Handler {
+func NewHandler(notifier Notifier, approver Approver, listenAddr config.ListenAddr, showPIDs bool, autoApproveDuration, notificationDelay time.Duration) *Handler {
 	return &Handler{
 		notifier:          notifier,
 		approver:          approver,
-		baseURL:           baseURL,
+		listenAddr:        listenAddr,
 		showPIDs:          showPIDs,
 		autoApproveLabel:  formatDurationShort(autoApproveDuration),
 		notificationDelay: notificationDelay,
-		openURL:           func(u string) { exec.Command("xdg-open", u).Start() },
+		openURL:           OpenURL,
 		notifications:     make(map[string]uint32),
 		requests:          make(map[uint32]string),
 		pending:           newDelayGroup(),
@@ -458,7 +470,9 @@ func (h *Handler) handleAction(action Action) {
 	var err error
 	switch action.ActionKey {
 	case actionDefault:
-		h.openURL(h.baseURL + "?request=" + reqID)
+		if err := h.openURL(h.listenAddr.RequestURL(reqID)); err != nil {
+			slog.Warn("failed to open the web UI from notification", "action", action.ActionKey, "request_id", reqID, "error", err)
+		}
 		return
 	case actionApprove:
 		err = h.approver.Approve(reqID)

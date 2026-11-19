@@ -17,7 +17,13 @@ Where: internal/approval/manager.go:929, internal/approval/manager.go:942.
 
 Where: internal/proxy/senderinfo.go:13, internal/proxy/senderinfo.go:39-40, internal/proxy/proxy.go:56, internal/proxy/manager.go:214, internal/proxy/service.go:27, internal/proxy/collection.go:29.
 
-Found by the /unsmell run of 2026-11-10 (b3-12, b1-11, b2-11).
+38 declaration docs in internal/notification/desktop.go and desktop_test.go
+open with their own name (Notifier, Approver, Action, Closed, DBusNotifier, …).
+
+Where: internal/notification/desktop.go:25, internal/notification/desktop.go:366, internal/notification/desktop_test.go:19.
+
+Found by the /unsmell run of 2026-11-10 (b3-12, b1-11, b2-11), and the
+2026-11-19 run (b2-15).
 
 ## Next
 - Drop the name and start at the verb or noun phrase; move or delete the orphaned runService line.

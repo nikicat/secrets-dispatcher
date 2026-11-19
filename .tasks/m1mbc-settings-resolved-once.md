@@ -8,8 +8,6 @@ tags: [refactor, cli, config]
 Flag-over-config precedence and the state directory are merged field by field
 in `runLogin`, `runCLI` and `runServe` (nine settings for serve). Around it, in
 `main.go`:
-- the flag defaults `127.0.0.1:8484` and `info` duplicate
-  `config.DefaultListenAddr` and `config.DefaultLogLevel`;
 - the `--config`, `--state-dir` and `--verbose` help texts are spelled once per
   subcommand;
 - `--start` and `--no-start` are two bools for one setting.

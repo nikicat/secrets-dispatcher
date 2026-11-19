@@ -442,3 +442,35 @@ func TestExtractRequestID(t *testing.T) {
 		})
 	}
 }
+
+func TestWriteJSON(t *testing.T) {
+	rr := httptest.NewRecorder()
+
+	writeJSON(rr, ActionResponse{Status: "approved"})
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+	if body := rr.Body.String(); body != `{"status":"approved"}`+"\n" {
+		t.Errorf("unexpected body %q", body)
+	}
+}
+
+func TestWriteJSON_Unencodable(t *testing.T) {
+	rr := httptest.NewRecorder()
+
+	writeJSON(rr, make(chan int))
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500, got %d", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+	if body := rr.Body.String(); body != `{"error":"failed to encode response"}`+"\n" {
+		t.Errorf("unexpected body %q", body)
+	}
+}

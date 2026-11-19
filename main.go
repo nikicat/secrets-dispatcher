@@ -34,12 +34,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	defaultListenAddr   = "127.0.0.1:8484"
-	defaultTimeout      = 5 * time.Minute
-	defaultHistoryLimit = 100
-)
-
 var (
 	progName = filepath.Base(os.Args[0])
 	version  = "dev" // injected via -ldflags "-X main.version=..."
@@ -53,6 +47,11 @@ func init() {
 			version = bi.Main.Version
 		}
 	}
+}
+
+// Returns a context that SIGINT or SIGTERM cancels.
+func shutdownContext() (ctx context.Context, stop context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 func main() {
@@ -126,7 +125,7 @@ Run '%s <command> -h' for command-specific help.
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
+	listenAddr := fs.String("listen", config.DefaultListenAddr, "HTTP API listen address")
 	var stateDir config.StateDir
 	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	fs.Parse(args)
@@ -173,7 +172,7 @@ func runCLI(cmd string, args []string) {
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
 	var stateDir config.StateDir
 	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
-	serverAddr := fs.String("server", defaultListenAddr, "API server address")
+	serverAddr := fs.String("server", config.DefaultListenAddr, "API server address")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	fs.Parse(args)
 
@@ -258,11 +257,11 @@ func runCLI(cmd string, args []string) {
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn, error")
-	logFormat := fs.String("log-format", "text", "Log format: text (colored) or json")
-	listenAddr := fs.String("listen", defaultListenAddr, "HTTP API listen address")
-	timeout := fs.Duration("timeout", defaultTimeout, "Approval timeout")
-	historyLimit := fs.Int("history-limit", defaultHistoryLimit, "Maximum number of resolved requests to keep in history")
+	logLevel := fs.String("log-level", config.DefaultLogLevel, "Log level: debug, info, warn, error")
+	logFormat := fs.String("log-format", config.DefaultLogFormat, "Log format: text (colored) or json")
+	listenAddr := fs.String("listen", config.DefaultListenAddr, "HTTP API listen address")
+	timeout := fs.Duration("timeout", config.DefaultTimeout, "Approval timeout")
+	historyLimit := fs.Int("history-limit", config.DefaultHistoryLimit, "Maximum number of resolved requests to keep in history")
 	var stateDir config.StateDir
 	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
 	apiOnly := fs.Bool("api-only", false, "Run only the API server (for testing)")
@@ -410,23 +409,19 @@ func runServe(args []string) {
 		os.Exit(1)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := shutdownContext()
+	defer stop()
+	// stop also cancels ctx. Deferring this after stop makes it run first, so a
+	// return without a signal logs nothing.
+	defer context.AfterFunc(ctx, func() {
+		slog.Info("received signal, shutting down", "cause", context.Cause(ctx))
+	})()
 
 	// Start notification action listener (needs ctx)
 	if desktopNotifier != nil {
 		go notifHandler.ListenActions(ctx, desktopNotifier.Actions())
 		defer desktopNotifier.Stop()
 	}
-
-	// Handle signals for graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		slog.Info("received signal, shutting down", "signal", sig)
-		cancel()
-	}()
 
 	// Resolve upstream address
 	var upstreamAddr string
@@ -459,7 +454,7 @@ func runServe(args []string) {
 				fmt.Fprintf(os.Stderr, "error: client %q claimed twice (should be caught by validation)\n", approval.ClientLocal)
 				os.Exit(1)
 			}
-			sp := &staticProvider{info: proxy.ClientInfo{Name: approval.ClientLocal, SocketPath: "session_bus"}}
+			sp := &staticProvider{info: proxy.ClientInfo{Name: approval.ClientLocal, SocketPath: string(config.BusSessionBus)}}
 			providers = append(providers, sp)
 			runners = append(runners, func(ctx context.Context) error {
 				if upstreamAddr == "" {
@@ -799,10 +794,7 @@ func runConfigEdit(args []string) {
 	var answer string
 	fmt.Scanln(&answer)
 	if answer == "y" || answer == "Y" {
-		restart := exec.Command("systemctl", "--user", "restart", "secrets-dispatcher.service")
-		restart.Stdout = os.Stdout
-		restart.Stderr = os.Stderr
-		if err := restart.Run(); err != nil {
+		if err := service.RestartProxy(); err != nil {
 			fmt.Fprintf(os.Stderr, "error restarting service: %v\n", err)
 			os.Exit(1)
 		}
@@ -855,7 +847,7 @@ func runTry(args []string) {
 	narration := narrationFlag(fs)
 	fs.Parse(args)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := shutdownContext()
 	defer stop()
 
 	if err := service.Try(ctx, service.TryOptions{
@@ -1044,7 +1036,7 @@ func runDaemon(args []string) {
 	}
 	slog.SetDefault(slog.New(handler))
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	ctx, stop := shutdownContext()
 	defer stop()
 
 	cfg := daemon.Config{

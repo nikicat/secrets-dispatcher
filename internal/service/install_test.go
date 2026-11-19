@@ -721,24 +721,6 @@ func TestUninstallAllUnits(t *testing.T) {
 	}
 }
 
-// --- UnitPath ---
-
-func TestUnitPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	p, err := UnitPath()
-	if err != nil {
-		t.Fatalf("UnitPath() error: %v", err)
-	}
-
-	want := filepath.Join(tmpDir, "systemd", "user", proxyServiceUnit)
-	if p != want {
-		t.Errorf("UnitPath() = %q, want %q", p, want)
-	}
-}
-
 // --- D-Bus activation masking ---
 
 func TestInstallLocalMasksDBusActivation(t *testing.T) {
@@ -996,4 +978,12 @@ func TestNarrationFlagValue(t *testing.T) {
 	assert.Equal(t, NarrateMilestones, n)
 
 	assert.Error(t, n.Set("loud"))
+}
+
+func TestRestartProxy(t *testing.T) {
+	calls := mockSystemctl(t)
+
+	require.NoError(t, RestartProxy())
+
+	assert.Equal(t, []string{"restart " + proxyServiceUnit}, *calls)
 }

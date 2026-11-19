@@ -119,7 +119,8 @@ downstream) reports PIDs from there, so the dispatcher looks none of them up: a
 request from it has no process chain or unit, and `process` matchers never
 match it. Match it by `client`, the name the forward gives its socket. That
 name identifies the tunnel, not a process on the far side, so a client rule
-trusts everything that can reach that bus. An `approve` or `ignore` rule that
+trusts everything that can reach that bus
+([ADR 0003](adr/0003-remote-clients-identified-by-their-tunnel.md)). An `approve` or `ignore` rule that
 names no `client` covers only the session bus, and a `deny` rule that names
 none covers every bus. The names `local`, `ssh-agent` and `unknown` are
 reserved. The sockets directory skips a socket named after one, and a `socket`

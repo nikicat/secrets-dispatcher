@@ -365,16 +365,26 @@ func extractRequestID(path, prefix, suffix string) string {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		http.Error(w, `{"error": "failed to encode response"}`, http.StatusInternalServerError)
+	if err := respondJSON(w, http.StatusOK, v); err != nil {
+		writeError(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
 
 func writeError(w http.ResponseWriter, message string, code int) {
+	respondJSON(w, code, ErrorResponse{Error: message})
+}
+
+// Writes v as a JSON response with the given status code. Errors when v cannot
+// be encoded, and then writes nothing.
+func respondJSON(w http.ResponseWriter, code int, v any) error {
+	body, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(ErrorResponse{Error: message})
+	w.Write(append(body, '\n'))
+	return nil
 }
 
 // Decodes a POSTed JSON body into body, or writes the error response and returns false.

@@ -83,22 +83,17 @@ func Status() error {
 			if demoted != shadowed {
 				problems = append(problems, fmt.Sprintf("gnome-keyring demotion is inconsistent (drop-in: %v, autostart shadow: %v) — reinstall or uninstall to converge", demoted, shadowed))
 			}
-			for _, name := range []string{busSocketUnit, backendServiceUnit, proxyServiceUnit} {
-				if state, ok := states[name]; ok && state != "active" {
-					problems = append(problems, fmt.Sprintf("%s is %s", name, state))
-				}
-			}
+			problems = append(problems, notActive(states, busSocketUnit, backendServiceUnit, proxyServiceUnit)...)
 		} else {
 			// Remote topology: the dispatcher fronts a remote bus and must NOT
 			// hold takeover state on this session.
 			if masked || demoted || shadowed {
 				problems = append(problems, "remote topology installed but local takeover state present (mask/demotion) — run `service uninstall`, then reinstall")
 			}
-			if state, ok := states[proxyServiceUnit]; !ok {
+			if _, ok := states[proxyServiceUnit]; !ok {
 				problems = append(problems, proxyServiceUnit+" is missing while other units are installed — reinstall or uninstall")
-			} else if state != "active" {
-				problems = append(problems, fmt.Sprintf("%s is %s", proxyServiceUnit, state))
 			}
+			problems = append(problems, notActive(states, proxyServiceUnit)...)
 			// A running dispatcher in remote topology proxies to whatever owns
 			// org.freedesktop.secrets upstream; if nothing owns it, every secret
 			// lookup hangs with no visible error and the unit still looks
@@ -117,6 +112,18 @@ func Status() error {
 		fmt.Printf("⚠ %s\n", pr)
 	}
 	return fmt.Errorf("%d problem(s) found", len(problems))
+}
+
+// Returns a "<unit> is <state>" problem for each named unit that is installed
+// but not active, in the order given. A unit missing from states is skipped.
+func notActive(states map[string]string, names ...string) []string {
+	var problems []string
+	for _, name := range names {
+		if state, ok := states[name]; ok && state != "active" {
+			problems = append(problems, fmt.Sprintf("%s is %s", name, state))
+		}
+	}
+	return problems
 }
 
 // unitState reports systemctl is-active for a unit ("active", "inactive",

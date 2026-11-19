@@ -26,5 +26,9 @@ would make the transport MITM-resistant independently of SSH, is deferred
 
 - Servers use standard libsecret; nothing changes on their side.
 - Trust in a client is the trust in whoever set up its tunnel: the laptop user.
+- Trust rules match a tunnelled request by its `client`, the tunnel's name. The
+  request has no local process chain to match
+  ([ADR 0005](0005-trust-rules-on-the-process-chain.md)), so a rule naming a
+  client trusts everything that can reach that tunnel.
 - When the laptop is offline, remote requests fail with a Secret Service
   error. Nothing is queued.

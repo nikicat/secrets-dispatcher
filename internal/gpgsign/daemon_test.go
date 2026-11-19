@@ -35,16 +35,7 @@ func TestCancelSigningRequest_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &DaemonClient{
-		token: "test-token",
-		httpClient: &http.Client{
-			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				req.URL.Scheme = "http"
-				req.URL.Host = strings.TrimPrefix(srv.URL, "http://")
-				return http.DefaultTransport.RoundTrip(req)
-			}),
-		},
-	}
+	client := newTestClient(srv)
 
 	err := client.CancelSigningRequest(context.Background(), "test-request-id")
 	if err != nil {
@@ -66,16 +57,7 @@ func TestCancelSigningRequest_NotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := &DaemonClient{
-		token: "test-token",
-		httpClient: &http.Client{
-			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				req.URL.Scheme = "http"
-				req.URL.Host = strings.TrimPrefix(srv.URL, "http://")
-				return http.DefaultTransport.RoundTrip(req)
-			}),
-		},
-	}
+	client := newTestClient(srv)
 
 	err := client.CancelSigningRequest(context.Background(), "nonexistent-id")
 	if err == nil {
@@ -83,10 +65,12 @@ func TestCancelSigningRequest_NotFound(t *testing.T) {
 	}
 }
 
+const testToken config.AuthToken = "test-token"
+
 // newTestClient creates a DaemonClient that redirects requests to the given httptest server.
-func newTestClient(srv *httptest.Server, token config.AuthToken) *DaemonClient {
+func newTestClient(srv *httptest.Server) *DaemonClient {
 	return &DaemonClient{
-		token: token,
+		token: testToken,
 		httpClient: &http.Client{
 			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				req.URL.Scheme = "http"
@@ -115,7 +99,7 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newTestClient(srv, "test-token")
+	client := newTestClient(srv)
 	reqID, err := client.PostSigningRequest(context.Background(), "my-repo", &approval.GPGSignInfo{
 		RepoName:  "my-repo",
 		CommitMsg: "feat: add tests",
@@ -137,8 +121,8 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	if gotContentType != "application/json" {
 		t.Errorf("content-type = %q, want application/json", gotContentType)
 	}
-	if gotAuth != "test-token" {
-		t.Errorf("Bearer token = %q, want %q", string(gotAuth), "test-token")
+	if gotAuth != testToken {
+		t.Errorf("Bearer token = %q, want %q", string(gotAuth), string(testToken))
 	}
 	if gotBody.Client != "my-repo" {
 		t.Errorf("body.client = %q, want %q", gotBody.Client, "my-repo")
@@ -154,7 +138,7 @@ func TestPostSigningRequest_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newTestClient(srv, "test-token")
+	client := newTestClient(srv)
 	_, err := client.PostSigningRequest(context.Background(), "repo", &approval.GPGSignInfo{})
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
@@ -170,7 +154,7 @@ func TestPostSigningRequest_EmptyRequestID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := newTestClient(srv, "test-token")
+	client := newTestClient(srv)
 	_, err := client.PostSigningRequest(context.Background(), "repo", &approval.GPGSignInfo{})
 	if err == nil {
 		t.Fatal("expected error for empty request_id, got nil")

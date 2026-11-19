@@ -126,6 +126,22 @@ func TestStatusWarnsOnDeadBackend(t *testing.T) {
 	assert.ErrorContains(t, Status(), "problem")
 }
 
+func TestStatusNamesEachInactiveTakeoverUnit(t *testing.T) {
+	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
+	f.writeUnits(t, allUnitNames...)
+	f.writeMask(t)
+	f.writeDropIn(t)
+	f.writeShadow(t)
+	f.unitStates[proxyServiceUnit] = "inactive"
+	f.unitStates[busSocketUnit] = "failed"
+
+	var err error
+	out := captureStdout(t, func() { err = Status() })
+
+	assert.EqualError(t, err, "2 problem(s) found")
+	assert.Contains(t, out, "⚠ secrets-dispatcher-bus.socket is failed\n⚠ secrets-dispatcher.service is inactive\n")
+}
+
 func TestStatusNotInstalledClean(t *testing.T) {
 	newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
 
@@ -164,4 +180,16 @@ func TestStatusRemoteModeWarnsOnUnowned(t *testing.T) {
 	})
 
 	assert.ErrorContains(t, Status(), "problem")
+}
+
+func TestStatusRemoteModeNamesInactiveProxy(t *testing.T) {
+	f := newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
+	f.writeUnits(t, proxyServiceUnit)
+	f.unitStates[proxyServiceUnit] = "failed"
+
+	var err error
+	out := captureStdout(t, func() { err = Status() })
+
+	assert.EqualError(t, err, "1 problem(s) found")
+	assert.Contains(t, out, "⚠ secrets-dispatcher.service is failed\n")
 }

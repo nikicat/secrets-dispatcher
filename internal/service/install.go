@@ -185,15 +185,6 @@ func unitDir() (string, error) {
 	return filepath.Join(configHome, "systemd", "user"), nil
 }
 
-// UnitPath returns the full path where the proxy unit file is (or would be) installed.
-func UnitPath() (string, error) {
-	dir, err := unitDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, proxyServiceUnit), nil
-}
-
 // Install writes systemd user unit files, updates the config topology,
 // reloads systemd, and enables the service. Plan(opts) previews the same
 // changes without making them.
@@ -419,6 +410,11 @@ func Uninstall(n Narration) error {
 	}
 
 	return h.systemctl("daemon-reload")
+}
+
+// Restarts the proxy unit, with systemctl's output on the terminal.
+func RestartProxy() error {
+	return host{narration: NarrateChanges}.systemctl("restart", proxyServiceUnit)
 }
 
 // systemctlFunc is the function used to run systemctl commands.

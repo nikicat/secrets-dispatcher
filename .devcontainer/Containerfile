@@ -10,7 +10,7 @@ RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/%s/%s\nSuites: 
       > /etc/apt/sources.list.d/debian.sources \
  && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/snapshot \
  && apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev xz-utils \
+ && apt-get install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev xz-utils shellcheck \
  && rm -rf /var/lib/apt/lists/*
 
 # go and node from their own releases, at go.mod's and .nvmrc's versions, which Debian's predate
@@ -35,6 +35,11 @@ RUN npm install -g pnpm@12.18.0
 # the libraries Playwright's chromium and firefox load, at web/package.json's version
 ARG PLAYWRIGHT=1.65.0
 RUN apt-get update && npx -y "playwright@$PLAYWRIGHT" install-deps chromium firefox && rm -rf /var/lib/apt/lists/*
+
+# an arm64 VM under KVM (devcontainer.json passes /dev/kvm)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils \
+ && rm -rf /var/lib/apt/lists/*
 
 # the user VS Code connects as (devcontainer.json's remoteUser)
 RUN useradd -m -u 1000 -U vscode

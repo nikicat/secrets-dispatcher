@@ -5,14 +5,16 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// swapFuncs saves and restores all injectable syscall functions around a test.
-// Returns a cleanup function to be called with t.Cleanup.
+// saveOrigFuncs restores all injectable syscall functions after the test, and
+// points the session stack at a fake Debian common-session for its duration.
 func saveOrigFuncs(t *testing.T) {
 	t.Helper()
+	fakeSessionStack(t, debianCommonSession)
 	origUserAdd := userAddFunc
 	origLoginctl := loginctlFunc
 	origUserLookup := userLookupFunc
@@ -31,6 +33,28 @@ func saveOrigFuncs(t *testing.T) {
 		writeFileFunc = origWriteFile
 		geteuidFunc = origGeteuid
 	})
+}
+
+// A trimmed Debian /etc/pam.d/common-session.
+const debianCommonSession = `session	[default=1]			pam_permit.so
+session	requisite			pam_deny.so
+session	required			pam_permit.so
+session	required	pam_unix.so
+# end of pam-auth-update config
+`
+
+// Makes a stack file holding content the only session stack for the test,
+// and returns its path.
+func fakeSessionStack(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "common-session")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	orig := sessionStacks
+	sessionStacks = []string{path}
+	t.Cleanup(func() { sessionStacks = orig })
+	return path
 }
 
 // mockRootEuid makes geteuidFunc return 0 (root).
@@ -293,7 +317,7 @@ func TestProvision_WritesPAMConfig(t *testing.T) {
 
 	var pamContent string
 	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
-		if path == "/etc/pam.d/secrets-dispatcher" {
+		if path == pamConfigPath {
 			pamContent = string(data)
 		}
 		return nil
@@ -310,8 +334,9 @@ func TestProvision_WritesPAMConfig(t *testing.T) {
 	if !strings.Contains(pamContent, "pam_exec.so") {
 		t.Errorf("PAM config should reference pam_exec.so; got:\n%s", pamContent)
 	}
-	if !strings.Contains(pamContent, "--no-block") {
-		t.Errorf("PAM config should use --no-block to avoid hanging login; got:\n%s", pamContent)
+	wantLine := "/usr/bin/systemctl --user --machine=secrets-nb@ start --no-block " + string(daemonUnit) + "\n"
+	if !strings.HasSuffix(pamContent, wantLine) {
+		t.Errorf("PAM config should start %s under the companion user's manager; got:\n%s", daemonUnit, pamContent)
 	}
 }
 
@@ -456,5 +481,119 @@ func TestProvision_CompanionNameOverride(t *testing.T) {
 
 	if addedUser != "sd-companion" {
 		t.Errorf("userAdd should use CompanionName override %q; got %q", "sd-companion", addedUser)
+	}
+}
+
+// Pins the files Provision writes and the PAM hook's exact content.
+func TestProvision_WrittenFiles(t *testing.T) {
+	saveOrigFuncs(t)
+	mockRootEuid()
+	noopFuncs()
+	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	written := map[string]string{}
+	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+		written[path] = string(data)
+		return nil
+	}
+
+	if err := Provision(Config{DesktopUser: "nb"}); err != nil {
+		t.Fatalf("Provision() unexpected error: %v", err)
+	}
+
+	var paths []string
+	for p := range written {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	want := []string{
+		sessionStacks[0],
+		pamConfigPath,
+		"/usr/share/dbus-1/system.d/net.mowaka.SecretsDispatcher1.conf",
+		"/var/lib/secret-companion/nb/.config/systemd/user/" + string(daemonUnit),
+	}
+	slices.Sort(want)
+	if !slices.Equal(paths, want) {
+		t.Errorf("Provision() wrote %v, want %v", paths, want)
+	}
+	wantPAM := "# Managed by secrets-dispatcher provision. Do not edit manually.\n" +
+		"# Start the companion daemon on desktop user login.\n" +
+		"session optional pam_exec.so quiet type=open_session /usr/bin/systemctl --user --machine=secrets-nb@ start --no-block " + string(daemonUnit) + "\n"
+	if written[pamConfigPath] != wantPAM {
+		t.Errorf("PAM config = %q, want %q", written[pamConfigPath], wantPAM)
+	}
+}
+
+// Writes only the session stack, for real, and drops every other write.
+func writeOnlySessionStack() {
+	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+		if slices.Contains(sessionStacks, path) {
+			return os.WriteFile(path, data, perm)
+		}
+		return nil
+	}
+}
+
+func TestProvision_IncludesPAMConfig(t *testing.T) {
+	for _, tc := range []struct{ name, stack string }{
+		{"trailing newline", debianCommonSession},
+		{"no trailing newline", strings.TrimSuffix(debianCommonSession, "\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			saveOrigFuncs(t)
+			mockRootEuid()
+			noopFuncs()
+			userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+			path := fakeSessionStack(t, tc.stack)
+			must(t, os.Chmod(path, 0640))
+			writeOnlySessionStack()
+
+			if err := Provision(Config{DesktopUser: "nb"}); err != nil {
+				t.Fatalf("Provision() unexpected error: %v", err)
+			}
+
+			got, err := os.ReadFile(path)
+			must(t, err)
+			want := debianCommonSession + "# Added by secrets-dispatcher provision.\nsession include secrets-dispatcher\n"
+			if string(got) != want {
+				t.Errorf("session stack = %q, want %q", got, want)
+			}
+			info, err := os.Stat(path)
+			must(t, err)
+			if info.Mode().Perm() != 0640 {
+				t.Errorf("session stack mode = %v, want 0640", info.Mode().Perm())
+			}
+		})
+	}
+}
+
+func TestProvision_IncludesPAMConfigOnce(t *testing.T) {
+	saveOrigFuncs(t)
+	mockRootEuid()
+	noopFuncs()
+	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	writeOnlySessionStack()
+	path := sessionStacks[0]
+
+	must(t, Provision(Config{DesktopUser: "nb"}))
+	first, err := os.ReadFile(path)
+	must(t, err)
+	must(t, Provision(Config{DesktopUser: "nb"}))
+	second, err := os.ReadFile(path)
+	must(t, err)
+	if string(second) != string(first) {
+		t.Errorf("second Provision() changed the session stack:\n%s\nwas:\n%s", second, first)
+	}
+}
+
+func TestProvision_FailsWithoutSessionStack(t *testing.T) {
+	saveOrigFuncs(t)
+	mockRootEuid()
+	noopFuncs()
+	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	sessionStacks = []string{filepath.Join(t.TempDir(), "common-session"), filepath.Join(t.TempDir(), "system-login")}
+
+	err := Provision(Config{DesktopUser: "nb"})
+	if err == nil || !strings.Contains(err.Error(), "session include secrets-dispatcher") {
+		t.Errorf("Provision() error = %v, want one naming the line to add", err)
 	}
 }

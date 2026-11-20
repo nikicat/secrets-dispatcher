@@ -1,12 +1,9 @@
 package config
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"time"
@@ -16,20 +13,20 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-// Defaults for serve-subcommand settings.
+// Defaults for settings that neither the config file nor a flag sets.
 const (
 	DefaultListenAddr            = ListenAddr("127.0.0.1:8484")
 	DefaultTimeout               = 5 * time.Minute
 	DefaultHistoryLimit          = 100
-	DefaultLogLevel              = "info"
-	DefaultLogFormat             = "text"
+	DefaultLogLevel              = LogInfo
+	DefaultLogFormat             = LogText
 	DefaultApprovalWindow        = 5 * time.Second
 	DefaultAutoApproveDuration   = 2 * time.Minute
 	DefaultNotificationDelay     = 500 * time.Millisecond
 	DefaultUpstreamSlowThreshold = 1500 * time.Millisecond
+	DefaultNotifications         = true
 )
 
-var defaultNotifications = true
 var defaultShowPIDs = false
 var defaultTrimProcessChain = true
 var defaultIgnoreChromeDummySecret = true
@@ -58,16 +55,14 @@ const (
 	BusSockets BusType = "sockets"
 )
 
-// UnmarshalText parses a bus type, so that a config file naming an unknown
-// type fails to load. An empty type is left unset for WithDefaults.
-func (t *BusType) UnmarshalText(text []byte) error {
-	switch v := BusType(text); v {
-	case "", BusSessionBus, BusSocket, BusSockets:
-		*t = v
-		return nil
-	default:
-		return fmt.Errorf("bus type must be %q, %q or %q, got %q", BusSessionBus, BusSocket, BusSockets, v)
-	}
+// The valid bus types.
+var BusTypes = []BusType{BusSessionBus, BusSocket, BusSockets}
+
+// Parses a bus type as parseEnum does, so that a config file naming an
+// unknown type fails to load.
+func (t *BusType) UnmarshalText(text []byte) (err error) {
+	*t, err = parseEnum(text, BusTypes, "bus type")
+	return err
 }
 
 // validate checks that b has the path its type needs.
@@ -83,16 +78,10 @@ func (b BusConfig) validate() error {
 // directory and there is none.
 func (cfg *Config) WithDefaults() (*Config, error) {
 	out := *cfg
-	if out.Listen == "" {
-		out.Listen = DefaultListenAddr
-	}
+	out.Listen = out.Listen.OrDefault()
 	s := &out.Serve
-	if s.LogLevel == "" {
-		s.LogLevel = DefaultLogLevel
-	}
-	if s.LogFormat == "" {
-		s.LogFormat = DefaultLogFormat
-	}
+	s.LogLevel = s.LogLevel.OrDefault()
+	s.LogFormat = s.LogFormat.OrDefault()
 	if s.Timeout == 0 {
 		s.Timeout = Duration(DefaultTimeout)
 	}
@@ -100,7 +89,7 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 		s.HistoryLimit = DefaultHistoryLimit
 	}
 	if s.Notifications == nil {
-		s.Notifications = &defaultNotifications
+		s.Notifications = new(DefaultNotifications)
 	}
 	if s.ShowPIDs == nil {
 		s.ShowPIDs = &defaultShowPIDs
@@ -316,8 +305,21 @@ func (r TrustRule) globs() []namedGlob {
 // Duration wraps time.Duration with YAML unmarshalling for human-readable strings.
 type Duration time.Duration
 
+func (d Duration) String() string { return time.Duration(d).String() }
+
+// Sets the duration from a command-line flag value in Go duration syntax,
+// such as 90s or 5m. Errors when value is not a duration.
+func (d *Duration) Set(value string) error {
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return err
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
 func (d Duration) MarshalYAML() (any, error) {
-	return time.Duration(d).String(), nil
+	return d.String(), nil
 }
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
@@ -325,11 +327,9 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	if err := value.Decode(&s); err != nil {
 		return err
 	}
-	parsed, err := time.ParseDuration(s)
-	if err != nil {
+	if err := d.Set(s); err != nil {
 		return fmt.Errorf("invalid duration %q: %w", s, err)
 	}
-	*d = Duration(parsed)
 	return nil
 }
 
@@ -337,8 +337,8 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 type ServeConfig struct {
 	Upstream                BusConfig       `yaml:"upstream"`
 	Downstream              []BusConfig     `yaml:"downstream"`
-	LogLevel                string          `yaml:"log_level"`
-	LogFormat               string          `yaml:"log_format"`
+	LogLevel                LogLevel        `yaml:"log_level"`
+	LogFormat               LogFormat       `yaml:"log_format"`
 	Timeout                 Duration        `yaml:"timeout"`
 	HistoryLimit            int             `yaml:"history_limit"`
 	Notifications           *bool           `yaml:"notifications"`
@@ -458,53 +458,4 @@ type Config struct {
 	Listen   ListenAddr  `yaml:"listen"`
 	Serve    ServeConfig `yaml:"serve"`
 	SSH      *SSHConfig  `yaml:"ssh,omitempty"`
-}
-
-// Returns the default config file, under the XDG config home.
-func DefaultPath() (string, error) {
-	base, err := ConfigHome()
-	if err != nil {
-		return "", fmt.Errorf("find the config file: %w", err)
-	}
-	return filepath.Join(base, appName, "config.yaml"), nil
-}
-
-// Returns path, or DefaultPath when path is empty.
-func PathOrDefault(path string) (string, error) {
-	if path != "" {
-		return path, nil
-	}
-	return DefaultPath()
-}
-
-// Loads the config file at DefaultPath, as Load does. A missing file gives an
-// empty config.
-func LoadDefault() (*Config, error) {
-	path, err := DefaultPath()
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := Load(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return &Config{}, nil
-	}
-	return cfg, err
-}
-
-// Reads and parses the YAML config file at path. Unknown keys are rejected.
-// Each error names path. Errors with os.ErrNotExist when the file does not
-// exist.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-
-	var cfg Config
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parsing config %s: %w", path, err)
-	}
-	return &cfg, nil
 }

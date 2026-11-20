@@ -178,7 +178,11 @@ func (c thinClient) locateLocalDaemon() (*DaemonClient, error) {
 // when the file sets none. git runs gpg-sign without our flags, so a daemon
 // started with another state directory or config file is not found.
 func daemonStateDir() (config.StateDir, error) {
-	cfg, err := config.LoadDefault()
+	source, err := config.DefaultSource()
+	if err != nil {
+		return "", err
+	}
+	cfg, err := source.Load()
 	if err != nil {
 		return "", err
 	}

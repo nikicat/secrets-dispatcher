@@ -15,6 +15,11 @@ plus `proxy/manager.go`.
 Done when one runner type holds the shared settings, and an upstream address
 type owns the "session bus or socket" choice and the `unix:path=` form.
 
+`runServe` also recovers the sockets runner's `*proxy.Manager` from
+`providers []api.ClientProvider` with a type assertion (`p.(*proxy.Manager)`,
+`main.go` near the WebSocket subscribe loop); the runner type should keep its
+manager so the loop ranges over it (2026-11-20 run, r1a-16).
+
 ## Related
 Tkf361 changes the session-bus runner's retry.
 

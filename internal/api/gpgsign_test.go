@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/poll"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -310,16 +311,11 @@ func (o *wsEventObserver) OnEvent(event approval.Event) {
 }
 
 func (o *wsEventObserver) WaitForMessages(count int, timeout time.Duration) []WSMessage {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	poll.Until(timeout, 10*time.Millisecond, func() bool {
 		o.mu.Lock()
-		n := len(o.msgs)
-		o.mu.Unlock()
-		if n >= count {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		defer o.mu.Unlock()
+		return len(o.msgs) >= count
+	})
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return append([]WSMessage{}, o.msgs...)

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -288,7 +289,7 @@ func (m *Manager) serve(ctx context.Context, socketPath string, inst *proxyInsta
 	defer close(inst.done)
 	p := inst.proxy
 	err := p.Run(ctx)
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("proxy error",
 			"socket", socketPath,
 			"client", p.clientName,

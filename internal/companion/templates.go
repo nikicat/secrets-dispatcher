@@ -1,14 +1,11 @@
 package companion
 
-// Template strings for provisioning artifacts. text/template is used for
-// rendering so template variables are clear and composable.
+// Files that provision the companion-user experiment
+// (docs/adr/0002-visibility-not-isolation.md).
 
-// dbusPolicyTemplate is the D-Bus system bus policy file for the companion daemon.
-// It is modeled on Pattern 5 from RESEARCH.md (verified against /usr/share/dbus-1/system.conf).
-// The system bus already denies own="*" and method_call sends by default, so we
-// only need to add allow (punch-hole) rules.
-//
-// Install location: /usr/share/dbus-1/system.d/net.mowaka.SecretsDispatcher1.conf
+// The companion daemon's system bus policy. It holds only allow rules, because
+// the system bus already denies own="*" and method_call sends by default
+// (/usr/share/dbus-1/system.conf).
 const dbusPolicyTemplate = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
@@ -25,9 +22,8 @@ const dbusPolicyTemplate = `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BU
 </busconfig>
 `
 
-// systemdUnitTemplate is the systemd user unit file for the companion daemon.
-// Installed to companion user's ~/.config/systemd/user/.
-// Type=notify requires sd-notify readiness notification before systemd considers it started.
+// The companion daemon's systemd user unit. With Type=notify, systemd counts
+// the daemon started only once it sends the sd_notify readiness message.
 const systemdUnitTemplate = `[Unit]
 Description=Secrets Dispatcher Companion Daemon
 Documentation=https://github.com/nikicat/secrets-dispatcher
@@ -46,10 +42,11 @@ RestartSec=5
 WantedBy=default.target
 `
 
-// pamConfigTemplate is the PAM session hook that starts the companion daemon on login.
-// Installed to /etc/pam.d/secrets-dispatcher.
-// Uses --no-block so it does not hang the login session (PROV-02).
+// The PAM session hook that starts the companion daemon at login in the
+// companion user's own systemd manager, without holding up the login.
+// Provision installs the unit there unenabled. It runs only when a session
+// opens (type=open_session), not again at logout.
 const pamConfigTemplate = `# Managed by secrets-dispatcher provision. Do not edit manually.
-# Start/stop companion daemon on desktop user login/logout.
-session optional pam_exec.so quiet /usr/bin/systemctl start --no-block secrets-dispatcher-companion@%u.service
+# Start the companion daemon on desktop user login.
+session optional pam_exec.so quiet type=open_session /usr/bin/systemctl --user --machine={{.CompanionUser}}@ start --no-block {{.DaemonUnit}}
 `

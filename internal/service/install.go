@@ -2,7 +2,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,18 +11,22 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
-	"gopkg.in/yaml.v3"
+	"github.com/nikicat/secrets-dispatcher/internal/poll"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 const (
-	proxyServiceUnit   = "secrets-dispatcher.service"
-	busSocketUnit      = "secrets-dispatcher-bus.socket"
-	busServiceUnit     = "secrets-dispatcher-bus.service"
-	backendServiceUnit = "secrets-dispatcher-backend.service"
+	proxyServiceUnit   systemd.Unit = "secrets-dispatcher.service"
+	busSocketUnit      systemd.Unit = "secrets-dispatcher-bus.socket"
+	busServiceUnit     systemd.Unit = "secrets-dispatcher-bus.service"
+	backendServiceUnit systemd.Unit = "secrets-dispatcher-backend.service"
 )
 
+// The content of each unit file, by unit.
+type unitFiles map[systemd.Unit]string
+
 // allUnitNames lists every unit file the package may install.
-var allUnitNames = []string{
+var allUnitNames = []systemd.Unit{
 	busSocketUnit,
 	busServiceUnit,
 	backendServiceUnit,
@@ -65,8 +68,8 @@ ExecStart=%s --session --nofork --nopidfile --address=systemd:
 
 const backendServiceTemplate = `[Unit]
 Description=Secrets Dispatcher - Secret Service backend
-Requires=` + busSocketUnit + `
-After=` + busSocketUnit + `
+Requires=` + string(busSocketUnit) + `
+After=` + string(busSocketUnit) + `
 
 [Service]
 Type=simple
@@ -77,8 +80,8 @@ Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%s
 const localProxyTemplate = `[Unit]
 Description=Secrets Dispatcher - D-Bus Secret Service approval proxy
 Documentation=https://github.com/nikicat/secrets-dispatcher
-Requires=` + backendServiceUnit + `
-After=` + backendServiceUnit + `
+Requires=` + string(backendServiceUnit) + `
+After=` + string(backendServiceUnit) + `
 
 [Service]
 Type=simple
@@ -98,16 +101,13 @@ const (
 
 // Options configures service installation.
 type Options struct {
-	// ConfigPath overrides the config file location (default: config.DefaultPath()).
-	ConfigPath string
+	// The config file that the proxy unit's `serve` command reads. Install
+	// rewrites its serve topology and keeps every other setting.
+	ConfigPath config.Path
 	// Start the service immediately after enabling.
-	Start bool
-	// The topology: remote, local or full. Empty means remote.
-	Mode string
-	// BackendPath selects the private backend for local/full modes: a binary
-	// path, a keyword ("gopass", "gnome-keyring"), or empty for the
-	// detection-driven default. See resolveBackendExec.
-	BackendPath string
+	Start   bool
+	Mode    Mode
+	Backend Backend
 	// How much of its work Install prints. Plan ignores it.
 	Narration Narration
 }
@@ -167,6 +167,25 @@ func (h host) systemctl(args ...string) error {
 	return systemctlFunc(h.narration, args...)
 }
 
+// A systemctl command that the service package runs.
+type systemctlVerb string
+
+const (
+	verbStop         systemctlVerb = "stop"
+	verbDisable      systemctlVerb = "disable"
+	verbEnable       systemctlVerb = "enable"
+	verbStart        systemctlVerb = "start"
+	verbTryRestart   systemctlVerb = "try-restart"
+	verbRestart      systemctlVerb = "restart"
+	verbDaemonReload systemctlVerb = "daemon-reload"
+	verbIsActive     systemctlVerb = "is-active"
+)
+
+// Runs `systemctl --user verb u`.
+func (h host) systemctlUnit(verb systemctlVerb, u systemd.Unit) error {
+	return h.systemctl(string(verb), string(u))
+}
+
 // lookPathFunc is the function used to find binaries on PATH.
 // Replaced in tests.
 var lookPathFunc = exec.LookPath
@@ -200,37 +219,11 @@ func Install(opts Options) error {
 	}
 	h.narration.printf("Wrote config: %s\n", in.configPath)
 
-	// Detect the current provider BEFORE taking over — masking and stopping
-	// the D-Bus-activated owner below destroy the evidence.
-	var provider Provider
-	if in.mode != "remote" {
-		provider = DetectProvider()
-		fmt.Printf("Detected Secret Service provider: %s\n", provider)
+	if err := in.topology.prepare(h); err != nil {
+		return err
 	}
 
-	// Mask/unmask D-Bus activation based on mode.
-	switch in.mode {
-	case "local", "full":
-		if err := h.maskDBusActivation(); err != nil {
-			return err
-		}
-		if provider.Kind == ProviderGnomeKeyring {
-			if err := h.demoteGnomeKeyring(); err != nil {
-				return err
-			}
-		}
-		h.stopDBusActivatedService()
-	case "remote":
-		if err := h.unmaskDBusActivation(); err != nil {
-			return err
-		}
-		if err := h.restoreGnomeKeyring(); err != nil {
-			return err
-		}
-	}
-
-	// Build unit file contents for this mode.
-	needed, err := in.units(provider)
+	needed, err := in.topology.units(in.execStart)
 	if err != nil {
 		return err
 	}
@@ -244,20 +237,20 @@ func Install(opts Options) error {
 		return fmt.Errorf("create unit dir: %w", err)
 	}
 
-	for _, name := range allUnitNames {
-		path := filepath.Join(dir, name)
-		if content, ok := needed[name]; ok {
+	for _, u := range allUnitNames {
+		path := u.Path(dir)
+		if content, ok := needed[u]; ok {
 			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-				return fmt.Errorf("write %s: %w", name, err)
+				return fmt.Errorf("write %s: %w", u, err)
 			}
 			h.narration.printf("Wrote unit file: %s\n", path)
 		} else {
 			// Clean up units from a previous mode if they exist.
 			if _, statErr := os.Stat(path); statErr == nil {
-				_ = h.systemctl("stop", name)
-				_ = h.systemctl("disable", name)
+				_ = h.systemctlUnit(verbStop, u)
+				_ = h.systemctlUnit(verbDisable, u)
 				if rmErr := os.Remove(path); rmErr != nil {
-					return fmt.Errorf("remove stale %s: %w", name, rmErr)
+					return fmt.Errorf("remove stale %s: %w", u, rmErr)
 				}
 				h.narration.printf("Removed stale unit: %s\n", path)
 			}
@@ -265,35 +258,24 @@ func Install(opts Options) error {
 	}
 
 	// Reload and enable.
-	if err := h.systemctl("daemon-reload"); err != nil {
+	if err := h.systemctl(string(verbDaemonReload)); err != nil {
 		return err
 	}
-	if in.mode != "remote" {
-		if err := h.systemctl("enable", busSocketUnit); err != nil {
+	for _, u := range in.topology.activated() {
+		if err := h.systemctlUnit(verbEnable, u); err != nil {
 			return err
 		}
-		h.narration.printf("Enabled %s\n", busSocketUnit)
+		h.narration.printf("Enabled %s\n", u)
 	}
-	if err := h.systemctl("enable", proxyServiceUnit); err != nil {
-		return err
-	}
-	h.narration.printf("Enabled %s\n", proxyServiceUnit)
 
 	if opts.Start {
-		if in.mode != "remote" {
-			if err := h.systemctl("start", busSocketUnit); err != nil {
+		for _, u := range in.topology.activated() {
+			if err := h.systemctlUnit(verbStart, u); err != nil {
 				return err
 			}
-			h.narration.printf("Started %s\n", busSocketUnit)
+			h.narration.printf("Started %s\n", u)
 		}
-		if err := h.systemctl("start", proxyServiceUnit); err != nil {
-			return err
-		}
-		h.narration.printf("Started %s\n", proxyServiceUnit)
-
-		if in.mode != "remote" {
-			reportOwnership()
-		}
+		in.topology.confirm()
 	}
 
 	return nil
@@ -306,17 +288,12 @@ var ownerWaitTimeout = 5 * time.Second
 // waitForOwner polls until kind owns org.freedesktop.secrets or the timeout
 // expires, returning the last-seen provider either way.
 func waitForOwner(kind ProviderKind, timeout time.Duration) (Provider, bool) {
-	deadline := time.Now().Add(timeout)
-	for {
-		p := DetectProvider()
-		if p.Kind == kind {
-			return p, true
-		}
-		if time.Now().After(deadline) {
-			return p, false
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	var p Provider
+	ok := poll.Until(timeout, 250*time.Millisecond, func() bool {
+		p = DetectProvider()
+		return p.Kind == kind
+	})
+	return p, ok
 }
 
 // reportOwnership prints who owns org.freedesktop.secrets after a takeover
@@ -331,58 +308,23 @@ func reportOwnership() {
 }
 
 // Sets the serve upstream and downstream in the config file at in.configPath
-// to the topology of in.mode. Every other setting in the file is kept.
+// to in.topology. Every other setting in the file is kept.
 func (in installInputs) writeTopology() error {
-	// A missing file is the first install, which writes a fresh config.
-	cfg, err := config.Load(in.configPath)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		cfg = &config.Config{}
-	case err != nil:
+	cfg, err := in.configPath.LoadOrEmpty()
+	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-
-	busSocket := in.runtimeDir.BackendBusSocket()
-	socketsDir := in.runtimeDir.ClientSockets()
-
-	switch in.mode {
-	case "remote":
-		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSessionBus}
-		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: config.BusSockets, Path: socketsDir},
-		}
-	case "local":
-		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSocket, Path: busSocket}
-		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: config.BusSessionBus},
-		}
-	case "full":
-		cfg.Serve.Upstream = config.BusConfig{Type: config.BusSocket, Path: busSocket}
-		cfg.Serve.Downstream = []config.BusConfig{
-			{Type: config.BusSessionBus},
-			{Type: config.BusSockets, Path: socketsDir},
-		}
-	}
-
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(in.configPath), 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-
-	return os.WriteFile(in.configPath, data, 0644)
+	cfg.Serve.Upstream, cfg.Serve.Downstream = in.topology.serve(in.runtimeDir)
+	return in.configPath.Save(cfg)
 }
 
 // Uninstall stops and disables all service units, removes unit files, and reloads systemd.
 func Uninstall(n Narration) error {
 	h := host{narration: n}
 	// Stop and disable all known units (ignore errors for missing ones).
-	for _, name := range allUnitNames {
-		_ = h.systemctl("stop", name)
-		_ = h.systemctl("disable", name)
+	for _, u := range allUnitNames {
+		_ = h.systemctlUnit(verbStop, u)
+		_ = h.systemctlUnit(verbDisable, u)
 	}
 
 	dir, err := unitDir()
@@ -390,31 +332,27 @@ func Uninstall(n Narration) error {
 		return err
 	}
 
-	for _, name := range allUnitNames {
-		path := filepath.Join(dir, name)
+	for _, u := range allUnitNames {
+		path := u.Path(dir)
 		if err := os.Remove(path); err != nil {
 			if !os.IsNotExist(err) {
-				return fmt.Errorf("remove %s: %w", name, err)
+				return fmt.Errorf("remove %s: %w", u, err)
 			}
 			continue
 		}
 		h.narration.printf("Removed %s\n", path)
 	}
 
-	if err := h.unmaskDBusActivation(); err != nil {
+	if err := h.leaveTakeover(); err != nil {
 		return err
 	}
 
-	if err := h.restoreGnomeKeyring(); err != nil {
-		return err
-	}
-
-	return h.systemctl("daemon-reload")
+	return h.systemctl(string(verbDaemonReload))
 }
 
 // Restarts the proxy unit, with systemctl's output on the terminal.
 func RestartProxy() error {
-	return host{narration: NarrateChanges}.systemctl("restart", proxyServiceUnit)
+	return host{narration: NarrateChanges}.systemctlUnit(verbRestart, proxyServiceUnit)
 }
 
 // systemctlFunc is the function used to run systemctl commands.
@@ -515,6 +453,15 @@ func (h host) unmaskDBusActivation() error {
 
 	reloadDBus()
 	return nil
+}
+
+// Gives org.freedesktop.secrets back to the desktop's own provider. Does
+// nothing to what no takeover changed.
+func (h host) leaveTakeover() error {
+	if err := h.unmaskDBusActivation(); err != nil {
+		return err
+	}
+	return h.restoreGnomeKeyring()
 }
 
 func (h host) stopDBusActivatedService() {

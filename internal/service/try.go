@@ -2,20 +2,19 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
 type TryOptions struct {
-	// ConfigPath is the base config the trial copies its settings (rules,
-	// listen address) from. Default: config.DefaultPath(). Never modified.
-	ConfigPath string
-	// BackendPath selects the private backend, same forms as Options.BackendPath.
-	BackendPath string
+	// The config file that the trial copies its settings from. Try never writes
+	// to it (README, "Temporary — try it").
+	ConfigPath config.Path
+	Backend    Backend
 	// DryRun prints the changes the trial would make, without making any.
 	DryRun bool
 	// How much of the install and the restore Try prints.
@@ -29,9 +28,9 @@ func Try(ctx context.Context, opts TryOptions) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(unitsDir, name)); err == nil {
-			return fmt.Errorf("%s is already installed — the trial would remove it on exit; run `secrets-dispatcher service uninstall` first (see `service status`)", name)
+	for _, u := range allUnitNames {
+		if _, err := os.Stat(u.Path(unitsDir)); err == nil {
+			return fmt.Errorf("%s is already installed — the trial would remove it on exit; run `secrets-dispatcher service uninstall` first (see `service status`)", u)
 		}
 	}
 
@@ -40,12 +39,13 @@ func Try(ctx context.Context, opts TryOptions) error {
 		return err
 	}
 	trialConfig := runtimeDir.TrialConfig()
-	baseConfig, err := config.PathOrDefault(opts.ConfigPath)
+	base, err := opts.ConfigPath.OrDefault()
 	if err != nil {
 		return err
 	}
+	baseConfig := base.File
 	h := host{narration: opts.Narration}
-	installOpts := Options{ConfigPath: trialConfig, Start: true, Mode: "local", BackendPath: opts.BackendPath, Narration: opts.Narration}
+	installOpts := Options{ConfigPath: trialConfig.Path(), Start: true, Mode: ModeLocal, Backend: opts.Backend, Narration: opts.Narration}
 
 	if opts.DryRun {
 		changes, err := Plan(installOpts)
@@ -61,15 +61,8 @@ func Try(ctx context.Context, opts TryOptions) error {
 	// pre-takeover state.
 	orig := DetectProvider()
 
-	if data, err := os.ReadFile(baseConfig); err == nil {
-		if err := os.MkdirAll(filepath.Dir(trialConfig), 0700); err != nil {
-			return fmt.Errorf("create trial config dir: %w", err)
-		}
-		if err := os.WriteFile(trialConfig, data, 0600); err != nil {
-			return fmt.Errorf("write trial config: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read config %s: %w", baseConfig, err)
+	if err := baseConfig.CopyTo(trialConfig); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("copy the base config to the trial: %w", err)
 	}
 
 	if err := Install(installOpts); err != nil {
@@ -88,9 +81,9 @@ func Try(ctx context.Context, opts TryOptions) error {
 	return h.restoreTrial(trialConfig, orig)
 }
 
-func printTrialPlan(baseConfig, trialConfig string, changes []Change) {
+func printTrialPlan(baseConfig, trialConfig config.File, changes []Change) {
 	fmt.Println(cBold("Dry run — the trial would:"))
-	fmt.Printf("  %s\n", Change{"copy", baseConfig + " -> " + trialConfig, "trial config; your config is never modified"})
+	fmt.Printf("  %s\n", Change{"copy", fmt.Sprintf("%s -> %s", baseConfig, trialConfig), "trial config; your config is never modified"})
 	for _, c := range changes {
 		fmt.Println("  " + c.String())
 	}
@@ -100,7 +93,7 @@ func printTrialPlan(baseConfig, trialConfig string, changes []Change) {
 
 // Prints the web UI address from the config at trialConfig, or a warning when
 // that config does not load, and the commands that exercise the trial.
-func announceTrial(trialConfig string) {
+func announceTrial(trialConfig config.File) {
 	fmt.Println()
 	if listen, err := listenAddr(trialConfig); err != nil {
 		fmt.Printf("%s Web UI address unknown: %v\n", cWarn("WARNING:"), err)
@@ -114,8 +107,8 @@ func announceTrial(trialConfig string) {
 }
 
 // Returns the address serve listens on under the config file at path.
-func listenAddr(path string) (config.ListenAddr, error) {
-	cfg, err := config.Load(path)
+func listenAddr(path config.File) (config.ListenAddr, error) {
+	cfg, err := path.Load()
 	if err != nil {
 		return "", err
 	}
@@ -151,9 +144,9 @@ func watchOwnership(ctx context.Context) {
 
 // restoreTrial reverses the trial: full uninstall, drop the throwaway config,
 // and confirm the displaced provider is back in front.
-func (h host) restoreTrial(trialConfig string, orig Provider) error {
+func (h host) restoreTrial(trialConfig config.File, orig Provider) error {
 	err := Uninstall(h.narration)
-	if rmErr := os.Remove(trialConfig); rmErr != nil && !os.IsNotExist(rmErr) && err == nil {
+	if rmErr := trialConfig.Remove(); rmErr != nil && err == nil {
 		err = fmt.Errorf("remove trial config: %w", rmErr)
 	}
 	pokeSecretsActivation()

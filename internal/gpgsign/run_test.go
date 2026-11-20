@@ -107,10 +107,9 @@ func TestRunDelegatesVerificationToRealGPG(t *testing.T) {
 func TestDaemonStateDirFromConfig(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", "/home/u/.state")
-	path, err := config.DefaultPath()
+	source, err := config.DefaultSource()
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	require.NoError(t, os.WriteFile(path, []byte("state_dir: /srv/state\n"), 0o600))
+	require.NoError(t, source.File.Save(&config.Config{StateDir: "/srv/state"}))
 
 	dir, err := daemonStateDir()
 	require.NoError(t, err)

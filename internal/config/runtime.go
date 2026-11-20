@@ -62,7 +62,7 @@ func (d RuntimeDir) BackendBusSocket() string { return d.join(backendBusSocketNa
 func (d RuntimeDir) KeyringControlDir() string { return d.join(keyringControlDirName) }
 
 // Returns the throwaway config of `secrets-dispatcher try`.
-func (d RuntimeDir) TrialConfig() string { return d.join(trialConfigName) }
+func (d RuntimeDir) TrialConfig() File { return File{d.join(trialConfigName)} }
 
 func (d RuntimeDir) join(names ...string) string {
 	return filepath.Join(append([]string{string(d)}, names...)...)

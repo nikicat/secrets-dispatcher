@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nikicat/secrets-dispatcher/internal/poll"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -399,14 +400,7 @@ func (o *testObserver) Events() []Event {
 }
 
 func (o *testObserver) WaitForEvents(count int, timeout time.Duration) []Event {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		events := o.Events()
-		if len(events) >= count {
-			return events
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	poll.Until(timeout, 10*time.Millisecond, func() bool { return len(o.Events()) >= count })
 	return o.Events()
 }
 

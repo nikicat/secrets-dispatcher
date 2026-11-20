@@ -158,9 +158,10 @@ func TestCheck_ReturnsExpectedCheckCount(t *testing.T) {
 	cfg := Config{DesktopUser: "counttest", HomeBase: t.TempDir()}
 	results := Check(cfg)
 
-	// There should be exactly 10 checks (documented in check.go):
-	// user, home-exists, home-mode, home-owned, gopass, gnupg, dbus, systemd-unit, pam, linger.
-	const expectedChecks = 10
+	// There should be exactly 11 checks (documented in check.go): user,
+	// home-exists, home-mode, home-owned, gopass, gnupg, dbus, systemd-unit,
+	// pam, pam-include, linger.
+	const expectedChecks = 11
 	if len(results) != expectedChecks {
 		t.Errorf("Check() returned %d results, want %d; results: %v", len(results), expectedChecks, resultNames(results))
 	}
@@ -207,4 +208,49 @@ func resultNames(results []CheckResult) []string {
 		names[i] = r.Name
 	}
 	return names
+}
+
+func TestCheckPAMConfig(t *testing.T) {
+	nb := Config{DesktopUser: "nb"}
+	other := Config{DesktopUser: "other"}
+	path := filepath.Join(t.TempDir(), "secrets-dispatcher")
+	content, err := pamConfig("secrets-nb")
+	must(t, err)
+	must(t, os.WriteFile(path, content, 0644))
+
+	if r := nb.checkPAMConfig(path); !r.Pass {
+		t.Errorf("checkPAMConfig() failed on the provisioned file: %s", r.Message)
+	}
+	if r := other.checkPAMConfig(path); r.Pass {
+		t.Error("checkPAMConfig() passed a file written for another companion user")
+	}
+	stale := "session optional pam_exec.so quiet /usr/bin/systemctl start --no-block secrets-dispatcher-companion@%u.service\n"
+	must(t, os.WriteFile(path, []byte(stale), 0644))
+	if r := nb.checkPAMConfig(path); r.Pass {
+		t.Error("checkPAMConfig() passed a stale PAM config")
+	}
+	logoutToo := "session optional pam_exec.so quiet /usr/bin/systemctl --user --machine=secrets-nb@ start --no-block " + string(daemonUnit) + "\n"
+	must(t, os.WriteFile(path, []byte(logoutToo), 0644))
+	if r := nb.checkPAMConfig(path); r.Pass {
+		t.Error("checkPAMConfig() passed a hook that also runs at logout")
+	}
+	if r := nb.checkPAMConfig(filepath.Join(t.TempDir(), "missing")); r.Pass {
+		t.Error("checkPAMConfig() passed a missing file")
+	}
+}
+
+func TestCheckPAMInclude(t *testing.T) {
+	nb := Config{DesktopUser: "nb"}
+	path := fakeSessionStack(t, debianCommonSession)
+	if r := nb.checkPAMInclude(); r.Pass {
+		t.Error("checkPAMInclude() passed a stack without the include line")
+	}
+	must(t, os.WriteFile(path, []byte(debianCommonSession+pamIncludeLine+"\n"), 0644))
+	if r := nb.checkPAMInclude(); !r.Pass {
+		t.Errorf("checkPAMInclude() failed on a stack with the include line: %s", r.Message)
+	}
+	sessionStacks = []string{filepath.Join(t.TempDir(), "missing")}
+	if r := nb.checkPAMInclude(); r.Pass {
+		t.Error("checkPAMInclude() passed without a session stack")
+	}
 }

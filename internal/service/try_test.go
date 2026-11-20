@@ -30,7 +30,7 @@ func mockOwnerByInstallState(t *testing.T, unitsDir string) {
 	t.Helper()
 	mockBusctlOwner(t, 4242)
 	mockReadlink(t, func(string) (string, error) {
-		if _, err := os.Stat(filepath.Join(unitsDir, proxyServiceUnit)); err == nil {
+		if _, err := os.Stat(proxyServiceUnit.Path(unitsDir)); err == nil {
 			return "/usr/bin/secrets-dispatcher", nil
 		}
 		return "/usr/bin/gnome-keyring-daemon", nil
@@ -45,7 +45,7 @@ func TestTryRefusesWhenInstalled(t *testing.T) {
 
 	unitsDir := filepath.Join(tmpDir, "systemd", "user")
 	require.NoError(t, os.MkdirAll(unitsDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(unitsDir, proxyServiceUnit), []byte("x"), 0644))
+	require.NoError(t, os.WriteFile(proxyServiceUnit.Path(unitsDir), []byte("x"), 0644))
 
 	err := Try(context.Background(), TryOptions{})
 	require.ErrorContains(t, err, "already installed")
@@ -106,7 +106,7 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	// Wait for the trial to be fully installed.
 	trialConfig := filepath.Join(tmpDir, "secrets-dispatcher", "try-config.yaml")
 	require.Eventually(t, func() bool {
-		_, err := os.Stat(filepath.Join(unitsDir, proxyServiceUnit))
+		_, err := os.Stat(proxyServiceUnit.Path(unitsDir))
 		return err == nil
 	}, 10*time.Second, 10*time.Millisecond, "trial never installed the proxy unit")
 
@@ -121,7 +121,7 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 
 	// Everything reverted: units, mask, demotion, trial config.
 	for _, name := range allUnitNames {
-		assert.NoFileExists(t, filepath.Join(unitsDir, name))
+		assert.NoFileExists(t, name.Path(unitsDir))
 	}
 	assert.NoFileExists(t, filepath.Join(tmpDir, "dbus-1", "services", dbusServiceFile))
 	assert.NoFileExists(t, filepath.Join(unitsDir, gkDropInDirName, gkDropInName))

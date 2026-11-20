@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"net/url"
 	"testing"
 
@@ -41,7 +40,7 @@ func TestListenAddrSet(t *testing.T) {
 		var a ListenAddr
 		err := a.Set(tc.value)
 		if !tc.ok {
-			assert.ErrorContains(t, err, fmt.Sprintf("listen address %q", tc.value))
+			assert.Error(t, err, tc.value)
 			continue
 		}
 		require.NoError(t, err, tc.value)

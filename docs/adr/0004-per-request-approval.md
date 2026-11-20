@@ -22,8 +22,9 @@ hand, trains the user to click approve without reading.
   a temporary rule for the matching pattern lasting
   `auto_approve_duration_seconds` (default 120s). Durable auto-approval is a
   trust rule in `config.yaml` ([ADR 0005](0005-trust-rules-on-the-process-chain.md)).
-- **Every attempt is logged**, approved, denied or ruled, as structured JSON on
-  stderr, which journald keeps when the dispatcher runs as the user service.
+- **Every attempt is logged**, approved, denied or ruled, on stderr, which
+  journald keeps when the dispatcher runs as the user service
+  ([ARCHITECTURE.md, Audit logging](../ARCHITECTURE.md#audit-logging)).
 
 ## Consequences
 

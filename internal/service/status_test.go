@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 // statusFixture builds the file state of a topology and wires the exec fakes:
@@ -17,7 +19,7 @@ type statusFixture struct {
 	tmpDir     string
 	unitsDir   string
 	ownerExe   string
-	unitStates map[string]string
+	unitStates map[systemd.Unit]unitState
 }
 
 func newStatusFixture(t *testing.T, ownerExe string) *statusFixture {
@@ -25,7 +27,7 @@ func newStatusFixture(t *testing.T, ownerExe string) *statusFixture {
 	f := &statusFixture{
 		tmpDir:     t.TempDir(),
 		ownerExe:   ownerExe,
-		unitStates: map[string]string{},
+		unitStates: map[systemd.Unit]unitState{},
 	}
 	f.unitsDir = filepath.Join(f.tmpDir, "systemd", "user")
 	t.Setenv("XDG_CONFIG_HOME", f.tmpDir)
@@ -34,9 +36,8 @@ func newStatusFixture(t *testing.T, ownerExe string) *statusFixture {
 
 	mockExecOutput(t, func(name string, args ...string) ([]byte, error) {
 		if name == "systemctl" {
-			unit := args[len(args)-1]
-			if state, ok := f.unitStates[unit]; ok {
-				return []byte(state + "\n"), nil
+			if state, ok := f.unitStates[systemd.Unit(args[len(args)-1])]; ok {
+				return []byte(string(state) + "\n"), nil
 			}
 			return []byte("active\n"), nil
 		}
@@ -48,11 +49,11 @@ func newStatusFixture(t *testing.T, ownerExe string) *statusFixture {
 	return f
 }
 
-func (f *statusFixture) writeUnits(t *testing.T, names ...string) {
+func (f *statusFixture) writeUnits(t *testing.T, units ...systemd.Unit) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(f.unitsDir, 0755))
-	for _, name := range names {
-		require.NoError(t, os.WriteFile(filepath.Join(f.unitsDir, name), []byte("x"), 0644))
+	for _, u := range units {
+		require.NoError(t, os.WriteFile(u.Path(f.unitsDir), []byte("x"), 0644))
 	}
 }
 
@@ -121,7 +122,7 @@ func TestStatusWarnsOnDeadBackend(t *testing.T) {
 	f.writeMask(t)
 	f.writeDropIn(t)
 	f.writeShadow(t)
-	f.unitStates["secrets-dispatcher-backend.service"] = "failed"
+	f.unitStates[backendServiceUnit] = "failed"
 
 	assert.ErrorContains(t, Status(), "problem")
 }

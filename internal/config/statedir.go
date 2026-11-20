@@ -25,6 +25,10 @@ func (d *StateDir) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// The default state directory as help texts spell it, with $XDG_STATE_HOME
+// left unexpanded.
+const DefaultStateDirHelp = "$XDG_STATE_HOME/" + appName
+
 // Returns the current user's default state directory, under the XDG state home.
 func LookupStateDir() (StateDir, error) {
 	base, err := stateHome()
@@ -47,11 +51,7 @@ func (d StateDir) String() string { return string(d) }
 // Sets the directory from a command-line flag, as flag.Value does. Resolves a
 // relative path against the current directory.
 func (d *StateDir) Set(value string) error {
-	if value == "" {
-		*d = ""
-		return nil
-	}
-	abs, err := filepath.Abs(value)
+	abs, err := absOrEmpty(value)
 	if err != nil {
 		return err
 	}

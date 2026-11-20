@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 	"gopkg.in/yaml.v3"
 )
 
@@ -51,7 +52,7 @@ func defaultLookPath(name string) (string, error) {
 	return "/usr/bin/" + name, nil
 }
 
-// --- remote mode (default) ---
+// --- remote mode ---
 
 func TestInstallRemoteWritesProxyUnit(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -61,14 +62,14 @@ func TestInstallRemoteWritesProxyUnit(t *testing.T) {
 
 	mockSystemctl(t)
 
-	if err := Install(Options{}); err != nil {
+	if err := Install(Options{Mode: ModeRemote}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
 
 	// Proxy unit should exist.
-	content, err := os.ReadFile(filepath.Join(dir, proxyServiceUnit))
+	content, err := os.ReadFile(proxyServiceUnit.Path(dir))
 	if err != nil {
 		t.Fatalf("read proxy unit: %v", err)
 	}
@@ -85,8 +86,8 @@ func TestInstallRemoteWritesProxyUnit(t *testing.T) {
 	}
 
 	// Private-bus units should NOT exist.
-	for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-bus.service", "secrets-dispatcher-backend.service"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+	for _, name := range []systemd.Unit{busSocketUnit, busServiceUnit, backendServiceUnit} {
+		if _, err := os.Stat(name.Path(dir)); !os.IsNotExist(err) {
 			t.Errorf("stale unit %s should not exist in remote mode", name)
 		}
 	}
@@ -100,7 +101,7 @@ func TestInstallRemoteConfig(t *testing.T) {
 
 	mockSystemctl(t)
 
-	if err := Install(Options{}); err != nil {
+	if err := Install(Options{Mode: ModeRemote}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -135,13 +136,13 @@ func TestInstallRemoteSystemctlCalls(t *testing.T) {
 
 	calls := mockSystemctl(t)
 
-	if err := Install(Options{}); err != nil {
+	if err := Install(Options{Mode: ModeRemote}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	expected := []string{
 		"daemon-reload",
-		"enable " + proxyServiceUnit,
+		"enable " + string(proxyServiceUnit),
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -161,14 +162,14 @@ func TestInstallRemoteWithStart(t *testing.T) {
 
 	calls := mockSystemctl(t)
 
-	if err := Install(Options{Start: true}); err != nil {
+	if err := Install(Options{Mode: ModeRemote, Start: true}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	expected := []string{
 		"daemon-reload",
-		"enable " + proxyServiceUnit,
-		"start " + proxyServiceUnit,
+		"enable " + string(proxyServiceUnit),
+		"start " + string(proxyServiceUnit),
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -189,7 +190,7 @@ func TestInstallCustomConfigPath(t *testing.T) {
 	mockSystemctl(t)
 
 	customConfig := filepath.Join(tmpDir, "custom", "config.yaml")
-	if err := Install(Options{ConfigPath: customConfig}); err != nil {
+	if err := Install(Options{Mode: ModeRemote, ConfigPath: config.Path(customConfig)}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -199,7 +200,7 @@ func TestInstallCustomConfigPath(t *testing.T) {
 	}
 
 	// ExecStart should reference the custom path.
-	unitPath := filepath.Join(tmpDir, "systemd", "user", proxyServiceUnit)
+	unitPath := proxyServiceUnit.Path(filepath.Join(tmpDir, "systemd", "user"))
 	content, _ := os.ReadFile(unitPath)
 	if !strings.Contains(string(content), "--config "+customConfig) {
 		t.Error("ExecStart should reference custom config path")
@@ -218,19 +219,19 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
 
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		if _, err := os.Stat(name.Path(dir)); err != nil {
 			t.Errorf("unit file %s not found: %v", name, err)
 		}
 	}
 
 	// Socket unit.
-	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-bus.socket"))
+	content, _ := os.ReadFile(busSocketUnit.Path(dir))
 	s := string(content)
 	if !strings.Contains(s, "ListenStream=%t/secrets-dispatcher/backend-bus.sock") {
 		t.Errorf("socket unit wrong ListenStream, got:\n%s", s)
@@ -240,13 +241,13 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	}
 
 	// Bus service.
-	content, _ = os.ReadFile(filepath.Join(dir, "secrets-dispatcher-bus.service"))
+	content, _ = os.ReadFile(busServiceUnit.Path(dir))
 	if !strings.Contains(string(content), "/usr/bin/dbus-daemon --session --nofork --nopidfile --address=systemd:") {
 		t.Error("bus service wrong ExecStart")
 	}
 
 	// Backend service.
-	content, _ = os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
+	content, _ = os.ReadFile(backendServiceUnit.Path(dir))
 	s = string(content)
 	if !strings.Contains(s, "ExecStart=/usr/bin/gopass-secret service --bus-address") {
 		t.Error("backend service wrong ExecStart")
@@ -259,7 +260,7 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	}
 
 	// Proxy service (local variant).
-	content, _ = os.ReadFile(filepath.Join(dir, proxyServiceUnit))
+	content, _ = os.ReadFile(proxyServiceUnit.Path(dir))
 	s = string(content)
 	if !strings.Contains(s, "serve --config") {
 		t.Error("proxy service missing 'serve --config'")
@@ -279,7 +280,7 @@ func TestInstallLocalConfig(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
 
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -316,14 +317,14 @@ func TestInstallLocalSystemctlCalls(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
 
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	expected := []string{
 		"daemon-reload",
 		"enable secrets-dispatcher-bus.socket",
-		"enable " + proxyServiceUnit,
+		"enable " + string(proxyServiceUnit),
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -346,16 +347,16 @@ func TestInstallLocalWithStart(t *testing.T) {
 	mockExecOutput(t, noopExecOutput)
 	shortOwnerWait(t)
 
-	if err := Install(Options{Mode: "local", Start: true}); err != nil {
+	if err := Install(Options{Mode: ModeLocal, Start: true}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	expected := []string{
 		"daemon-reload",
 		"enable secrets-dispatcher-bus.socket",
-		"enable " + proxyServiceUnit,
+		"enable " + string(proxyServiceUnit),
 		"start secrets-dispatcher-bus.socket",
-		"start " + proxyServiceUnit,
+		"start " + string(proxyServiceUnit),
 	}
 	if len(*calls) != len(expected) {
 		t.Fatalf("expected %d systemctl calls, got %d: %v", len(expected), len(*calls), *calls)
@@ -379,7 +380,7 @@ func TestInstallFullConfig(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
 
-	if err := Install(Options{Mode: "full"}); err != nil {
+	if err := Install(Options{Mode: ModeFull}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -422,13 +423,13 @@ func TestInstallFullWritesAllUnits(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
 
-	if err := Install(Options{Mode: "full"}); err != nil {
+	if err := Install(Options{Mode: ModeFull}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		if _, err := os.Stat(name.Path(dir)); err != nil {
 			t.Errorf("unit file %s not found: %v", name, err)
 		}
 	}
@@ -461,7 +462,7 @@ func TestInstallPreservesExistingConfig(t *testing.T) {
 	os.WriteFile(configPath, data, 0644)
 
 	// Install in local mode.
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -501,31 +502,31 @@ func TestInstallSwitchLocalToRemoteRemovesStaleUnits(t *testing.T) {
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	os.MkdirAll(dir, 0755)
 	for _, name := range allUnitNames {
-		os.WriteFile(filepath.Join(dir, name), []byte("previous"), 0644)
+		os.WriteFile(name.Path(dir), []byte("previous"), 0644)
 	}
 
 	// Switch to remote.
-	if err := Install(Options{Mode: "remote"}); err != nil {
+	if err := Install(Options{Mode: ModeRemote}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	// Only proxy unit should remain.
-	if _, err := os.Stat(filepath.Join(dir, proxyServiceUnit)); err != nil {
+	if _, err := os.Stat(proxyServiceUnit.Path(dir)); err != nil {
 		t.Error("proxy unit should exist")
 	}
-	for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-bus.service", "secrets-dispatcher-backend.service"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+	for _, name := range []systemd.Unit{busSocketUnit, busServiceUnit, backendServiceUnit} {
+		if _, err := os.Stat(name.Path(dir)); !os.IsNotExist(err) {
 			t.Errorf("stale unit %s should have been removed", name)
 		}
 	}
 
 	// Verify stop+disable were called for stale units.
 	callStr := strings.Join(*calls, "\n")
-	for _, name := range []string{"secrets-dispatcher-bus.socket", "secrets-dispatcher-bus.service", "secrets-dispatcher-backend.service"} {
-		if !strings.Contains(callStr, "stop "+name) {
+	for _, name := range []systemd.Unit{busSocketUnit, busServiceUnit, backendServiceUnit} {
+		if !strings.Contains(callStr, "stop "+string(name)) {
 			t.Errorf("missing stop call for %s", name)
 		}
-		if !strings.Contains(callStr, "disable "+name) {
+		if !strings.Contains(callStr, "disable "+string(name)) {
 			t.Errorf("missing disable call for %s", name)
 		}
 	}
@@ -552,18 +553,18 @@ func TestInstallLocalAutoDetectsBackend(t *testing.T) {
 		}
 	})
 
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
-	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
+	content, _ := os.ReadFile(backendServiceUnit.Path(dir))
 	if !strings.Contains(string(content), "ExecStart=/opt/bin/gopass-secret service") {
 		t.Error("should use auto-detected backend path")
 	}
 }
 
-func TestInstallLocalExplicitBackendPath(t *testing.T) {
+func TestInstallLocalBackendCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_DATA_HOME", tmpDir)
@@ -573,12 +574,12 @@ func TestInstallLocalExplicitBackendPath(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockExecOutput(t, noopExecOutput)
 
-	if err := Install(Options{Mode: "local", BackendPath: "/custom/backend"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal, Backend: "/custom/backend"}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
 	dir := filepath.Join(tmpDir, "systemd", "user")
-	content, _ := os.ReadFile(filepath.Join(dir, "secrets-dispatcher-backend.service"))
+	content, _ := os.ReadFile(backendServiceUnit.Path(dir))
 	if !strings.Contains(string(content), "ExecStart=/custom/backend") {
 		t.Error("should use explicit backend path")
 	}
@@ -601,7 +602,7 @@ func TestInstallBackendNotFound(t *testing.T) {
 		return "", fmt.Errorf("not found: %s", name)
 	})
 
-	err := Install(Options{Mode: "local"})
+	err := Install(Options{Mode: ModeLocal})
 	if err == nil {
 		t.Fatal("expected error when backend not found")
 	}
@@ -622,7 +623,7 @@ func TestInstallDbusDaemonNotFound(t *testing.T) {
 		return "", fmt.Errorf("not found: %s", name)
 	})
 
-	err := Install(Options{Mode: "local"})
+	err := Install(Options{Mode: ModeLocal})
 	if err == nil {
 		t.Fatal("expected error when dbus-daemon not found")
 	}
@@ -638,25 +639,54 @@ func TestInstallMissingRuntimeDir(t *testing.T) {
 
 	mockSystemctl(t)
 
-	err := Install(Options{})
+	err := Install(Options{Mode: ModeRemote})
 	require.ErrorIs(t, err, config.ErrNoRuntimeDir)
 }
 
-func TestInstallUnknownMode(t *testing.T) {
+func TestInstallRejectsModeNotNamed(t *testing.T) {
+	for _, mode := range []Mode{"", "bogus"} {
+		t.Run(string(mode), func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", tmpDir)
+			t.Setenv("XDG_DATA_HOME", tmpDir)
+			t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+			calls := mockSystemctl(t)
+
+			unitDir := filepath.Join(tmpDir, "systemd", "user")
+			require.NoError(t, os.MkdirAll(unitDir, 0755))
+			installed := proxyServiceUnit.Path(unitDir)
+			require.NoError(t, os.WriteFile(installed, []byte("installed"), 0644))
+
+			_, err := Plan(Options{Mode: mode})
+			require.ErrorContains(t, err, "unknown mode")
+			require.ErrorContains(t, Install(Options{Mode: mode}), "unknown mode")
+
+			entries, err := os.ReadDir(unitDir)
+			require.NoError(t, err)
+			assert.Len(t, entries, 1)
+			content, err := os.ReadFile(installed)
+			require.NoError(t, err)
+			assert.Equal(t, "installed", string(content))
+			assert.Empty(t, *calls)
+		})
+	}
+}
+
+func TestInstallRejectsBackendForRemote(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmpDir)
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	calls := mockSystemctl(t)
+	opts := Options{Mode: ModeRemote, Backend: BackendGopass}
 
-	mockSystemctl(t)
+	_, err := Plan(opts)
+	require.ErrorContains(t, err, "only to local and full modes")
+	require.ErrorContains(t, Install(opts), "only to local and full modes")
 
-	err := Install(Options{Mode: "bogus"})
-	if err == nil {
-		t.Fatal("expected error for unknown mode")
-	}
-	if !strings.Contains(err.Error(), "unknown mode") {
-		t.Errorf("error should say unknown mode, got: %v", err)
-	}
+	assert.NoDirExists(t, filepath.Join(tmpDir, "systemd"))
+	assert.NoDirExists(t, filepath.Join(tmpDir, "secrets-dispatcher"))
+	assert.Empty(t, *calls)
 }
 
 // --- uninstall ---
@@ -669,7 +699,7 @@ func TestUninstall(t *testing.T) {
 	// Create a single unit file (remote mode).
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	os.MkdirAll(dir, 0755)
-	unitPath := filepath.Join(dir, proxyServiceUnit)
+	unitPath := proxyServiceUnit.Path(dir)
 	os.WriteFile(unitPath, []byte("fake"), 0644)
 
 	calls := mockSystemctl(t)
@@ -684,7 +714,7 @@ func TestUninstall(t *testing.T) {
 
 	var expected []string
 	for _, name := range allUnitNames {
-		expected = append(expected, "stop "+name, "disable "+name)
+		expected = append(expected, "stop "+string(name), "disable "+string(name))
 	}
 	expected = append(expected, "daemon-reload")
 	if len(*calls) != len(expected) {
@@ -705,7 +735,7 @@ func TestUninstallAllUnits(t *testing.T) {
 	dir := filepath.Join(tmpDir, "systemd", "user")
 	os.MkdirAll(dir, 0755)
 	for _, name := range allUnitNames {
-		os.WriteFile(filepath.Join(dir, name), []byte("fake"), 0644)
+		os.WriteFile(name.Path(dir), []byte("fake"), 0644)
 	}
 
 	mockSystemctl(t)
@@ -715,7 +745,7 @@ func TestUninstallAllUnits(t *testing.T) {
 	}
 
 	for _, name := range allUnitNames {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+		if _, err := os.Stat(name.Path(dir)); !os.IsNotExist(err) {
 			t.Errorf("unit file %s should have been removed", name)
 		}
 	}
@@ -739,7 +769,7 @@ func TestInstallLocalMasksDBusActivation(t *testing.T) {
 	origContent := "[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/usr/bin/gopass-secret-service\n"
 	os.WriteFile(filepath.Join(dbusDir, dbusServiceFile), []byte(origContent), 0644)
 
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -779,7 +809,7 @@ func TestInstallLocalMaskIdempotent(t *testing.T) {
 	origContent := "[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/usr/bin/gopass\n"
 	os.WriteFile(filepath.Join(dbusDir, dbusServiceFile+dbusBackupSuffix), []byte(origContent), 0644)
 
-	if err := Install(Options{Mode: "local"}); err != nil {
+	if err := Install(Options{Mode: ModeLocal}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -819,7 +849,7 @@ func TestInstallRemoteUnmasks(t *testing.T) {
 		return nil, nil
 	})
 
-	if err := Install(Options{Mode: "remote"}); err != nil {
+	if err := Install(Options{Mode: ModeRemote}); err != nil {
 		t.Fatalf("Install() error: %v", err)
 	}
 
@@ -925,7 +955,7 @@ func TestInstallQuietByDefault(t *testing.T) {
 	mockSystemctl(t)
 
 	out := captureStdout(t, func() {
-		require.NoError(t, Install(Options{}))
+		require.NoError(t, Install(Options{Mode: ModeRemote}))
 	})
 
 	assert.NotContains(t, out, "Wrote unit file:")
@@ -941,12 +971,12 @@ func TestInstallVerboseNarratesChanges(t *testing.T) {
 	mockSystemctl(t)
 
 	out := captureStdout(t, func() {
-		require.NoError(t, Install(Options{Narration: NarrateChanges}))
+		require.NoError(t, Install(Options{Mode: ModeRemote, Narration: NarrateChanges}))
 	})
 
 	assert.Contains(t, out, "Wrote unit file:")
 	assert.Contains(t, out, "Wrote config:")
-	assert.Contains(t, out, "Enabled "+proxyServiceUnit)
+	assert.Contains(t, out, "Enabled "+string(proxyServiceUnit))
 }
 
 func TestUninstallQuietByDefault(t *testing.T) {
@@ -956,7 +986,7 @@ func TestUninstallQuietByDefault(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	mockSystemctl(t)
 	mockExecOutput(t, noopExecOutput)
-	require.NoError(t, Install(Options{}))
+	require.NoError(t, Install(Options{Mode: ModeRemote}))
 
 	out := captureStdout(t, func() {
 		require.NoError(t, Uninstall(NarrateMilestones))
@@ -985,5 +1015,5 @@ func TestRestartProxy(t *testing.T) {
 
 	require.NoError(t, RestartProxy())
 
-	assert.Equal(t, []string{"restart " + proxyServiceUnit}, *calls)
+	assert.Equal(t, []string{"restart " + string(proxyServiceUnit)}, *calls)
 }

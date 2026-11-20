@@ -71,11 +71,15 @@ and which identifiers can and can't be spoofed.
 ## Audit logging
 
 Every access attempt — approved, denied, or auto-ruled — is written to stderr as
-structured JSON (captured by systemd-journald when run as the user service):
+one line of key=value fields, which systemd-journald keeps when the dispatcher
+runs as the user service. The journal adds its own timestamp:
 
-```json
-{"time":"2025-03-09T14:22:01Z","level":"INFO","msg":"dbus_call","method":"GetSecrets","items":["collection/login/github-token"],"process_chain":["claude-code","node","dbus-send"],"result":"approved"}
 ```
+INF dbus_call client=local method=GetSecrets result=ok items=[/org/freedesktop/secrets/collection/login/12]
+```
+
+`serve --log-format json` (or `serve.log_format: json`) writes one JSON object
+per line instead.
 
 ## Scope
 

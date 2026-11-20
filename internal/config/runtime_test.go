@@ -17,7 +17,7 @@ func TestLookupRuntimeDir(t *testing.T) {
 		{"ClientSockets", dir.ClientSockets(), "/run/user/1000/secrets-dispatcher/sockets"},
 		{"RemoteSocket", dir.RemoteSocket("nb-home"), "/run/user/1000/secrets-dispatcher/remote/nb-home.sock"},
 		{"BackendBusSocket", dir.BackendBusSocket(), "/run/user/1000/secrets-dispatcher/backend-bus.sock"},
-		{"TrialConfig", dir.TrialConfig(), "/run/user/1000/secrets-dispatcher/try-config.yaml"},
+		{"TrialConfig", dir.TrialConfig().String(), "/run/user/1000/secrets-dispatcher/try-config.yaml"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)

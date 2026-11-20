@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // Starts a private session bus and returns its address. The test's cleanup stops it.
@@ -30,11 +32,9 @@ func StartKillableDBusDaemon(t testing.TB) (addr string, kill func()) {
 		cmd.Wait()
 	})
 	t.Cleanup(kill)
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if _, err := os.Stat(socketPath); err == nil {
-			return addr, kill
-		}
-	}
-	t.Fatalf("dbus-daemon socket not created: %s", socketPath)
-	return "", nil
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(socketPath)
+		return err == nil
+	}, 5*time.Second, 50*time.Millisecond, "dbus-daemon socket not created: %s", socketPath)
+	return addr, kill
 }

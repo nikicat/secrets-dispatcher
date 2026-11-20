@@ -110,7 +110,7 @@ func TestLoadStateDir(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			os.WriteFile(path, []byte(tc.yaml), 0o644)
-			cfg, err := Load(path)
+			cfg, err := File{path}.Load()
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("Load() error = %v, want it to contain %q", err, tc.wantErr)

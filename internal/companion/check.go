@@ -1,6 +1,7 @@
 package companion
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/user"
@@ -49,36 +50,24 @@ func Check(cfg Config) []CheckResult {
 
 	// 1. Companion user exists.
 	u, userErr := userLookupFunc(companionUser)
-	results = append(results, CheckResult{
-		Name: "companion user exists",
-		Pass: userErr == nil,
-		Message: passOrFix(userErr == nil,
-			fmt.Sprintf("user %q found (uid=%s)", companionUser, safeUID(u)),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	results = append(results, checkResult("companion user exists", userErr == nil,
+		fmt.Sprintf("user %q found (uid=%s)", companionUser, safeUID(u)),
+		cfg.provisionHint(),
+	))
 
 	// 2. Home directory exists and has correct permissions.
 	homeStat, homeErr := os.Stat(homeDir)
 	homeExists := homeErr == nil
-	results = append(results, CheckResult{
-		Name: "home directory exists",
-		Pass: homeExists,
-		Message: passOrFix(homeExists,
-			fmt.Sprintf("directory %q exists", homeDir),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	results = append(results, checkResult("home directory exists", homeExists,
+		fmt.Sprintf("directory %q exists", homeDir),
+		cfg.provisionHint(),
+	))
 
 	homeMode0700 := homeExists && homeStat.Mode().Perm() == 0700
-	results = append(results, CheckResult{
-		Name: "home directory mode 0700",
-		Pass: homeMode0700,
-		Message: passOrFix(homeMode0700,
-			"home directory has correct permissions (0700)",
-			fmt.Sprintf("run: sudo chmod 0700 %s", homeDir),
-		),
-	})
+	results = append(results, checkResult("home directory mode 0700", homeMode0700,
+		"home directory has correct permissions (0700)",
+		fmt.Sprintf("run: sudo chmod 0700 %s", homeDir),
+	))
 
 	// 3. Home directory owned by companion user.
 	homeOwnedByCompanion := false
@@ -86,96 +75,101 @@ func Check(cfg Config) []CheckResult {
 		uid, _ := strconv.Atoi(u.Uid)
 		homeOwnedByCompanion = fileOwnedByUID(homeDir, uid)
 	}
-	results = append(results, CheckResult{
-		Name: "home directory owned by companion user",
-		Pass: homeOwnedByCompanion,
-		Message: passOrFix(homeOwnedByCompanion,
-			fmt.Sprintf("home directory owned by %q", companionUser),
-			fmt.Sprintf("run: sudo chown %s:%s %s", companionUser, companionUser, homeDir),
-		),
-	})
+	results = append(results, checkResult("home directory owned by companion user", homeOwnedByCompanion,
+		fmt.Sprintf("home directory owned by %q", companionUser),
+		fmt.Sprintf("run: sudo chown %s:%s %s", companionUser, companionUser, homeDir),
+	))
 
 	// 4. gopass config directory exists.
 	gopassDir := filepath.Join(homeDir, ".config", "gopass")
 	gopassExists := dirExists(gopassDir)
-	results = append(results, CheckResult{
-		Name: "gopass config directory exists",
-		Pass: gopassExists,
-		Message: passOrFix(gopassExists,
-			fmt.Sprintf("directory %q exists", gopassDir),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	results = append(results, checkResult("gopass config directory exists", gopassExists,
+		fmt.Sprintf("directory %q exists", gopassDir),
+		cfg.provisionHint(),
+	))
 
 	// 5. GPG home directory exists.
 	gnupgDir := filepath.Join(homeDir, ".gnupg")
 	gnupgExists := dirExists(gnupgDir)
-	results = append(results, CheckResult{
-		Name: "GPG home directory exists",
-		Pass: gnupgExists,
-		Message: passOrFix(gnupgExists,
-			fmt.Sprintf("directory %q exists", gnupgDir),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	results = append(results, checkResult("GPG home directory exists", gnupgExists,
+		fmt.Sprintf("directory %q exists", gnupgDir),
+		cfg.provisionHint(),
+	))
 
 	// 6. D-Bus policy file exists.
 	dbusPolicy := "/usr/share/dbus-1/system.d/net.mowaka.SecretsDispatcher1.conf"
 	dbusPolicyExists := fileExists(dbusPolicy)
-	results = append(results, CheckResult{
-		Name: "D-Bus policy file exists",
-		Pass: dbusPolicyExists,
-		Message: passOrFix(dbusPolicyExists,
-			fmt.Sprintf("policy file %q exists", dbusPolicy),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	results = append(results, checkResult("D-Bus policy file exists", dbusPolicyExists,
+		fmt.Sprintf("policy file %q exists", dbusPolicy),
+		cfg.provisionHint(),
+	))
 
 	// 7. systemd user unit file exists.
-	unitFile := filepath.Join(homeDir, ".config", "systemd", "user", "secrets-dispatcher-daemon.service")
+	unitFile := daemonUnit.Path(userUnitDir(homeDir))
 	unitExists := fileExists(unitFile)
-	results = append(results, CheckResult{
-		Name: "systemd user unit file exists",
-		Pass: unitExists,
-		Message: passOrFix(unitExists,
-			fmt.Sprintf("unit file %q exists", unitFile),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	results = append(results, checkResult("systemd user unit file exists", unitExists,
+		fmt.Sprintf("unit file %q exists", unitFile),
+		cfg.provisionHint(),
+	))
 
-	// 8. PAM config exists.
-	pamConfig := "/etc/pam.d/secrets-dispatcher"
-	pamExists := fileExists(pamConfig)
-	results = append(results, CheckResult{
-		Name: "PAM config exists",
-		Pass: pamExists,
-		Message: passOrFix(pamExists,
-			fmt.Sprintf("PAM config %q exists", pamConfig),
-			fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", cfg.DesktopUser),
-		),
-	})
+	// 8. PAM config starts the daemon under the companion user's manager.
+	results = append(results, cfg.checkPAMConfig(pamConfigPath))
 
-	// 9. Linger enabled (indicated by presence of /var/lib/systemd/linger/{username}).
+	// 9. The login session stack runs the PAM config.
+	results = append(results, cfg.checkPAMInclude())
+
+	// 10. Linger enabled (indicated by presence of /var/lib/systemd/linger/{username}).
 	lingerFile := filepath.Join("/var/lib/systemd/linger", companionUser)
 	lingerEnabled := fileExists(lingerFile)
-	results = append(results, CheckResult{
-		Name: "systemd linger enabled",
-		Pass: lingerEnabled,
-		Message: passOrFix(lingerEnabled,
-			fmt.Sprintf("linger enabled for %q (%s exists)", companionUser, lingerFile),
-			fmt.Sprintf("run: sudo loginctl enable-linger %s", companionUser),
-		),
-	})
+	results = append(results, checkResult("systemd linger enabled", lingerEnabled,
+		fmt.Sprintf("linger enabled for %q (%s exists)", companionUser, lingerFile),
+		fmt.Sprintf("run: sudo loginctl enable-linger %s", companionUser),
+	))
 
 	return results
 }
 
-// passOrFix returns passMsg when ok is true and fixMsg otherwise.
-func passOrFix(ok bool, passMsg, fixMsg string) string {
-	if ok {
-		return passMsg
+// Checks that the PAM config at path is the one provision writes for c's
+// companion user.
+func (c Config) checkPAMConfig(path string) CheckResult {
+	companionUser := c.companionUsername()
+	want, err := pamConfig(companionUser)
+	if err != nil {
+		return CheckResult{Name: "PAM config current", Message: err.Error()}
 	}
-	return fixMsg
+	got, readErr := os.ReadFile(path)
+	current := readErr == nil && bytes.Equal(got, want)
+	return checkResult("PAM config current", current,
+		fmt.Sprintf("PAM config %q starts %s for %q", path, daemonUnit, companionUser),
+		c.provisionHint(),
+	)
+}
+
+// Checks that the login session stack includes the PAM config.
+func (c Config) checkPAMInclude() CheckResult {
+	stack, err := findSessionStack()
+	if err != nil {
+		return CheckResult{Name: "PAM config included", Message: err.Error()}
+	}
+	included := stack.includesHook()
+	return checkResult("PAM config included", included,
+		fmt.Sprintf("session stack %q has %q", stack.path, pamIncludeLine),
+		c.provisionHint(),
+	)
+}
+
+// Returns the result of the check name: passed with passMsg when ok, failed
+// with the fix hint fixMsg otherwise.
+func checkResult(name string, ok bool, passMsg, fixMsg string) CheckResult {
+	if ok {
+		return CheckResult{Name: name, Pass: true, Message: passMsg}
+	}
+	return CheckResult{Name: name, Message: fixMsg}
+}
+
+// Returns the fix hint for anything provision installs.
+func (c Config) provisionHint() string {
+	return fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", c.DesktopUser)
 }
 
 // safeUID returns the UID string from a *user.User, or "?" if u is nil.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 // Secrets-only demotion of gnome-keyring (spike-validated on Ubuntu 24.04
@@ -29,11 +30,11 @@ import (
 // the state model: nothing to record elsewhere, the files ARE the state.
 
 const (
-	gkServiceUnit    = "gnome-keyring-daemon.service"
-	gkDropInDirName  = gkServiceUnit + ".d"
-	gkDropInName     = "50-secrets-dispatcher.conf"
-	gkAutostartName  = "gnome-keyring-secrets.desktop"
-	gkManagedComment = "# Managed by secrets-dispatcher; removed by `secrets-dispatcher service uninstall`.\n"
+	gkServiceUnit    systemd.Unit = "gnome-keyring-daemon.service"
+	gkDropInDirName               = string(gkServiceUnit) + ".d"
+	gkDropInName                  = "50-secrets-dispatcher.conf"
+	gkAutostartName               = "gnome-keyring-secrets.desktop"
+	gkManagedComment              = "# Managed by secrets-dispatcher; removed by `secrets-dispatcher service uninstall`.\n"
 )
 
 const gkDropInTemplate = gkManagedComment +
@@ -62,14 +63,13 @@ func autostartDir() (string, error) {
 	return filepath.Join(configHome, "autostart"), nil
 }
 
-// demoteGnomeKeyring applies the secrets-only demotion. The currently running
-// (still full-component) daemon is handled by the caller: try-restart below
-// picks up the drop-in for a unit-managed daemon; stopDBusActivatedService
-// catches an unmanaged (PAM-spawned) owner.
+// Applies the secrets-only demotion (ADR 0009) and restarts a running
+// unit-managed gnome-keyring onto it. Errors when gnome-keyring-daemon is not
+// installed.
 func (h host) demoteGnomeKeyring() error {
-	gkDaemon, err := lookPathFunc("gnome-keyring-daemon")
+	gkDaemon, err := gnomeKeyringDaemon()
 	if err != nil {
-		return fmt.Errorf("find gnome-keyring-daemon: %w", err)
+		return err
 	}
 
 	unitsDir, err := unitDir()
@@ -108,16 +108,7 @@ func (h host) demoteGnomeKeyring() error {
 	}
 	h.narration.printf("Hid gnome-keyring secrets autostart: %s\n", shadow)
 
-	if err := h.systemctl("daemon-reload"); err != nil {
-		return err
-	}
-	// Only touches a unit-managed daemon that is actually running; releases
-	// org.freedesktop.secrets by restarting it without the secrets component.
-	if err := h.systemctl("try-restart", gkServiceUnit); err != nil {
-		// Non-fatal: the unit may not exist on non-systemd-keyring distros.
-		fmt.Printf("note: try-restart %s: %v\n", gkServiceUnit, err)
-	}
-	return nil
+	return h.restartKeyring()
 }
 
 // restoreGnomeKeyring reverses demoteGnomeKeyring. Safe to call when the
@@ -161,10 +152,17 @@ func (h host) restoreGnomeKeyring() error {
 	if !changed {
 		return nil
 	}
-	if err := h.systemctl("daemon-reload"); err != nil {
+	return h.restartKeyring()
+}
+
+// Reloads unit files and restarts a running unit-managed gnome-keyring. A failed
+// restart only prints a note, since the unit may not exist outside
+// systemd-managed keyrings. Errors when the reload fails.
+func (h host) restartKeyring() error {
+	if err := h.systemctl(string(verbDaemonReload)); err != nil {
 		return err
 	}
-	if err := h.systemctl("try-restart", gkServiceUnit); err != nil {
+	if err := h.systemctlUnit(verbTryRestart, gkServiceUnit); err != nil {
 		fmt.Printf("note: try-restart %s: %v\n", gkServiceUnit, err)
 	}
 	return nil

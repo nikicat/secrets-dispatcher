@@ -7,28 +7,23 @@ import (
 	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 // installInputs are the resolved, side-effect-free facts an install is built
 // from. Shared by Install (the executor) and Plan (the --dry-run view) so the
 // two cannot disagree about mode, paths, or the proxy command line.
 type installInputs struct {
-	mode        string
-	runtimeDir  config.RuntimeDir
-	configPath  string
-	execStart   string // proxy unit ExecStart
-	backendPath string // private backend selector, as Options.BackendPath
+	topology   topology
+	runtimeDir config.RuntimeDir
+	configPath config.File
+	execStart  string // proxy unit ExecStart
 }
 
 func resolveInstallInputs(opts Options) (installInputs, error) {
-	mode := opts.Mode
-	if mode == "" {
-		mode = "remote"
-	}
-	switch mode {
-	case "remote", "local", "full":
-	default:
-		return installInputs{}, fmt.Errorf("unknown mode %q (must be remote, local, or full)", mode)
+	topology, err := opts.Mode.topology(opts.Backend)
+	if err != nil {
+		return installInputs{}, err
 	}
 
 	runtimeDir, err := config.LookupRuntimeDir()
@@ -45,42 +40,17 @@ func resolveInstallInputs(opts Options) (installInputs, error) {
 		return installInputs{}, fmt.Errorf("resolve executable: %w", err)
 	}
 
-	configPath, err := config.PathOrDefault(opts.ConfigPath)
+	source, err := opts.ConfigPath.OrDefault()
 	if err != nil {
 		return installInputs{}, err
 	}
 
 	return installInputs{
-		mode:        mode,
-		runtimeDir:  runtimeDir,
-		configPath:  configPath,
-		execStart:   self + " serve --config " + configPath,
-		backendPath: opts.BackendPath,
+		topology:   topology,
+		runtimeDir: runtimeDir,
+		configPath: source.File,
+		execStart:  strings.Join(append([]string{self}, config.ServeArgs(source.File)...), " "),
 	}, nil
-}
-
-// Returns the unit files (name -> content) the mode installs.
-// provider drives the detection-driven backend default (resolveBackendExec).
-func (in installInputs) units(provider Provider) (map[string]string, error) {
-	needed := make(map[string]string)
-	switch in.mode {
-	case "remote":
-		needed[proxyServiceUnit] = fmt.Sprintf(unitTemplate, in.execStart)
-	case "local", "full":
-		dbusDaemon, err := lookPathFunc("dbus-daemon")
-		if err != nil {
-			return nil, fmt.Errorf("find dbus-daemon: %w", err)
-		}
-		backendExec, err := resolveBackendExec(in.backendPath, provider)
-		if err != nil {
-			return nil, err
-		}
-		needed[busSocketUnit] = fmt.Sprintf(busSocketTemplate, config.SystemdRuntimeDir.BackendBusSocket())
-		needed[busServiceUnit] = fmt.Sprintf(busServiceTemplate, dbusDaemon)
-		needed[backendServiceUnit] = fmt.Sprintf(backendServiceTemplate, backendExec, config.SystemdRuntimeDir.BackendBusSocket())
-		needed[proxyServiceUnit] = fmt.Sprintf(localProxyTemplate, in.execStart)
-	}
-	return needed, nil
 }
 
 // A Change is one concrete action an install will perform: a file write, a
@@ -124,79 +94,26 @@ func Plan(opts Options) ([]Change, error) {
 	if err != nil {
 		return nil, err
 	}
-	maskPath := filepath.Join(dbusDir, dbusServiceFile)
-	dropIn := filepath.Join(unitsDir, gkDropInDirName, gkDropInName)
-	shadow := filepath.Join(asDir, gkAutostartName)
+	files := takeoverFiles{
+		mask:   filepath.Join(dbusDir, dbusServiceFile),
+		dropIn: filepath.Join(unitsDir, gkDropInDirName, gkDropInName),
+		shadow: filepath.Join(asDir, gkAutostartName),
+	}
 
 	changes := []Change{
-		{"write", in.configPath, "set serve topology: " + in.mode + " (other settings preserved)"},
+		{"write", in.configPath.String(), "set serve topology: " + opts.Mode.String() + " (other settings preserved)"},
 	}
+	changes = append(changes, in.topology.planPrepare(files)...)
 
-	var provider Provider
-	switch in.mode {
-	case "local", "full":
-		provider = DetectProvider()
-
-		// maskDBusActivation
-		if existing, err := os.ReadFile(maskPath); err == nil && string(existing) != dbusActivationMask {
-			changes = append(changes, Change{"backup", maskPath, "-> " + maskPath + dbusBackupSuffix})
-		}
-		changes = append(changes, Change{"write", maskPath, "mask D-Bus activation of org.freedesktop.secrets"})
-
-		// demoteGnomeKeyring
-		if provider.Kind == ProviderGnomeKeyring {
-			changes = append(changes, Change{"write", dropIn, "demote gnome-keyring to pkcs11-only (secrets move to the private backend)"})
-			if existing, err := os.ReadFile(shadow); err == nil && string(existing) != gkAutostartShadow {
-				changes = append(changes, Change{"backup", shadow, "-> " + shadow + dbusBackupSuffix})
-			}
-			changes = append(changes, Change{"write", shadow, "hide the gnome-keyring secrets autostart kicker (Hidden=true)"})
-			changes = append(changes,
-				Change{"run", "systemctl --user daemon-reload", ""},
-				Change{"run", "systemctl --user try-restart " + gkServiceUnit, "restart without the secrets component"})
-		}
-
-		// stopDBusActivatedService
-		if provider.PID > 0 && provider.Kind != ProviderDispatcher {
-			changes = append(changes, Change{"signal", fmt.Sprintf("SIGTERM -> pid %d (%s)", provider.PID, provider.Kind), "current owner of org.freedesktop.secrets"})
-		}
-	case "remote":
-		// unmaskDBusActivation
-		if existing, err := os.ReadFile(maskPath); err == nil && string(existing) == dbusActivationMask {
-			if _, err := os.Stat(maskPath + dbusBackupSuffix); err == nil {
-				changes = append(changes, Change{"restore", maskPath + dbusBackupSuffix, "-> " + maskPath})
-			} else {
-				changes = append(changes, Change{"remove", maskPath, "D-Bus activation mask"})
-			}
-		}
-		// restoreGnomeKeyring
-		restored := false
-		if _, err := os.Stat(dropIn); err == nil {
-			changes = append(changes, Change{"remove", dropIn, "gnome-keyring demotion drop-in"})
-			restored = true
-		}
-		if existing, err := os.ReadFile(shadow); err == nil && string(existing) == gkAutostartShadow {
-			changes = append(changes, Change{"remove", shadow, "autostart shadow"})
-			if _, err := os.Stat(shadow + dbusBackupSuffix); err == nil {
-				changes = append(changes, Change{"restore", shadow + dbusBackupSuffix, "-> " + shadow})
-			}
-			restored = true
-		}
-		if restored {
-			changes = append(changes,
-				Change{"run", "systemctl --user daemon-reload", ""},
-				Change{"run", "systemctl --user try-restart " + gkServiceUnit, "restart with all components"})
-		}
-	}
-
-	needed, err := in.units(provider)
+	needed, err := in.topology.units(in.execStart)
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range allUnitNames {
-		path := filepath.Join(unitsDir, name)
-		if content, ok := needed[name]; ok {
+	for _, u := range allUnitNames {
+		path := u.Path(unitsDir)
+		if content, ok := needed[u]; ok {
 			note := ""
-			if name == backendServiceUnit {
+			if u == backendServiceUnit {
 				// Surface the resolved backend — the one non-obvious content choice.
 				note = "private backend: " + execStartOf(content)
 			}
@@ -206,23 +123,31 @@ func Plan(opts Options) ([]Change, error) {
 		}
 	}
 
-	changes = append(changes, Change{"run", "systemctl --user daemon-reload", ""})
-	if in.mode != "remote" {
-		changes = append(changes, Change{"run", "systemctl --user enable " + busSocketUnit, ""})
+	changes = append(changes, daemonReloadChange())
+	for _, u := range in.topology.activated() {
+		changes = append(changes, systemctlChange(verbEnable, u, ""))
 	}
-	changes = append(changes, Change{"run", "systemctl --user enable " + proxyServiceUnit, ""})
 	if opts.Start {
-		if in.mode != "remote" {
-			changes = append(changes, Change{"run", "systemctl --user start " + busSocketUnit, ""})
+		for _, u := range in.topology.activated() {
+			changes = append(changes, systemctlChange(verbStart, u, ""))
 		}
-		changes = append(changes, Change{"run", "systemctl --user start " + proxyServiceUnit, ""})
 	}
 	return changes, nil
 }
 
+// Returns the change that runs `systemctl --user verb u`.
+func systemctlChange(verb systemctlVerb, u systemd.Unit, note string) Change {
+	return Change{"run", "systemctl --user " + string(verb) + " " + string(u), note}
+}
+
+// Returns the change that runs `systemctl --user daemon-reload`.
+func daemonReloadChange() Change {
+	return Change{"run", "systemctl --user " + string(verbDaemonReload), ""}
+}
+
 // execStartOf extracts the ExecStart= command from a unit file body.
-func execStartOf(unit string) string {
-	for line := range strings.Lines(unit) {
+func execStartOf(content string) string {
+	for line := range strings.Lines(content) {
 		if cmd, ok := strings.CutPrefix(line, "ExecStart="); ok {
 			return strings.TrimSpace(cmd)
 		}

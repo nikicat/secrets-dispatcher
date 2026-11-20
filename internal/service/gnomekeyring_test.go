@@ -35,7 +35,7 @@ func TestDemoteGnomeKeyringWritesDropInAndShadow(t *testing.T) {
 	assert.Contains(t, string(shadowContent), "Hidden=true")
 	assert.Contains(t, string(shadowContent), "Managed by secrets-dispatcher")
 
-	assert.Equal(t, []string{"daemon-reload", "try-restart " + gkServiceUnit}, *calls)
+	assert.Equal(t, []string{"daemon-reload", "try-restart " + string(gkServiceUnit)}, *calls)
 }
 
 func TestDemoteGnomeKeyringBacksUpUserAutostart(t *testing.T) {

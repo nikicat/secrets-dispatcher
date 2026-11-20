@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +31,7 @@ serve:
   notifications: false
 `), 0o644)
 
-	cfg, err := Load(path)
+	cfg, err := File{path}.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -84,7 +83,7 @@ serve:
   log_level: warn
 `), 0o644)
 
-	cfg, err := Load(path)
+	cfg, err := File{path}.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -113,54 +112,12 @@ serve:
 	}
 }
 
-func TestLoadMissingFile(t *testing.T) {
-	path := "/nonexistent/path/config.yaml"
-	_, err := Load(path)
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("Load() error = %v, want os.ErrNotExist", err)
-	}
-	if !strings.Contains(err.Error(), path) {
-		t.Errorf("Load() error = %v, want it to name %s", err, path)
-	}
-}
-
-func TestLoadDefaultMissingFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	cfg, err := LoadDefault()
-	if err != nil {
-		t.Fatalf("LoadDefault() error = %v", err)
-	}
-	if !reflect.DeepEqual(cfg, &Config{}) {
-		t.Errorf("LoadDefault() = %+v, want an empty config", cfg)
-	}
-}
-
-func TestPathOrDefault(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	want, err := DefaultPath()
-	if err != nil {
-		t.Fatalf("DefaultPath() error = %v", err)
-	}
-	for _, tc := range []struct{ in, want string }{
-		{"/etc/custom.yaml", "/etc/custom.yaml"},
-		{"", want},
-	} {
-		got, err := PathOrDefault(tc.in)
-		if err != nil {
-			t.Fatalf("PathOrDefault(%q) error = %v", tc.in, err)
-		}
-		if got != tc.want {
-			t.Errorf("PathOrDefault(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 func TestLoadInvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	os.WriteFile(path, []byte(`{{{not yaml`), 0o644)
 
-	_, err := Load(path)
+	_, err := File{path}.Load()
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
 	}
@@ -174,7 +131,7 @@ serve:
   timeout: not-a-duration
 `), 0o644)
 
-	_, err := Load(path)
+	_, err := File{path}.Load()
 	if err == nil {
 		t.Fatal("expected error for invalid duration")
 	}
@@ -189,7 +146,7 @@ serve:
     - name: ../api
 `), 0o644)
 
-	_, err := Load(path)
+	_, err := File{path}.Load()
 	if err == nil || !strings.Contains(err.Error(), `invalid remote name "../api"`) {
 		t.Fatalf("expected invalid remote name error, got %v", err)
 	}
@@ -216,7 +173,7 @@ serve:
   upstream:
     type: tcp
 `,
-			wantErr: `bus type must be "session_bus", "socket" or "sockets", got "tcp"`,
+			wantErr: `bus type must be session_bus, socket or sockets, got "tcp"`,
 		},
 		{
 			name: "downstream type",
@@ -232,11 +189,21 @@ serve:
 			yaml:    "listen: \"8484\"\n",
 			wantErr: `listen address "8484"`,
 		},
+		{
+			name:    "log level",
+			yaml:    "serve:\n  log_level: verbose\n",
+			wantErr: `log level must be`,
+		},
+		{
+			name:    "log format",
+			yaml:    "serve:\n  log_format: logfmt\n",
+			wantErr: `log format must be`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			os.WriteFile(path, []byte(tc.yaml), 0o644)
-			_, err := Load(path)
+			_, err := File{path}.Load()
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("Load() error = %v, want it to contain %q", err, tc.wantErr)
 			}
@@ -253,7 +220,7 @@ serve:
       process:
         exe: /usr/bin/git
 `), 0o644)
-	cfg, err := Load(path)
+	cfg, err := File{path}.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -280,7 +247,7 @@ serve:
   notifications: false
 `), 0o644)
 
-	cfgFalse, err := Load(pathFalse)
+	cfgFalse, err := File{pathFalse}.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -298,23 +265,12 @@ serve:
   log_level: info
 `), 0o644)
 
-	cfgUnset, err := Load(pathUnset)
+	cfgUnset, err := File{pathUnset}.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfgUnset.Serve.Notifications != nil {
 		t.Errorf("unset notifications should be nil, got %v", *cfgUnset.Serve.Notifications)
-	}
-}
-
-func TestDefaultPath(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
-	got, err := DefaultPath()
-	if err != nil {
-		t.Fatalf("DefaultPath: %v", err)
-	}
-	if want := "/custom/config/secrets-dispatcher/config.yaml"; got != want {
-		t.Errorf("DefaultPath() = %q, want %q", got, want)
 	}
 }
 

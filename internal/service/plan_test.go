@@ -33,7 +33,7 @@ func TestPlanLocalGnomeKeyringMirrorsInstallOrder(t *testing.T) {
 		return "/usr/bin/gnome-keyring-daemon", nil
 	})
 
-	changes, err := Plan(Options{Mode: "local", Start: true})
+	changes, err := Plan(Options{Mode: ModeLocal, Start: true})
 	require.NoError(t, err)
 
 	config := changeIndex(changes, "write", "config.yaml")
@@ -41,8 +41,8 @@ func TestPlanLocalGnomeKeyringMirrorsInstallOrder(t *testing.T) {
 	dropIn := changeIndex(changes, "write", gkDropInName)
 	shadow := changeIndex(changes, "write", gkAutostartName)
 	sigterm := changeIndex(changes, "signal", "pid 4242")
-	proxyUnit := changeIndex(changes, "write", proxyServiceUnit)
-	start := changeIndex(changes, "run", "start "+proxyServiceUnit)
+	proxyUnit := changeIndex(changes, "write", string(proxyServiceUnit))
+	start := changeIndex(changes, "run", "start "+string(proxyServiceUnit))
 
 	for name, idx := range map[string]int{
 		"config": config, "mask": mask, "drop-in": dropIn, "shadow": shadow,
@@ -78,10 +78,10 @@ func TestPlanSurfacesResolvedBackend(t *testing.T) {
 		return "/usr/bin/gnome-keyring-daemon", nil
 	})
 
-	changes, err := Plan(Options{Mode: "local"})
+	changes, err := Plan(Options{Mode: ModeLocal})
 	require.NoError(t, err)
 
-	idx := changeIndex(changes, "write", "secrets-dispatcher-backend.service")
+	idx := changeIndex(changes, "write", string(backendServiceUnit))
 	require.GreaterOrEqual(t, idx, 0)
 	assert.Contains(t, changes[idx].Note, "gnome-keyring-daemon --foreground --components=secrets")
 }
@@ -94,10 +94,10 @@ func TestPlanRemoteMinimal(t *testing.T) {
 
 	mockExecOutput(t, noopExecOutput)
 
-	changes, err := Plan(Options{})
+	changes, err := Plan(Options{Mode: ModeRemote})
 	require.NoError(t, err)
 
-	assert.GreaterOrEqual(t, changeIndex(changes, "write", proxyServiceUnit), 0)
+	assert.GreaterOrEqual(t, changeIndex(changes, "write", string(proxyServiceUnit)), 0)
 	assert.Equal(t, -1, changeIndex(changes, "write", dbusServiceFile), "remote mode must not mask")
 	assert.Equal(t, -1, changeIndex(changes, "signal", ""), "remote mode must not signal anyone")
 	for _, c := range changes {
@@ -124,13 +124,13 @@ func TestPlanRemoteReversesTakeoverState(t *testing.T) {
 	require.NoError(t, os.MkdirAll(asDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(asDir, gkAutostartName), []byte(gkAutostartShadow), 0644))
 
-	changes, err := Plan(Options{Mode: "remote"})
+	changes, err := Plan(Options{Mode: ModeRemote})
 	require.NoError(t, err)
 
 	assert.GreaterOrEqual(t, changeIndex(changes, "remove", dbusServiceFile), 0)
 	assert.GreaterOrEqual(t, changeIndex(changes, "remove", gkDropInName), 0)
 	assert.GreaterOrEqual(t, changeIndex(changes, "remove", gkAutostartName), 0)
-	assert.GreaterOrEqual(t, changeIndex(changes, "run", "try-restart "+gkServiceUnit), 0)
+	assert.GreaterOrEqual(t, changeIndex(changes, "run", "try-restart "+string(gkServiceUnit)), 0)
 
 	// Reading state must not modify it.
 	_, err = os.Stat(filepath.Join(dbusDir, dbusServiceFile))
@@ -154,7 +154,7 @@ func TestPlanMirrorsInstall(t *testing.T) {
 	mockSystemctl(t)
 	shortOwnerWait(t)
 
-	opts := Options{Mode: "local", Start: true}
+	opts := Options{Mode: ModeLocal, Start: true}
 	changes, err := Plan(opts)
 	require.NoError(t, err)
 

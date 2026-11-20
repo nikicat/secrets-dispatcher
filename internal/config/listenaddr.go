@@ -25,11 +25,14 @@ func (a *ListenAddr) UnmarshalText(text []byte) error {
 }
 
 // Errors when value is empty or not a host:port.
-func (a *ListenAddr) Set(value string) error {
-	if value == "" {
-		return fmt.Errorf("listen address %q: empty", value)
+func (a *ListenAddr) Set(value string) error { return setText(a, value) }
+
+// Returns a, or DefaultListenAddr when a is empty.
+func (a ListenAddr) OrDefault() ListenAddr {
+	if a == "" {
+		return DefaultListenAddr
 	}
-	return a.UnmarshalText([]byte(value))
+	return a
 }
 
 // Returns the root URL of the API and the web UI, with no trailing slash.

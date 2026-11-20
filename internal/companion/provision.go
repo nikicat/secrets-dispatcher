@@ -2,12 +2,17 @@ package companion
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/template"
+
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 // Config holds the inputs for provisioning a companion user.
@@ -54,7 +59,8 @@ func (c Config) homeDir() string {
 //  5. Write D-Bus system bus policy file
 //  6. Write systemd user unit file
 //  7. Write PAM session hook config
-//  8. Enable systemd linger for companion user
+//  8. Include the hook in the login session stack
+//  9. Enable systemd linger for companion user
 //
 // Provision requires root (os.Geteuid() == 0).
 func Provision(cfg Config) error {
@@ -122,11 +128,16 @@ func Provision(cfg Config) error {
 	}
 
 	// 7. Write PAM session hook config.
-	if err := writePAMConfig(); err != nil {
+	if err := writePAMConfig(companionUser); err != nil {
 		return fmt.Errorf("write PAM config: %w", err)
 	}
 
-	// 8. Enable linger so companion's systemd --user persists after desktop logout.
+	// 8. Include the hook in the login session stack.
+	if err := includePAMConfig(); err != nil {
+		return fmt.Errorf("include PAM config: %w", err)
+	}
+
+	// 9. Enable linger so companion's systemd --user persists after desktop logout.
 	slog.Info("enabling systemd linger", "companion_user", companionUser)
 	if err := loginctlFunc("enable-linger", companionUser); err != nil {
 		return fmt.Errorf("enable linger: %w", err)
@@ -210,6 +221,15 @@ func writeDBusPolicy(desktopUser, companionUser string) error {
 	return writeFileFunc(path, content, 0644)
 }
 
+// The companion daemon's systemd user unit.
+const daemonUnit systemd.Unit = "secrets-dispatcher-daemon.service"
+
+// Returns the systemd user unit directory of the companion user whose home is
+// homeDir.
+func userUnitDir(homeDir string) string {
+	return filepath.Join(homeDir, ".config", "systemd", "user")
+}
+
 // writeSystemdUnit renders and writes the systemd user unit file to the companion's XDG dir.
 func writeSystemdUnit(homeDir, companionUser, uidStr string, uid, gid int) error {
 	type templateVars struct {
@@ -225,7 +245,7 @@ func writeSystemdUnit(homeDir, companionUser, uidStr string, uid, gid int) error
 		return err
 	}
 
-	unitDir := filepath.Join(homeDir, ".config", "systemd", "user")
+	unitDir := userUnitDir(homeDir)
 	if err := mkdirAllFunc(unitDir, 0700); err != nil {
 		return fmt.Errorf("create systemd unit dir %q: %w", unitDir, err)
 	}
@@ -233,7 +253,7 @@ func writeSystemdUnit(homeDir, companionUser, uidStr string, uid, gid int) error
 		return fmt.Errorf("chown systemd unit dir %q: %w", unitDir, err)
 	}
 
-	unitPath := filepath.Join(unitDir, "secrets-dispatcher-daemon.service")
+	unitPath := daemonUnit.Path(unitDir)
 	slog.Info("writing systemd unit", "path", unitPath)
 	if err := writeFileFunc(unitPath, content, 0644); err != nil {
 		return err
@@ -241,11 +261,99 @@ func writeSystemdUnit(homeDir, companionUser, uidStr string, uid, gid int) error
 	return chownFunc(unitPath, uid, gid)
 }
 
-// writePAMConfig writes the PAM session hook configuration.
-func writePAMConfig() error {
-	path := "/etc/pam.d/secrets-dispatcher"
-	slog.Info("writing PAM config", "path", path)
-	return writeFileFunc(path, []byte(pamConfigTemplate), 0644)
+// The PAM service name of the session hook.
+const pamService = "secrets-dispatcher"
+
+// The PAM session hook file.
+const pamConfigPath = "/etc/pam.d/" + pamService
+
+// The session stack line that runs the hook.
+const pamIncludeLine = "session include " + pamService
+
+// Renders the PAM session hook that starts daemonUnit under companionUser's
+// systemd user manager.
+func pamConfig(companionUser string) ([]byte, error) {
+	type templateVars struct {
+		CompanionUser string
+		DaemonUnit    systemd.Unit
+	}
+	return renderTemplate("pam-config", pamConfigTemplate, templateVars{
+		CompanionUser: companionUser,
+		DaemonUnit:    daemonUnit,
+	})
+}
+
+func writePAMConfig(companionUser string) error {
+	content, err := pamConfig(companionUser)
+	if err != nil {
+		return err
+	}
+	slog.Info("writing PAM config", "path", pamConfigPath)
+	return writeFileFunc(pamConfigPath, content, 0644)
+}
+
+// Session stacks that login services include, in the order provision tries
+// them: Debian's common-session, whose lines after the pam-auth-update block
+// survive pam-auth-update, and Arch's system-login. Fedora's authselect
+// rewrites its stacks, so none of them is listed.
+var sessionStacks = []string{"/etc/pam.d/common-session", "/etc/pam.d/system-login"}
+
+// A session stack file as read from disk.
+type sessionStack struct {
+	path    string
+	content []byte
+	mode    fs.FileMode
+}
+
+// Reads the first of sessionStacks that exists. Errors when none does, naming
+// the line to add by hand.
+func findSessionStack() (sessionStack, error) {
+	for _, path := range sessionStacks {
+		info, err := os.Stat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return sessionStack{}, err
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return sessionStack{}, err
+		}
+		return sessionStack{path: path, content: content, mode: info.Mode().Perm()}, nil
+	}
+	return sessionStack{}, fmt.Errorf("none of %s exists; add %q to the session stack your login services include",
+		strings.Join(sessionStacks, ", "), pamIncludeLine)
+}
+
+// Checks whether the stack already runs the hook.
+func (s sessionStack) includesHook() bool {
+	for line := range bytes.Lines(s.content) {
+		if string(bytes.TrimSpace(line)) == pamIncludeLine {
+			return true
+		}
+	}
+	return false
+}
+
+// Appends the hook's include line to the session stack, after a marker
+// comment, unless the stack already has it.
+func includePAMConfig() error {
+	stack, err := findSessionStack()
+	if err != nil {
+		return err
+	}
+	if stack.includesHook() {
+		slog.Info("session stack already includes PAM config", "path", stack.path)
+		return nil
+	}
+	content := stack.content
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		content = append(content, '\n')
+	}
+	content = append(content, "# Added by secrets-dispatcher provision.\n"+pamIncludeLine+"\n"...)
+	slog.Info("including PAM config in session stack", "path", stack.path)
+	return writeFileFunc(stack.path, content, stack.mode)
 }
 
 // renderTemplate executes a text/template and returns the rendered bytes.

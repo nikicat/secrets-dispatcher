@@ -61,7 +61,7 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "serve":
+	case config.ServeCommand:
 		runServe(os.Args[2:])
 	case "login":
 		runLogin(os.Args[2:])
@@ -123,35 +123,17 @@ Run '%s <command> -h' for command-specific help.
 }
 
 func runLogin(args []string) {
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	listenAddr := config.DefaultListenAddr
-	fs.Var(&listenAddr, "listen", "HTTP API listen `address`")
-	var stateDir config.StateDir
-	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
-	fs.Parse(args)
+	fs := newSettingsFlags("login")
+	fs.listenFlag("listen", "HTTP API listen `address`")
+	cfg := fs.parse(args)
 
-	// Load config and apply values for flags not explicitly set
-	cfg, err := loadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	set := setFlags(fs)
-	if !set["state-dir"] && cfg.StateDir != "" {
-		stateDir = cfg.StateDir
-	}
-	if !set["listen"] && cfg.Listen != "" {
-		listenAddr = cfg.Listen
-	}
-
-	auth, err := loadClientAuth(stateDir)
+	endpoint, err := loadAPIEndpoint(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	url, err := auth.GenerateLoginURL(listenAddr)
+	url, err := endpoint.Auth.GenerateLoginURL(endpoint.Addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error generating login URL: %v\n", err)
 		os.Exit(1)
@@ -167,36 +149,18 @@ func runLogin(args []string) {
 }
 
 func runCLI(cmd string, args []string) {
-	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	var stateDir config.StateDir
-	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
-	serverAddr := config.DefaultListenAddr
-	fs.Var(&serverAddr, "server", "API server `address`")
+	fs := newSettingsFlags(cmd)
+	fs.listenFlag("server", "API server `address`")
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
-	fs.Parse(args)
+	cfg := fs.parse(args)
 
-	// Load config and apply values for flags not explicitly set
-	cfg, err := loadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	set := setFlags(fs)
-	if !set["state-dir"] && cfg.StateDir != "" {
-		stateDir = cfg.StateDir
-	}
-	if !set["server"] && cfg.Listen != "" {
-		serverAddr = cfg.Listen
-	}
-
-	auth, err := loadClientAuth(stateDir)
+	endpoint, err := loadAPIEndpoint(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	client := cli.NewClient(serverAddr, auth.Token())
+	client := cli.NewClient(endpoint.Addr, endpoint.Auth.Token())
 	formatter := cli.NewFormatter(os.Stdout, *jsonOutput)
 
 	switch cmd {
@@ -254,83 +218,37 @@ func runCLI(cmd string, args []string) {
 	}
 }
 
-func runServe(args []string) {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	logLevel := fs.String("log-level", config.DefaultLogLevel, "Log level: debug, info, warn, error")
-	logFormat := fs.String("log-format", config.DefaultLogFormat, "Log format: text (colored) or json")
-	listenAddr := config.DefaultListenAddr
-	fs.Var(&listenAddr, "listen", "HTTP API listen `address`")
-	timeout := fs.Duration("timeout", config.DefaultTimeout, "Approval timeout")
-	historyLimit := fs.Int("history-limit", config.DefaultHistoryLimit, "Maximum number of resolved requests to keep in history")
-	var stateDir config.StateDir
-	fs.Var(&stateDir, "state-dir", "State `directory` (default: $XDG_STATE_HOME/secrets-dispatcher)")
+// The flags of serve.
+type serveFlags struct {
+	*settingsFlags
+	apiOnly *bool
+}
+
+func newServeFlags() serveFlags {
+	fs := newSettingsFlags(config.ServeCommand)
+	fs.listenFlag("listen", "HTTP API listen `address`")
+	logFlags(fs.FlagSet, &fs.cfg.Serve.LogLevel, &fs.cfg.Serve.LogFormat)
+	fs.Var(&fs.cfg.Serve.Timeout, "timeout", "Approval timeout `duration`")
+	showDefault(fs.FlagSet, "timeout", config.DefaultTimeout)
+	fs.IntVar(&fs.cfg.Serve.HistoryLimit, "history-limit", 0, "Maximum number of resolved requests to keep in history")
+	showDefault(fs.FlagSet, "history-limit", config.DefaultHistoryLimit)
+	fs.Var(optionalBool{&fs.cfg.Serve.Notifications}, "notifications", "Enable desktop notifications for approval requests")
+	showDefault(fs.FlagSet, "notifications", config.DefaultNotifications)
 	apiOnly := fs.Bool("api-only", false, "Run only the API server (for testing)")
-	notifications := fs.Bool("notifications", true, "Enable desktop notifications for approval requests")
-	fs.Parse(args)
+	return serveFlags{fs, apiOnly}
+}
 
-	// Load config and apply values for flags not explicitly set
-	cfg, err := loadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	set := setFlags(fs)
-	if !set["state-dir"] && cfg.StateDir != "" {
-		stateDir = cfg.StateDir
-	}
-	if !set["listen"] && cfg.Listen != "" {
-		listenAddr = cfg.Listen
-	}
-	if !set["log-level"] && cfg.Serve.LogLevel != "" {
-		*logLevel = cfg.Serve.LogLevel
-	}
-	if !set["log-format"] && cfg.Serve.LogFormat != "" {
-		*logFormat = cfg.Serve.LogFormat
-	}
-	if !set["timeout"] && cfg.Serve.Timeout != 0 {
-		*timeout = time.Duration(cfg.Serve.Timeout)
-	}
-	if !set["history-limit"] && cfg.Serve.HistoryLimit != 0 {
-		*historyLimit = cfg.Serve.HistoryLimit
-	}
-	if !set["notifications"] && cfg.Serve.Notifications != nil {
-		*notifications = *cfg.Serve.Notifications
-	}
+func runServe(args []string) {
+	fs := newServeFlags()
 
-	// Apply defaults and validate
-	cfg, err = cfg.Resolve()
+	cfg, err := fs.parse(args).Resolve()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}
 
-	level := parseLogLevel(*logLevel)
-
-	// Set global slog default with configured level and format
-	var handler slog.Handler
-	switch *logFormat {
-	case "json":
-		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
-	default:
-		// When running under systemd, the journal adds its own timestamps.
-		underSystemd := os.Getenv("INVOCATION_ID") != ""
-		opts := &tint.Options{
-			Level:      level,
-			TimeFormat: time.TimeOnly,
-			NoColor:    underSystemd,
-		}
-		if underSystemd {
-			opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
-				if a.Key == slog.TimeKey {
-					return slog.Attr{}
-				}
-				return a
-			}
-		}
-		handler = tint.NewTextHandler(os.Stderr, opts)
-	}
-	slog.SetDefault(slog.New(handler))
+	level := cfg.Serve.LogLevel.Level()
+	slog.SetDefault(slog.New(newLogHandler(cfg.Serve.LogLevel, cfg.Serve.LogFormat)))
 
 	// Create approval manager
 	var trustedSigners []approval.TrustedSigner
@@ -369,8 +287,8 @@ func runServe(args []string) {
 		trustRules = append(trustRules, tr)
 	}
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:             *timeout,
-		HistoryMax:          *historyLimit,
+		Timeout:             time.Duration(cfg.Serve.Timeout),
+		HistoryMax:          cfg.Serve.HistoryLimit,
 		ApprovalWindow:      time.Duration(cfg.Serve.ApprovalWindow),
 		AutoApproveDuration: time.Duration(cfg.Serve.AutoApproveDuration),
 		TrustedSigners:      trustedSigners,
@@ -382,7 +300,7 @@ func runServe(args []string) {
 	var desktopNotifier *notification.DBusNotifier
 	var notifHandler *notification.Handler
 	slowUpstream := proxy.SlowUpstream{Threshold: time.Duration(*cfg.Serve.UpstreamSlowThreshold)}
-	if *notifications {
+	if *cfg.Serve.Notifications {
 		notifier, err := notification.NewDBusNotifier()
 		if err != nil {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
@@ -395,11 +313,11 @@ func runServe(args []string) {
 	resolver := api.NewResolver(approvalMgr, slowUpstream)
 	notificationDelay := time.Duration(cfg.Serve.NotificationDelay)
 	if desktopNotifier != nil {
-		notifHandler = notification.NewHandler(desktopNotifier, resolver, listenAddr, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
+		notifHandler = notification.NewHandler(desktopNotifier, resolver, cfg.Listen, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
 		approvalMgr.Subscribe(notifHandler)
 	}
 
-	stateDir, err = stateDir.OrDefault()
+	stateDir, err := cfg.StateDir.OrDefault()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -548,12 +466,12 @@ func runServe(args []string) {
 
 	// Create API server
 	apiServer, err := api.NewServer(api.ServerConfig{
-		Addr:              listenAddr,
+		Addr:              cfg.Listen,
 		Resolver:          resolver,
 		Auth:              auth,
 		TrimProcessChain:  *cfg.Serve.TrimProcessChain,
 		NotificationDelay: notificationDelay,
-		TestMode:          *apiOnly,
+		TestMode:          *fs.apiOnly,
 	}, &multiProvider{providers: providers})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating API server: %v\n", err)
@@ -561,7 +479,7 @@ func runServe(args []string) {
 	}
 
 	// Serve the API socket in the runtime directory, except with --api-only.
-	if !*apiOnly {
+	if !*fs.apiOnly {
 		runtimeDir, err := config.LookupRuntimeDir()
 		if err != nil {
 			slog.Warn("the API socket will not be created", "error", err)
@@ -590,7 +508,7 @@ func runServe(args []string) {
 	}()
 
 	// In API-only mode, just wait for shutdown signal
-	if *apiOnly {
+	if *fs.apiOnly {
 		slog.Info("running in API-only mode (no D-Bus proxy)")
 		<-ctx.Done()
 		return
@@ -618,7 +536,7 @@ func runServe(args []string) {
 		wg.Add(1)
 		go func(idx int, runFn downstreamRunner) {
 			defer wg.Done()
-			if err := runFn(ctx); err != nil && err != context.Canceled {
+			if err := runFn(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				slog.Error("downstream error", "index", idx, "error", err)
 			}
 		}(i, run)
@@ -684,15 +602,12 @@ func runConfig(args []string) {
 }
 
 func runConfigShow(args []string) {
-	fs := flag.NewFlagSet("config show", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	fs := newConfigFlags("config show")
 	defaults := fs.Bool("defaults", false, "Show all fields with program defaults filled in")
 	fs.Parse(args)
 
-	// Determine which path to display
-	path := configPathOrDefault(*configPath)
-
-	cfg, err := loadConfig(*configPath)
+	source := configPathOrDefault(fs.path)
+	cfg, err := source.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -706,7 +621,7 @@ func runConfigShow(args []string) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "# %s\n", path)
+	fmt.Fprintf(os.Stderr, "# %s\n", source.File)
 
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -717,20 +632,19 @@ func runConfigShow(args []string) {
 }
 
 func runConfigEdit(args []string) {
-	fs := flag.NewFlagSet("config edit", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	fs := newConfigFlags("config edit")
 	fs.Parse(args)
 
-	path := configPathOrDefault(*configPath)
+	path := configPathOrDefault(fs.path).File
 
 	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := path.CreateDir(); err != nil {
 		fmt.Fprintf(os.Stderr, "error creating config directory: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Read file content before editing (may not exist yet)
-	before, _ := os.ReadFile(path)
+	before, _ := path.ReadFile()
 
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -741,7 +655,7 @@ func runConfigEdit(args []string) {
 		os.Exit(1)
 	}
 
-	cmd := exec.Command(editor, path)
+	cmd := exec.Command(editor, path.String())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -751,7 +665,7 @@ func runConfigEdit(args []string) {
 	}
 
 	// Validate the new config
-	after, err := os.ReadFile(path)
+	after, err := path.ReadFile()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading config after edit: %v\n", err)
 		os.Exit(1)
@@ -763,7 +677,7 @@ func runConfigEdit(args []string) {
 	}
 
 	// Parse and validate
-	cfg, err := config.Load(path)
+	cfg, err := path.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: config has errors: %v\n", err)
 		fmt.Fprintln(os.Stderr, "the file was saved but may not load correctly")
@@ -792,11 +706,15 @@ func runConfigEdit(args []string) {
 }
 
 func runConfigValidate(args []string) {
-	fs := flag.NewFlagSet("config validate", flag.ExitOnError)
-	configPath := fs.String("config", "", "Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
+	fs := newConfigFlags("config validate")
 	fs.Parse(args)
 
-	cfg, err := loadConfig(*configPath)
+	source, err := fs.path.OrDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	cfg, err := source.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -817,12 +735,8 @@ Commands:
   edit          Edit config in $EDITOR and optionally restart service
   validate      Validate config syntax and values
 
-Options:
-  --config      Path to config file (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
-
-Show-only options:
-  --defaults    Show all fields with program defaults filled in
-`, progName)
+Run '%s config <command> -h' for its options.
+`, progName, progName)
 }
 
 // runService handles the "service" subcommand group (install/uninstall/status).
@@ -830,21 +744,17 @@ Show-only options:
 // SIGTERM) restores the original Secret Service.
 func runTry(args []string) {
 	fs := flag.NewFlagSet("try", flag.ExitOnError)
-	dryRun := fs.Bool("dry-run", false, "Print what the trial would change, then exit without changing anything")
-	configPath := fs.String("config", "", "Base config the trial copies settings from, never modified (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	backend := fs.String("backend", "", "Backend for the trial: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
-	narration := narrationFlag(fs)
+	var opts service.TryOptions
+	fs.BoolVar(&opts.DryRun, "dry-run", false, "Print what the trial would change, then exit without changing anything")
+	configFlag(fs, &opts.ConfigPath, "Base config `file` the trial copies settings from, never modified")
+	backendFlag(fs, &opts.Backend, "Backend for the trial")
+	narrationFlag(fs, &opts.Narration)
 	fs.Parse(args)
 
 	ctx, stop := shutdownContext()
 	defer stop()
 
-	if err := service.Try(ctx, service.TryOptions{
-		ConfigPath:  *configPath,
-		BackendPath: *backend,
-		DryRun:      *dryRun,
-		Narration:   *narration,
-	}); err != nil {
+	if err := service.Try(ctx, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -860,14 +770,7 @@ func runService(args []string) {
 	case "install":
 		runServiceInstall(args[1:])
 	case "uninstall":
-		fs := flag.NewFlagSet("service uninstall", flag.ExitOnError)
-		narration := narrationFlag(fs)
-		fs.Parse(args[1:])
-		if err := service.Uninstall(*narration); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("✓ Uninstalled — stock Secret Service restored")
+		runServiceUninstall(args[1:])
 	case "status":
 		if err := service.Status(); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -882,24 +785,28 @@ func runService(args []string) {
 	}
 }
 
+func runServiceUninstall(args []string) {
+	fs := flag.NewFlagSet("service uninstall", flag.ExitOnError)
+	var narration service.Narration
+	narrationFlag(fs, &narration)
+	fs.Parse(args)
+	if err := service.Uninstall(narration); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("✓ Uninstalled — stock Secret Service restored")
+}
+
 func runServiceInstall(args []string) {
 	fs := flag.NewFlagSet("service install", flag.ExitOnError)
-	start := fs.Bool("start", true, "Start the service immediately after installing (default; use --no-start to skip)")
-	noStart := fs.Bool("no-start", false, "Install and enable only — don't start now (starts on next login)")
-	configPath := fs.String("config", "", "Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)")
-	mode := fs.String("mode", "local", "Topology mode: local (gate this desktop), remote (serve secrets to remote hosts), or full")
-	backend := fs.String("backend", "", "Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects the current provider")
+	opts := service.Options{Mode: service.ModeLocal}
+	startFlags(fs, &opts.Start)
+	configFlag(fs, &opts.ConfigPath, "Config `file` path")
+	fs.Var(&opts.Mode, "mode", "Topology `mode`: local (gate this desktop), remote (serve secrets to remote hosts), or full")
+	backendFlag(fs, &opts.Backend, "Backend for local/full modes")
 	dryRun := fs.Bool("dry-run", false, "Print what the install would change, then exit without changing anything")
-	narration := narrationFlag(fs)
+	narrationFlag(fs, &opts.Narration)
 	fs.Parse(args)
-
-	opts := service.Options{
-		ConfigPath:  *configPath,
-		Start:       *start && !*noStart,
-		Mode:        *mode,
-		BackendPath: *backend,
-		Narration:   *narration,
-	}
 
 	if *dryRun {
 		if err := service.PrintPlan(opts); err != nil {
@@ -915,13 +822,6 @@ func runServiceInstall(args []string) {
 	}
 }
 
-// Registers the --verbose flag on fs and returns the narration it sets.
-func narrationFlag(fs *flag.FlagSet) *service.Narration {
-	n := service.NarrateMilestones
-	fs.Var(&n, "verbose", "Narrate every file and unit change (default: milestones only)")
-	return &n
-}
-
 func printServiceUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: %s service <command> [options]
 
@@ -930,15 +830,8 @@ Commands:
   uninstall     Stop, disable, and remove the systemd user service
   status        Doctor-style health report: name owner, unit states, mask/demotion consistency
 
-Install options:
-  --mode        Topology mode: local (default — gate this desktop), remote, or full
-  --no-start    Install and enable only — don't start now (starts on next login)
-  --start       Start immediately after installing (default)
-  --config      Config file path (default: $XDG_CONFIG_HOME/secrets-dispatcher/config.yaml)
-  --backend     Backend for local/full modes: path or keyword (gopass, gnome-keyring); default auto-detects
-  --dry-run     Print what the install would change, then exit without changing anything
-  --verbose     Narrate every file and unit change (default: milestones only)
-`, progName)
+Run '%s service <command> -h' for its options.
+`, progName, progName)
 }
 
 // Runs the gpg-sign subcommand. It either configures git to use this binary as
@@ -1007,23 +900,12 @@ func runProvision(args []string) {
 func runDaemon(args []string) {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	busAddress := fs.String("bus-address", "", "D-Bus address to connect to (default: system bus; non-empty used by tests)")
-	logLevel := fs.String("log-level", "info", "Log level: debug, info, warn, error")
+	var logLevel config.LogLevel
+	var logFormat config.LogFormat
+	logFlags(fs, &logLevel, &logFormat)
 	fs.Parse(args)
 
-	level := parseLogLevel(*logLevel)
-
-	// Mirror the slog setup from runServe: JSON under systemd, tint for terminals.
-	underSystemd := os.Getenv("INVOCATION_ID") != ""
-	var handler slog.Handler
-	if underSystemd {
-		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level})
-	} else {
-		handler = tint.NewTextHandler(os.Stderr, &tint.Options{
-			Level:   level,
-			NoColor: false,
-		})
-	}
-	slog.SetDefault(slog.New(handler))
+	slog.SetDefault(slog.New(newLogHandler(logLevel, logFormat)))
 
 	ctx, stop := shutdownContext()
 	defer stop()
@@ -1039,19 +921,28 @@ func runDaemon(args []string) {
 	}
 }
 
-func parseLogLevel(s string) slog.Level {
-	switch s {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
+// Returns a handler that writes log records at the given level and above to
+// stderr, in the given format. Under systemd, text has no colors and no
+// times, since the journal adds its own times.
+func newLogHandler(level config.LogLevel, format config.LogFormat) slog.Handler {
+	if format.OrDefault() == config.LogJSON {
+		return slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level.Level()})
 	}
+	underSystemd := os.Getenv("INVOCATION_ID") != ""
+	opts := &tint.Options{
+		Level:      level.Level(),
+		TimeFormat: time.TimeOnly,
+		NoColor:    underSystemd,
+	}
+	if underSystemd {
+		opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		}
+	}
+	return tint.NewTextHandler(os.Stderr, opts)
 }
 
 // Claims name for one downstream client of serve. Exits when name is already
@@ -1063,47 +954,36 @@ func claimClient(mgr *approval.Manager, name string) {
 	}
 }
 
-// Returns the Auth for the master token that serve keeps in dir, or in the
-// default state directory when dir is empty (ADR 0006). Errors when serve has
-// never written a token there.
-func loadClientAuth(dir config.StateDir) (*api.Auth, error) {
-	dir, err := dir.OrDefault()
+type apiEndpoint struct {
+	Addr config.ListenAddr
+	Auth *api.Auth
+}
+
+// Returns the address of serve's API and the master token that clients send
+// to it (ADR 0006), both found from the given settings. Errors when serve has
+// not yet written a token in the state directory.
+func loadAPIEndpoint(cfg *config.Config) (apiEndpoint, error) {
+	dir, err := cfg.StateDir.OrDefault()
 	if err != nil {
-		return nil, err
+		return apiEndpoint{}, err
 	}
 	auth, err := api.LoadAuth(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("no cookie file at %s\nStart the service first with: %s serve", dir.Cookie(), progName)
+		return apiEndpoint{}, fmt.Errorf("no cookie file at %s\nStart the service first with: %s %s", dir.Cookie(), progName, config.ServeCommand)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("load auth: %w", err)
+		return apiEndpoint{}, fmt.Errorf("load auth: %w", err)
 	}
-	return auth, nil
+	return apiEndpoint{Addr: cfg.Listen.OrDefault(), Auth: auth}, nil
 }
 
-// Loads the config file at explicitPath, or the default one when explicitPath
-// is empty.
-func loadConfig(explicitPath string) (*config.Config, error) {
-	if explicitPath != "" {
-		return config.Load(explicitPath)
-	}
-	return config.LoadDefault()
-}
-
-// Returns path, or the default config file when path is empty. Exits when
-// there is no default.
-func configPathOrDefault(path string) string {
-	path, err := config.PathOrDefault(path)
+// Returns p.OrDefault(). Exits when p is empty and there is no default config
+// file.
+func configPathOrDefault(p config.Path) config.Source {
+	file, err := p.OrDefault()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v (set XDG_CONFIG_HOME or use --config)\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v (set XDG_CONFIG_HOME or use --%s)\n", err, config.ConfigFlag)
 		os.Exit(1)
 	}
-	return path
-}
-
-// setFlags returns the set of flag names that were explicitly provided on the command line.
-func setFlags(fs *flag.FlagSet) map[string]bool {
-	m := make(map[string]bool)
-	fs.Visit(func(f *flag.Flag) { m[f.Name] = true })
-	return m
+	return file
 }

@@ -14,7 +14,8 @@ type TryOptions struct {
 	// The config file that the trial copies its settings from. Try never writes
 	// to it (README, "Temporary — try it").
 	ConfigPath config.Path
-	Backend    Backend
+	// The private backend; nil picks it from the provider.
+	Backend *Backend
 	// DryRun prints the changes the trial would make, without making any.
 	DryRun bool
 	// How much of the install and the restore Try prints.
@@ -29,8 +30,8 @@ func Try(ctx context.Context, opts TryOptions) error {
 		return err
 	}
 	for _, u := range allUnitNames {
-		if _, err := os.Stat(u.Path(unitsDir)); err == nil {
-			return fmt.Errorf("%s is already installed — the trial would remove it on exit; run `secrets-dispatcher service uninstall` first (see `service status`)", u)
+		if unitsDir.UnitFile(u).Exists() {
+			return fmt.Errorf("%s is already installed — the trial would remove it on exit; run %s first (see %s)", u, UninstallCommand.hint(), StatusCommand.hint())
 		}
 	}
 
@@ -44,11 +45,10 @@ func Try(ctx context.Context, opts TryOptions) error {
 		return err
 	}
 	baseConfig := base.File
-	h := host{narration: opts.Narration}
 	installOpts := Options{ConfigPath: trialConfig.Path(), Start: true, Mode: ModeLocal, Backend: opts.Backend, Narration: opts.Narration}
 
 	if opts.DryRun {
-		changes, err := Plan(installOpts)
+		changes, err := Plan(ctx, installOpts)
 		if err != nil {
 			return err
 		}
@@ -59,26 +59,36 @@ func Try(ctx context.Context, opts TryOptions) error {
 	// Remember the provider being displaced so the restore can confirm it is
 	// back. Install re-detects (and prints) right after; both see the same
 	// pre-takeover state.
-	orig := DetectProvider()
+	t := trial{config: trialConfig, narration: opts.Narration, orig: DetectProvider(ctx)}
 
 	if err := baseConfig.CopyTo(trialConfig); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("copy the base config to the trial: %w", err)
 	}
 
-	if err := Install(installOpts); err != nil {
+	// Ctrl-C has cancelled ctx by now, and the restore must still run.
+	restoreCtx := context.WithoutCancel(ctx)
+	if err := Install(ctx, installOpts); err != nil {
 		fmt.Println(cErr("Install failed — reverting partial changes…"))
-		if restoreErr := h.restoreTrial(trialConfig, orig); restoreErr != nil {
+		if restoreErr := t.restore(restoreCtx); restoreErr != nil {
 			fmt.Printf("%s restore after failed install: %v\n", cWarn("WARNING:"), restoreErr)
 		}
 		return err
 	}
 
-	announceTrial(trialConfig)
+	t.announce()
 	watchOwnership(ctx)
 
 	fmt.Println()
 	fmt.Println(cDim("Stopping the trial — restoring the original Secret Service…"))
-	return h.restoreTrial(trialConfig, orig)
+	return t.restore(restoreCtx)
+}
+
+// A takeover that is undone when the trial ends, so the user's setup comes
+// back exactly (ADR 0009).
+type trial struct {
+	config    config.File
+	narration Narration
+	orig      Provider
 }
 
 func printTrialPlan(baseConfig, trialConfig config.File, changes []Change) {
@@ -91,11 +101,12 @@ func printTrialPlan(baseConfig, trialConfig config.File, changes []Change) {
 	fmt.Println(cDim("activation and gnome-keyring restored, trial config deleted."))
 }
 
-// Prints the web UI address from the config at trialConfig, or a warning when
-// that config does not load, and the commands that exercise the trial.
-func announceTrial(trialConfig config.File) {
+// Prints the trial's web UI address and the commands that exercise the
+// trial. When the trial's config fails to load, prints a warning instead of
+// the address.
+func (t trial) announce() {
 	fmt.Println()
-	if listen, err := listenAddr(trialConfig); err != nil {
+	if listen, err := listenAddr(t.config); err != nil {
 		fmt.Printf("%s Web UI address unknown: %v\n", cWarn("WARNING:"), err)
 	} else {
 		fmt.Printf("%s Web UI: %s\n", cOK("✓"), cBold(listen.BaseURL()))
@@ -118,8 +129,8 @@ func listenAddr(path config.File) (config.ListenAddr, error) {
 	return cfg.Listen, nil
 }
 
-// watchOwnership blocks until ctx is done, reporting when the dispatcher
-// loses (or re-gains) org.freedesktop.secrets — the live re-grab warning.
+// Blocks until ctx is done. Prints a warning each time the dispatcher loses
+// org.freedesktop.secrets, and a notice each time it gets the name back.
 func watchOwnership(ctx context.Context) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -129,8 +140,8 @@ func watchOwnership(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			p := DetectProvider()
-			if nowInFront := p.Kind == ProviderDispatcher; nowInFront != inFront {
+			p := DetectProvider(ctx)
+			if nowInFront := p.is(ProviderDispatcher); nowInFront != inFront {
 				inFront = nowInFront
 				if inFront {
 					fmt.Println(cOK("org.freedesktop.secrets is owned by secrets-dispatcher again"))
@@ -142,32 +153,25 @@ func watchOwnership(ctx context.Context) {
 	}
 }
 
-// restoreTrial reverses the trial: full uninstall, drop the throwaway config,
-// and confirm the displaced provider is back in front.
-func (h host) restoreTrial(trialConfig config.File, orig Provider) error {
-	err := Uninstall(h.narration)
-	if rmErr := trialConfig.Remove(); rmErr != nil && err == nil {
+// Uninstalls the trial and deletes its config, which gives the Secret Service
+// back to the provider it displaced. Errors when either of those fails. A
+// provider that has not taken org.freedesktop.secrets back yet is no error.
+func (t trial) restore(ctx context.Context) error {
+	err := Uninstall(ctx, t.narration)
+	if rmErr := t.config.Remove(); rmErr != nil && err == nil {
 		err = fmt.Errorf("remove trial config: %w", rmErr)
 	}
-	pokeSecretsActivation()
-	if orig.Kind != ProviderNone && orig.Kind != ProviderDispatcher {
-		if p, ok := waitForOwner(orig.Kind, ownerWaitTimeout); ok {
+	// D-Bus activation, just unmasked, starts the stock provider now instead
+	// of at its next client.
+	_ = session.pokeSecrets(ctx)
+	if o := t.orig.displaced(); o != nil {
+		if p := waitForOwner(ctx, o.Kind()); p.is(o.Kind()) {
 			fmt.Printf("%s Restored: org.freedesktop.secrets is owned by %s again\n", cOK("✓"), p)
 			return err
 		}
-		fmt.Printf("%s %s has not re-taken org.freedesktop.secrets yet — it returns on next access or login\n", cDim("note:"), orig.Kind)
+		fmt.Printf("%s %s has not re-taken org.freedesktop.secrets yet — it returns on next access or login\n", cDim("note:"), o.Kind())
 		return err
 	}
 	fmt.Println(cOK("✓") + " Restored: all trial state removed")
 	return err
-}
-
-// pokeSecretsActivation touches org.freedesktop.secrets so D-Bus activation
-// (just unmasked) starts the stock provider without waiting for its next
-// client. The call exists for its side effect; errors are irrelevant.
-func pokeSecretsActivation() {
-	_, _ = execOutputFunc("busctl", "--user", "--timeout=10", "call",
-		"org.freedesktop.secrets", "/org/freedesktop/secrets",
-		"org.freedesktop.DBus.Properties", "Get",
-		"ss", "org.freedesktop.Secret.Service", "Collections")
 }

@@ -7,6 +7,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // mockNotifier records calls to NotifySlowUpstream.
@@ -54,7 +56,7 @@ func TestWithSlowNotify_SlowCall(t *testing.T) {
 	ctx := UpstreamCallContext{
 		RequestType: approval.RequestTypeGetSecret,
 		Items:       []approval.ItemInfo{{Label: "my-password"}},
-		SenderInfo:  approval.SenderInfo{PID: 1234},
+		SenderInfo:  approval.SenderInfo{Info: sender.Info{PID: 1234}},
 	}
 
 	call := WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
@@ -116,7 +118,7 @@ func TestWithSlowNotify_LazyResolution(t *testing.T) {
 			resolved = true
 			return approval.SenderInfo{
 				PID: 5678,
-				ProcessChain: []approval.ProcessInfo{
+				ProcessChain: []procutil.Process{
 					{Name: "git", PID: 5678},
 					{Name: "zsh", PID: 1000},
 				},
@@ -156,7 +158,7 @@ func TestWithSlowNotify_PrefilledSenderSkipsResolve(t *testing.T) {
 	notifier := &mockNotifier{}
 	ctx := UpstreamCallContext{
 		RequestType: approval.RequestTypeGetSecret,
-		SenderInfo:  approval.SenderInfo{PID: 999},
+		SenderInfo:  approval.SenderInfo{Info: sender.Info{PID: 999}},
 		ResolveSender: func() approval.SenderInfo {
 			resolved = true
 			return approval.SenderInfo{PID: 0}

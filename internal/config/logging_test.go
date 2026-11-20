@@ -23,30 +23,32 @@ func TestLogLevelLevel(t *testing.T) {
 	}
 }
 
-func TestLogLevelSet(t *testing.T) {
+func TestLogLevelUnmarshalText(t *testing.T) {
 	var l LogLevel
-	require.NoError(t, l.Set("warn"))
+	require.NoError(t, l.UnmarshalText([]byte("warn")))
 	assert.Equal(t, LogWarn, l)
-	assert.Error(t, l.Set(""))
-	assert.Error(t, l.Set("verbose"))
+	assert.EqualError(t, l.UnmarshalText([]byte("verbose")), `log level must be debug, info, warn or error, got "verbose"`)
+	require.NoError(t, l.UnmarshalText(nil))
+	assert.Empty(t, l, "an empty text is unset")
 }
 
-func TestLogFormatSet(t *testing.T) {
+func TestLogFormatUnmarshalText(t *testing.T) {
 	var f LogFormat
-	require.NoError(t, f.Set("json"))
+	require.NoError(t, f.UnmarshalText([]byte("json")))
 	assert.Equal(t, LogJSON, f)
-	assert.Error(t, f.Set(""))
-	assert.Error(t, f.Set("logfmt"))
+	assert.Error(t, f.UnmarshalText([]byte("logfmt")))
+	require.NoError(t, f.UnmarshalText(nil))
+	assert.Empty(t, f, "an empty text is unset")
 }
 
 func TestAlternatives(t *testing.T) {
-	assert.Equal(t, "debug, info, warn or error", Alternatives(LogLevels))
-	assert.Equal(t, "text or json", Alternatives(LogFormats))
+	assert.Equal(t, "debug, info, warn or error", LogLevels.String())
+	assert.Equal(t, "text or json", LogFormats.String())
 	assert.Equal(t, "text", Alternatives([]LogFormat{LogText}))
 }
 
 func TestEveryLogLevelHasSlogLevel(t *testing.T) {
-	for _, l := range LogLevels {
+	for _, l := range LogLevels.Values() {
 		assert.Contains(t, slogLevels, l)
 	}
 }

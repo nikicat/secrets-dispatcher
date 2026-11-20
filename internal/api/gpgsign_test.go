@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -310,8 +311,8 @@ func (o *wsEventObserver) OnEvent(event approval.Event) {
 	o.mu.Unlock()
 }
 
-func (o *wsEventObserver) WaitForMessages(count int, timeout time.Duration) []WSMessage {
-	poll.Until(timeout, 10*time.Millisecond, func() bool {
+func (o *wsEventObserver) WaitForMessages(ctx context.Context, count int, timeout time.Duration) []WSMessage {
+	poll.Until(ctx, timeout, 10*time.Millisecond, func() bool {
 		o.mu.Lock()
 		defer o.mu.Unlock()
 		return len(o.msgs) >= count
@@ -445,7 +446,7 @@ func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
 	}
 
 	// Wait for the observer to receive the approved event.
-	msgs := obs.WaitForMessages(1, time.Second)
+	msgs := obs.WaitForMessages(t.Context(), 1, time.Second)
 	if len(msgs) < 1 {
 		t.Fatal("expected at least 1 WSMessage for EventRequestApproved")
 	}

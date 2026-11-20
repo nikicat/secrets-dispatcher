@@ -55,7 +55,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 	}
 
 	// EventRequestCreated must fire.
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	ev := findEvent(events, EventRequestCreated)
 	if ev == nil {
 		t.Fatalf("expected EventRequestCreated to fire, got %d events: %v", len(events), events)
@@ -93,7 +93,7 @@ func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 	}
 
 	// Wait for Created + Expired events (budget: 200ms, well within 10s test timeout).
-	events := obs.WaitForEvents(2, 200*time.Millisecond)
+	events := obs.WaitForEvents(t.Context(), 2, 200*time.Millisecond)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Expired), got %d", len(events))
 	}
@@ -135,7 +135,7 @@ func TestCreateGPGSignRequest_Approve(t *testing.T) {
 	}
 
 	// Wait for Created + Approved (order non-deterministic due to async dispatch).
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Approved), got %d", len(events))
 	}
@@ -169,7 +169,7 @@ func TestCreateGPGSignRequest_Deny(t *testing.T) {
 	}
 
 	// Wait for Created + Denied (order non-deterministic due to async dispatch).
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Denied), got %d", len(events))
 	}
@@ -195,7 +195,7 @@ func TestCreateGPGSignRequest_Cancel(t *testing.T) {
 	}
 
 	// Wait for Created + Cancelled events.
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Cancelled), got %d", len(events))
 	}
@@ -317,7 +317,7 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 		t.Fatal("expected non-empty request ID")
 	}
 
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	ev := findEvent(events, EventRequestAutoApproved)
 	if ev == nil {
 		t.Fatalf("expected EventRequestAutoApproved, got events: %v", events)

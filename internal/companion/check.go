@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"slices"
-	"strconv"
-	"syscall"
 )
 
 // CheckResult holds the outcome of a single deployment validation check.
@@ -44,53 +41,48 @@ func Check(cfg Config) []CheckResult {
 	}
 
 	companionUser := cfg.companionUsername()
-	homeDir := cfg.homeDir()
 
 	var results []CheckResult
 
 	// 1. Companion user exists.
-	u, userErr := userLookupFunc(companionUser)
+	acct, userErr := lookupAccount(companionUser)
+	c := companion{account: acct, home: cfg.homeDir()}
+	home := c.home.Dir()
 	results = append(results, checkResult("companion user exists", userErr == nil,
-		fmt.Sprintf("user %q found (uid=%s)", companionUser, safeUID(u)),
+		fmt.Sprintf("user %q found (uid=%d)", companionUser, c.uid),
 		cfg.provisionHint(),
 	))
 
 	// 2. Home directory exists and has correct permissions.
-	homeStat, homeErr := os.Stat(homeDir)
-	homeExists := homeErr == nil
-	results = append(results, checkResult("home directory exists", homeExists,
-		fmt.Sprintf("directory %q exists", homeDir),
+	results = append(results, checkResult("home directory exists", home.isDir(),
+		fmt.Sprintf("directory %q exists", home),
 		cfg.provisionHint(),
 	))
 
-	homeMode0700 := homeExists && homeStat.Mode().Perm() == 0700
-	results = append(results, checkResult("home directory mode 0700", homeMode0700,
+	perm, permErr := home.perm()
+	results = append(results, checkResult("home directory mode 0700", permErr == nil && perm == 0700,
 		"home directory has correct permissions (0700)",
-		fmt.Sprintf("run: sudo chmod 0700 %s", homeDir),
+		fmt.Sprintf("run: sudo chmod 0700 %s", home),
 	))
 
 	// 3. Home directory owned by companion user.
-	homeOwnedByCompanion := false
-	if homeExists && userErr == nil {
-		uid, _ := strconv.Atoi(u.Uid)
-		homeOwnedByCompanion = fileOwnedByUID(homeDir, uid)
-	}
-	results = append(results, checkResult("home directory owned by companion user", homeOwnedByCompanion,
+	owner, ownerErr := home.ownerUID()
+	results = append(results, checkResult("home directory owned by companion user", userErr == nil && ownerErr == nil && owner == c.uid,
 		fmt.Sprintf("home directory owned by %q", companionUser),
-		fmt.Sprintf("run: sudo chown %s:%s %s", companionUser, companionUser, homeDir),
+		fmt.Sprintf("run: sudo chown %s:%s %s", companionUser, companionUser, home),
 	))
 
 	// 4. gopass config directory exists.
-	gopassDir := filepath.Join(homeDir, ".config", "gopass")
-	gopassExists := dirExists(gopassDir)
+	gopassDir := c.home.GopassDir()
+	gopassExists := gopassDir.isDir()
 	results = append(results, checkResult("gopass config directory exists", gopassExists,
 		fmt.Sprintf("directory %q exists", gopassDir),
 		cfg.provisionHint(),
 	))
 
 	// 5. GPG home directory exists.
-	gnupgDir := filepath.Join(homeDir, ".gnupg")
-	gnupgExists := dirExists(gnupgDir)
+	gnupgDir := c.home.GnupgDir()
+	gnupgExists := gnupgDir.isDir()
 	results = append(results, checkResult("GPG home directory exists", gnupgExists,
 		fmt.Sprintf("directory %q exists", gnupgDir),
 		cfg.provisionHint(),
@@ -105,8 +97,8 @@ func Check(cfg Config) []CheckResult {
 	))
 
 	// 7. systemd user unit file exists.
-	unitFile := daemonUnit.Path(userUnitDir(homeDir))
-	unitExists := fileExists(unitFile)
+	unitFile := c.home.UnitDir().UnitFile(daemonUnit)
+	unitExists := unitFile.Exists()
 	results = append(results, checkResult("systemd user unit file exists", unitExists,
 		fmt.Sprintf("unit file %q exists", unitFile),
 		cfg.provisionHint(),
@@ -172,40 +164,8 @@ func (c Config) provisionHint() string {
 	return fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", c.DesktopUser)
 }
 
-// safeUID returns the UID string from a *user.User, or "?" if u is nil.
-func safeUID(u *user.User) string {
-	if u == nil {
-		return "?"
-	}
-	return u.Uid
-}
-
 // fileExists returns true if path exists and is a regular file or symlink.
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-// dirExists returns true if path exists and is a directory.
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-// fileOwnedByUID returns true if path's owner UID matches uid.
-func fileOwnedByUID(path string, uid int) bool {
-	return statUID(path) == uid
-}
-
-// statUID returns the owning UID of path, or -1 on error.
-func statUID(path string) int {
-	info, err := os.Stat(path)
-	if err != nil {
-		return -1
-	}
-	sys, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return -1
-	}
-	return int(sys.Uid)
 }

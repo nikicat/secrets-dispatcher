@@ -1,4 +1,5 @@
 import type { PendingRequest } from "./types";
+import { senderDisplayName } from "./sender";
 
 /**
  * Browser notification service for approval requests.
@@ -84,8 +85,9 @@ function formatBody(request: PendingRequest): string {
 
   parts.push(`Client: ${request.client}`);
 
-  if (request.sender_info?.invoker_name) {
-    parts.push(`Process: ${request.sender_info.invoker_name}`);
+  const name = request.sender_info && senderDisplayName(request.sender_info);
+  if (name) {
+    parts.push(`Process: ${name}`);
   } else if (request.sender_info?.pid) {
     parts.push(`PID: ${request.sender_info.pid}`);
   }

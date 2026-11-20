@@ -4,25 +4,25 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 func TestCheck_AllPass(t *testing.T) {
 	// Set up a temp dir that mirrors the expected provisioned structure.
 	tmpDir := t.TempDir()
 
-	// Save and restore all injectables.
-	origUserLookup := userLookupFunc
-	t.Cleanup(func() { userLookupFunc = origUserLookup })
-
-	// Mock user lookup to succeed.
+	// Mock user lookup to succeed, as the user that owns the temp dir.
 	companionUsername := "secrets-testuser"
-	userLookupFunc = func(username string) (*user.User, error) {
+	uid := strconv.Itoa(os.Getuid())
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		if username == companionUsername {
-			return &user.User{Username: companionUsername, Uid: "1001", Gid: "1001"}, nil
+			return &user.User{Username: companionUsername, Uid: uid, Gid: uid}, nil
 		}
 		return nil, user.UnknownUserError(username)
-	}
+	})
 
 	cfg := Config{
 		DesktopUser: "testuser",
@@ -35,10 +35,9 @@ func TestCheck_AllPass(t *testing.T) {
 	must(t, os.MkdirAll(homeDir, 0700))
 	must(t, os.MkdirAll(filepath.Join(homeDir, ".config", "gopass"), 0700))
 	must(t, os.MkdirAll(filepath.Join(homeDir, ".gnupg"), 0700))
-	unitDir := filepath.Join(homeDir, ".config", "systemd", "user")
-	must(t, os.MkdirAll(unitDir, 0700))
+	unitDir := companionHome(homeDir).UnitDir()
 	// Create the unit file so the systemd unit check passes.
-	must(t, os.WriteFile(filepath.Join(unitDir, "secrets-dispatcher-daemon.service"), []byte("[Unit]"), 0644))
+	must(t, unitDir.UnitFile(daemonUnit).Write("[Unit]"))
 
 	// D-Bus policy and PAM config live at absolute system paths; we can't redirect
 	// those in Check() (it uses os.Stat directly). Instead we only verify that the
@@ -58,18 +57,16 @@ func TestCheck_AllPass(t *testing.T) {
 	assertPass(t, checkMap, "companion user exists")
 	assertPass(t, checkMap, "home directory exists")
 	assertPass(t, checkMap, "home directory mode 0700")
+	assertPass(t, checkMap, "home directory owned by companion user")
 	assertPass(t, checkMap, "gopass config directory exists")
 	assertPass(t, checkMap, "GPG home directory exists")
 	assertPass(t, checkMap, "systemd user unit file exists")
 }
 
 func TestCheck_MissingUser(t *testing.T) {
-	origUserLookup := userLookupFunc
-	t.Cleanup(func() { userLookupFunc = origUserLookup })
-
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		return nil, user.UnknownUserError(username)
-	}
+	})
 
 	cfg := Config{DesktopUser: "nouser", HomeBase: t.TempDir()}
 	results := Check(cfg)
@@ -92,13 +89,10 @@ func TestCheck_MissingUser(t *testing.T) {
 }
 
 func TestCheck_MissingFiles(t *testing.T) {
-	origUserLookup := userLookupFunc
-	t.Cleanup(func() { userLookupFunc = origUserLookup })
-
 	// User exists but no directories created.
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "emptyuser", HomeBase: t.TempDir()}
 	// Don't create any files/dirs — everything should fail.
@@ -121,11 +115,9 @@ func TestCheck_MissingFiles(t *testing.T) {
 }
 
 func TestCheck_LingerMissing(t *testing.T) {
-	origUserLookup := userLookupFunc
-	t.Cleanup(func() { userLookupFunc = origUserLookup })
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "lingertest", HomeBase: t.TempDir()}
 	results := Check(cfg)
@@ -149,11 +141,9 @@ func TestCheck_LingerMissing(t *testing.T) {
 }
 
 func TestCheck_ReturnsExpectedCheckCount(t *testing.T) {
-	origUserLookup := userLookupFunc
-	t.Cleanup(func() { userLookupFunc = origUserLookup })
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		return nil, user.UnknownUserError(username)
-	}
+	})
 
 	cfg := Config{DesktopUser: "counttest", HomeBase: t.TempDir()}
 	results := Check(cfg)
@@ -249,7 +239,7 @@ func TestCheckPAMInclude(t *testing.T) {
 	if r := nb.checkPAMInclude(); !r.Pass {
 		t.Errorf("checkPAMInclude() failed on a stack with the include line: %s", r.Message)
 	}
-	sessionStacks = []string{filepath.Join(t.TempDir(), "missing")}
+	testutil.Swap(t, &sessionStacks, []string{filepath.Join(t.TempDir(), "missing")})
 	if r := nb.checkPAMInclude(); r.Pass {
 		t.Error("checkPAMInclude() passed without a session stack")
 	}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 // The env var naming the forwarded remote socket that the thin client signs
@@ -22,7 +23,7 @@ type RemoteSignRequest struct {
 // Submits info through the remote socket and blocks until the request is
 // resolved. Cancelling ctx drops the connection, which cancels the request on
 // the daemon. Errors when the socket approves the request without gpg's output.
-func SignRemote(ctx context.Context, socketPath string, info *approval.GPGSignInfo) (SignOutcome, error) {
+func SignRemote(ctx context.Context, socketPath unixsock.Path, info *approval.GPGSignInfo) (SignOutcome, error) {
 	var res SignOutcome
 	if err := postJSON(ctx, UnixSocketClient(socketPath), RemoteSignPath, nil, RemoteSignRequest{GPGSignInfo: info}, &res); err != nil {
 		return res, fmt.Errorf("remote socket %s: %w", socketPath, err)

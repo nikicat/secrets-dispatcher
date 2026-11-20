@@ -5,9 +5,13 @@ import (
 	"os"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
-	"github.com/stretchr/testify/assert"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 // absentPID is above Linux's PID_MAX_LIMIT (4194304), so no /proc entry exists for it: the
@@ -17,23 +21,23 @@ const absentPID = 1 << 30
 
 // mockDBusClient implements dbusClient for testing.
 type mockDBusClient struct {
-	pid      uint32
+	pid      procutil.PID
 	pidErr   error
-	uid      uint32
+	uid      procutil.UID
 	uidErr   error
-	unitName string
+	unitName systemd.Unit
 	unitErr  error
 }
 
-func (m *mockDBusClient) GetConnectionUnixProcessID(sender senderName) (uint32, error) {
+func (m *mockDBusClient) GetConnectionUnixProcessID(sender sender.UniqueName) (procutil.PID, error) {
 	return m.pid, m.pidErr
 }
 
-func (m *mockDBusClient) GetConnectionUnixUser(sender senderName) (uint32, error) {
+func (m *mockDBusClient) GetConnectionUnixUser(sender sender.UniqueName) (procutil.UID, error) {
 	return m.uid, m.uidErr
 }
 
-func (m *mockDBusClient) GetUnitByPID(pid uint32) (string, error) {
+func (m *mockDBusClient) GetUnitByPID(pid procutil.PID) (systemd.Unit, error) {
 	return m.unitName, m.unitErr
 }
 
@@ -47,18 +51,13 @@ func TestSenderInfoResolver_Resolve_AllSuccess(t *testing.T) {
 
 	info := resolver.Resolve(":1.123")
 
-	if info.Sender != ":1.123" {
-		t.Errorf("expected sender :1.123, got %s", info.Sender)
-	}
+	assert.Equal(t, new(sender.UniqueName(":1.123")), info.Sender)
 	if info.PID != absentPID {
 		t.Errorf("expected PID %d, got %d", absentPID, info.PID)
 	}
-	if info.UID != 1000 {
-		t.Errorf("expected UID 1000, got %d", info.UID)
-	}
-	if info.InvokerName != "test.service" {
-		t.Errorf("expected unit_name test.service, got %s", info.InvokerName)
-	}
+	assert.Equal(t, new(procutil.UID(1000)), info.UID)
+	assert.Empty(t, info.InvokerName, "no /proc chain, so no process name")
+	assert.Equal(t, systemd.Unit("test.service"), info.SystemdUnit)
 }
 
 func TestSenderInfoResolver_Resolve_NoSystemd(t *testing.T) {
@@ -72,15 +71,11 @@ func TestSenderInfoResolver_Resolve_NoSystemd(t *testing.T) {
 
 	info := resolver.Resolve(":1.123")
 
-	if info.Sender != ":1.123" {
-		t.Errorf("expected sender :1.123, got %s", info.Sender)
-	}
+	assert.Equal(t, new(sender.UniqueName(":1.123")), info.Sender)
 	if info.PID != absentPID {
 		t.Errorf("expected PID %d, got %d", absentPID, info.PID)
 	}
-	if info.UID != 1000 {
-		t.Errorf("expected UID 1000, got %d", info.UID)
-	}
+	assert.Equal(t, new(procutil.UID(1000)), info.UID)
 	if info.InvokerName != "" {
 		t.Errorf("expected empty unit_name, got %s", info.InvokerName)
 	}
@@ -95,15 +90,11 @@ func TestSenderInfoResolver_Resolve_PIDFails(t *testing.T) {
 
 	info := resolver.Resolve(":1.123")
 
-	if info.Sender != ":1.123" {
-		t.Errorf("expected sender :1.123, got %s", info.Sender)
-	}
+	assert.Equal(t, new(sender.UniqueName(":1.123")), info.Sender)
 	if info.PID != 0 {
 		t.Errorf("expected PID 0, got %d", info.PID)
 	}
-	if info.UID != 1000 {
-		t.Errorf("expected UID 1000, got %d", info.UID)
-	}
+	assert.Equal(t, new(procutil.UID(1000)), info.UID)
 	// Unit lookup should be skipped when PID is 0
 	if info.InvokerName != "" {
 		t.Errorf("expected empty unit_name, got %s", info.InvokerName)
@@ -123,12 +114,8 @@ func TestSenderInfoResolver_Resolve_UIDFails(t *testing.T) {
 	if info.PID != absentPID {
 		t.Errorf("expected PID %d, got %d", absentPID, info.PID)
 	}
-	if info.UID != 0 {
-		t.Errorf("expected UID 0, got %d", info.UID)
-	}
-	if info.InvokerName != "test.service" {
-		t.Errorf("expected unit_name test.service, got %s", info.InvokerName)
-	}
+	assert.Nil(t, info.UID, "an unreported UID stays unknown, not root")
+	assert.Equal(t, systemd.Unit("test.service"), info.SystemdUnit)
 }
 
 func TestSenderInfoResolver_Resolve_AllFail(t *testing.T) {
@@ -141,15 +128,11 @@ func TestSenderInfoResolver_Resolve_AllFail(t *testing.T) {
 	info := resolver.Resolve(":1.123")
 
 	// Should still return sender, with zeros for everything else
-	if info.Sender != ":1.123" {
-		t.Errorf("expected sender :1.123, got %s", info.Sender)
-	}
+	assert.Equal(t, new(sender.UniqueName(":1.123")), info.Sender)
 	if info.PID != 0 {
 		t.Errorf("expected PID 0, got %d", info.PID)
 	}
-	if info.UID != 0 {
-		t.Errorf("expected UID 0, got %d", info.UID)
-	}
+	assert.Nil(t, info.UID, "an unreported UID stays unknown, not root")
 	if info.InvokerName != "" {
 		t.Errorf("expected empty unit_name, got %s", info.InvokerName)
 	}
@@ -158,23 +141,19 @@ func TestSenderInfoResolver_Resolve_AllFail(t *testing.T) {
 func TestSenderInfoResolver_Resolve_PartialInfo(t *testing.T) {
 	// Verify that SenderInfo struct is properly initialized
 	info := approval.SenderInfo{
-		Sender:      ":1.456",
+		Sender:      new(sender.UniqueName(":1.456")),
 		PID:         12345,
-		UID:         1000,
-		InvokerName: "test.service",
+		UID:         new(procutil.UID(1000)),
+		InvokerName: "gh",
 	}
 
-	if info.Sender != ":1.456" {
-		t.Errorf("expected sender :1.456, got %s", info.Sender)
-	}
+	assert.Equal(t, new(sender.UniqueName(":1.456")), info.Sender)
 	if info.PID != 12345 {
 		t.Errorf("expected PID 12345, got %d", info.PID)
 	}
-	if info.UID != 1000 {
-		t.Errorf("expected UID 1000, got %d", info.UID)
-	}
-	if info.InvokerName != "test.service" {
-		t.Errorf("expected unit_name test.service, got %s", info.InvokerName)
+	assert.Equal(t, new(procutil.UID(1000)), info.UID)
+	if info.InvokerName != "gh" {
+		t.Errorf("expected invoker gh, got %s", info.InvokerName)
 	}
 }
 
@@ -191,7 +170,7 @@ func TestNewSenderInfoResolver(t *testing.T) {
 
 func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
 	// Use our own PID so /proc reading works and procutil resolves the invoker.
-	selfPID := uint32(os.Getpid())
+	selfPID := procutil.PID(os.Getpid())
 	client := &mockDBusClient{
 		pid:      selfPID,
 		uid:      1000,
@@ -202,44 +181,46 @@ func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
 	info := resolver.Resolve(":1.42")
 
 	// procutil should have resolved the invoker, so InvokerName is the process comm.
-	expectedComm, expectedPID := procutil.ResolveInvoker(selfPID)
-	assert.Equal(t, expectedComm, info.InvokerName, "InvokerName should be the process comm from procutil")
-	assert.Equal(t, expectedPID, info.PID, "PID should be the invoker PID from procutil")
+	invoker, ok := selfPID.Invoker()
+	require.True(t, ok)
+	assert.Equal(t, invoker.Name, info.InvokerName, "InvokerName should be the process comm from procutil")
+	assert.Equal(t, invoker.PID, info.PID, "PID should be the invoker PID from procutil")
 	// The systemd unit is resolved separately and never overwrites the comm display.
 	assert.NotEqual(t, "should-not-be-used.service", info.InvokerName, "systemd unit must not leak into InvokerName")
-	assert.Equal(t, "should-not-be-used.service", info.SystemdUnit, "SystemdUnit should be resolved from GetUnitByPID")
+	assert.Equal(t, systemd.Unit("should-not-be-used.service"), info.SystemdUnit, "SystemdUnit should be resolved from GetUnitByPID")
 
 	// Verify process chain entries have Exe/Args/CWD populated.
 	if len(info.ProcessChain) == 0 {
 		t.Fatal("expected non-empty ProcessChain")
 	}
 	self := info.ProcessChain[0]
-	if self.Exe == "" {
-		t.Error("expected non-empty Exe in first ProcessChain entry")
+	if self.Exe == nil {
+		t.Error("expected an Exe in first ProcessChain entry")
 	}
 	if len(self.Args) == 0 {
 		t.Error("expected non-empty Args in first ProcessChain entry")
 	}
-	if self.CWD == "" {
-		t.Error("expected non-empty CWD in first ProcessChain entry")
+	if self.CWD == nil {
+		t.Error("expected a CWD in first ProcessChain entry")
 	}
 }
 
 func TestSenderInfoResolver_Resolve_FiltersSelfExe(t *testing.T) {
-	selfPID := uint32(os.Getpid())
-	selfExe, err := os.Executable()
+	selfPID := procutil.PID(os.Getpid())
+	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
+	selfExe := procutil.Path(exe)
 
 	client := &mockDBusClient{pid: selfPID, uid: 1000}
 	resolver := newSenderInfoResolverWithClient(client)
 
-	// Without selfExe set, the test binary should appear in the chain.
+	// A zero ChainReader leaves the test binary in the chain.
 	info := resolver.Resolve(":1.99")
 	var foundSelf bool
 	for _, p := range info.ProcessChain {
-		if p.Exe == selfExe {
+		if p.Exe != nil && *p.Exe == selfExe {
 			foundSelf = true
 			break
 		}
@@ -248,19 +229,21 @@ func TestSenderInfoResolver_Resolve_FiltersSelfExe(t *testing.T) {
 		t.Fatal("expected test binary in unfiltered chain")
 	}
 
-	// With selfExe set, our binary should be filtered out.
-	resolver.local.selfExe = selfExe
+	// With our own executable known, our binary should be filtered out.
+	reader, err := sender.NewChainReader(procutil.ChainToInit)
+	require.NoError(t, err)
+	resolver.local = &reader
 	info = resolver.Resolve(":1.99")
 	for _, p := range info.ProcessChain {
-		if p.Exe == selfExe {
+		if p.Exe != nil && *p.Exe == selfExe {
 			t.Errorf("self exe %q should have been filtered from chain", selfExe)
 		}
 	}
 }
 
 func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
-	// absentPID has no /proc entry, so procutil returns empty
-	// and we fall back to systemd GetUnitByPID.
+	// absentPID has no /proc entry, so the display falls back to the unit from
+	// systemd GetUnitByPID.
 	client := &mockDBusClient{
 		pid:      absentPID,
 		uid:      1000,
@@ -270,9 +253,8 @@ func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
 
 	info := resolver.Resolve(":1.42")
 
-	if info.InvokerName != "fallback.service" {
-		t.Errorf("expected InvokerName %q from systemd fallback, got %q", "fallback.service", info.InvokerName)
-	}
+	assert.Empty(t, info.InvokerName)
+	assert.Equal(t, "fallback.service", info.DisplayName())
 	// PID should remain as the original D-Bus PID when procutil fails.
 	if info.PID != absentPID {
 		t.Errorf("expected PID %d, got %d", absentPID, info.PID)
@@ -282,23 +264,17 @@ func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
 // A forwarded PID that also exists here, as this test's own does, must not lend
 // its process chain or unit to the request.
 func TestSenderInfoResolver_Resolve_Forwarded(t *testing.T) {
-	client := &mockDBusClient{pid: uint32(os.Getpid()), uid: 1000, unitName: "local.service"}
+	client := &mockDBusClient{pid: procutil.PID(os.Getpid()), uid: 1000, unitName: "local.service"}
 	resolver := newSenderInfoResolverWithClient(client)
 	resolver.clientName = "symbiosis"
 	resolver.local = nil
 
 	info := resolver.Resolve(":1.7")
 
-	assert.Equal(t, "symbiosis", info.Client)
-	assert.Equal(t, uint32(os.Getpid()), info.PID)
-	assert.Equal(t, uint32(1000), info.UID)
+	assert.Equal(t, approval.ClientName("symbiosis"), info.Client)
+	assert.Equal(t, procutil.PID(os.Getpid()), info.PID)
+	assert.Equal(t, new(procutil.UID(1000)), info.UID)
 	assert.Empty(t, info.ProcessChain)
 	assert.Empty(t, info.SystemdUnit)
 	assert.Empty(t, info.InvokerName)
-}
-
-// A proxy built without LocalProcesses treats its bus as forwarded.
-func TestConfig_LocalProcsDefaultsToForwarded(t *testing.T) {
-	assert.Nil(t, Config{TrimProcessChain: true}.localProcs())
-	assert.NotNil(t, Config{LocalProcesses: true}.localProcs())
 }

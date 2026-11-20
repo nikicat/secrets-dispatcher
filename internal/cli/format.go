@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 // Formatter outputs data in various formats.
@@ -99,15 +100,19 @@ func formatRemaining(expiresAt time.Time) string {
 	return remaining.String()
 }
 
-func formatPID(pid uint32) string {
+func formatPID(pid procutil.PID) string {
 	if pid == 0 {
 		return "-"
 	}
-	return fmt.Sprintf("%d", pid)
+	return pid.String()
 }
 
-func formatUID(uid uint32) string {
-	return fmt.Sprintf("%d", uid)
+// Returns uid as a number, or "-" when it is unknown.
+func formatUID(uid *procutil.UID) string {
+	if uid == nil {
+		return "-"
+	}
+	return uid.String()
 }
 
 // FormatShowResult outputs a single request (pending or resolved).
@@ -133,28 +138,25 @@ func (f *Formatter) formatRequest(req *PendingRequest) {
 	}
 
 	// Sender process info
-	if req.SenderInfo.InvokerName != "" {
-		fmt.Fprintf(f.w, "Process: %s\n", req.SenderInfo.InvokerName)
+	if name := req.SenderInfo.DisplayName(); name != "" {
+		fmt.Fprintf(f.w, "Process: %s\n", name)
 	}
 	if req.SenderInfo.PID != 0 {
 		fmt.Fprintf(f.w, "PID:     %d\n", req.SenderInfo.PID)
 	}
-	if req.SenderInfo.UserName != "" {
-		fmt.Fprintf(f.w, "User:    %s (UID %d)\n", req.SenderInfo.UserName, req.SenderInfo.UID)
-	}
-	if req.SenderInfo.Sender != "" {
-		fmt.Fprintf(f.w, "Sender:  %s\n", req.SenderInfo.Sender)
+	if s := req.SenderInfo.Sender; s != nil {
+		fmt.Fprintf(f.w, "Sender:  %s\n", *s)
 	}
 	if len(req.SenderInfo.ProcessChain) > 0 {
 		fmt.Fprintln(f.w, "Chain:")
 		for _, p := range req.SenderInfo.ProcessChain {
-			exe := p.Exe
-			if exe == "" {
-				exe = p.Name
+			exe := p.Name
+			if p.Exe != nil {
+				exe = string(*p.Exe)
 			}
 			fmt.Fprintf(f.w, "  %s[%d]", exe, p.PID)
-			if p.CWD != "" {
-				fmt.Fprintf(f.w, " cwd=%s", p.CWD)
+			if p.CWD != nil {
+				fmt.Fprintf(f.w, " cwd=%s", *p.CWD)
 			}
 			fmt.Fprintln(f.w)
 			if len(p.Args) > 1 {

@@ -1,51 +1,32 @@
 package service
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
+	"github.com/nikicat/secrets-dispatcher/internal/textfile"
 )
 
-// Secrets-only demotion of gnome-keyring (spike-validated on Ubuntu 24.04
-// GNOME, see docs/adr/0009-gnome-keyring-secrets-only-demotion.md).
-//
-// Masking gnome-keyring's systemd units outright does NOT work: at the next
-// login pam_gnome_keyring spawns an unmanaged daemon (--daemonize --login)
-// that re-grabs org.freedesktop.secrets anyway, and pkcs11 dies with the
-// daemon. Closing that hole would require root-level PAM edits — far too
-// invasive. Instead we demote only the *secrets component*, keeping the
-// daemon, its control socket (PAM keeps feeding it the login password), and
-// pkcs11 intact:
-//
-//  1. a systemd user drop-in removes `secrets` from --components;
-//  2. a user-level autostart shadow hides the gnome-keyring-secrets.desktop
-//     kicker (systemd's xdg-autostart-generator honors Hidden=true);
-//  3. the D-Bus activation mask (maskDBusActivation) covers on-demand starts.
-//
-// All three are plain user-level files carrying a managed-by marker; reversal
-// removes exactly what we wrote and restores any backed-up user file. This is
-// the state model: nothing to record elsewhere, the files ARE the state.
+const gkServiceUnit systemd.Unit = "gnome-keyring-daemon.service"
 
 const (
-	gkServiceUnit    systemd.Unit = "gnome-keyring-daemon.service"
-	gkDropInDirName               = string(gkServiceUnit) + ".d"
-	gkDropInName                  = "50-secrets-dispatcher.conf"
-	gkAutostartName               = "gnome-keyring-secrets.desktop"
-	gkManagedComment              = "# Managed by secrets-dispatcher; removed by `secrets-dispatcher service uninstall`.\n"
+	gkDropInName    = "50-secrets-dispatcher.conf"
+	gkAutostartName = "gnome-keyring-secrets.desktop"
 )
 
-const gkDropInTemplate = gkManagedComment +
+var gkManagedComment = "# Managed by secrets-dispatcher; removed by " + UninstallCommand.hint() + ".\n"
+
+var gkDropInTemplate = gkManagedComment +
 	`# Demotes gnome-keyring to non-secrets components so secrets-dispatcher can
 # own org.freedesktop.secrets while pkcs11 and PAM unlock keep working.
 [Service]
 ExecStart=
-ExecStart=%s --foreground --components=pkcs11 --control-directory=%%t/keyring
+ExecStart=%s
 `
 
-const gkAutostartShadow = gkManagedComment +
+var gkAutostartShadow = gkManagedComment +
 	`# Hides the stock /etc/xdg/autostart gnome-keyring secrets kicker, which
 # would otherwise respawn a secrets daemon into a fresh session.
 [Desktop Entry]
@@ -54,116 +35,93 @@ Name=Secret Storage Service
 Hidden=true
 `
 
+// Returns the drop-in that demotes gnome-keyring, in the systemd user unit
+// directory.
+func gkDropIn() (managedDropIn, error) {
+	dir, err := unitDir()
+	if err != nil {
+		return managedDropIn{}, err
+	}
+	return managedDropIn{narratedFile[systemd.DropIn]{
+		file:    dir.DropIn(gkServiceUnit, gkDropInName),
+		name:    "gnome-keyring demotion drop-in",
+		purpose: "demote gnome-keyring to pkcs11-only (secrets move to the private backend)",
+	}}, nil
+}
+
 // Returns the user XDG autostart directory, under the XDG config home.
-func autostartDir() (string, error) {
+func autostartDir() (textfile.Dir, error) {
 	configHome, err := config.ConfigHome()
 	if err != nil {
-		return "", err
+		return textfile.Dir{}, err
 	}
-	return filepath.Join(configHome, "autostart"), nil
+	return textfile.DirAt(configHome, "autostart"), nil
+}
+
+// Returns the shadow that hides gnome-keyring's secrets autostart entry, in
+// the user XDG autostart directory.
+func gkAutostart() (managedFile, error) {
+	dir, err := autostartDir()
+	if err != nil {
+		return managedFile{}, err
+	}
+	return managedFile{
+		file:    dir.File(gkAutostartName),
+		name:    "gnome-keyring autostart shadow",
+		purpose: "hide the gnome-keyring secrets autostart kicker (Hidden=true)",
+		content: gkAutostartShadow,
+	}, nil
 }
 
 // Applies the secrets-only demotion (ADR 0009) and restarts a running
 // unit-managed gnome-keyring onto it. Errors when gnome-keyring-daemon is not
 // installed.
-func (h host) demoteGnomeKeyring() error {
+func (h host) demoteGnomeKeyring(ctx context.Context) error {
 	gkDaemon, err := gnomeKeyringDaemon()
 	if err != nil {
 		return err
 	}
-
-	unitsDir, err := unitDir()
-	if err != nil {
+	demoted := systemd.NewCommand(gkDaemon, "--foreground", "--components=pkcs11", "--control-directory=%t/keyring")
+	if err := h.files.dropIn.write(h.narration, fmt.Sprintf(gkDropInTemplate, demoted.ExecLine())); err != nil {
 		return err
 	}
-	dropInDir := filepath.Join(unitsDir, gkDropInDirName)
-	if err := os.MkdirAll(dropInDir, 0755); err != nil {
-		return fmt.Errorf("create drop-in dir: %w", err)
-	}
-	dropIn := filepath.Join(dropInDir, gkDropInName)
-	if err := os.WriteFile(dropIn, fmt.Appendf(nil, gkDropInTemplate, gkDaemon), 0644); err != nil {
-		return fmt.Errorf("write drop-in: %w", err)
-	}
-	h.narration.printf("Wrote gnome-keyring drop-in: %s\n", dropIn)
-
-	asDir, err := autostartDir()
-	if err != nil {
+	if err := h.files.shadow.write(h.narration); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(asDir, 0755); err != nil {
-		return fmt.Errorf("create autostart dir: %w", err)
-	}
-	shadow := filepath.Join(asDir, gkAutostartName)
-	// A pre-existing user autostart override is the user's own — back it up
-	// so uninstall restores it exactly (same pattern as maskDBusActivation).
-	existing, err := os.ReadFile(shadow)
-	if err == nil && string(existing) != gkAutostartShadow {
-		if err := os.Rename(shadow, shadow+dbusBackupSuffix); err != nil {
-			return fmt.Errorf("backup %s: %w", gkAutostartName, err)
-		}
-		h.narration.printf("Backed up %s\n", shadow)
-	}
-	if err := os.WriteFile(shadow, []byte(gkAutostartShadow), 0644); err != nil {
-		return fmt.Errorf("write autostart shadow: %w", err)
-	}
-	h.narration.printf("Hid gnome-keyring secrets autostart: %s\n", shadow)
-
-	return h.restartKeyring()
+	return h.restartKeyring(ctx)
 }
 
-// restoreGnomeKeyring reverses demoteGnomeKeyring. Safe to call when the
-// demotion was never applied: it removes only files we wrote (checked by the
-// managed marker/content) and restores any backup.
-func (h host) restoreGnomeKeyring() error {
-	unitsDir, err := unitDir()
-	if err != nil {
-		return err
-	}
-	dropIn := filepath.Join(unitsDir, gkDropInDirName, gkDropInName)
+// The takeover files that the gnome-keyring demotion writes, in its order.
+func (f takeoverFiles) demotion() []takeoverFile { return []takeoverFile{f.dropIn, f.shadow} }
+
+// Restores gnome-keyring's stock secrets component, and restarts it when any
+// file changed.
+func (h host) restoreGnomeKeyring(ctx context.Context) error {
 	changed := false
-	if _, err := os.Stat(dropIn); err == nil {
-		if err := os.Remove(dropIn); err != nil {
-			return fmt.Errorf("remove drop-in: %w", err)
+	for _, f := range h.files.demotion() {
+		restored, err := f.restore(h.narration)
+		if err != nil {
+			return err
 		}
-		_ = os.Remove(filepath.Dir(dropIn)) // rmdir if now empty
-		h.narration.printf("Removed gnome-keyring drop-in: %s\n", dropIn)
-		changed = true
+		changed = changed || restored
 	}
-
-	asDir, err := autostartDir()
-	if err != nil {
-		return err
-	}
-	shadow := filepath.Join(asDir, gkAutostartName)
-	if content, err := os.ReadFile(shadow); err == nil && string(content) == gkAutostartShadow {
-		if err := os.Remove(shadow); err != nil {
-			return fmt.Errorf("remove autostart shadow: %w", err)
-		}
-		h.narration.printf("Removed gnome-keyring autostart shadow: %s\n", shadow)
-		changed = true
-		if _, err := os.Stat(shadow + dbusBackupSuffix); err == nil {
-			if err := os.Rename(shadow+dbusBackupSuffix, shadow); err != nil {
-				return fmt.Errorf("restore %s: %w", gkAutostartName, err)
-			}
-			h.narration.printf("Restored %s from backup\n", shadow)
-		}
-	}
-
 	if !changed {
 		return nil
 	}
-	return h.restartKeyring()
+	return h.restartKeyring(ctx)
 }
 
 // Reloads unit files and restarts a running unit-managed gnome-keyring. A failed
 // restart only prints a note, since the unit may not exist outside
 // systemd-managed keyrings. Errors when the reload fails.
-func (h host) restartKeyring() error {
-	if err := h.systemctl(string(verbDaemonReload)); err != nil {
+func (h host) restartKeyring(ctx context.Context) error {
+	if err := h.reload(ctx); err != nil {
 		return err
 	}
-	if err := h.systemctlUnit(verbTryRestart, gkServiceUnit); err != nil {
-		fmt.Printf("note: try-restart %s: %v\n", gkServiceUnit, err)
+	if err := h.units.Unit(gkServiceUnit).TryRestart(ctx); err != nil {
+		fmt.Printf("note: %v\n", err)
+		return nil
 	}
+	h.narration.printf("Restarted %s if it was running\n", gkServiceUnit)
 	return nil
 }

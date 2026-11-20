@@ -25,7 +25,7 @@ func TestListenAddrWebUILinks(t *testing.T) {
 	}
 }
 
-func TestListenAddrSet(t *testing.T) {
+func TestListenAddrUnmarshalText(t *testing.T) {
 	for _, tc := range []struct {
 		value string
 		ok    bool
@@ -35,10 +35,9 @@ func TestListenAddrSet(t *testing.T) {
 		{"[::1]:8484", true},
 		{"8484", false},
 		{"http://127.0.0.1:8484", false},
-		{"", false},
 	} {
 		var a ListenAddr
-		err := a.Set(tc.value)
+		err := a.UnmarshalText([]byte(tc.value))
 		if !tc.ok {
 			assert.Error(t, err, tc.value)
 			continue

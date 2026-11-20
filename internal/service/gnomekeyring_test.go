@@ -1,104 +1,103 @@
 package service
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func gkPaths(t *testing.T) (dropIn, shadow string) {
+type gkFixture struct {
+	files takeoverFiles
+	units *fakeUnits
+	host  host
+}
+
+func newGKFixture(t *testing.T) gkFixture {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
-	dropIn = filepath.Join(tmp, "systemd", "user", gkDropInDirName, gkDropInName)
-	shadow = filepath.Join(tmp, "autostart", gkAutostartName)
-	return dropIn, shadow
+	files := tempTakeoverFiles(t)
+	units := &fakeUnits{}
+	return gkFixture{
+		files: files,
+		units: units,
+		host:  host{units: units, files: files},
+	}
 }
 
 func TestDemoteGnomeKeyringWritesDropInAndShadow(t *testing.T) {
-	dropIn, shadow := gkPaths(t)
+	f := newGKFixture(t)
 	mockLookPath(t, defaultLookPath)
-	calls := mockSystemctl(t)
 
-	require.NoError(t, host{}.demoteGnomeKeyring())
+	require.NoError(t, f.host.demoteGnomeKeyring(t.Context()))
 
-	dropInContent, err := os.ReadFile(dropIn)
+	dropInContent, err := f.files.dropIn.file.Read()
 	require.NoError(t, err)
-	assert.Contains(t, string(dropInContent), "ExecStart=\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=pkcs11 --control-directory=%t/keyring")
-	assert.Contains(t, string(dropInContent), "Managed by secrets-dispatcher")
+	assert.Contains(t, dropInContent, "ExecStart=\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=pkcs11 --control-directory=%t/keyring")
+	assert.Contains(t, dropInContent, "Managed by secrets-dispatcher")
 
-	shadowContent, err := os.ReadFile(shadow)
+	shadowContent, err := f.files.shadow.file.Read()
 	require.NoError(t, err)
-	assert.Contains(t, string(shadowContent), "Hidden=true")
-	assert.Contains(t, string(shadowContent), "Managed by secrets-dispatcher")
+	assert.Contains(t, shadowContent, "Hidden=true")
+	assert.Contains(t, shadowContent, "Managed by secrets-dispatcher")
 
-	assert.Equal(t, []string{"daemon-reload", "try-restart " + string(gkServiceUnit)}, *calls)
+	assert.Equal(t, []unitCall{{opReload, ""}, {opTryRestart, gkServiceUnit}}, f.units.calls)
+}
+
+func TestGnomeKeyringManagedComment(t *testing.T) {
+	assert.Equal(t, "# Managed by secrets-dispatcher; removed by `secrets-dispatcher service uninstall`.\n", gkManagedComment,
+		"an installed autostart shadow is recognised by its content")
 }
 
 func TestDemoteGnomeKeyringBacksUpUserAutostart(t *testing.T) {
-	_, shadow := gkPaths(t)
+	f := newGKFixture(t)
 	mockLookPath(t, defaultLookPath)
-	mockSystemctl(t)
 
 	// The user has their own autostart override — it must survive a
 	// demote/restore round trip exactly.
 	userContent := "[Desktop Entry]\nType=Application\nExec=my-custom-thing\n"
-	require.NoError(t, os.MkdirAll(filepath.Dir(shadow), 0755))
-	require.NoError(t, os.WriteFile(shadow, []byte(userContent), 0644))
+	shadow := f.files.shadow
+	require.NoError(t, shadow.file.Write(userContent))
 
-	require.NoError(t, host{}.demoteGnomeKeyring())
+	require.NoError(t, f.host.demoteGnomeKeyring(t.Context()))
 
-	backup, err := os.ReadFile(shadow + dbusBackupSuffix)
-	require.NoError(t, err)
-	assert.Equal(t, userContent, string(backup))
+	assert.Equal(t, userContent, readFile(t, shadow.backup()))
 
-	require.NoError(t, host{}.restoreGnomeKeyring())
+	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
 
-	restored, err := os.ReadFile(shadow)
-	require.NoError(t, err)
-	assert.Equal(t, userContent, string(restored))
-	assert.NoFileExists(t, shadow+dbusBackupSuffix)
+	assert.Equal(t, userContent, readFile(t, shadow.file))
+	assert.False(t, shadow.backup().Exists())
 }
 
 func TestRestoreGnomeKeyringRemovesOnlyOurFiles(t *testing.T) {
-	dropIn, shadow := gkPaths(t)
+	f := newGKFixture(t)
 	mockLookPath(t, defaultLookPath)
-	mockSystemctl(t)
 
-	require.NoError(t, host{}.demoteGnomeKeyring())
-	require.NoError(t, host{}.restoreGnomeKeyring())
+	require.NoError(t, f.host.demoteGnomeKeyring(t.Context()))
+	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
 
-	assert.NoFileExists(t, dropIn)
-	assert.NoFileExists(t, shadow)
+	assert.False(t, f.files.dropIn.file.Exists())
+	assert.False(t, f.files.shadow.file.Exists())
 	// The empty drop-in dir is cleaned up too.
-	assert.NoDirExists(t, filepath.Dir(dropIn))
+	assert.NoDirExists(t, f.files.dropIn.file.Dir().String())
 }
 
 func TestRestoreGnomeKeyringNoopWhenNeverDemoted(t *testing.T) {
-	gkPaths(t)
-	calls := mockSystemctl(t)
+	f := newGKFixture(t)
 
-	require.NoError(t, host{}.restoreGnomeKeyring())
+	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
 
-	// Nothing was ours to remove — no systemctl churn either.
-	assert.Empty(t, *calls)
+	// Nothing was ours to remove — no unit manager churn either.
+	assert.Empty(t, f.units.calls)
 }
 
 func TestRestoreGnomeKeyringLeavesForeignShadowAlone(t *testing.T) {
-	_, shadow := gkPaths(t)
-	calls := mockSystemctl(t)
+	f := newGKFixture(t)
 
 	foreign := "[Desktop Entry]\nType=Application\nHidden=true\n"
-	require.NoError(t, os.MkdirAll(filepath.Dir(shadow), 0755))
-	require.NoError(t, os.WriteFile(shadow, []byte(foreign), 0644))
+	require.NoError(t, f.files.shadow.file.Write(foreign))
 
-	require.NoError(t, host{}.restoreGnomeKeyring())
+	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
 
-	content, err := os.ReadFile(shadow)
-	require.NoError(t, err)
-	assert.Equal(t, foreign, string(content), "a user-authored shadow must not be touched")
-	assert.Empty(t, *calls)
+	assert.Equal(t, foreign, readFile(t, f.files.shadow.file), "a user-authored shadow must not be touched")
+	assert.Empty(t, f.units.calls)
 }

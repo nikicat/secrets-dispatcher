@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // ErrDenied is returned when a request is denied by the user.
@@ -83,7 +85,7 @@ const (
 // Request represents a secret access request awaiting approval.
 type Request struct {
 	ID        string     `json:"id"`
-	Client    string     `json:"client"`
+	Client    ClientName `json:"client"`
 	Items     []ItemInfo `json:"items"`
 	Session   string     `json:"session"`
 	CreatedAt time.Time  `json:"created_at"`
@@ -114,20 +116,22 @@ type Request struct {
 // Rules match only on the invoker's executable (ADR 0005), and a request that
 // came over a tunnel, or whose invoker was not resolved, has none.
 func (r *Request) AutoApprovable() bool {
-	return invokerExePath(r.SenderInfo) != ""
+	_, ok := r.SenderInfo.invokerExe()
+	return ok
 }
 
 // Returns a temporary rule that auto-approves requests like r (ADR 0004) once
 // Manager.AddAutoApproveRule installs it. Errors with ErrNotAutoApprovable when
 // r is not AutoApprovable.
 func (r *Request) AutoApproveRule() (AutoApproveRule, error) {
-	if !r.AutoApprovable() {
+	exe, ok := r.SenderInfo.invokerExe()
+	if !ok {
 		return AutoApproveRule{}, ErrNotAutoApprovable
 	}
 	rule := AutoApproveRule{
 		ID:          uuid.New().String(),
 		InvokerName: r.SenderInfo.InvokerName,
-		InvokerExe:  invokerExePath(r.SenderInfo),
+		InvokerExe:  exe,
 		RequestType: r.Type,
 	}
 
@@ -168,9 +172,9 @@ type HistoryEntry struct {
 // TrustedSigner defines a process auto-approved for GPG signing.
 // All three fields must match. Empty optional fields match anything.
 type TrustedSigner struct {
-	ExePath    string `json:"exe_path"`              // Required: absolute path to the executable
-	RepoPath   string `json:"repo_path,omitempty"`   // Optional: repo basename; empty matches any repo
-	FilePrefix string `json:"file_prefix,omitempty"` // Optional: all changed files must have this prefix; empty matches any
+	ExePath    procutil.Path `json:"exe_path"`              // Required: absolute path to the executable
+	RepoPath   string        `json:"repo_path,omitempty"`   // Optional: repo basename; empty matches any repo
+	FilePrefix string        `json:"file_prefix,omitempty"` // Optional: all changed files must have this prefix; empty matches any
 }
 
 // AutoApproveRule defines a temporary rule that auto-approves matching requests.
@@ -182,7 +186,7 @@ type TrustedSigner struct {
 type AutoApproveRule struct {
 	ID          string            `json:"id"`
 	InvokerName string            `json:"invoker_name"`
-	InvokerExe  string            `json:"invoker_exe,omitempty"`
+	InvokerExe  procutil.Path     `json:"invoker_exe,omitempty"`
 	RequestType RequestType       `json:"request_type"`
 	Collection  string            `json:"collection"`
 	Attributes  map[string]string `json:"attributes,omitempty"`
@@ -206,7 +210,7 @@ type Manager struct {
 	approvalWindow time.Duration
 	cacheMu        sync.Mutex
 	cache          map[approvalCacheKey]time.Time
-	clients        map[string]bool // names held by running buses
+	clients        map[ClientName]bool // names held by running buses
 
 	autoApproveMu       sync.Mutex
 	autoApproveRules    []AutoApproveRule
@@ -630,11 +634,19 @@ func (m *Manager) ApproveGPGSign(id string, res GPGResult) error {
 // Identifies an item approved for a sender. Each bus numbers its own senders,
 // so the client is part of the key.
 type approvalCacheKey struct {
-	client, sender, itemPath string
+	client   ClientName
+	sender   sender.UniqueName
+	itemPath string
 }
 
-func (s SenderInfo) cacheKey(itemPath string) approvalCacheKey {
-	return approvalCacheKey{s.Client, s.Sender, itemPath}
+// Returns the key that caches an approval of itemPath for s. Reports false
+// when s has no sender, since another process could then reuse the approval
+// (ADR 0004).
+func (s SenderInfo) cacheKey(itemPath string) (approvalCacheKey, bool) {
+	if s.Sender == nil {
+		return approvalCacheKey{}, false
+	}
+	return approvalCacheKey{s.Client, *s.Sender, itemPath}, true
 }
 
 // checkApprovalCache returns true if ALL items have a valid cache entry for the sender.
@@ -650,7 +662,10 @@ func (m *Manager) checkApprovalCache(senderInfo SenderInfo, items []ItemInfo) bo
 	defer m.cacheMu.Unlock()
 
 	for _, item := range items {
-		key := senderInfo.cacheKey(item.Path)
+		key, ok := senderInfo.cacheKey(item.Path)
+		if !ok {
+			return false
+		}
 		ts, ok := m.cache[key]
 		if !ok || ts.Before(cutoff) {
 			if ok {
@@ -673,20 +688,21 @@ func (m *Manager) CacheItemForSender(senderInfo SenderInfo, itemPath string) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 
-	key := senderInfo.cacheKey(itemPath)
-	m.cache[key] = time.Now()
+	if key, ok := senderInfo.cacheKey(itemPath); ok {
+		m.cache[key] = time.Now()
+	}
 }
 
 // Takes name for a bus and reports whether no other bus held it. One name never
 // stands for two buses while approvals for it can be cached.
-func (m *Manager) ClaimClient(name string) bool {
+func (m *Manager) ClaimClient(name ClientName) bool {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 	if m.clients[name] {
 		return false
 	}
 	if m.clients == nil {
-		m.clients = map[string]bool{}
+		m.clients = map[ClientName]bool{}
 	}
 	m.clients[name] = true
 	return true
@@ -694,7 +710,7 @@ func (m *Manager) ClaimClient(name string) bool {
 
 // Gives name back once its bus has stopped, and forgets the approvals cached
 // for it, since the next bus to claim the name numbers its senders afresh.
-func (m *Manager) ReleaseClient(name string) {
+func (m *Manager) ReleaseClient(name ClientName) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 	delete(m.clients, name)
@@ -789,10 +805,10 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 		}
 
 		// Match on the non-spoofable invoker exe path, never the caller's comm
-		// (InvokerName), which is attacker-controllable. Fail closed when either the
-		// rule or the caller lacks a resolved exe.
-		callerExe := invokerExePath(senderInfo)
-		if callerExe == "" || rule.InvokerExe != callerExe {
+		// (InvokerName), which is attacker-controllable. Fail closed when the
+		// caller lacks a resolved exe.
+		callerExe, ok := senderInfo.invokerExe()
+		if !ok || rule.InvokerExe != callerExe {
 			continue
 		}
 		// Match request type
@@ -929,11 +945,11 @@ func (m *Manager) CheckTrustedSigner(senderInfo SenderInfo, repoName string, cha
 	}
 
 	for _, proc := range senderInfo.ProcessChain {
-		if proc.Exe == "" {
+		if proc.Exe == nil {
 			continue
 		}
 		for _, ts := range m.trustedSigners {
-			if proc.Exe != ts.ExePath {
+			if *proc.Exe != ts.ExePath {
 				continue
 			}
 			if ts.RepoPath != "" && repoName != ts.RepoPath {
@@ -958,18 +974,17 @@ func allFilesMatch(files []string, prefix string) bool {
 	return true
 }
 
-// invokerExePath returns the non-spoofable executable path (/proc/PID/exe) of the
-// invoking process — the chain entry identified by senderInfo.PID. Unlike
-// InvokerName (which normally holds the caller's spoofable comm), this cannot be
-// forged with prctl(PR_SET_NAME). Returns "" when no exe can be resolved, in which
-// case callers must fail closed rather than fall back to comm.
-func invokerExePath(s SenderInfo) string {
+// Returns the /proc/PID/exe path of the invoker, the chain entry at s.PID.
+// Unlike the comm in InvokerName, prctl(PR_SET_NAME) cannot forge it. Reports
+// false when it is unknown, and callers then fail closed rather than fall back
+// to the comm.
+func (s SenderInfo) invokerExe() (procutil.Path, bool) {
 	for _, p := range s.ProcessChain {
-		if p.PID == s.PID && p.Exe != "" {
-			return p.Exe
+		if p.PID == s.PID && p.Exe != nil {
+			return *p.Exe, true
 		}
 	}
-	return ""
+	return "", false
 }
 
 // withDefaultActions returns rules with an empty Action read as RuleApprove,
@@ -1007,7 +1022,7 @@ func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, re
 		}
 	}
 
-	if ok, _ := path.Match(rule.clientGlob(), senderInfo.Client); !ok {
+	if ok, _ := path.Match(rule.clientGlob(), string(senderInfo.Client)); !ok {
 		return false
 	}
 
@@ -1048,7 +1063,10 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 	if pm.Exe != "" {
 		matched := false
 		for _, proc := range senderInfo.ProcessChain {
-			if ok, _ := path.Match(pm.Exe, proc.Exe); ok {
+			if proc.Exe == nil {
+				continue
+			}
+			if ok, _ := path.Match(pm.Exe, string(*proc.Exe)); ok {
 				matched = true
 				break
 			}
@@ -1095,7 +1113,10 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 	if pm.CWD != "" {
 		matched := false
 		for _, proc := range senderInfo.ProcessChain {
-			if ok, _ := path.Match(pm.CWD, proc.CWD); ok {
+			if proc.CWD == nil {
+				continue
+			}
+			if ok, _ := path.Match(pm.CWD, string(*proc.CWD)); ok {
 				matched = true
 				break
 			}
@@ -1108,7 +1129,7 @@ func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
 	if pm.Unit != "" {
 		// Match against the real systemd unit (authoritative), never the spoofable
 		// InvokerName/comm.
-		if ok, _ := path.Match(pm.Unit, senderInfo.SystemdUnit); !ok {
+		if ok, _ := path.Match(pm.Unit, string(senderInfo.SystemdUnit)); !ok {
 			return false
 		}
 	}
@@ -1259,7 +1280,8 @@ func (m *Manager) cacheApproval(req *Request) {
 	defer m.cacheMu.Unlock()
 
 	for _, item := range req.Items {
-		key := req.SenderInfo.cacheKey(item.Path)
-		m.cache[key] = now
+		if key, ok := req.SenderInfo.cacheKey(item.Path); ok {
+			m.cache[key] = now
+		}
 	}
 }

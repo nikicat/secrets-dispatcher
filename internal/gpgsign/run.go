@@ -15,6 +15,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 // Serves the gpg-sign subcommand, which git runs as
@@ -112,7 +113,7 @@ func (c thinClient) collectSignInfo(keyID string, stdin io.Reader) (*approval.GP
 // Signs info through the remote socket that remoteSocketEnv names, or through
 // the local daemon when it names none. Cancelling ctx cancels the request.
 func (c thinClient) sign(ctx context.Context, info *approval.GPGSignInfo) (SignOutcome, error) {
-	if socket := os.Getenv(remoteSocketEnv); socket != "" {
+	if socket := unixsock.Path(os.Getenv(remoteSocketEnv)); socket != "" {
 		c.debugf("remote socket=%s", socket)
 		return SignRemote(ctx, socket, info)
 	}

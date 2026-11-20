@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
@@ -42,21 +46,8 @@ serve:
 	if cfg.Listen != "0.0.0.0:9090" {
 		t.Errorf("Listen = %q, want 0.0.0.0:9090", cfg.Listen)
 	}
-	if cfg.Serve.Upstream.Type != "socket" {
-		t.Errorf("Upstream.Type = %q, want socket", cfg.Serve.Upstream.Type)
-	}
-	if cfg.Serve.Upstream.Path != "/run/upstream.sock" {
-		t.Errorf("Upstream.Path = %q, want /run/upstream.sock", cfg.Serve.Upstream.Path)
-	}
-	if len(cfg.Serve.Downstream) != 1 {
-		t.Fatalf("Downstream len = %d, want 1", len(cfg.Serve.Downstream))
-	}
-	if cfg.Serve.Downstream[0].Type != "sockets" {
-		t.Errorf("Downstream[0].Type = %q, want sockets", cfg.Serve.Downstream[0].Type)
-	}
-	if cfg.Serve.Downstream[0].Path != "/run/socks" {
-		t.Errorf("Downstream[0].Path = %q, want /run/socks", cfg.Serve.Downstream[0].Path)
-	}
+	assert.Equal(t, UpstreamConfig{Bus: Socket{Path: "/run/upstream.sock"}}, cfg.Serve.Upstream)
+	assert.Equal(t, []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}}, cfg.Serve.Downstream)
 	if cfg.Serve.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want debug", cfg.Serve.LogLevel)
 	}
@@ -104,8 +95,8 @@ serve:
 	if cfg.Serve.HistoryLimit != 0 {
 		t.Errorf("HistoryLimit = %d, want 0", cfg.Serve.HistoryLimit)
 	}
-	if cfg.Serve.Upstream.Type != "" {
-		t.Errorf("Upstream.Type = %q, want empty", cfg.Serve.Upstream.Type)
+	if cfg.Serve.Upstream.Bus != nil {
+		t.Errorf("Upstream.Bus = %v, want nil", cfg.Serve.Upstream.Bus)
 	}
 	if len(cfg.Serve.Downstream) != 0 {
 		t.Errorf("Downstream len = %d, want 0", len(cfg.Serve.Downstream))
@@ -137,6 +128,45 @@ serve:
 	}
 }
 
+func TestDurationYAMLRoundTrip(t *testing.T) {
+	in := ServeConfig{Timeout: Duration(90 * time.Second)}
+	data, err := yaml.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "timeout: 1m30s")
+
+	var out ServeConfig
+	require.NoError(t, yaml.Unmarshal(data, &out))
+	assert.Equal(t, in.Timeout, out.Timeout)
+}
+
+func TestBusConfigYAMLRoundTrip(t *testing.T) {
+	in := ServeConfig{
+		Upstream: UpstreamConfig{Bus: Socket{Path: "run/up.sock"}},
+		Downstream: []BusConfig{
+			{Bus: Sockets{Dir: "/run/socks"}},
+			{Bus: SessionBus{}},
+			{Bus: Socket{Path: "/run/vm.sock"}},
+		},
+	}
+	data, err := yaml.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `upstream:
+    type: socket
+    path: run/up.sock
+downstream:
+    - type: sockets
+      path: /run/socks
+    - type: session_bus
+    - type: socket
+      path: /run/vm.sock
+`)
+
+	var out ServeConfig
+	require.NoError(t, yaml.Unmarshal(data, &out))
+	assert.Equal(t, in.Upstream, out.Upstream)
+	assert.Equal(t, in.Downstream, out.Downstream)
+}
+
 func TestLoadInvalidRemoteName(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -150,6 +180,20 @@ serve:
 	if err == nil || !strings.Contains(err.Error(), `invalid remote name "../api"`) {
 		t.Fatalf("expected invalid remote name error, got %v", err)
 	}
+}
+
+// A relative exe_path could never match, since /proc reports every executable
+// by its absolute path.
+func TestLoadRelativeTrustedSignerExePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+serve:
+  trusted_signers:
+    - exe_path: bin/nvim
+`), 0o644))
+
+	_, err := File{path}.Load()
+	assert.ErrorContains(t, err, `path must be absolute: "bin/nvim"`)
 }
 
 func TestLoadRejectsUnknownEnumValues(t *testing.T) {
@@ -174,6 +218,16 @@ serve:
     type: tcp
 `,
 			wantErr: `bus type must be session_bus, socket or sockets, got "tcp"`,
+		},
+		{
+			name: "sockets upstream",
+			yaml: `
+serve:
+  upstream:
+    type: sockets
+    path: /run/socks
+`,
+			wantErr: `upstream type must be session_bus or socket, got "sockets"`,
 		},
 		{
 			name: "downstream type",
@@ -289,18 +343,8 @@ func TestWithDefaults(t *testing.T) {
 	if out.Serve.LogLevel != DefaultLogLevel {
 		t.Errorf("LogLevel = %q, want %q", out.Serve.LogLevel, DefaultLogLevel)
 	}
-	if out.Serve.Upstream.Type != "session_bus" {
-		t.Errorf("Upstream.Type = %q, want session_bus", out.Serve.Upstream.Type)
-	}
-	if len(out.Serve.Downstream) != 1 {
-		t.Fatalf("Downstream len = %d, want 1", len(out.Serve.Downstream))
-	}
-	if out.Serve.Downstream[0].Type != "sockets" {
-		t.Errorf("Downstream[0].Type = %q, want sockets", out.Serve.Downstream[0].Type)
-	}
-	if out.Serve.Downstream[0].Path != "/run/user/1000/secrets-dispatcher/sockets" {
-		t.Errorf("Downstream[0].Path = %q", out.Serve.Downstream[0].Path)
-	}
+	assert.Equal(t, UpstreamConfig{Bus: SessionBus{}}, out.Serve.Upstream)
+	assert.Equal(t, []BusConfig{{Bus: Sockets{Dir: "/run/user/1000/secrets-dispatcher/sockets"}}}, out.Serve.Downstream)
 }
 
 func TestWithDefaultsSSH(t *testing.T) {
@@ -328,7 +372,7 @@ func TestWithDefaultsSSH(t *testing.T) {
 		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
 		want := SSHConfig{Upstream: "/tmp/up.sock", Listen: "/tmp/agent.sock"}
 		cfg := &Config{
-			Serve: ServeConfig{Downstream: []BusConfig{{Type: BusSocket, Path: "/tmp/bus.sock"}}},
+			Serve: ServeConfig{Downstream: []BusConfig{{Bus: Socket{Path: "/tmp/bus.sock"}}}},
 			SSH:   &want,
 		}
 		out, err := cfg.WithDefaults()
@@ -352,7 +396,7 @@ func TestWithDefaultsSSH(t *testing.T) {
 	t.Run("listen without runtime dir", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", "")
 		cfg := &Config{
-			Serve: ServeConfig{Downstream: []BusConfig{{Type: BusSocket, Path: "/tmp/bus.sock"}}},
+			Serve: ServeConfig{Downstream: []BusConfig{{Bus: Socket{Path: "/tmp/bus.sock"}}}},
 			SSH:   &SSHConfig{Upstream: "/tmp/up.sock"},
 		}
 		if _, err := cfg.WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
@@ -377,95 +421,95 @@ func TestResolveValidates(t *testing.T) {
 		{
 			name: "valid session_bus upstream + sockets downstream",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 			}},
 		},
 		{
 			name: "valid socket upstream + session_bus downstream",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "socket", Path: "/run/up.sock"},
-				Downstream: []BusConfig{{Type: "session_bus"}},
+				Upstream:   UpstreamConfig{Bus: Socket{Path: "/run/up.sock"}},
+				Downstream: []BusConfig{{Bus: SessionBus{}}},
 			}},
 		},
 		{
 			name: "valid remotes",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 				Remotes:    []RemoteConfig{{Name: "nb-home"}, {Name: "ci-2"}},
 			}},
 		},
 		{
 			name: "duplicate remote",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 				Remotes:    []RemoteConfig{{Name: "nb-home"}, {Name: "nb-home"}},
 			}},
 			wantErr: `remotes[1]: duplicate name "nb-home"`,
 		},
 		{
-			name: "invalid upstream type",
-			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "sockets"},
-				Downstream: []BusConfig{{Type: "session_bus"}},
-			}},
-			wantErr: "upstream type must be",
-		},
-		{
 			name: "socket upstream missing path",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "socket"},
-				Downstream: []BusConfig{{Type: "session_bus"}},
+				Upstream:   UpstreamConfig{Bus: Socket{}},
+				Downstream: []BusConfig{{Bus: SessionBus{}}},
 			}},
 			wantErr: "requires a non-empty path",
 		},
 		{
 			name: "sockets downstream missing path",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{}}},
 			}},
 			wantErr: "requires a non-empty path",
 		},
 		{
+			name: "downstream without a type",
+			cfg: Config{Serve: ServeConfig{
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{}},
+			}},
+			wantErr: `downstream[0]: bus type must be session_bus, socket or sockets, got ""`,
+		},
+		{
 			name: "both upstream and downstream session_bus",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "session_bus"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: SessionBus{}}},
 			}},
 			wantErr: "cannot both be session_bus",
 		},
 		{
 			name: "socket downstream named like the session bus",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "socket", Path: "/run/local.sock"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Socket{Path: "/run/local.sock"}}},
 			}},
 			wantErr: `reserved client name "local"`,
 		},
 		{
 			name: "two socket downstreams with one client name",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "socket", Path: "/a/vm.sock"}, {Type: "socket", Path: "/b/vm.sock"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Socket{Path: "/a/vm.sock"}}, {Bus: Socket{Path: "/b/vm.sock"}}},
 			}},
 			wantErr: `already has the client name "vm"`,
 		},
 		{
 			name: "duplicate session_bus downstream",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "socket", Path: "/up.sock"},
-				Downstream: []BusConfig{{Type: "session_bus"}, {Type: "session_bus"}},
+				Upstream:   UpstreamConfig{Bus: Socket{Path: "/up.sock"}},
+				Downstream: []BusConfig{{Bus: SessionBus{}}, {Bus: SessionBus{}}},
 			}},
 			wantErr: "at most one session_bus downstream",
 		},
 		{
 			name: "valid deny rule",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 				Rules: []TrustRule{{
 					Name:    "deny-epiphany",
 					Action:  "deny",
@@ -476,8 +520,8 @@ func TestResolveValidates(t *testing.T) {
 		{
 			name: "valid args rule",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 				Rules: []TrustRule{{
 					Name:    "logcli",
 					Action:  "approve",
@@ -488,8 +532,8 @@ func TestResolveValidates(t *testing.T) {
 		{
 			name: "invalid args glob",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 				Rules: []TrustRule{{
 					Name:    "bad-args",
 					Action:  "approve",
@@ -501,8 +545,8 @@ func TestResolveValidates(t *testing.T) {
 		{
 			name: "invalid cwd glob",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   BusConfig{Type: "session_bus"},
-				Downstream: []BusConfig{{Type: "sockets", Path: "/run/socks"}},
+				Upstream:   UpstreamConfig{Bus: SessionBus{}},
+				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
 				Rules: []TrustRule{{
 					Name:    "bad-cwd",
 					Action:  "approve",
@@ -532,25 +576,8 @@ func TestResolveValidates(t *testing.T) {
 	}
 }
 
-func TestResolveSetsSocketClient(t *testing.T) {
-	cfg := &Config{Serve: ServeConfig{
-		Upstream: BusConfig{Type: BusSessionBus},
-		Downstream: []BusConfig{
-			{Type: BusSocket, Path: "/run/vm.sock"},
-			{Type: BusSockets, Path: "/run/socks"},
-		},
-	}}
-	out, err := cfg.Resolve()
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got := out.Serve.Downstream[0].Client; got != "vm" {
-		t.Errorf("Downstream[0].Client = %q, want vm", got)
-	}
-	if got := out.Serve.Downstream[1].Client; got != "" {
-		t.Errorf("Downstream[1].Client = %q, want empty", got)
-	}
-	if got := cfg.Serve.Downstream[0].Client; got != "" {
-		t.Errorf("Resolve changed the input's downstream in place: Client = %q", got)
-	}
+func TestSocketClient(t *testing.T) {
+	client, err := Socket{Path: "/run/vm.sock"}.Client()
+	require.NoError(t, err)
+	assert.Equal(t, approval.ClientName("vm"), client)
 }

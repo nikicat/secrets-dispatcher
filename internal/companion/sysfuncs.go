@@ -7,22 +7,30 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 // Injectable system call function variables. Unit tests swap these out to avoid
-// requiring root, real users, or real system tools. This follows the same pattern
-// as internal/service/install.go (systemctlFunc).
+// requiring root, real users, or real system tools.
 
 var (
 	userAddFunc    = defaultUserAdd
 	loginctlFunc   = defaultLoginctl
 	userLookupFunc = defaultUserLookup
 	mkdirAllFunc   = os.MkdirAll
-	chownFunc      = os.Lchown
+	mkdirFunc      = os.Mkdir
+	statFunc       = os.Stat
+	chownFunc      = lchown
 	chmodFunc      = os.Chmod
 	writeFileFunc  = os.WriteFile
-	geteuidFunc    = os.Geteuid
+	geteuidFunc    = func() procutil.UID { return procutil.UID(os.Geteuid()) }
 )
+
+// Hands path, or the symlink at path, to uid and gid.
+func lchown(path string, uid procutil.UID, gid procutil.GID) error {
+	return os.Lchown(path, int(uid), int(gid))
+}
 
 // defaultUserAdd runs: useradd --home-dir <homeDir> --no-create-home --shell <shell> <username>
 // NOTE: No --system flag — companion user needs a regular UID range so that

@@ -17,7 +17,11 @@ const configFileName = "config.yaml"
 
 // The default config file as help texts spell it, with $XDG_CONFIG_HOME
 // left unexpanded.
-const DefaultPathHelp = "$XDG_CONFIG_HOME/" + appName + "/" + configFileName
+var DefaultPathHelp = defaultConfigFile("$XDG_CONFIG_HOME")
+
+func defaultConfigFile(base string) string {
+	return filepath.Join(base, appName, configFileName)
+}
 
 // Returns the default config file, under the XDG config home. It may be
 // missing. Errors when there is no XDG config home.
@@ -26,29 +30,22 @@ func DefaultSource() (Source, error) {
 	if err != nil {
 		return Source{}, fmt.Errorf("find the config file: %w", err)
 	}
-	return Source{File: File{filepath.Join(base, appName, configFileName)}, optional: true}, nil
+	return Source{File: File{defaultConfigFile(base)}, optional: true}, nil
 }
 
-func (p Path) String() string { return string(p) }
-
-// Sets the path from a command-line flag value. Resolves a relative path
-// against the current directory. An empty value stays empty.
-func (p *Path) Set(value string) error {
-	abs, err := absOrEmpty(value)
+// Parses a config file location and resolves a relative one against the
+// current directory. An empty text is unset.
+func (p *Path) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*p = ""
+		return nil
+	}
+	abs, err := filepath.Abs(string(text))
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve config file %q: %w", text, err)
 	}
 	*p = Path(abs)
 	return nil
-}
-
-// Returns value resolved against the current directory, or empty when value
-// is empty.
-func absOrEmpty(value string) (string, error) {
-	if value == "" {
-		return "", nil
-	}
-	return filepath.Abs(value)
 }
 
 // Returns the file p names, or DefaultSource() when p is empty. Errors when p
@@ -81,7 +78,7 @@ type File struct{ path string }
 
 func (f File) String() string { return f.path }
 
-// Returns f as the value of a --config flag.
+// Returns f as a Path, which is never empty.
 func (f File) Path() Path { return Path(f.path) }
 
 // Returns the config in f. Unknown keys are rejected, and each error names the

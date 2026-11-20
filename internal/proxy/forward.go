@@ -5,6 +5,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // memberOf returns the method/member name of an incoming message.
@@ -78,8 +79,8 @@ func nameHasOwner(conn *dbus.Conn, name string) bool {
 }
 
 // Errors when name has no owner on conn.
-func nameOwner(conn *dbus.Conn, name string) (senderName, error) {
+func nameOwner(conn *dbus.Conn, name string) (sender.UniqueName, error) {
 	var owner string
 	err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, name).Store(&owner)
-	return senderName(owner), err
+	return sender.UniqueName(owner), err
 }

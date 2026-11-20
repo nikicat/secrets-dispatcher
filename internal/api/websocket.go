@@ -403,7 +403,7 @@ func convertRequest(req *approval.Request) PendingRequest {
 		ExpiresAt:        req.ExpiresAt,
 		Type:             string(req.Type),
 		SearchAttributes: req.SearchAttributes,
-		SenderInfo:       convertSenderInfo(req.SenderInfo),
+		SenderInfo:       req.SenderInfo.Info,
 		GPGSignInfo:      req.GPGSignInfo,
 		AutoApprovable:   req.AutoApprovable(),
 	}

@@ -6,12 +6,11 @@ import (
 	"sync"
 
 	"github.com/godbus/dbus/v5"
+
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-// senderName is a D-Bus sender's unique connection name (e.g., ":1.123").
-type senderName string
-
-// requestID identifies a single in-flight request within a sender's set.
+// Identifies a single in-flight request within a sender's set.
 type requestID uint64
 
 // clientTracker tracks D-Bus clients and provides contexts that get cancelled
@@ -25,7 +24,7 @@ type clientTracker struct {
 	// Service calls on one connection — and each is tracked and cancelled
 	// independently. All of a sender's requests are cancelled together only when
 	// that sender actually disconnects.
-	clients map[senderName]map[requestID]context.CancelFunc
+	clients map[sender.UniqueName]map[requestID]context.CancelFunc
 	// nextID assigns a unique id to each request; only accessed under mu.
 	nextID    requestID
 	signals   chan *dbus.Signal
@@ -37,7 +36,7 @@ type clientTracker struct {
 func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 	t := &clientTracker{
 		conn:    conn,
-		clients: make(map[senderName]map[requestID]context.CancelFunc),
+		clients: make(map[sender.UniqueName]map[requestID]context.CancelFunc),
 		signals: make(chan *dbus.Signal, 16),
 		done:    make(chan struct{}),
 	}
@@ -90,16 +89,15 @@ func (t *clientTracker) processSignals() {
 
 			// Client disconnected when: name is a unique name, old_owner is non-empty, new_owner is empty
 			if name != "" && name[0] == ':' && oldOwner != "" && newOwner == "" {
-				t.clientDisconnected(senderName(oldOwner))
+				t.clientDisconnected(sender.UniqueName(oldOwner))
 			}
 		}
 	}
 }
 
-// clientDisconnected is called when a client disconnects. It cancels every
-// request still pending for that sender — this is the only place that cancels a
-// sender's requests wholesale.
-func (t *clientTracker) clientDisconnected(sender senderName) {
+// Cancels every request still pending for sender once it disconnects. Nothing
+// else cancels a sender's requests wholesale.
+func (t *clientTracker) clientDisconnected(sender sender.UniqueName) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -119,7 +117,7 @@ func (t *clientTracker) clientDisconnected(sender senderName) {
 // The context should be used for the duration of a single request, and release
 // called (typically deferred) when it completes. If the client has already
 // disconnected, the returned context is already cancelled.
-func (t *clientTracker) contextForSender(parent context.Context, sender senderName) (context.Context, func()) {
+func (t *clientTracker) contextForSender(parent context.Context, sender sender.UniqueName) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(parent)
 
 	t.mu.Lock()

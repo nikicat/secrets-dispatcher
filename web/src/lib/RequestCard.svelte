@@ -2,6 +2,7 @@
   import type { PendingRequest } from "./types";
   import { approve, approveAndAutoApprove, deny, ApiError } from "./api";
   import ProcessChain from "./ProcessChain.svelte";
+  import { senderDisplayName } from "./sender";
 
   interface Props {
     request: PendingRequest;
@@ -31,14 +32,15 @@
       return request.client;
     }
 
-    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
+    const user = info.uid !== undefined ? `UID ${info.uid}` : "";
 
-    // If we have a unit name, show that with username
-    if (info.invoker_name) {
-      return user ? `${info.invoker_name} (${user})` : info.invoker_name;
+    // If we have a process or unit name, show that with the user
+    const name = senderDisplayName(info);
+    if (name) {
+      return user ? `${name} (${user})` : name;
     }
 
-    // Fall back to username with PID
+    // Fall back to the user with PID
     if (info.pid && user) {
       return `${user} (PID ${info.pid})`;
     }

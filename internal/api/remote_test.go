@@ -73,7 +73,7 @@ func TestRemoteSign_ApprovedReturnsSignature(t *testing.T) {
 	result := rh.signAsync(context.Background())
 
 	req := rh.waitPending(t)
-	assert.Equal(t, "remote:nb-home", req.Client)
+	assert.Equal(t, approval.ClientName("remote:nb-home"), req.Client)
 	assert.Empty(t, req.SenderInfo.ProcessChain, "a remote request has no local process chain")
 	assert.Equal(t, "fix: remote", req.GPGSignInfo.CommitMsg, "display stays bound to the signed bytes")
 	require.NoError(t, rh.h.resolver.Approve(req.ID))

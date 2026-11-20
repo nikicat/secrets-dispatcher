@@ -14,7 +14,7 @@ const (
 )
 
 // The valid log levels, from most to least verbose.
-var LogLevels = []LogLevel{LogDebug, LogInfo, LogWarn, LogError}
+var LogLevels = NewEnum("log level", LogDebug, LogInfo, LogWarn, LogError)
 
 var slogLevels = map[LogLevel]slog.Level{
 	LogDebug: slog.LevelDebug,
@@ -25,14 +25,11 @@ var slogLevels = map[LogLevel]slog.Level{
 
 func (l LogLevel) String() string { return string(l) }
 
-// Parses a log level as parseEnum does.
+// Parses a log level as Enum.Parse does.
 func (l *LogLevel) UnmarshalText(text []byte) (err error) {
-	*l, err = parseEnum(text, LogLevels, "log level")
+	*l, err = LogLevels.Parse(text)
 	return err
 }
-
-// Errors when value is empty or names no level.
-func (l *LogLevel) Set(value string) error { return setText(l, value) }
 
 // Returns l, or DefaultLogLevel when l is empty.
 func (l LogLevel) OrDefault() LogLevel {
@@ -56,18 +53,15 @@ const (
 )
 
 // The valid log formats.
-var LogFormats = []LogFormat{LogText, LogJSON}
+var LogFormats = NewEnum("log format", LogText, LogJSON)
 
 func (f LogFormat) String() string { return string(f) }
 
-// Parses a log format as parseEnum does.
+// Parses a log format as Enum.Parse does.
 func (f *LogFormat) UnmarshalText(text []byte) (err error) {
-	*f, err = parseEnum(text, LogFormats, "log format")
+	*f, err = LogFormats.Parse(text)
 	return err
 }
-
-// Errors when value is empty or names no format.
-func (f *LogFormat) Set(value string) error { return setText(f, value) }
 
 // Returns f, or DefaultLogFormat when f is empty.
 func (f LogFormat) OrDefault() LogFormat {

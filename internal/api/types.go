@@ -5,6 +5,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // StatusResponse is returned by GET /api/v1/status.
@@ -26,37 +27,17 @@ type ItemInfo struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
-// ProcessInfo represents a single process in the process chain.
-type ProcessInfo struct {
-	Name string   `json:"name"`
-	PID  uint32   `json:"pid"`
-	Exe  string   `json:"exe,omitempty"`
-	Args []string `json:"args,omitempty"`
-	CWD  string   `json:"cwd,omitempty"`
-}
-
-// SenderInfo contains information about the D-Bus sender process.
-type SenderInfo struct {
-	Sender       string        `json:"sender"`                  // D-Bus unique name (":1.123")
-	PID          uint32        `json:"pid"`                     // Process ID
-	UID          uint32        `json:"uid"`                     // User ID
-	UserName     string        `json:"user_name"`               // Username (may be empty if lookup fails)
-	InvokerName  string        `json:"invoker_name"`            // Invoker process comm (display); spoofable — NOT the systemd unit
-	SystemdUnit  string        `json:"systemd_unit,omitempty"`  // Real systemd unit (from GetUnitByPID); authoritative
-	ProcessChain []ProcessInfo `json:"process_chain,omitempty"` // Full process chain from requestor to init
-}
-
 // PendingRequest represents a pending approval request in API responses.
 type PendingRequest struct {
 	ID               string                `json:"id"`
-	Client           string                `json:"client"`
+	Client           approval.ClientName   `json:"client"`
 	Items            []ItemInfo            `json:"items"`
 	Session          string                `json:"session"`
 	CreatedAt        time.Time             `json:"created_at"`
 	ExpiresAt        time.Time             `json:"expires_at"`
 	Type             string                `json:"type"`
 	SearchAttributes map[string]string     `json:"search_attributes,omitempty"`
-	SenderInfo       SenderInfo            `json:"sender_info"`
+	SenderInfo       sender.Info           `json:"sender_info"`
 	GPGSignInfo      *approval.GPGSignInfo `json:"gpg_sign_info,omitempty"`
 	// True if approval.Request.AutoApprovable accepts the request. False
 	// otherwise.

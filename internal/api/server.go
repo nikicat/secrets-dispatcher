@@ -6,13 +6,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // Server is the HTTP API server.
@@ -34,9 +33,8 @@ type ServerConfig struct {
 	Addr     config.ListenAddr
 	Resolver *Resolver
 	Auth     *Auth
-	// True if a GPG sign request's process chain stops at the first session
-	// leader. False otherwise.
-	TrimProcessChain bool
+	// Reads the process chains of GPG sign requests' callers.
+	Chains sender.ChainReader
 	// How long browser clients wait before notifying of a new request. Zero
 	// notifies at once.
 	NotificationDelay time.Duration
@@ -123,31 +121,13 @@ func newRouter(handlers *Handlers, ws *WSHandler, auth *Auth) http.Handler {
 // Opens the API socket in dir and serves the API on it in the background.
 // Shutdown closes it.
 func (s *Server) ServeAPISocket(dir config.RuntimeDir) error {
-	unixListener, err := listenUnix(dir.APISocket())
+	unixListener, err := dir.APISocket().ListenPrivate()
 	if err != nil {
 		return err
 	}
 	s.runtimeDir = dir
 	s.serveInBackground(s.httpServer, unixListener, "Unix socket server error")
 	return nil
-}
-
-// Listens on a new Unix socket at path that only the owner can connect to.
-// Closing the listener removes the socket file.
-func listenUnix(path string) (net.Listener, error) {
-	os.Remove(path) //nolint:errcheck // stale socket from a previous run
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
-	}
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0600); err != nil {
-		listener.Close()
-		return nil, err
-	}
-	return listener, nil
 }
 
 // Serves srv on listener in the background until Shutdown, and logs any

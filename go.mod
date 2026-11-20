@@ -3,7 +3,9 @@ module github.com/nikicat/secrets-dispatcher
 go 1.27
 
 require (
+	github.com/alecthomas/kong v1.17.0
 	github.com/coder/websocket v1.8.15
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.4
 	github.com/google/uuid v1.6.0

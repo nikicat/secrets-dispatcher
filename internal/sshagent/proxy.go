@@ -15,13 +15,14 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-// proxyAgent wraps an upstream SSH agent, delegating most operations but
-// gating Sign requests through the approval manager.
+// An upstream SSH agent whose Sign requests go through the approval manager
+// first.
 type proxyAgent struct {
-	upstream    agent.Agent
-	approval    *approval.Manager
-	senderInfo  approval.SenderInfo
-	destination string // resolved SSH destination host
+	upstream   agent.Agent
+	approval   *approval.Manager
+	senderInfo approval.SenderInfo
+	// The host the client connects to; nil when it is not known.
+	destination *string
 	logger      *slog.Logger
 
 	// cache key list so we can look up comments for sign requests
@@ -29,7 +30,7 @@ type proxyAgent struct {
 	keys   []*agent.Key
 }
 
-func newProxyAgent(upstream agent.Agent, approvalMgr *approval.Manager, senderInfo approval.SenderInfo, destination string, logger *slog.Logger) *proxyAgent {
+func newProxyAgent(upstream agent.Agent, approvalMgr *approval.Manager, senderInfo approval.SenderInfo, destination *string, logger *slog.Logger) *proxyAgent {
 	return &proxyAgent{
 		upstream:    upstream,
 		approval:    approvalMgr,
@@ -69,8 +70,8 @@ func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agen
 	attrs := map[string]string{
 		"fingerprint": fingerprint,
 	}
-	if p.destination != "" {
-		attrs["destination"] = p.destination
+	if p.destination != nil {
+		attrs["destination"] = *p.destination
 	}
 
 	items := []approval.ItemInfo{{
@@ -82,7 +83,7 @@ func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agen
 	p.logger.Info("sign request received",
 		"fingerprint", fingerprint,
 		"comment", comment,
-		"destination", p.destination,
+		"destination", attrs["destination"],
 		"invoker", p.senderInfo.InvokerName)
 
 	if _, err := p.approval.RequireApproval(
@@ -106,8 +107,8 @@ func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agen
 	return p.upstream.Sign(key, data)
 }
 
-// findKeyComment looks up the comment for a key by matching its blob
-// against the cached key list.
+// Returns the comment of key, matched by its blob against the cached key
+// list.
 func (p *proxyAgent) findKeyComment(key ssh.PublicKey) string {
 	blob := key.Marshal()
 	h := sha256.Sum256(blob)

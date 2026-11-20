@@ -8,12 +8,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"text/template"
 
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
+
+// The default of Config.HomeBase.
+const DefaultHomeBase = "/var/lib/secret-companion"
 
 // Config holds the inputs for provisioning a companion user.
 type Config struct {
@@ -24,14 +27,13 @@ type Config struct {
 	// CompanionName, if non-empty, overrides the default "secrets-{DesktopUser}" username.
 	CompanionName string
 
-	// HomeBase is the parent directory for companion homes.
-	// Defaults to "/var/lib/secret-companion".
+	// The parent directory of companion homes, or empty for DefaultHomeBase.
 	HomeBase string
 }
 
 func (c *Config) defaults() {
 	if c.HomeBase == "" {
-		c.HomeBase = "/var/lib/secret-companion"
+		c.HomeBase = DefaultHomeBase
 	}
 }
 
@@ -44,8 +46,8 @@ func (c Config) companionUsername() string {
 }
 
 // homeDir returns the companion user's home directory.
-func (c Config) homeDir() string {
-	return filepath.Join(c.HomeBase, c.DesktopUser)
+func (c Config) homeDir() companionHome {
+	return companionHome(filepath.Join(c.HomeBase, c.DesktopUser))
 }
 
 // Provision creates the companion user and all deployment artifacts for the
@@ -67,7 +69,7 @@ func Provision(cfg Config) error {
 	cfg.defaults()
 
 	// 1. Validate preconditions.
-	if geteuidFunc() != 0 {
+	if geteuidFunc() != procutil.RootUID {
 		return fmt.Errorf("provision requires root; run: sudo secrets-dispatcher provision")
 	}
 
@@ -93,42 +95,34 @@ func Provision(cfg Config) error {
 		return fmt.Errorf("ensure companion user: %w", err)
 	}
 
-	// Look up the companion user to get UID/GID for chown.
-	u, err := userLookupFunc(companionUser)
+	acct, err := lookupAccount(companionUser)
 	if err != nil {
 		return fmt.Errorf("lookup companion user %q after creation: %w", companionUser, err)
 	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		return fmt.Errorf("parse companion UID %q: %w", u.Uid, err)
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return fmt.Errorf("parse companion GID %q: %w", u.Gid, err)
-	}
+	c := companion{account: acct, home: homeDir}
 
 	// 3. Create home directory with correct ownership and permissions.
-	if err := ensureHomeDir(homeDir, uid, gid); err != nil {
+	if err := c.home.Dir().ensure(c.account, 0700); err != nil {
 		return fmt.Errorf("ensure home dir: %w", err)
 	}
 
 	// 4. Create gopass/GPG directory skeleton (PROV-03 Phase 4 scope = dirs only).
-	if err := ensureDirectorySkeleton(homeDir, uid, gid); err != nil {
+	if err := c.ensureDirectorySkeleton(); err != nil {
 		return fmt.Errorf("ensure directory skeleton: %w", err)
 	}
 
 	// 5. Write D-Bus system bus policy file.
-	if err := writeDBusPolicy(cfg.DesktopUser, companionUser); err != nil {
+	if err := c.writeDBusPolicy(cfg.DesktopUser); err != nil {
 		return fmt.Errorf("write D-Bus policy: %w", err)
 	}
 
 	// 6. Write systemd user unit file to companion's XDG config directory.
-	if err := writeSystemdUnit(homeDir, companionUser, u.Uid, uid, gid); err != nil {
+	if err := c.writeSystemdUnit(); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 
 	// 7. Write PAM session hook config.
-	if err := writePAMConfig(companionUser); err != nil {
+	if err := writePAMConfig(c.name); err != nil {
 		return fmt.Errorf("write PAM config: %w", err)
 	}
 
@@ -138,78 +132,52 @@ func Provision(cfg Config) error {
 	}
 
 	// 9. Enable linger so companion's systemd --user persists after desktop logout.
-	slog.Info("enabling systemd linger", "companion_user", companionUser)
-	if err := loginctlFunc("enable-linger", companionUser); err != nil {
+	slog.Info("enabling systemd linger", "companion_user", c.name)
+	if err := loginctlFunc("enable-linger", c.name); err != nil {
 		return fmt.Errorf("enable linger: %w", err)
 	}
 
-	slog.Info("provisioning complete", "companion_user", companionUser)
+	slog.Info("provisioning complete", "companion_user", c.name)
 	return nil
 }
 
 // ensureUser creates the companion Linux user if it does not already exist.
-func ensureUser(username, homeDir string) error {
+func ensureUser(username string, homeDir companionHome) error {
 	if _, err := userLookupFunc(username); err == nil {
 		slog.Info("companion user already exists, skipping creation", "username", username)
 		return nil
 	}
 
 	// Create parent directory first (root-owned, 0755).
-	parentDir := filepath.Dir(homeDir)
+	parentDir := filepath.Dir(homeDir.String())
 	if err := mkdirAllFunc(parentDir, 0755); err != nil {
 		return fmt.Errorf("create parent dir %q: %w", parentDir, err)
 	}
 
 	slog.Info("creating companion user", "username", username, "home_dir", homeDir)
-	return userAddFunc(username, homeDir, "/usr/sbin/nologin")
-}
-
-// ensureHomeDir creates the home directory with 0700 permissions and chowns it to the companion user.
-func ensureHomeDir(homeDir string, uid, gid int) error {
-	if err := mkdirAllFunc(homeDir, 0700); err != nil {
-		return fmt.Errorf("create home dir %q: %w", homeDir, err)
-	}
-	if err := chownFunc(homeDir, uid, gid); err != nil {
-		return fmt.Errorf("chown home dir %q: %w", homeDir, err)
-	}
-	if err := chmodFunc(homeDir, 0700); err != nil {
-		return fmt.Errorf("chmod home dir %q: %w", homeDir, err)
-	}
-	slog.Info("home directory ready", "path", homeDir)
-	return nil
+	return userAddFunc(username, homeDir.String(), "/usr/sbin/nologin")
 }
 
 // ensureDirectorySkeleton creates the gopass and GPG directory skeleton under companion home.
 // Phase 4 scope: directories only. Actual gopass init + GPG key generation is Phase 5.
-func ensureDirectorySkeleton(homeDir string, uid, gid int) error {
-	dirs := []string{
-		filepath.Join(homeDir, ".config", "gopass"),
-		filepath.Join(homeDir, ".gnupg"),
-	}
-	for _, d := range dirs {
-		if err := mkdirAllFunc(d, 0700); err != nil {
-			return fmt.Errorf("create dir %q: %w", d, err)
+func (c companion) ensureDirectorySkeleton() error {
+	for _, d := range []companionDir{c.home.GopassDir(), c.home.GnupgDir()} {
+		if err := d.ensure(c.account, 0700); err != nil {
+			return err
 		}
-		if err := chownFunc(d, uid, gid); err != nil {
-			return fmt.Errorf("chown %q: %w", d, err)
-		}
-		if err := chmodFunc(d, 0700); err != nil {
-			return fmt.Errorf("chmod %q: %w", d, err)
-		}
-		slog.Info("directory ready", "path", d)
 	}
 	return nil
 }
 
 // writeDBusPolicy renders and writes the D-Bus system bus policy file.
-func writeDBusPolicy(desktopUser, companionUser string) error {
+func (c companion) writeDBusPolicy(desktopUser string) error {
 	type templateVars struct {
 		CompanionUser string
 		DesktopUser   string
 	}
 
 	content, err := renderTemplate("dbus-policy", dbusPolicyTemplate, templateVars{
-		CompanionUser: companionUser,
+		CompanionUser: c.name,
 		DesktopUser:   desktopUser,
 	})
 	if err != nil {
@@ -224,41 +192,27 @@ func writeDBusPolicy(desktopUser, companionUser string) error {
 // The companion daemon's systemd user unit.
 const daemonUnit systemd.Unit = "secrets-dispatcher-daemon.service"
 
-// Returns the systemd user unit directory of the companion user whose home is
-// homeDir.
-func userUnitDir(homeDir string) string {
-	return filepath.Join(homeDir, ".config", "systemd", "user")
-}
-
 // writeSystemdUnit renders and writes the systemd user unit file to the companion's XDG dir.
-func writeSystemdUnit(homeDir, companionUser, uidStr string, uid, gid int) error {
+func (c companion) writeSystemdUnit() error {
 	type templateVars struct {
-		CompanionHome string
-		CompanionUID  string
+		CompanionHome companionHome
+		CompanionUID  procutil.UID
 	}
 
 	content, err := renderTemplate("systemd-unit", systemdUnitTemplate, templateVars{
-		CompanionHome: homeDir,
-		CompanionUID:  uidStr,
+		CompanionHome: c.home,
+		CompanionUID:  c.uid,
 	})
 	if err != nil {
 		return err
 	}
 
-	unitDir := userUnitDir(homeDir)
-	if err := mkdirAllFunc(unitDir, 0700); err != nil {
-		return fmt.Errorf("create systemd unit dir %q: %w", unitDir, err)
-	}
-	if err := chownFunc(unitDir, uid, gid); err != nil {
-		return fmt.Errorf("chown systemd unit dir %q: %w", unitDir, err)
-	}
-
-	unitPath := daemonUnit.Path(unitDir)
-	slog.Info("writing systemd unit", "path", unitPath)
-	if err := writeFileFunc(unitPath, content, 0644); err != nil {
+	unitFile := companionFile{c.home.UnitDir().UnitFile(daemonUnit).File}
+	if err := unitFile.dir().ensure(c.account, 0700); err != nil {
 		return err
 	}
-	return chownFunc(unitPath, uid, gid)
+	slog.Info("writing systemd unit", "path", unitFile)
+	return unitFile.write(c.account, content, 0644)
 }
 
 // The PAM service name of the session hook.

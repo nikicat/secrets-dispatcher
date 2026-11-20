@@ -7,7 +7,9 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
@@ -46,6 +48,6 @@ func TestProxyFailsWhenSessionBusNameIsHeld(t *testing.T) {
 	require.NoError(t, err)
 	frontConn, err := dbus.Connect(frontAddr)
 	require.NoError(t, err)
-	p := New(Config{ClientName: t.Name(), LocalProcesses: true})
+	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), Config{Local: &sender.ChainReader{}})
 	require.ErrorIs(t, p.ConnectWith(frontConn, backendConn), errBusNameTaken)
 }

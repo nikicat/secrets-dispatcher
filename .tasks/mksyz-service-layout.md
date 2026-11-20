@@ -2,13 +2,15 @@
 status: todo
 tags: [refactor, service]
 ---
-# The unit-file layout has no type of its own
+# The service setup's layout is resolved again by each entry point
 
 ## Goal
-The mask, drop-in, autostart-shadow and unit paths, and the checks for
-whether a file is ours, are derived again in `plan.go`, `status.go`,
-`install.go`, `try.go` and `gnomekeyring.go`, each from `unitDir()` and the
-XDG directories. Done when one `layout` type owns those paths and checks and
-the five files use it.
+The takeover files own their paths and checks (`takeoverFiles`), but
+`unitDir()` is still resolved separately in `Install`, `Uninstall`, `Plan`,
+`Status`, `Try` and `gkDropIn`, `locateTakeoverFiles()` in `openHost`, `Plan`
+and `Status`, and the "which of `allUnitNames` have a unit file" loop is
+written twice, in `Status` and `Try`. Done when one layout value, built once
+from the XDG homes, gives the unit directory, the takeover files and the
+installed units, and `Install`, `Uninstall`, `Plan`, `Status` and `Try` take it.
 
-Found by the 2026-11-19 unsmell run. (b2-7)
+Found by the 2026-11-19 unsmell run (b2-7); narrowed by the 2026-11-20 run (r1-16).

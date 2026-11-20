@@ -7,6 +7,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // The gnome-keyring "system prompter" protocol. When a client asks to unlock a
@@ -150,7 +151,7 @@ func (b *prompterBridge) StopPrompting(msg dbus.Message, callback dbus.ObjectPat
 	return err
 }
 
-func (b *prompterBridge) exportCallback(path dbus.ObjectPath, keyring senderName) error {
+func (b *prompterBridge) exportCallback(path dbus.ObjectPath, keyring sender.UniqueName) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.callbacks[path] {

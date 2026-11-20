@@ -8,6 +8,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // Service implements org.freedesktop.Secret.Service.
@@ -39,9 +40,9 @@ func (s *Service) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return s.localConn.Object(dbustypes.BusName, path)
 }
 
-// senderResolver returns a lazy resolver of sender's SenderInfo, suitable for an
-// UpstreamCallContext.ResolveSender field.
-func (s *Service) senderResolver(sender senderName) func() approval.SenderInfo {
+// Returns a lazy resolver of sender's SenderInfo, for the ResolveSender field
+// of an UpstreamCallContext.
+func (s *Service) senderResolver(sender sender.UniqueName) func() approval.SenderInfo {
 	return func() approval.SenderInfo { return s.resolver.Resolve(sender) }
 }
 
@@ -135,17 +136,16 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	senderInfo := s.resolver.Resolve(sender)
 
 	// Require approval before accessing secrets
-	itemStrs := objectPathsToStrings(items)
 	_, err := s.approval.RequireApproval(ctx, itemInfos, string(session), approval.RequestTypeGetSecret, nil, senderInfo)
 	if err != nil {
-		s.logger.LogGetSecrets(ctx, itemStrs, "denied", err)
+		s.logger.LogGetSecrets(ctx, items, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	// Map remote session to local session
 	localSession, ok := s.sessions.GetLocalSession(session)
 	if !ok {
-		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", dbustypes.ErrSessionNotFound(string(session)))
+		s.logger.LogGetSecrets(context.Background(), items, "error", dbustypes.ErrSessionNotFound(string(session)))
 		return nil, dbustypes.ErrSessionNotFound(string(session))
 	}
 
@@ -156,14 +156,14 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 		SenderInfo:  senderInfo,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
 	if call.Err != nil {
-		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", call.Err)
+		s.logger.LogGetSecrets(context.Background(), items, "error", call.Err)
 		return nil, dbustypes.ErrFailed(call.Err)
 	}
 
 	// The return type is Dict<ObjectPath, Secret> where Secret is (oayays)
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	if err := call.Store(&secrets); err != nil {
-		s.logger.LogGetSecrets(context.Background(), itemStrs, "error", err)
+		s.logger.LogGetSecrets(context.Background(), items, "error", err)
 		return nil, dbustypes.ErrFailed(err)
 	}
 
@@ -172,13 +172,13 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	for path, secret := range secrets {
 		encoded, err := s.sessions.ForClient(session, secret)
 		if err != nil {
-			s.logger.LogGetSecrets(context.Background(), itemStrs, "error", err)
+			s.logger.LogGetSecrets(context.Background(), items, "error", err)
 			return nil, dbustypes.ErrFailed(err)
 		}
 		secrets[path] = encoded
 	}
 
-	s.logger.LogGetSecrets(context.Background(), itemStrs, "ok", nil)
+	s.logger.LogGetSecrets(context.Background(), items, "ok", nil)
 	return secrets, nil
 }
 
@@ -206,21 +206,18 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 		ResolveSender: s.senderResolver(sender),
 	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
-		objStrs := objectPathsToStrings(objects)
-		s.logger.LogUnlock(context.Background(), objStrs, 0, "error", call.Err)
+		s.logger.LogUnlock(context.Background(), objects, 0, "error", call.Err)
 		return nil, "/", dbustypes.ErrFailed(call.Err)
 	}
 
 	var unlocked []dbus.ObjectPath
 	var prompt dbus.ObjectPath
 	if err := call.Store(&unlocked, &prompt); err != nil {
-		objStrs := objectPathsToStrings(objects)
-		s.logger.LogUnlock(context.Background(), objStrs, 0, "error", err)
+		s.logger.LogUnlock(context.Background(), objects, 0, "error", err)
 		return nil, "/", dbustypes.ErrFailed(err)
 	}
 
-	objStrs := objectPathsToStrings(objects)
-	s.logger.LogUnlock(context.Background(), objStrs, len(unlocked), "ok", nil)
+	s.logger.LogUnlock(context.Background(), objects, len(unlocked), "ok", nil)
 	return unlocked, prompt, nil
 }
 
@@ -511,12 +508,4 @@ func (s *Service) getUnlockInfo(objects []dbus.ObjectPath, ctx UpstreamCallConte
 		}
 	}
 	return infos
-}
-
-func objectPathsToStrings(paths []dbus.ObjectPath) []string {
-	strs := make([]string, len(paths))
-	for i, p := range paths {
-		strs[i] = string(p)
-	}
-	return strs
 }

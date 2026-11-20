@@ -94,7 +94,7 @@ func (i *GPGSignInfo) RequireSignedBytes() error {
 // appears). Fires EventRequestAutoApproved so the history entry shows "auto_approved".
 // The request is never added to pending and no timeout goroutine is started.
 // res is the gpg output to deliver to the thin client via WebSocket.
-func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, senderInfo SenderInfo, res GPGResult) (string, error) {
+func (m *Manager) RecordAutoApprovedGPGSign(client ClientName, info *GPGSignInfo, senderInfo SenderInfo, res GPGResult) (string, error) {
 	if err := info.RequireSignedBytes(); err != nil {
 		return "", err
 	}
@@ -122,7 +122,7 @@ func (m *Manager) RecordAutoApprovedGPGSign(client string, info *GPGSignInfo, se
 // pipeline (EventRequestApproved / EventRequestDenied / EventRequestExpired).
 // Uses context.Background() for the timeout goroutine so a dropped HTTP connection does
 // not cancel a request the user is actively reviewing in the web UI.
-func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderInfo SenderInfo) (string, error) {
+func (m *Manager) CreateGPGSignRequest(client ClientName, info *GPGSignInfo, senderInfo SenderInfo) (string, error) {
 	req, err := m.createGPGSignRequest(client, info, senderInfo)
 	if err != nil {
 		return "", err
@@ -132,7 +132,7 @@ func (m *Manager) CreateGPGSignRequest(client string, info *GPGSignInfo, senderI
 
 // Creates a gpg_sign request and returns it with its resolution once it is
 // resolved. Ending ctx cancels the request.
-func (m *Manager) AwaitGPGSign(ctx context.Context, client string, info *GPGSignInfo, senderInfo SenderInfo) (*Request, Resolution, error) {
+func (m *Manager) AwaitGPGSign(ctx context.Context, client ClientName, info *GPGSignInfo, senderInfo SenderInfo) (*Request, Resolution, error) {
 	req, err := m.createGPGSignRequest(client, info, senderInfo)
 	if err != nil {
 		return nil, "", err
@@ -146,7 +146,7 @@ func (m *Manager) AwaitGPGSign(ctx context.Context, client string, info *GPGSign
 	return req, req.resolution, nil
 }
 
-func (m *Manager) createGPGSignRequest(client string, info *GPGSignInfo, senderInfo SenderInfo) (*Request, error) {
+func (m *Manager) createGPGSignRequest(client ClientName, info *GPGSignInfo, senderInfo SenderInfo) (*Request, error) {
 	if err := info.RequireSignedBytes(); err != nil {
 		return nil, err
 	}

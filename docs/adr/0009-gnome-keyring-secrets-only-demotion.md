@@ -12,18 +12,23 @@ will only try this near their real keyring if it is fully reversible.
 
 ## Decision
 
-- **Demote, don't mask.** A spike (PR #14) found that masking gnome-keyring's
-  units does not hold: at the next login `pam_gnome_keyring` respawns an
-  unmanaged `--daemonize --login` daemon that re-grabs the name, and the pkcs11
-  component dies with the mask. Instead the dispatcher installs a user drop-in
-  limiting the session daemon to `--components=pkcs11`, a `Hidden=true` shadow
-  of its autostart entry, and a D-Bus activation mask, and runs gnome-keyring's
-  secrets component as its private backend.
-- **Every change is a user-level file the dispatcher records,** so
+- **Demote, don't mask.** A spike (PR #14, Ubuntu 24.04 GNOME) found that
+  masking gnome-keyring's units does not hold: at the next login
+  `pam_gnome_keyring` respawns an unmanaged `--daemonize --login` daemon that
+  re-grabs the name, and the pkcs11 component dies with the mask. Closing that
+  hole takes root-level PAM edits, which is too invasive. Instead the
+  dispatcher installs a user drop-in limiting the session daemon to
+  `--components=pkcs11`, a `Hidden=true` shadow of its autostart entry (which
+  systemd's xdg-autostart-generator honors), and a D-Bus activation mask, and
+  runs gnome-keyring's secrets component as its private backend. The daemon
+  and its control socket stay, so PAM keeps unlocking it with the login
+  password.
+- **Every change is a user-level file, and the files are the record,** so
   `service uninstall` and the `try` trial restore the previous state exactly.
+  The dispatcher recognises its own files by their content, backs up a user
+  file it displaces beside it, and records nothing elsewhere.
 - **The provider is detected, not configured:** the current name owner's exe
-  and `XDG_CURRENT_DESKTOP` pick the topology, and `--backend gnome-keyring` is
-  a keyword, not a path.
+  picks the topology, and `--backend gnome-keyring` is a keyword, not a path.
 
 ## Consequences
 

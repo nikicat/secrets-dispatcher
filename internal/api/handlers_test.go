@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/stretchr/testify/require"
 )
@@ -53,12 +54,12 @@ func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) str
 	return mgr.AddAutoApproveRule(rule)
 }
 
-func localSender(comm, exe string) approval.SenderInfo {
+func localSender(comm string, exe procutil.Path) approval.SenderInfo {
 	const pid = 4242
 	return approval.SenderInfo{
 		PID:          pid,
 		InvokerName:  comm,
-		ProcessChain: []approval.ProcessInfo{{Name: comm, PID: pid, Exe: exe}},
+		ProcessChain: []procutil.Process{{Name: comm, PID: pid, Exe: &exe}},
 	}
 }
 

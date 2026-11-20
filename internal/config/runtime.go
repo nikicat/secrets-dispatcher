@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 // The per-user directory under $XDG_RUNTIME_DIR that holds the daemon's
@@ -18,13 +20,13 @@ const SystemdRuntimeDir RuntimeDir = "%t/" + appName
 // sockets.
 var ErrNoRuntimeDir = errors.New("XDG_RUNTIME_DIR is not set to an absolute path")
 
-// The file names in the runtime directory.
+// The file names in the runtime directory, sockets without their extension.
 const (
-	apiSocketName         = "api.sock"
-	sshAgentSocketName    = "ssh-agent.sock"
+	apiSocketName         = "api"
+	sshAgentSocketName    = "ssh-agent"
 	clientSocketsName     = "sockets"
 	remoteSocketsName     = "remote"
-	backendBusSocketName  = "backend-bus.sock"
+	backendBusSocketName  = "backend-bus"
 	keyringControlDirName = "keyring"
 	trialConfigName       = "try-config.yaml"
 )
@@ -42,28 +44,26 @@ func LookupRuntimeDir() (RuntimeDir, error) {
 
 // Returns the socket where the daemon serves its API to clients of the same
 // user, such as the gpg-sign thin client.
-func (d RuntimeDir) APISocket() string { return d.join(apiSocketName) }
+func (d RuntimeDir) APISocket() unixsock.Path { return d.dir().Socket(apiSocketName) }
 
 // Returns the default socket of the SSH agent proxy.
-func (d RuntimeDir) SSHAgentSocket() string { return d.join(sshAgentSocketName) }
+func (d RuntimeDir) SSHAgentSocket() unixsock.Path { return d.dir().Socket(sshAgentSocketName) }
 
 // Returns the default directory of per-client D-Bus sockets.
-func (d RuntimeDir) ClientSockets() string { return d.join(clientSocketsName) }
+func (d RuntimeDir) ClientSockets() unixsock.Dir { return d.dir().Sub(clientSocketsName) }
 
 // Returns the signing socket the daemon serves for the named remote (ADR 0011).
-func (d RuntimeDir) RemoteSocket(name RemoteName) string {
-	return d.join(remoteSocketsName, string(name)+".sock")
+func (d RuntimeDir) RemoteSocket(name RemoteName) unixsock.Path {
+	return d.dir().Sub(remoteSocketsName).Socket(string(name))
 }
 
 // Returns the socket of the private D-Bus that the backend keyring runs on.
-func (d RuntimeDir) BackendBusSocket() string { return d.join(backendBusSocketName) }
+func (d RuntimeDir) BackendBusSocket() unixsock.Path { return d.dir().Socket(backendBusSocketName) }
 
 // Returns the control directory of the gnome-keyring backend.
-func (d RuntimeDir) KeyringControlDir() string { return d.join(keyringControlDirName) }
+func (d RuntimeDir) KeyringControlDir() unixsock.Dir { return d.dir().Sub(keyringControlDirName) }
 
 // Returns the throwaway config of `secrets-dispatcher try`.
-func (d RuntimeDir) TrialConfig() File { return File{d.join(trialConfigName)} }
+func (d RuntimeDir) TrialConfig() File { return File{filepath.Join(string(d), trialConfigName)} }
 
-func (d RuntimeDir) join(names ...string) string {
-	return filepath.Join(append([]string{string(d)}, names...)...)
-}
+func (d RuntimeDir) dir() unixsock.Dir { return unixsock.Dir(d) }

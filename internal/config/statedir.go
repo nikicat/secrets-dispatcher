@@ -14,8 +14,8 @@ type StateDir string
 // The auth token's file name in the state directory.
 const cookieName = ".cookie"
 
-// Parses a state directory. An empty text leaves it unset for OrDefault.
-// Errors when text is a relative path.
+// Parses a state directory. An empty text is unset (ARCHITECTURE.md, "Command
+// line and settings"). Errors when text is a relative path.
 func (d *StateDir) UnmarshalText(text []byte) error {
 	v := StateDir(text)
 	if v != "" && !filepath.IsAbs(string(v)) {
@@ -27,7 +27,9 @@ func (d *StateDir) UnmarshalText(text []byte) error {
 
 // The default state directory as help texts spell it, with $XDG_STATE_HOME
 // left unexpanded.
-const DefaultStateDirHelp = "$XDG_STATE_HOME/" + appName
+var DefaultStateDirHelp = defaultStateDir("$XDG_STATE_HOME")
+
+func defaultStateDir(base string) string { return filepath.Join(base, appName) }
 
 // Returns the current user's default state directory, under the XDG state home.
 func LookupStateDir() (StateDir, error) {
@@ -35,7 +37,7 @@ func LookupStateDir() (StateDir, error) {
 	if err != nil {
 		return "", fmt.Errorf("find the state directory: %w", err)
 	}
-	return StateDir(filepath.Join(base, appName)), nil
+	return StateDir(defaultStateDir(base)), nil
 }
 
 // Returns d, or the current user's default state directory when d is empty.
@@ -44,19 +46,6 @@ func (d StateDir) OrDefault() (StateDir, error) {
 		return d, nil
 	}
 	return LookupStateDir()
-}
-
-func (d StateDir) String() string { return string(d) }
-
-// Sets the directory from a command-line flag, as flag.Value does. Resolves a
-// relative path against the current directory.
-func (d *StateDir) Set(value string) error {
-	abs, err := absOrEmpty(value)
-	if err != nil {
-		return err
-	}
-	*d = StateDir(abs)
-	return nil
 }
 
 // Returns the file that holds the API's auth token.

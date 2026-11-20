@@ -6,8 +6,8 @@ tags: [refactor, api]
 
 ## Goal
 Every `PendingRequest` is now built by `convertRequest` (`websocket.go`), but
-`HandleTestInjectHistory` (`handlers.go`) hand-writes the inverse conversion and
-drops `SystemdUnit` and `GPGSignInfo`. Done when paired conversions live
-together with a round-trip test.
+`HandleTestInjectHistory` (`handlers.go`) hand-writes the inverse conversion of
+the items and drops `GPGSignInfo`. The sender info is shared and needs no
+conversion. Done when paired conversions live together with a round-trip test.
 
 Found by the 2026-11-19 unsmell run. (b3-9, b3-10)

@@ -13,12 +13,13 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
 
 // DaemonClient communicates with the secrets-dispatcher daemon over a Unix socket.
 type DaemonClient struct {
-	socketPath string
+	socketPath unixsock.Path
 	token      config.AuthToken
 	httpClient *http.Client
 }
@@ -35,10 +36,10 @@ const wsReadLimit = 1 << 20
 func SocketURL(path string) string { return "http://" + socketHost + path }
 
 // Builds an HTTP client that sends every request to the unix socket at socketPath.
-func UnixSocketClient(socketPath string) *http.Client {
+func UnixSocketClient(socketPath unixsock.Path) *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			return socketPath.Dial(ctx)
 		},
 	}}
 }
@@ -70,7 +71,7 @@ func postJSON(ctx context.Context, client *http.Client, path string, header http
 }
 
 // Returns a client of the daemon API at socketPath.
-func NewDaemonClient(socketPath string, token config.AuthToken) *DaemonClient {
+func NewDaemonClient(socketPath unixsock.Path, token config.AuthToken) *DaemonClient {
 	return &DaemonClient{
 		socketPath: socketPath,
 		token:      token,

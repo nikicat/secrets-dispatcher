@@ -51,25 +51,6 @@ func TestSourceLoadExplicitMissingFile(t *testing.T) {
 	assert.ErrorContains(t, err, path)
 }
 
-func TestPathSet(t *testing.T) {
-	for _, tc := range []struct{ in, want Path }{
-		{"/etc/custom.yaml", "/etc/custom.yaml"},
-		{"", ""},
-	} {
-		var p Path
-		require.NoError(t, p.Set(string(tc.in)))
-		assert.Equal(t, tc.want, p, "Set(%q)", tc.in)
-	}
-}
-
-func TestPathSetRelative(t *testing.T) {
-	dir := t.TempDir()
-	t.Chdir(dir)
-	var p Path
-	require.NoError(t, p.Set("x.yaml"))
-	assert.Equal(t, Path(filepath.Join(dir, "x.yaml")), p)
-}
-
 func TestFileLoadOrEmptyMissingFile(t *testing.T) {
 	cfg, err := File{filepath.Join(t.TempDir(), "missing.yaml")}.LoadOrEmpty()
 	require.NoError(t, err)

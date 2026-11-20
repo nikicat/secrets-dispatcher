@@ -3,31 +3,36 @@ package approval
 
 import (
 	"fmt"
-	"path/filepath"
 	"slices"
-	"strings"
+
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
+
+// The way a request came in: a bus, the SSH agent socket or a remote. Trust
+// rules match on it.
+type ClientName string
 
 // Client names the dispatcher gives its own clients. No forwarded bus may take one.
 const (
 	// The session bus.
-	ClientLocal = "local"
+	ClientLocal ClientName = "local"
 	// The SSH agent socket.
-	ClientSSHAgent = "ssh-agent"
+	ClientSSHAgent ClientName = "ssh-agent"
 	// A client that was given no name.
-	ClientUnknown = "unknown"
+	ClientUnknown ClientName = "unknown"
 )
 
-// Returns the client name of the bus forwarded through socketPath, the file's
-// name without ".sock". Errors when that name is empty or one the dispatcher
-// reserves.
-func ClientFromSocket(socketPath string) (string, error) {
-	name := strings.TrimSuffix(filepath.Base(socketPath), ".sock")
+// Returns the client name of the bus forwarded through socket, as
+// unixsock.Path.Name reads it. Errors when that name is empty or one the
+// dispatcher reserves.
+func ClientFromSocket(socket unixsock.Path) (ClientName, error) {
+	name := ClientName(socket.Name())
 	if name == "" {
-		return "", fmt.Errorf("socket %s has no client name", socketPath)
+		return "", fmt.Errorf("socket %s has no client name", socket)
 	}
-	if slices.Contains([]string{ClientLocal, ClientSSHAgent, ClientUnknown}, name) {
-		return "", fmt.Errorf("socket %s takes the reserved client name %q", socketPath, name)
+	if slices.Contains([]ClientName{ClientLocal, ClientSSHAgent, ClientUnknown}, name) {
+		return "", fmt.Errorf("socket %s takes the reserved client name %q", socket, name)
 	}
 	return name, nil
 }
@@ -36,15 +41,6 @@ func ClientFromSocket(socketPath string) (string, error) {
 // sender on a forwarded bus has neither a process chain nor a unit.
 func (s SenderInfo) hasLocalProcess() bool {
 	return len(s.ProcessChain) > 0 || s.SystemdUnit != ""
-}
-
-// ProcessInfo represents a single process in the process chain.
-type ProcessInfo struct {
-	Name string   `json:"name"`
-	PID  uint32   `json:"pid"`
-	Exe  string   `json:"exe,omitempty"`
-	Args []string `json:"args,omitempty"`
-	CWD  string   `json:"cwd,omitempty"`
 }
 
 // TrustRule defines a persistent declarative rule from config for auto-approving, ignoring, or denying requests.
@@ -69,7 +65,7 @@ func (r *TrustRule) clientGlob() string {
 	case r.Action == RuleDeny:
 		return "*"
 	default:
-		return ClientLocal
+		return string(ClientLocal)
 	}
 }
 
@@ -122,14 +118,9 @@ type SecretMatcher struct {
 
 // SenderInfo contains information about the D-Bus sender process.
 type SenderInfo struct {
-	Sender       string        `json:"sender"`                  // D-Bus unique name (":1.123")
-	Client       string        `json:"-"`                       // The client the request came through, matched by TrustRule.Client
-	PID          uint32        `json:"pid"`                     // Process ID
-	UID          uint32        `json:"uid"`                     // User ID
-	UserName     string        `json:"user_name"`               // Username (may be empty if lookup fails)
-	InvokerName  string        `json:"invoker_name"`            // Invoker process comm (display); spoofable — NOT the systemd unit
-	SystemdUnit  string        `json:"systemd_unit,omitempty"`  // Real systemd unit (from GetUnitByPID); authoritative, matched by the `unit` rule
-	ProcessChain []ProcessInfo `json:"process_chain,omitempty"` // Full process chain from requestor to init
+	sender.Info
+	// The client the request came through.
+	Client ClientName `json:"-"`
 	// PeerTrusted reports whether the process that opened the connection is a
 	// trusted transport for this request — one whose self-reported, server-
 	// unverifiable fields (repo name, changed files, commit object) we can rely on

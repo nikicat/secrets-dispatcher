@@ -1,15 +1,17 @@
 package proxy
 
 import (
-	"log/slog"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-func uniqueName(conn *dbus.Conn) senderName {
-	return senderName(conn.Names()[0])
+func uniqueName(conn *dbus.Conn) sender.UniqueName {
+	return sender.UniqueName(conn.Names()[0])
 }
 
 func startTestProxy(t *testing.T, frontAddr, backendAddr string) *Proxy {
@@ -18,7 +20,7 @@ func startTestProxy(t *testing.T, frontAddr, backendAddr string) *Proxy {
 	require.NoError(t, err, "connect proxy to backend bus")
 	frontConn, err := dbus.Connect(frontAddr)
 	require.NoError(t, err, "connect proxy to front bus")
-	p := New(Config{ClientName: t.Name(), LogLevel: slog.LevelDebug})
+	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), Config{})
 	require.NoError(t, p.ConnectWith(frontConn, backendConn), "connect proxy")
 	t.Cleanup(func() { p.Close() })
 	return p

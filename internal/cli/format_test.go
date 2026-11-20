@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 func TestRequestSummary_GPGSign(t *testing.T) {
@@ -182,12 +185,11 @@ func TestFormatRequest_ShowsItemAttributes(t *testing.T) {
 			Path:       "/org/freedesktop/secrets/collection/login/42",
 			Attributes: map[string]string{"service": "ssh", "user": "alice"},
 		}},
-		SenderInfo: SenderInfo{
-			Sender:      ":1.42",
+		SenderInfo: sender.Info{
+			Sender:      new(sender.UniqueName(":1.42")),
 			PID:         1234,
-			UID:         1000,
-			UserName:    "alice",
-			InvokerName: "myapp.service",
+			UID:         new(procutil.UID(1000)),
+			SystemdUnit: "myapp.service",
 		},
 		Session:   "/org/freedesktop/secrets/session/s1",
 		ExpiresAt: time.Now().Add(5 * time.Minute),
@@ -205,7 +207,7 @@ func TestFormatRequest_ShowsItemAttributes(t *testing.T) {
 	mustContain(t, out, "  Attrs:\n")
 	mustContain(t, out, "    service: ssh\n")
 	mustContain(t, out, "    user: alice\n")
-	mustContain(t, out, "User:    alice (UID 1000)")
+	mustContain(t, out, "Process: myapp.service")
 	mustContain(t, out, "Sender:  :1.42")
 	mustContain(t, out, "Session: /org/freedesktop/secrets/session/s1")
 	mustContain(t, out, "Expires:")

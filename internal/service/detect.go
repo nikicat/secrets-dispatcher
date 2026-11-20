@@ -1,12 +1,14 @@
 package service
 
 import (
+	"context"
 	"fmt"
-	"os"
 	"path/filepath"
+
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
-// ProviderKind identifies a known Secret Service implementation.
+// A known Secret Service implementation.
 type ProviderKind string
 
 const (
@@ -14,23 +16,26 @@ const (
 	ProviderGopass       ProviderKind = "gopass"
 	ProviderKWallet      ProviderKind = "kwallet"
 	ProviderDispatcher   ProviderKind = "secrets-dispatcher"
-	ProviderNone         ProviderKind = "none"    // nothing owns org.freedesktop.secrets
 	ProviderUnknown      ProviderKind = "unknown" // owned, but not by a known implementation
 )
 
-// Provider describes the current owner of org.freedesktop.secrets on the
-// session bus, plus the desktop environment it runs in. It drives the
-// install-time decision of which masking/topology to apply and which
-// private backend to default to (ADR 0009).
+// Who owns org.freedesktop.secrets on the session bus. It drives the
+// install-time decision of which masking/topology to apply and which private
+// backend to default to (ADR 0009).
 type Provider struct {
-	Kind    ProviderKind
-	PID     int
-	Exe     string // resolved /proc/<pid>/exe; empty if unresolvable
-	Desktop string // $XDG_CURRENT_DESKTOP (e.g. "ubuntu:GNOME"), informational
+	// The owning process; nil when nothing owns the name.
+	Owner *Owner
 }
 
-// readlinkFunc is the function used to resolve /proc/<pid>/exe. Replaced in tests.
-var readlinkFunc = os.Readlink
+// The process that owns org.freedesktop.secrets.
+type Owner struct {
+	PID procutil.PID
+	// The resolved /proc/<pid>/exe; nil when it cannot be resolved.
+	Exe *procutil.Path
+}
+
+// Returns the executable of a process. Replaced in tests.
+var exeOf = procutil.PID.Exe
 
 // exeToKind maps a Secret Service daemon binary name to its provider kind.
 // Exact names, deliberately: matching on globs would misclassify wrappers.
@@ -42,50 +47,58 @@ var exeToKind = map[string]ProviderKind{
 	"secrets-dispatcher":   ProviderDispatcher,
 }
 
-// DetectProvider resolves who currently owns org.freedesktop.secrets on the
-// session bus (owner PID -> /proc/<pid>/exe) and the current desktop.
-func DetectProvider() Provider {
-	p := Provider{Kind: ProviderNone, Desktop: os.Getenv("XDG_CURRENT_DESKTOP")}
-
-	// Same mechanism as stopDBusActivatedService: ask the bus daemon for the
-	// owner's PID. Fails when the name is unowned.
-	out, err := execOutputFunc("busctl", "--user", "call",
-		"org.freedesktop.DBus", "/org/freedesktop/DBus",
-		"org.freedesktop.DBus", "GetConnectionUnixProcessID",
-		"s", "org.freedesktop.secrets")
+// Resolves who currently owns org.freedesktop.secrets on the session bus
+// (owner PID -> /proc/<pid>/exe).
+func DetectProvider(ctx context.Context) Provider {
+	pid, err := session.secretsOwner(ctx)
 	if err != nil {
-		return p
+		return Provider{}
 	}
-	var pid int
-	if _, err := fmt.Sscanf(string(out), "u %d", &pid); err != nil || pid <= 0 {
-		return p
+	o := &Owner{PID: pid}
+	if exe, ok := exeOf(pid); ok {
+		o.Exe = &exe
 	}
-	p.PID = pid
-	p.Kind = ProviderUnknown
-
-	exe, err := readlinkFunc(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		return p
-	}
-	p.Exe = exe
-
-	if kind, ok := exeToKind[filepath.Base(exe)]; ok {
-		p.Kind = kind
-	}
-	return p
+	return Provider{Owner: o}
 }
 
-// String renders the provider for user-facing output.
-func (p Provider) String() string {
-	switch p.Kind {
-	case ProviderNone:
-		return "none (org.freedesktop.secrets is unowned)"
-	case ProviderUnknown:
-		if p.Exe != "" {
-			return fmt.Sprintf("unknown (%s, pid %d)", p.Exe, p.PID)
-		}
-		return fmt.Sprintf("unknown (pid %d)", p.PID)
-	default:
-		return fmt.Sprintf("%s (pid %d)", p.Kind, p.PID)
+// Reports whether a provider of kind owns the name.
+func (p Provider) is(kind ProviderKind) bool { return p.Owner != nil && p.Owner.Kind() == kind }
+
+// Returns the owner of the name when it is not the dispatcher, nil otherwise.
+func (p Provider) displaced() *Owner {
+	if p.Owner == nil || p.Owner.Kind() == ProviderDispatcher {
+		return nil
 	}
+	return p.Owner
+}
+
+func (p Provider) String() string {
+	if p.Owner == nil {
+		return "none (org.freedesktop.secrets is unowned)"
+	}
+	return p.Owner.String()
+}
+
+// Returns the implementation that o's executable names. Returns
+// ProviderUnknown when the executable names no known implementation or was not
+// resolved.
+func (o Owner) Kind() ProviderKind {
+	if o.Exe != nil {
+		if kind, ok := exeToKind[filepath.Base(string(*o.Exe))]; ok {
+			return kind
+		}
+	}
+	return ProviderUnknown
+}
+
+func (o Owner) String() string {
+	if o.Kind() == ProviderUnknown && o.Exe != nil {
+		return fmt.Sprintf("unknown (%s, pid %d)", *o.Exe, o.PID)
+	}
+	return fmt.Sprintf("%s (pid %d)", o.Kind(), o.PID)
+}
+
+// Returns the change that stops o, as the dry run lists it.
+func (o Owner) sigtermChange() Change {
+	return Change{"signal", fmt.Sprintf("SIGTERM -> pid %d (%s)", o.PID, o.Kind()), "current owner of org.freedesktop.secrets"}
 }

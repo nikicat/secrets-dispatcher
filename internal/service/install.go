@@ -2,17 +2,19 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/poll"
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
+	"github.com/nikicat/secrets-dispatcher/internal/textfile"
 )
 
 const (
@@ -63,7 +65,7 @@ Description=Secrets Dispatcher - Private D-Bus daemon
 
 [Service]
 Type=simple
-ExecStart=%s --session --nofork --nopidfile --address=systemd:
+ExecStart=%s
 `
 
 const backendServiceTemplate = `[Unit]
@@ -74,7 +76,7 @@ After=` + string(busSocketUnit) + `
 [Service]
 Type=simple
 ExecStart=%s
-Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%s
+Environment=DBUS_SESSION_BUS_ADDRESS=%s
 `
 
 const localProxyTemplate = `[Unit]
@@ -94,20 +96,19 @@ WantedBy=graphical-session.target
 `
 
 const (
-	dbusServiceFile    = "org.freedesktop.secrets.service"
-	dbusBackupSuffix   = ".pre-dispatcher"
-	dbusActivationMask = "[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/bin/false\n"
+	dbusServiceFile    = dbustypes.BusName + ".service"
+	dbusActivationMask = "[D-BUS Service]\nName=" + dbustypes.BusName + "\nExec=/bin/false\n"
 )
 
-// Options configures service installation.
 type Options struct {
 	// The config file that the proxy unit's `serve` command reads. Install
 	// rewrites its serve topology and keeps every other setting.
 	ConfigPath config.Path
 	// Start the service immediately after enabling.
-	Start   bool
-	Mode    Mode
-	Backend Backend
+	Start bool
+	Mode  Mode
+	// A takeover's private backend; nil picks it from the provider.
+	Backend *Backend
 	// How much of its work Install prints. Plan ignores it.
 	Narration Narration
 }
@@ -118,40 +119,14 @@ type Narration int
 const (
 	// Prints provider detection, ownership, ✓ summaries and warnings.
 	NarrateMilestones Narration = iota
-	// Also prints every file and unit change and systemctl's own output.
+	// Also prints every file and unit change, with the symlinks that enabling
+	// and disabling units created or removed.
 	NarrateChanges
 )
 
-// Returns "true" under NarrateChanges, "false" otherwise, as a bool flag shows.
-func (n Narration) String() string {
-	return strconv.FormatBool(n.changes())
-}
-
-// Parses a bool flag value: true selects NarrateChanges, false
-// NarrateMilestones. Errors when s is not a bool.
-func (n *Narration) Set(s string) error {
-	changes, err := strconv.ParseBool(s)
-	if err != nil {
-		return err
-	}
-	*n = NarrateMilestones
-	if changes {
-		*n = NarrateChanges
-	}
-	return nil
-}
-
-// Reports true, so the flag works without a value.
-func (*Narration) IsBoolFlag() bool { return true }
-
-// Reports whether every change prints, not only the milestones.
-func (n Narration) changes() bool {
-	return n == NarrateChanges
-}
-
 // Prints a per-change line, only under NarrateChanges.
 func (n Narration) printf(format string, args ...any) {
-	if n.changes() {
+	if n == NarrateChanges {
 		fmt.Printf(format, args...)
 	}
 }
@@ -160,66 +135,103 @@ func (n Narration) printf(format string, args ...any) {
 type host struct {
 	// How much of the changes to the session print.
 	narration Narration
+	units     unitManager
+	// The takeover files under the user's XDG homes.
+	files takeoverFiles
 }
 
-// Runs `systemctl --user` with args.
-func (h host) systemctl(args ...string) error {
-	return systemctlFunc(h.narration, args...)
+// Returns a host on the user's systemd manager, which the caller closes.
+func openHost(ctx context.Context, n Narration) (host, error) {
+	files, err := locateTakeoverFiles()
+	if err != nil {
+		return host{}, err
+	}
+	units, err := openUnitManager(ctx)
+	if err != nil {
+		return host{}, err
+	}
+	return host{narration: n, units: units, files: files}, nil
 }
 
-// A systemctl command that the service package runs.
-type systemctlVerb string
+func (h host) close() { h.units.Close() }
 
-const (
-	verbStop         systemctlVerb = "stop"
-	verbDisable      systemctlVerb = "disable"
-	verbEnable       systemctlVerb = "enable"
-	verbStart        systemctlVerb = "start"
-	verbTryRestart   systemctlVerb = "try-restart"
-	verbRestart      systemctlVerb = "restart"
-	verbDaemonReload systemctlVerb = "daemon-reload"
-	verbIsActive     systemctlVerb = "is-active"
-)
+func (h host) reload(ctx context.Context) error {
+	if err := h.units.Reload(ctx); err != nil {
+		return err
+	}
+	h.narration.printf("Reloaded systemd user units\n")
+	return nil
+}
 
-// Runs `systemctl --user verb u`.
-func (h host) systemctlUnit(verb systemctlVerb, u systemd.Unit) error {
-	return h.systemctl(string(verb), string(u))
+func (h host) enable(ctx context.Context, u systemd.Unit) error {
+	changes, err := h.units.Unit(u).Enable(ctx)
+	if err != nil {
+		return err
+	}
+	h.narrateFileChanges(changes)
+	h.narration.printf("Enabled %s\n", u)
+	return nil
+}
+
+func (h host) start(ctx context.Context, u systemd.Unit) error {
+	if err := h.units.Unit(u).Start(ctx); err != nil {
+		return err
+	}
+	h.narration.printf("Started %s\n", u)
+	return nil
+}
+
+// Stops and disables u. Failures are ignored, since u may not be loaded or
+// enabled.
+func (h host) retire(ctx context.Context, u systemd.Unit) {
+	unit := h.units.Unit(u)
+	if unit.Stop(ctx) == nil {
+		h.narration.printf("Stopped %s\n", u)
+	}
+	if changes, err := unit.Disable(ctx); err == nil {
+		h.narrateFileChanges(changes)
+	}
+}
+
+func (h host) narrateFileChanges(changes []unitFileChange) {
+	for _, c := range changes {
+		h.narration.printf("%s\n", c)
+	}
 }
 
 // lookPathFunc is the function used to find binaries on PATH.
 // Replaced in tests.
 var lookPathFunc = exec.LookPath
 
-// execOutputFunc runs a command and returns stdout. Replaced in tests.
-var execOutputFunc = func(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).Output()
-}
-
 // Returns the systemd user unit directory, under the XDG config home.
-func unitDir() (string, error) {
+func unitDir() (systemd.UnitDir, error) {
 	configHome, err := config.ConfigHome()
 	if err != nil {
-		return "", err
+		return systemd.UnitDir{}, err
 	}
-	return filepath.Join(configHome, "systemd", "user"), nil
+	return systemd.UserUnitDir(configHome), nil
 }
 
-// Install writes systemd user unit files, updates the config topology,
-// reloads systemd, and enables the service. Plan(opts) previews the same
-// changes without making them.
-func Install(opts Options) error {
-	in, err := resolveInstallInputs(opts)
+// Installs and enables the service units for opts.Mode, and starts them when
+// opts.Start is set. A local or full install takes org.freedesktop.secrets over
+// (ADR 0009). Plan(opts) lists the same changes. ctx bounds each systemd call.
+func Install(ctx context.Context, opts Options) error {
+	in, err := resolveInstallInputs(ctx, opts)
 	if err != nil {
 		return err
 	}
-	h := host{narration: opts.Narration}
+	h, err := openHost(ctx, opts.Narration)
+	if err != nil {
+		return err
+	}
+	defer h.close()
 
 	if err := in.writeTopology(); err != nil {
 		return err
 	}
 	h.narration.printf("Wrote config: %s\n", in.configPath)
 
-	if err := in.topology.prepare(h); err != nil {
+	if err := in.topology.prepare(ctx, h); err != nil {
 		return err
 	}
 
@@ -233,49 +245,42 @@ func Install(opts Options) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create unit dir: %w", err)
-	}
-
 	for _, u := range allUnitNames {
-		path := u.Path(dir)
+		file := dir.UnitFile(u)
 		if content, ok := needed[u]; ok {
-			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			if err := file.Write(content); err != nil {
 				return fmt.Errorf("write %s: %w", u, err)
 			}
-			h.narration.printf("Wrote unit file: %s\n", path)
+			h.narration.printf("Wrote unit file: %s\n", file)
 		} else {
 			// Clean up units from a previous mode if they exist.
-			if _, statErr := os.Stat(path); statErr == nil {
-				_ = h.systemctlUnit(verbStop, u)
-				_ = h.systemctlUnit(verbDisable, u)
-				if rmErr := os.Remove(path); rmErr != nil {
+			if file.Exists() {
+				h.retire(ctx, u)
+				if rmErr := file.Remove(); rmErr != nil {
 					return fmt.Errorf("remove stale %s: %w", u, rmErr)
 				}
-				h.narration.printf("Removed stale unit: %s\n", path)
+				h.narration.printf("Removed stale unit: %s\n", file)
 			}
 		}
 	}
 
 	// Reload and enable.
-	if err := h.systemctl(string(verbDaemonReload)); err != nil {
+	if err := h.reload(ctx); err != nil {
 		return err
 	}
 	for _, u := range in.topology.activated() {
-		if err := h.systemctlUnit(verbEnable, u); err != nil {
+		if err := h.enable(ctx, u); err != nil {
 			return err
 		}
-		h.narration.printf("Enabled %s\n", u)
 	}
 
 	if opts.Start {
 		for _, u := range in.topology.activated() {
-			if err := h.systemctlUnit(verbStart, u); err != nil {
+			if err := h.start(ctx, u); err != nil {
 				return err
 			}
-			h.narration.printf("Started %s\n", u)
 		}
-		in.topology.confirm()
+		in.topology.confirm(ctx)
 	}
 
 	return nil
@@ -285,23 +290,28 @@ func Install(opts Options) error {
 // polls. Shortened in tests.
 var ownerWaitTimeout = 5 * time.Second
 
-// waitForOwner polls until kind owns org.freedesktop.secrets or the timeout
-// expires, returning the last-seen provider either way.
-func waitForOwner(kind ProviderKind, timeout time.Duration) (Provider, bool) {
+// Returns the Secret Service provider as soon as one of the given kind owns
+// org.freedesktop.secrets. Returns the last provider seen when
+// ownerWaitTimeout passes or ctx ends first.
+func waitForOwner(ctx context.Context, kind ProviderKind) Provider {
 	var p Provider
-	ok := poll.Until(timeout, 250*time.Millisecond, func() bool {
-		p = DetectProvider()
-		return p.Kind == kind
+	poll.Until(ctx, ownerWaitTimeout, 250*time.Millisecond, func() bool {
+		p = DetectProvider(ctx)
+		return p.is(kind)
 	})
-	return p, ok
+	return p
 }
 
-// reportOwnership prints who owns org.freedesktop.secrets after a takeover
-// start, warning when the dispatcher did not end up in front.
-func reportOwnership() {
-	p, ok := waitForOwner(ProviderDispatcher, ownerWaitTimeout)
-	if ok {
-		fmt.Printf("org.freedesktop.secrets is now owned by secrets-dispatcher (pid %d)\n", p.PID)
+// Prints who owns org.freedesktop.secrets after a takeover
+// start, warning when the dispatcher did not end up in front. Prints nothing
+// when ctx ended first.
+func reportOwnership(ctx context.Context) {
+	p := waitForOwner(ctx, ProviderDispatcher)
+	if ctx.Err() != nil {
+		return
+	}
+	if p.is(ProviderDispatcher) {
+		fmt.Printf("org.freedesktop.secrets is now owned by secrets-dispatcher (pid %d)\n", p.Owner.PID)
 		return
 	}
 	fmt.Printf("WARNING: org.freedesktop.secrets is owned by %s — secrets-dispatcher is NOT in front\n", p)
@@ -318,13 +328,17 @@ func (in installInputs) writeTopology() error {
 	return in.configPath.Save(cfg)
 }
 
-// Uninstall stops and disables all service units, removes unit files, and reloads systemd.
-func Uninstall(n Narration) error {
-	h := host{narration: n}
-	// Stop and disable all known units (ignore errors for missing ones).
+// Stops, disables and removes every service unit, and restores the Secret
+// Service setup that an install displaced (ADR 0009). ctx bounds each
+// systemd call.
+func Uninstall(ctx context.Context, n Narration) error {
+	h, err := openHost(ctx, n)
+	if err != nil {
+		return err
+	}
+	defer h.close()
 	for _, u := range allUnitNames {
-		_ = h.systemctlUnit(verbStop, u)
-		_ = h.systemctlUnit(verbDisable, u)
+		h.retire(ctx, u)
 	}
 
 	dir, err := unitDir()
@@ -333,155 +347,88 @@ func Uninstall(n Narration) error {
 	}
 
 	for _, u := range allUnitNames {
-		path := u.Path(dir)
-		if err := os.Remove(path); err != nil {
-			if !os.IsNotExist(err) {
+		file := dir.UnitFile(u)
+		if err := file.Remove(); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", u, err)
 			}
 			continue
 		}
-		h.narration.printf("Removed %s\n", path)
+		h.narration.printf("Removed %s\n", file)
 	}
 
-	if err := h.leaveTakeover(); err != nil {
+	if err := h.leaveTakeover(ctx); err != nil {
 		return err
 	}
 
-	return h.systemctl(string(verbDaemonReload))
+	return h.reload(ctx)
 }
 
-// Restarts the proxy unit, with systemctl's output on the terminal.
-func RestartProxy() error {
-	return host{narration: NarrateChanges}.systemctlUnit(verbRestart, proxyServiceUnit)
-}
-
-// systemctlFunc is the function used to run systemctl commands.
-// Replaced in tests to avoid requiring a real systemd.
-var systemctlFunc = systemctlExec
-
-func systemctlExec(n Narration, args ...string) error {
-	fullArgs := append([]string{"--user"}, args...)
-	cmd := exec.Command("systemctl", fullArgs...)
-	if n.changes() {
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("systemctl %s: %w", args[0], err)
-		}
-		return nil
-	}
-	// Quiet mode: swallow systemctl's narration ("Created symlink …"), but a
-	// failure must still show everything it said.
-	out, err := cmd.CombinedOutput()
+// Restarts the proxy unit and waits until it is back, or until ctx ends.
+func RestartProxy(ctx context.Context) error {
+	units, err := openUnitManager(ctx)
 	if err != nil {
-		return fmt.Errorf("systemctl %s: %w\n%s", args[0], err, out)
+		return err
 	}
-	return nil
+	defer units.Close()
+	return units.Unit(proxyServiceUnit).Restart(ctx)
 }
 
 // Returns the user D-Bus service directory, under the XDG data home.
-func dbusServiceDir() (string, error) {
+func dbusServiceDir() (textfile.Dir, error) {
 	dataHome, err := config.DataHome()
 	if err != nil {
-		return "", err
+		return textfile.Dir{}, err
 	}
-	return filepath.Join(dataHome, "dbus-1", "services"), nil
+	return textfile.DirAt(dataHome, "dbus-1", "services"), nil
 }
 
-func reloadDBus() {
-	_, _ = execOutputFunc("busctl", "--user", "call",
-		"org.freedesktop.DBus", "/org/freedesktop/DBus",
-		"org.freedesktop.DBus", "ReloadConfig")
-}
-
-func (h host) maskDBusActivation() error {
+// Returns the D-Bus activation mask of org.freedesktop.secrets, in the user
+// D-Bus service directory.
+func dbusMask() (managedFile, error) {
 	dir, err := dbusServiceDir()
 	if err != nil {
+		return managedFile{}, err
+	}
+	return managedFile{
+		file:    dir.File(dbusServiceFile),
+		name:    "D-Bus activation mask",
+		purpose: "mask D-Bus activation of org.freedesktop.secrets",
+		content: dbusActivationMask,
+	}, nil
+}
+
+func (h host) maskDBusActivation(ctx context.Context) error {
+	if err := h.files.mask.write(h.narration); err != nil {
 		return err
 	}
-	path := filepath.Join(dir, dbusServiceFile)
-	backupPath := path + dbusBackupSuffix
-
-	existing, err := os.ReadFile(path)
-	if err == nil && string(existing) != dbusActivationMask {
-		if err := os.Rename(path, backupPath); err != nil {
-			return fmt.Errorf("backup %s: %w", dbusServiceFile, err)
-		}
-		h.narration.printf("Backed up %s\n", path)
-	}
-
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create dbus service dir: %w", err)
-	}
-
-	if err := os.WriteFile(path, []byte(dbusActivationMask), 0644); err != nil {
-		return fmt.Errorf("write dbus mask: %w", err)
-	}
-	h.narration.printf("Masked D-Bus activation: %s\n", path)
-
-	reloadDBus()
+	_ = session.reloadConfig(ctx)
 	return nil
 }
 
-func (h host) unmaskDBusActivation() error {
-	dir, err := dbusServiceDir()
-	if err != nil {
+func (h host) unmaskDBusActivation(ctx context.Context) error {
+	restored, err := h.files.mask.restore(h.narration)
+	if err != nil || !restored {
 		return err
 	}
-	path := filepath.Join(dir, dbusServiceFile)
-	backupPath := path + dbusBackupSuffix
-
-	existing, err := os.ReadFile(path)
-	if err != nil {
-		return nil // no mask file
-	}
-	if string(existing) != dbusActivationMask {
-		return nil // not our mask
-	}
-
-	if _, err := os.Stat(backupPath); err == nil {
-		if err := os.Rename(backupPath, path); err != nil {
-			return fmt.Errorf("restore %s: %w", dbusServiceFile, err)
-		}
-		h.narration.printf("Restored %s from backup\n", path)
-	} else {
-		if err := os.Remove(path); err != nil {
-			return fmt.Errorf("remove dbus mask: %w", err)
-		}
-		h.narration.printf("Removed D-Bus activation mask: %s\n", path)
-	}
-
-	reloadDBus()
+	_ = session.reloadConfig(ctx)
 	return nil
 }
 
 // Gives org.freedesktop.secrets back to the desktop's own provider. Does
 // nothing to what no takeover changed.
-func (h host) leaveTakeover() error {
-	if err := h.unmaskDBusActivation(); err != nil {
+func (h host) leaveTakeover(ctx context.Context) error {
+	if err := h.unmaskDBusActivation(ctx); err != nil {
 		return err
 	}
-	return h.restoreGnomeKeyring()
+	return h.restoreGnomeKeyring(ctx)
 }
 
-func (h host) stopDBusActivatedService() {
-	// Find the PID of the process currently owning org.freedesktop.secrets on the session bus.
-	out, err := execOutputFunc("busctl", "--user", "call",
-		"org.freedesktop.DBus", "/org/freedesktop/DBus",
-		"org.freedesktop.DBus", "GetConnectionUnixProcessID",
-		"s", "org.freedesktop.secrets")
+func (h host) stopDBusActivatedService(ctx context.Context) {
+	pid, err := session.secretsOwner(ctx)
 	if err != nil {
 		return // name not owned
 	}
-	// busctl output: "u <pid>\n"
-	var pid int
-	if _, err := fmt.Sscanf(string(out), "u %d", &pid); err != nil || pid <= 0 {
-		return
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return
-	}
 	h.narration.printf("Stopping D-Bus activated owner of %s (PID %d)\n", dbusServiceFile, pid)
-	_ = p.Signal(syscall.SIGTERM)
+	_ = pid.Signal(syscall.SIGTERM)
 }

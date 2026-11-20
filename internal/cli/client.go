@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // Client communicates with the secrets-dispatcher API.
@@ -28,25 +29,6 @@ func NewClient(serverAddr config.ListenAddr, token config.AuthToken) *Client {
 			Timeout: 10 * time.Second,
 		},
 	}
-}
-
-// ProcessInfo represents a single process in the process chain.
-type ProcessInfo struct {
-	Name string   `json:"name"`
-	PID  uint32   `json:"pid"`
-	Exe  string   `json:"exe,omitempty"`
-	Args []string `json:"args,omitempty"`
-	CWD  string   `json:"cwd,omitempty"`
-}
-
-// SenderInfo contains information about the D-Bus sender process.
-type SenderInfo struct {
-	Sender       string        `json:"sender"`
-	PID          uint32        `json:"pid"`
-	UID          uint32        `json:"uid"`
-	UserName     string        `json:"user_name"`
-	InvokerName  string        `json:"unit_name"`
-	ProcessChain []ProcessInfo `json:"process_chain,omitempty"`
 }
 
 // ItemInfo contains metadata about a secret item.
@@ -86,7 +68,7 @@ type PendingRequest struct {
 	Type             string            `json:"type"`
 	SearchAttributes map[string]string `json:"search_attributes,omitempty"`
 	GPGSignInfo      *GPGSignInfo      `json:"gpg_sign_info,omitempty"`
-	SenderInfo       SenderInfo        `json:"sender_info"`
+	SenderInfo       sender.Info       `json:"sender_info"`
 }
 
 // HistoryEntry represents a resolved approval request.

@@ -2,37 +2,71 @@ package companion
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/fstest"
+
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
-// saveOrigFuncs restores all injectable syscall functions after the test, and
-// points the session stack at a fake Debian common-session for its duration.
-func saveOrigFuncs(t *testing.T) {
+// Swaps every system seam for the test: root, a companion user secrets-nb
+// (1001:1001) that exists, an in-memory directory tree that holds only "/",
+// a fake Debian session stack, and no-ops for everything else. Returns the tree.
+func fakeSystem(t *testing.T) fakeDirs {
 	t.Helper()
+	dirs := fakeDirs{}
 	fakeSessionStack(t, debianCommonSession)
-	origUserAdd := userAddFunc
-	origLoginctl := loginctlFunc
-	origUserLookup := userLookupFunc
-	origMkdirAll := mkdirAllFunc
-	origChown := chownFunc
-	origChmod := chmodFunc
-	origWriteFile := writeFileFunc
-	origGeteuid := geteuidFunc
-	t.Cleanup(func() {
-		userAddFunc = origUserAdd
-		loginctlFunc = origLoginctl
-		userLookupFunc = origUserLookup
-		mkdirAllFunc = origMkdirAll
-		chownFunc = origChown
-		chmodFunc = origChmod
-		writeFileFunc = origWriteFile
-		geteuidFunc = origGeteuid
-	})
+	testutil.Swap(t, &geteuidFunc, func() procutil.UID { return procutil.RootUID })
+	testutil.Swap(t, &userLookupFunc, mockLookupAlwaysFound("secrets-nb", "1001", "1001"))
+	testutil.Swap(t, &userAddFunc, func(username, homeDir, shell string) error { return nil })
+	testutil.Swap(t, &loginctlFunc, func(args ...string) error { return nil })
+	testutil.Swap(t, &mkdirAllFunc, func(path string, perm os.FileMode) error { return nil })
+	testutil.Swap(t, &mkdirFunc, dirs.mkdir)
+	testutil.Swap(t, &statFunc, dirs.stat)
+	testutil.Swap(t, &chownFunc, func(path string, uid procutil.UID, gid procutil.GID) error { return nil })
+	testutil.Swap(t, &chmodFunc, func(path string, mode os.FileMode) error { return nil })
+	testutil.Swap(t, &writeFileFunc, func(path string, data []byte, perm os.FileMode) error { return nil })
+	return dirs
+}
+
+// An in-memory tree behind mkdirFunc and statFunc, keyed by absolute path.
+type fakeDirs fstest.MapFS
+
+// Maps an absolute path to its fs.FS name.
+func fsName(path string) string {
+	if path == "/" {
+		return "."
+	}
+	return strings.TrimPrefix(path, "/")
+}
+
+func (d fakeDirs) stat(path string) (fs.FileInfo, error) {
+	return fs.Stat(fstest.MapFS(d), fsName(path))
+}
+
+// Fails as os.Mkdir does when path exists or its parent is missing.
+func (d fakeDirs) mkdir(path string, perm os.FileMode) error {
+	if _, err := d.stat(path); err == nil {
+		return fs.ErrExist
+	}
+	if parent, err := d.stat(filepath.Dir(path)); err != nil || !parent.IsDir() {
+		return fs.ErrNotExist
+	}
+	d[fsName(path)] = &fstest.MapFile{Mode: fs.ModeDir | perm}
+	return nil
+}
+
+// Reports whether path is a directory in the tree.
+func (d fakeDirs) isDir(path string) bool {
+	info, err := d.stat(path)
+	return err == nil && info.IsDir()
 }
 
 // A trimmed Debian /etc/pam.d/common-session.
@@ -51,69 +85,29 @@ func fakeSessionStack(t *testing.T, content string) string {
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
-	orig := sessionStacks
-	sessionStacks = []string{path}
-	t.Cleanup(func() { sessionStacks = orig })
+	testutil.Swap(t, &sessionStacks, []string{path})
 	return path
 }
 
-// mockRootEuid makes geteuidFunc return 0 (root).
-func mockRootEuid() {
-	geteuidFunc = func() int { return 0 }
-}
-
-// mockUserNotFound makes userLookupFunc return a "not found" error.
-func mockUserNotFound() {
-	userLookupFunc = func(username string) (*user.User, error) {
-		return nil, user.UnknownUserError(username)
-	}
-}
-
-// noopFuncs stubs out all filesystem/exec calls to be no-ops.
-func noopFuncs() {
-	userAddFunc = func(username, homeDir, shell string) error { return nil }
-	loginctlFunc = func(args ...string) error { return nil }
-	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
-	chownFunc = func(path string, uid, gid int) error { return nil }
-	chmodFunc = func(path string, mode os.FileMode) error { return nil }
-	writeFileFunc = func(path string, data []byte, perm os.FileMode) error { return nil }
-}
-
 func TestProvision_CreatesUser(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
+	fakeSystem(t)
 
 	var addedUser, addedHome, addedShell string
-	userAddFunc = func(username, homeDir, shell string) error {
+	testutil.Swap(t, &userAddFunc, func(username, homeDir, shell string) error {
 		addedUser = username
 		addedHome = homeDir
 		addedShell = shell
 		return nil
-	}
+	})
 	// First lookup: not found (triggers creation). Second lookup: returns created user.
 	callCount := 0
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, user.UnknownUserError(username)
 		}
 		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	}
-
-	noopFuncs()
-	userAddFunc = func(username, homeDir, shell string) error {
-		addedUser = username
-		addedHome = homeDir
-		addedShell = shell
-		return nil
-	}
-	userLookupFunc = func(username string) (*user.User, error) {
-		callCount++
-		if callCount == 1 {
-			return nil, user.UnknownUserError(username)
-		}
-		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -135,18 +129,13 @@ func TestProvision_CreatesUser(t *testing.T) {
 }
 
 func TestProvision_SkipsExistingUser(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-
-	// User already exists on first lookup.
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	fakeSystem(t)
 
 	userAddCalled := false
-	userAddFunc = func(username, homeDir, shell string) error {
+	testutil.Swap(t, &userAddFunc, func(username, homeDir, shell string) error {
 		userAddCalled = true
 		return nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -166,22 +155,20 @@ func mockLookupAlwaysFound(username, uid, gid string) func(string) (*user.User, 
 }
 
 func TestProvision_CreatesDirectories(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	dirs := fakeSystem(t)
+	testutil.Swap(t, &userLookupFunc, mockLookupAlwaysFound("secrets-nb", "1001", "1002"))
 
-	var createdDirs []string
-	mkdirAllFunc = func(path string, perm os.FileMode) error {
-		createdDirs = append(createdDirs, path)
-		return nil
-	}
+	// A filesystem where only the companion home's parent exists.
+	dirs[fsName("/var/lib/secret-companion")] = &fstest.MapFile{Mode: fs.ModeDir | 0755}
 
 	var chownedPaths []string
-	chownFunc = func(path string, uid, gid int) error {
+	testutil.Swap(t, &chownFunc, func(path string, uid procutil.UID, gid procutil.GID) error {
+		if uid != 1001 || gid != 1002 {
+			t.Errorf("chown %q to %d:%d, want 1001:1002", path, uid, gid)
+		}
 		chownedPaths = append(chownedPaths, path)
 		return nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -189,55 +176,52 @@ func TestProvision_CreatesDirectories(t *testing.T) {
 	}
 
 	homeDir := "/var/lib/secret-companion/nb"
-	wantDirs := []string{
-		homeDir, // home dir
-		filepath.Join(homeDir, ".config", "gopass"),          // gopass config
-		filepath.Join(homeDir, ".gnupg"),                     // gnupg
-		filepath.Join(homeDir, ".config", "systemd", "user"), // systemd unit dir
+	created := []string{
+		homeDir,
+		filepath.Join(homeDir, ".config"),
+		filepath.Join(homeDir, ".config", "gopass"),
+		filepath.Join(homeDir, ".gnupg"),
+		filepath.Join(homeDir, ".config", "systemd"),
+		companionHome(homeDir).UnitDir().String(),
 	}
-
-	dirSet := make(map[string]bool, len(createdDirs))
-	for _, d := range createdDirs {
-		dirSet[d] = true
-	}
-	for _, want := range wantDirs {
-		if !dirSet[want] {
-			t.Errorf("expected mkdirAllFunc called for %q; got dirs: %v", want, createdDirs)
+	for _, dir := range created {
+		if !dirs.isDir(dir) {
+			t.Errorf("directory %q not created", dir)
+		}
+		if !slices.Contains(chownedPaths, dir) {
+			t.Errorf("directory %q not handed to the companion; chowned: %v", dir, chownedPaths)
 		}
 	}
-
-	// chown should be called for home dir at minimum.
-	chownSet := make(map[string]bool, len(chownedPaths))
-	for _, p := range chownedPaths {
-		chownSet[p] = true
+	if unitFile := companionHome(homeDir).UnitDir().UnitFile(daemonUnit).String(); !slices.Contains(chownedPaths, unitFile) {
+		t.Errorf("unit file %q not handed to the companion; chowned: %v", unitFile, chownedPaths)
 	}
-	if !chownSet[homeDir] {
-		t.Errorf("expected chownFunc called for home dir %q; got paths: %v", homeDir, chownedPaths)
+	for _, dir := range []string{"/", "/var", "/var/lib", "/var/lib/secret-companion"} {
+		if slices.Contains(chownedPaths, dir) {
+			t.Errorf("pre-existing directory %q handed to the companion", dir)
+		}
+	}
+}
+
+func TestProvision_FailsOnFileInPlaceOfDirectory(t *testing.T) {
+	dirs := fakeSystem(t)
+	dirs[fsName("/var/lib/secret-companion/nb/.gnupg")] = &fstest.MapFile{Mode: 0600}
+
+	err := Provision(Config{DesktopUser: "nb"})
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("Provision() error = %v, want ENOTDIR", err)
 	}
 }
 
 func TestProvision_WritesDBusPolicy(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
+	fakeSystem(t)
 
-	// Use a real temp dir for file writes so we can read back content.
-	tmpDir := t.TempDir()
-
-	// Wire real writeFileFunc but redirect to tmpDir.
 	var writtenPaths []string
 	var writtenContents [][]byte
-	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+	testutil.Swap(t, &writeFileFunc, func(path string, data []byte, perm os.FileMode) error {
 		writtenPaths = append(writtenPaths, path)
 		writtenContents = append(writtenContents, data)
 		return nil
-	}
-	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
-	chownFunc = func(path string, uid, gid int) error { return nil }
-	chmodFunc = func(path string, mode os.FileMode) error { return nil }
-	userAddFunc = func(username, homeDir, shell string) error { return nil }
-	loginctlFunc = func(args ...string) error { return nil }
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
-	_ = tmpDir
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -271,23 +255,16 @@ func TestProvision_WritesDBusPolicy(t *testing.T) {
 }
 
 func TestProvision_WritesSystemdUnit(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
-	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
-	chownFunc = func(path string, uid, gid int) error { return nil }
-	chmodFunc = func(path string, mode os.FileMode) error { return nil }
-	userAddFunc = func(username, homeDir, shell string) error { return nil }
-	loginctlFunc = func(args ...string) error { return nil }
+	fakeSystem(t)
 
 	var systemdContent string
-	unitPath := filepath.Join("/var/lib/secret-companion/nb", ".config", "systemd", "user", "secrets-dispatcher-daemon.service")
-	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+	unitPath := companionHome("/var/lib/secret-companion/nb").UnitDir().UnitFile(daemonUnit).String()
+	testutil.Swap(t, &writeFileFunc, func(path string, data []byte, perm os.FileMode) error {
 		if path == unitPath {
 			systemdContent = string(data)
 		}
 		return nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -303,25 +280,21 @@ func TestProvision_WritesSystemdUnit(t *testing.T) {
 	if !strings.Contains(systemdContent, "Type=notify") {
 		t.Errorf("systemd unit should have Type=notify; got:\n%s", systemdContent)
 	}
+	if !strings.Contains(systemdContent, "Environment=XDG_RUNTIME_DIR=/run/user/1001\n") {
+		t.Errorf("systemd unit should set the companion's runtime dir; got:\n%s", systemdContent)
+	}
 }
 
 func TestProvision_WritesPAMConfig(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
-	mkdirAllFunc = func(path string, perm os.FileMode) error { return nil }
-	chownFunc = func(path string, uid, gid int) error { return nil }
-	chmodFunc = func(path string, mode os.FileMode) error { return nil }
-	userAddFunc = func(username, homeDir, shell string) error { return nil }
-	loginctlFunc = func(args ...string) error { return nil }
+	fakeSystem(t)
 
 	var pamContent string
-	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+	testutil.Swap(t, &writeFileFunc, func(path string, data []byte, perm os.FileMode) error {
 		if path == pamConfigPath {
 			pamContent = string(data)
 		}
 		return nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -341,16 +314,13 @@ func TestProvision_WritesPAMConfig(t *testing.T) {
 }
 
 func TestProvision_EnablesLinger(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	fakeSystem(t)
 
 	var loginctlArgs []string
-	loginctlFunc = func(args ...string) error {
+	testutil.Swap(t, &loginctlFunc, func(args ...string) error {
 		loginctlArgs = args
 		return nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	if err := Provision(cfg); err != nil {
@@ -363,8 +333,8 @@ func TestProvision_EnablesLinger(t *testing.T) {
 }
 
 func TestProvision_RequiresRoot(t *testing.T) {
-	saveOrigFuncs(t)
-	geteuidFunc = func() int { return 1000 } // non-root
+	fakeSystem(t)
+	testutil.Swap(t, &geteuidFunc, func() procutil.UID { return 1000 }) // non-root
 
 	cfg := Config{DesktopUser: "nb"}
 	err := Provision(cfg)
@@ -377,18 +347,16 @@ func TestProvision_RequiresRoot(t *testing.T) {
 }
 
 func TestProvision_DetectsSUDO_USER(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
+	fakeSystem(t)
 
 	var detectedUser string
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		// Capture what companion username was derived.
 		if after, ok := strings.CutPrefix(username, "secrets-"); ok {
 			detectedUser = after
 		}
 		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	}
+	})
 
 	t.Setenv("SUDO_USER", "alice")
 
@@ -403,8 +371,7 @@ func TestProvision_DetectsSUDO_USER(t *testing.T) {
 }
 
 func TestProvision_FailsWithoutUser(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
+	fakeSystem(t)
 
 	// Ensure SUDO_USER is not set.
 	t.Setenv("SUDO_USER", "")
@@ -420,10 +387,7 @@ func TestProvision_FailsWithoutUser(t *testing.T) {
 }
 
 func TestProvision_Idempotent(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	fakeSystem(t)
 
 	cfg := Config{DesktopUser: "nb"}
 
@@ -439,14 +403,14 @@ func TestProvision_Idempotent(t *testing.T) {
 }
 
 func TestProvision_UserAddPropagatesError(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
+	fakeSystem(t)
 
-	mockUserNotFound()
-	userAddFunc = func(username, homeDir, shell string) error {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
+		return nil, user.UnknownUserError(username)
+	})
+	testutil.Swap(t, &userAddFunc, func(username, homeDir, shell string) error {
 		return errors.New("useradd: exit status 1")
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb"}
 	err := Provision(cfg)
@@ -456,23 +420,21 @@ func TestProvision_UserAddPropagatesError(t *testing.T) {
 }
 
 func TestProvision_CompanionNameOverride(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
+	fakeSystem(t)
 
 	var addedUser string
 	callCount := 0
-	userLookupFunc = func(username string) (*user.User, error) {
+	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, user.UnknownUserError(username)
 		}
 		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	}
-	userAddFunc = func(username, homeDir, shell string) error {
+	})
+	testutil.Swap(t, &userAddFunc, func(username, homeDir, shell string) error {
 		addedUser = username
 		return nil
-	}
+	})
 
 	cfg := Config{DesktopUser: "nb", CompanionName: "sd-companion"}
 	if err := Provision(cfg); err != nil {
@@ -486,15 +448,12 @@ func TestProvision_CompanionNameOverride(t *testing.T) {
 
 // Pins the files Provision writes and the PAM hook's exact content.
 func TestProvision_WrittenFiles(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+	fakeSystem(t)
 	written := map[string]string{}
-	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+	testutil.Swap(t, &writeFileFunc, func(path string, data []byte, perm os.FileMode) error {
 		written[path] = string(data)
 		return nil
-	}
+	})
 
 	if err := Provision(Config{DesktopUser: "nb"}); err != nil {
 		t.Fatalf("Provision() unexpected error: %v", err)
@@ -524,13 +483,13 @@ func TestProvision_WrittenFiles(t *testing.T) {
 }
 
 // Writes only the session stack, for real, and drops every other write.
-func writeOnlySessionStack() {
-	writeFileFunc = func(path string, data []byte, perm os.FileMode) error {
+func writeOnlySessionStack(t *testing.T) {
+	testutil.Swap(t, &writeFileFunc, func(path string, data []byte, perm os.FileMode) error {
 		if slices.Contains(sessionStacks, path) {
 			return os.WriteFile(path, data, perm)
 		}
 		return nil
-	}
+	})
 }
 
 func TestProvision_IncludesPAMConfig(t *testing.T) {
@@ -539,13 +498,10 @@ func TestProvision_IncludesPAMConfig(t *testing.T) {
 		{"no trailing newline", strings.TrimSuffix(debianCommonSession, "\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			saveOrigFuncs(t)
-			mockRootEuid()
-			noopFuncs()
-			userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
+			fakeSystem(t)
 			path := fakeSessionStack(t, tc.stack)
 			must(t, os.Chmod(path, 0640))
-			writeOnlySessionStack()
+			writeOnlySessionStack(t)
 
 			if err := Provision(Config{DesktopUser: "nb"}); err != nil {
 				t.Fatalf("Provision() unexpected error: %v", err)
@@ -567,11 +523,8 @@ func TestProvision_IncludesPAMConfig(t *testing.T) {
 }
 
 func TestProvision_IncludesPAMConfigOnce(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
-	writeOnlySessionStack()
+	fakeSystem(t)
+	writeOnlySessionStack(t)
 	path := sessionStacks[0]
 
 	must(t, Provision(Config{DesktopUser: "nb"}))
@@ -586,11 +539,8 @@ func TestProvision_IncludesPAMConfigOnce(t *testing.T) {
 }
 
 func TestProvision_FailsWithoutSessionStack(t *testing.T) {
-	saveOrigFuncs(t)
-	mockRootEuid()
-	noopFuncs()
-	userLookupFunc = mockLookupAlwaysFound("secrets-nb", "1001", "1001")
-	sessionStacks = []string{filepath.Join(t.TempDir(), "common-session"), filepath.Join(t.TempDir(), "system-login")}
+	fakeSystem(t)
+	testutil.Swap(t, &sessionStacks, []string{filepath.Join(t.TempDir(), "common-session"), filepath.Join(t.TempDir(), "system-login")})
 
 	err := Provision(Config{DesktopUser: "nb"})
 	if err == nil || !strings.Contains(err.Error(), "session include secrets-dispatcher") {

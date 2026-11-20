@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,35 +10,17 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
-func TestIsSocketFile(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected bool
-	}{
-		{"myserver.sock", true},
-		{"/path/to/server.sock", true},
-		{"notasocket.txt", false},
-		{"socket", false},
-		{"socket.sock.bak", false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			result := isSocketFile(tc.name)
-			if result != tc.expected {
-				t.Errorf("isSocketFile(%q) = %v, want %v", tc.name, result, tc.expected)
-			}
-		})
-	}
-}
+func connectSessionBus() (*dbus.Conn, error) { return dbus.ConnectSessionBus() }
 
 func TestNewManager(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir := unixsock.Dir(t.TempDir())
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
+	mgr, err := NewManager(tempDir, NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -49,20 +30,16 @@ func TestNewManager(t *testing.T) {
 		t.Errorf("expected socketsDir %q, got %q", tempDir, mgr.socketsDir)
 	}
 
-	if mgr.approval != approvalMgr {
+	if mgr.factory.approval != approvalMgr {
 		t.Error("approval manager not set correctly")
-	}
-
-	if mgr.logLevel != slog.LevelInfo {
-		t.Errorf("expected logLevel %v, got %v", slog.LevelInfo, mgr.logLevel)
 	}
 }
 
 func TestManager_ClientsEmpty(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir := unixsock.Dir(t.TempDir())
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
+	mgr, err := NewManager(tempDir, NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -78,7 +55,7 @@ func TestManager_ScanExistingSockets_NoSockets(t *testing.T) {
 	tempDir := t.TempDir()
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
 
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
+	mgr, err := NewManager(unixsock.Dir(tempDir), NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
@@ -118,14 +95,14 @@ func TestClientInfo(t *testing.T) {
 }
 
 func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir := unixsock.Dir(t.TempDir())
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	mgr, err := NewManager(tempDir, "unix:path="+filepath.Join(tempDir, "no-upstream"), approvalMgr, slog.LevelInfo, SlowUpstream{})
+	mgr, err := NewManager(tempDir, NewFactory(tempDir.Socket("no-upstream").ConnectDBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 	defer mgr.watcher.Close()
-	socketPath := filepath.Join(tempDir, "vm.sock")
+	socketPath := tempDir.Socket("vm")
 
 	// Another bus holds "vm", so the socket is skipped and the name stays with its holder.
 	approvalMgr.ClaimClient("vm")
@@ -143,14 +120,14 @@ func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
 }
 
 func TestManager_StopProxy_WaitsForName(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir := unixsock.Dir(t.TempDir())
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	mgr, err := NewManager(tempDir, "", approvalMgr, slog.LevelInfo, SlowUpstream{})
+	mgr, err := NewManager(tempDir, NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 	defer mgr.watcher.Close()
-	socketPath := filepath.Join(tempDir, "vm.sock")
+	socketPath := tempDir.Socket("vm")
 
 	// A proxy whose downstream stays open runs until it is stopped.
 	front, _ := net.Pipe()
@@ -158,11 +135,14 @@ func TestManager_StopProxy_WaitsForName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConn failed: %v", err)
 	}
-	p := New(Config{ClientName: "vm", Approval: approvalMgr})
+	p := New("vm", approvalMgr, Config{})
 	p.frontConn = frontConn
-	approvalMgr.ClaimClient("vm")
+	claim, err := mgr.factory.Claim("vm")
+	if err != nil {
+		t.Fatalf("Claim failed: %v", err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
-	inst := &proxyInstance{proxy: p, cancel: cancel, done: make(chan struct{})}
+	inst := &proxyInstance{proxy: p, claim: claim, cancel: cancel, done: make(chan struct{})}
 	mgr.proxies.add(socketPath, inst)
 	go mgr.serve(ctx, socketPath, inst)
 

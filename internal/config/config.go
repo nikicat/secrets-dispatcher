@@ -11,67 +11,26 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 // Defaults for settings that neither the config file nor a flag sets.
 const (
-	DefaultListenAddr            = ListenAddr("127.0.0.1:8484")
-	DefaultTimeout               = 5 * time.Minute
-	DefaultHistoryLimit          = 100
-	DefaultLogLevel              = LogInfo
-	DefaultLogFormat             = LogText
-	DefaultApprovalWindow        = 5 * time.Second
-	DefaultAutoApproveDuration   = 2 * time.Minute
-	DefaultNotificationDelay     = 500 * time.Millisecond
-	DefaultUpstreamSlowThreshold = 1500 * time.Millisecond
-	DefaultNotifications         = true
+	DefaultListenAddr              = ListenAddr("127.0.0.1:8484")
+	DefaultTimeout                 = 5 * time.Minute
+	DefaultHistoryLimit            = 100
+	DefaultLogLevel                = LogInfo
+	DefaultLogFormat               = LogText
+	DefaultApprovalWindow          = 5 * time.Second
+	DefaultAutoApproveDuration     = 2 * time.Minute
+	DefaultNotificationDelay       = 500 * time.Millisecond
+	DefaultUpstreamSlowThreshold   = 1500 * time.Millisecond
+	DefaultNotifications           = true
+	DefaultShowPIDs                = false
+	DefaultTrimProcessChain        = true
+	DefaultIgnoreChromeDummySecret = true
 )
-
-var defaultShowPIDs = false
-var defaultTrimProcessChain = true
-var defaultIgnoreChromeDummySecret = true
-
-// BusConfig describes a D-Bus endpoint (upstream backend or downstream front).
-type BusConfig struct {
-	Type BusType `yaml:"type"`
-	// The socket file for BusSocket, or the directory of sockets for
-	// BusSockets. BusSessionBus takes no path.
-	Path string `yaml:"path,omitempty"`
-	// The client name of a BusSocket downstream, derived from Path. Empty
-	// before Resolve.
-	Client string `yaml:"-"`
-}
-
-// BusType is how the daemon reaches a D-Bus endpoint.
-type BusType string
-
-const (
-	// BusSessionBus is the user's session bus.
-	BusSessionBus BusType = "session_bus"
-	// BusSocket is one D-Bus socket file.
-	BusSocket BusType = "socket"
-	// BusSockets is a directory where each client gets its own socket. Only a
-	// downstream can be one.
-	BusSockets BusType = "sockets"
-)
-
-// The valid bus types.
-var BusTypes = []BusType{BusSessionBus, BusSocket, BusSockets}
-
-// Parses a bus type as parseEnum does, so that a config file naming an
-// unknown type fails to load.
-func (t *BusType) UnmarshalText(text []byte) (err error) {
-	*t, err = parseEnum(text, BusTypes, "bus type")
-	return err
-}
-
-// validate checks that b has the path its type needs.
-func (b BusConfig) validate() error {
-	if (b.Type == BusSocket || b.Type == BusSockets) && b.Path == "" {
-		return fmt.Errorf("type %q requires a non-empty path", b.Type)
-	}
-	return nil
-}
 
 // Returns a copy of cfg with zero-value fields filled from program defaults.
 // Errors with ErrNoRuntimeDir when a default it must fill needs the runtime
@@ -92,13 +51,13 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 		s.Notifications = new(DefaultNotifications)
 	}
 	if s.ShowPIDs == nil {
-		s.ShowPIDs = &defaultShowPIDs
+		s.ShowPIDs = new(DefaultShowPIDs)
 	}
 	if s.TrimProcessChain == nil {
-		s.TrimProcessChain = &defaultTrimProcessChain
+		s.TrimProcessChain = new(DefaultTrimProcessChain)
 	}
 	if s.IgnoreChromeDummySecret == nil {
-		s.IgnoreChromeDummySecret = &defaultIgnoreChromeDummySecret
+		s.IgnoreChromeDummySecret = new(DefaultIgnoreChromeDummySecret)
 	}
 	if s.ApprovalWindow == 0 {
 		s.ApprovalWindow = Duration(DefaultApprovalWindow)
@@ -113,15 +72,15 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 		d := Duration(DefaultUpstreamSlowThreshold)
 		s.UpstreamSlowThreshold = &d
 	}
-	if s.Upstream.Type == "" {
-		s.Upstream = BusConfig{Type: BusSessionBus}
+	if s.Upstream.Bus == nil {
+		s.Upstream = UpstreamConfig{Bus: SessionBus{}}
 	}
 	if len(s.Downstream) == 0 {
 		dir, err := LookupRuntimeDir()
 		if err != nil {
 			return nil, fmt.Errorf("no default for serve.downstream: %w", err)
 		}
-		s.Downstream = []BusConfig{{Type: BusSockets, Path: dir.ClientSockets()}}
+		s.Downstream = []BusConfig{{Bus: Sockets{Dir: dir.ClientSockets()}}}
 	} else {
 		s.Downstream = slices.Clone(s.Downstream)
 	}
@@ -136,7 +95,7 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 	if out.SSH != nil {
 		ssh := *out.SSH
 		if ssh.Upstream == "" {
-			ssh.Upstream = os.Getenv("SSH_AUTH_SOCK")
+			ssh.Upstream = unixsock.Path(os.Getenv("SSH_AUTH_SOCK"))
 		}
 		if ssh.Listen == "" {
 			dir, err := LookupRuntimeDir()
@@ -150,14 +109,11 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 	return &out, nil
 }
 
-// Returns a copy of cfg with defaults and socket client names filled in, ready
-// to run. Errors as WithDefaults, approval.ClientFromSocket and validate do.
+// Returns a copy of cfg with defaults filled in, ready to run. Errors as
+// WithDefaults and validate do.
 func (cfg *Config) Resolve() (*Config, error) {
 	out, err := cfg.WithDefaults()
 	if err != nil {
-		return nil, err
-	}
-	if err := out.Serve.setSocketClients(); err != nil {
 		return nil, err
 	}
 	if err := out.validate(); err != nil {
@@ -166,55 +122,25 @@ func (cfg *Config) Resolve() (*Config, error) {
 	return out, nil
 }
 
-func (s *ServeConfig) setSocketClients() error {
-	for i := range s.Downstream {
-		d := &s.Downstream[i]
-		if d.Type != BusSocket {
-			continue
-		}
-		client, err := approval.ClientFromSocket(d.Path)
-		if err != nil {
-			return fmt.Errorf("downstream[%d]: %w", i, err)
-		}
-		d.Client = client
-	}
-	return nil
-}
-
-// Errors when the config is inconsistent. Expects the socket client names that
-// Resolve sets.
+// Errors when the config is inconsistent.
 func (cfg *Config) validate() error {
 	s := &cfg.Serve
 
-	if s.Upstream.Type == BusSockets {
-		return fmt.Errorf("upstream type must be %q or %q, got %q", BusSessionBus, BusSocket, s.Upstream.Type)
-	}
-	if err := s.Upstream.validate(); err != nil {
+	if err := s.Upstream.Bus.validate(); err != nil {
 		return fmt.Errorf("upstream: %w", err)
 	}
 
-	hasSessionBusDown := false
-	clients := map[string]bool{}
+	check := newDownstreamCheck(s.Upstream.Bus)
 	for i, d := range s.Downstream {
-		if err := d.validate(); err != nil {
+		if d.Bus == nil {
+			return fmt.Errorf("downstream[%d]: %w", i, BusTypes.Unknown(""))
+		}
+		if err := d.Bus.validate(); err != nil {
 			return fmt.Errorf("downstream[%d]: %w", i, err)
 		}
-		if d.Type == BusSocket {
-			if clients[d.Client] {
-				return fmt.Errorf("downstream[%d]: another socket downstream already has the client name %q", i, d.Client)
-			}
-			clients[d.Client] = true
+		if err := d.Bus.Visit(check); err != nil {
+			return fmt.Errorf("downstream[%d]: %w", i, err)
 		}
-		if d.Type == BusSessionBus {
-			if hasSessionBusDown {
-				return fmt.Errorf("downstream[%d]: at most one session_bus downstream is allowed", i)
-			}
-			hasSessionBusDown = true
-		}
-	}
-
-	if s.Upstream.Type == BusSessionBus && hasSessionBusDown {
-		return fmt.Errorf("upstream and downstream cannot both be session_bus (same bus)")
 	}
 
 	seen := map[RemoteName]bool{}
@@ -302,15 +228,15 @@ func (r TrustRule) globs() []namedGlob {
 	return out
 }
 
-// Duration wraps time.Duration with YAML unmarshalling for human-readable strings.
 type Duration time.Duration
 
 func (d Duration) String() string { return time.Duration(d).String() }
 
-// Sets the duration from a command-line flag value in Go duration syntax,
-// such as 90s or 5m. Errors when value is not a duration.
-func (d *Duration) Set(value string) error {
-	parsed, err := time.ParseDuration(value)
+func (d Duration) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
+
+// Parses a duration in Go syntax, such as 90s or 5m.
+func (d *Duration) UnmarshalText(text []byte) error {
+	parsed, err := time.ParseDuration(string(text))
 	if err != nil {
 		return err
 	}
@@ -318,24 +244,9 @@ func (d *Duration) Set(value string) error {
 	return nil
 }
 
-func (d Duration) MarshalYAML() (any, error) {
-	return d.String(), nil
-}
-
-func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
-	var s string
-	if err := value.Decode(&s); err != nil {
-		return err
-	}
-	if err := d.Set(s); err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
-	}
-	return nil
-}
-
 // ServeConfig holds serve-subcommand settings.
 type ServeConfig struct {
-	Upstream                BusConfig       `yaml:"upstream"`
+	Upstream                UpstreamConfig  `yaml:"upstream"`
 	Downstream              []BusConfig     `yaml:"downstream"`
 	LogLevel                LogLevel        `yaml:"log_level"`
 	LogFormat               LogFormat       `yaml:"log_format"`
@@ -370,6 +281,10 @@ type RemoteName string
 
 var remoteNameFormat = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
+// Returns the approval client that every request from the remote is filed
+// under (ADR 0011).
+func (n RemoteName) Client() approval.ClientName { return approval.ClientName("remote:" + n) }
+
 func (n *RemoteName) UnmarshalYAML(value *yaml.Node) error {
 	var s string
 	if err := value.Decode(&s); err != nil {
@@ -386,7 +301,7 @@ func (n *RemoteName) UnmarshalYAML(value *yaml.Node) error {
 // All three fields must match for auto-approval. Empty optional fields match anything.
 type TrustedSigner struct {
 	// The absolute path of the signing executable. Required.
-	ExePath string `yaml:"exe_path"`
+	ExePath procutil.Path `yaml:"exe_path"`
 	// The basename of the repository's top level, as git rev-parse
 	// --show-toplevel prints it.
 	RepoPath string `yaml:"repo_path,omitempty"`
@@ -446,10 +361,10 @@ type SecretMatcher struct {
 type SSHConfig struct {
 	// The real agent's socket. WithDefaults fills an empty one from
 	// $SSH_AUTH_SOCK.
-	Upstream string `yaml:"upstream"`
+	Upstream unixsock.Path `yaml:"upstream"`
 	// The proxy's socket. WithDefaults fills an empty one with the runtime
 	// directory's SSHAgentSocket.
-	Listen string `yaml:"listen"`
+	Listen unixsock.Path `yaml:"listen"`
 }
 
 // Config is the top-level configuration file structure.

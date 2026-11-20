@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +14,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
-// testEnv holds the test environment with two isolated D-Bus daemons.
+// Two isolated D-Bus daemons: the local one holds the backend, the remote one
+// the clients.
 type testEnv struct {
 	t          *testing.T
 	localAddr  string
@@ -23,7 +23,6 @@ type testEnv struct {
 	killRemote func()
 }
 
-// newTestEnv creates a new test environment with isolated D-Bus daemons.
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	env := &testEnv{t: t, localAddr: testutil.StartDBusDaemon(t)}
@@ -31,7 +30,6 @@ func newTestEnv(t *testing.T) *testEnv {
 	return env
 }
 
-// localConn connects to the local D-Bus.
 func (e *testEnv) localConn() *dbus.Conn {
 	conn, err := dbus.Connect(e.localAddr)
 	if err != nil {
@@ -40,7 +38,6 @@ func (e *testEnv) localConn() *dbus.Conn {
 	return conn
 }
 
-// remoteConn connects to the remote D-Bus.
 func (e *testEnv) remoteConn() *dbus.Conn {
 	conn, err := dbus.Connect(e.remoteAddr)
 	if err != nil {
@@ -65,10 +62,7 @@ func TestProxyBasicOperations(t *testing.T) {
 	mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
 	// Start the proxy
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -218,10 +212,7 @@ func TestProxyItemOperations(t *testing.T) {
 
 	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test-app"}, []byte("secret-value"))
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -295,10 +286,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -388,9 +376,8 @@ func TestProxyCollectionOperations(t *testing.T) {
 	})
 }
 
-// TestProxyAliasPathOperations tests that the proxy correctly handles
-// collection operations via /org/freedesktop/secrets/aliases/default paths,
-// which is how libsecret (secret-tool) accesses collections.
+// libsecret (secret-tool) reaches collections through
+// /org/freedesktop/secrets/aliases/default paths.
 func TestProxyAliasPathOperations(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -404,10 +391,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 
 	mock.AddItem("Existing Secret", map[string]string{"app": "test"}, []byte("existing-value"))
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -504,7 +488,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 	})
 }
 
-// connectProxyWithConns connects the proxy using isolated D-Bus connections.
+// Connects p to the remote bus as its front and the local bus as its backend.
 func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteAddr string) error {
 	backendConn, err := dbus.Connect(localAddr)
 	if err != nil {
@@ -520,8 +504,6 @@ func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteAddr string) error {
 	return p.ConnectWith(frontConn, backendConn)
 }
 
-// TestProxyClientDisconnectCancelsPendingRequest tests that when a client disconnects
-// while waiting for approval, the pending request is automatically removed.
 func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -539,11 +521,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	// Create an approval manager that requires approval (not auto-approve)
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -621,7 +599,6 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	}
 }
 
-// TestProxyItemDeleteRequiresApproval tests that Item.Delete is gated by approval.
 func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -637,11 +614,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -696,7 +669,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 	}
 }
 
-// TestProxyItemDeleteDenied tests that denying Item.Delete returns an access denied error.
+// A denied Item.Delete returns an access denied error.
 func TestProxyItemDeleteDenied(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -712,11 +685,7 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -766,7 +735,6 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 	}
 }
 
-// TestProxyCollectionDeleteRequiresApproval tests that Collection.Delete is gated by approval.
 func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -780,11 +748,7 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -847,8 +811,8 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 	}
 }
 
-// TestProxyItemDeleteNoAutoApprove tests that approving a GetSecret does not
-// auto-approve a subsequent Delete for the same item (cache bypass).
+// Approving a GetSecret does not approve a later Delete of the same item from
+// the approval cache.
 func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -865,11 +829,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	// Use approval window so GetSecret gets cached
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100, ApprovalWindow: time.Minute})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -955,7 +915,6 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	}
 }
 
-// TestProxySetSecretRequiresApproval tests that Item.SetSecret is gated by approval.
 func TestProxySetSecretRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -971,11 +930,7 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -1041,7 +996,6 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 	}
 }
 
-// TestProxyCreateItemRequiresApproval tests that Collection.CreateItem is gated by approval.
 func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1055,11 +1009,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -1132,8 +1082,8 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	}
 }
 
-// TestProxyCreateItemIgnoresChromeDummy tests that CreateItem with Chrome's dummy
-// secret schema is silently ignored (not forwarded to backend, no pending request).
+// CreateItem with Chrome's dummy secret schema reaches neither the backend nor
+// the pending list.
 func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1153,11 +1103,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 		IgnoreChromeDummy: true,
 	})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -1229,8 +1175,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	}
 }
 
-// TestProxyRejectsUnsupportedAlgorithm tests that the proxy rejects algorithms
-// it does not implement (anything other than "plain" or the DH algorithm).
+// Any algorithm other than "plain" and the DH one is rejected.
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1242,10 +1187,7 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 		t.Fatalf("register mock service: %v", err)
 	}
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -1265,8 +1207,8 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	}
 }
 
-// openDHSession performs the client side of the dh-ietf1024 handshake against
-// the proxy and returns the negotiated session and the remote session path.
+// Performs the client side of the dh-ietf1024 handshake against the proxy and
+// returns the negotiated session and the remote session path.
 func openDHSession(t *testing.T, serviceObj dbus.BusObject) (*dhcrypto.Session, dbus.ObjectPath) {
 	t.Helper()
 
@@ -1298,10 +1240,9 @@ func openDHSession(t *testing.T, serviceObj dbus.BusObject) (*dhcrypto.Session, 
 	return session, sessionPath
 }
 
-// TestProxyDHSession exercises the dh-ietf1024-sha256-aes128-cbc-pkcs7 algorithm
-// end to end: secrets read over a DH session arrive encrypted (and decrypt to
-// the stored plaintext), and secrets written over a DH session are decrypted by
-// the proxy before reaching the (plain) upstream backend.
+// Secrets read over a dh-ietf1024-sha256-aes128-cbc-pkcs7 session arrive
+// encrypted and decrypt to the stored plaintext, and secrets written over one
+// reach the plain upstream backend decrypted.
 func TestProxyDHSession(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1314,10 +1255,7 @@ func TestProxyDHSession(t *testing.T) {
 	}
 	itemPath := mock.AddItem("DH Secret", map[string]string{"app": "dh-app"}, []byte("dh-secret-value"))
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
@@ -1459,8 +1397,8 @@ func TestProxyDHSession(t *testing.T) {
 	})
 }
 
-// TestProxyDetectsSocketDisconnect tests that the proxy detects when the remote
-// D-Bus daemon is killed (simulating SSH tunnel disconnect).
+// Killing the remote D-Bus daemon, as a dropped SSH tunnel does, makes Run
+// return an error.
 func TestProxyDetectsSocketDisconnect(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -1474,10 +1412,7 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 
 	ctx := t.Context()
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-	})
+	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)
@@ -1533,11 +1468,7 @@ func TestSearchItemsDenyRule(t *testing.T) {
 		}},
 	})
 
-	p := proxy.New(proxy.Config{
-		ClientName: "test-client",
-		LogLevel:   slog.LevelDebug,
-		Approval:   approvalMgr,
-	})
+	p := proxy.New("test-client", approvalMgr, proxy.Config{})
 
 	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
 		t.Fatalf("connect proxy: %v", err)

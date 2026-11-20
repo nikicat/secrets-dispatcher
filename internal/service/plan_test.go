@@ -2,16 +2,17 @@ package service
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
-// changeIndex returns the position of the first change matching op and a
-// target substring, or -1.
+// Returns the position of the first change with op whose target contains
+// targetSubstr, or -1 when there is none.
 func changeIndex(changes []Change, op, targetSubstr string) int {
 	for i, c := range changes {
 		if c.Op == op && strings.Contains(c.Target, targetSubstr) {
@@ -28,12 +29,12 @@ func TestPlanLocalGnomeKeyringMirrorsInstallOrder(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockLookPath(t, defaultLookPath)
-	mockBusctlOwner(t, 4242)
-	mockReadlink(t, func(string) (string, error) {
-		return "/usr/bin/gnome-keyring-daemon", nil
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
+		return "/usr/bin/gnome-keyring-daemon", true
 	})
 
-	changes, err := Plan(Options{Mode: ModeLocal, Start: true})
+	changes, err := Plan(t.Context(), Options{Mode: ModeLocal, Start: true})
 	require.NoError(t, err)
 
 	config := changeIndex(changes, "write", "config.yaml")
@@ -42,7 +43,7 @@ func TestPlanLocalGnomeKeyringMirrorsInstallOrder(t *testing.T) {
 	shadow := changeIndex(changes, "write", gkAutostartName)
 	sigterm := changeIndex(changes, "signal", "pid 4242")
 	proxyUnit := changeIndex(changes, "write", string(proxyServiceUnit))
-	start := changeIndex(changes, "run", "start "+string(proxyServiceUnit))
+	start := changeIndex(changes, "run", opStart.commandFor(proxyServiceUnit))
 
 	for name, idx := range map[string]int{
 		"config": config, "mask": mask, "drop-in": dropIn, "shadow": shadow,
@@ -73,17 +74,17 @@ func TestPlanSurfacesResolvedBackend(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockLookPath(t, defaultLookPath)
-	mockBusctlOwner(t, 4242)
-	mockReadlink(t, func(string) (string, error) {
-		return "/usr/bin/gnome-keyring-daemon", nil
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
+		return "/usr/bin/gnome-keyring-daemon", true
 	})
 
-	changes, err := Plan(Options{Mode: ModeLocal})
+	changes, err := Plan(t.Context(), Options{Mode: ModeLocal})
 	require.NoError(t, err)
 
 	idx := changeIndex(changes, "write", string(backendServiceUnit))
 	require.GreaterOrEqual(t, idx, 0)
-	assert.Contains(t, changes[idx].Note, "gnome-keyring-daemon --foreground --components=secrets")
+	assert.Equal(t, "private backend: /usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%t/secrets-dispatcher/keyring", changes[idx].Note)
 }
 
 func TestPlanRemoteMinimal(t *testing.T) {
@@ -92,9 +93,9 @@ func TestPlanRemoteMinimal(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
-	mockExecOutput(t, noopExecOutput)
+	mockSession(t, 0)
 
-	changes, err := Plan(Options{Mode: ModeRemote})
+	changes, err := Plan(t.Context(), Options{Mode: ModeRemote})
 	require.NoError(t, err)
 
 	assert.GreaterOrEqual(t, changeIndex(changes, "write", string(proxyServiceUnit)), 0)
@@ -106,35 +107,24 @@ func TestPlanRemoteMinimal(t *testing.T) {
 }
 
 func TestPlanRemoteReversesTakeoverState(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
+	files := tempTakeoverFiles(t)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
-	mockExecOutput(t, noopExecOutput)
+	mockSession(t, 0)
 
 	// Simulate a previous takeover: our mask, drop-in, and autostart shadow.
-	dbusDir := filepath.Join(tmpDir, "dbus-1", "services")
-	require.NoError(t, os.MkdirAll(dbusDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dbusDir, dbusServiceFile), []byte(dbusActivationMask), 0644))
-	dropInDir := filepath.Join(tmpDir, "systemd", "user", gkDropInDirName)
-	require.NoError(t, os.MkdirAll(dropInDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dropInDir, gkDropInName), []byte("x"), 0644))
-	asDir := filepath.Join(tmpDir, "autostart")
-	require.NoError(t, os.MkdirAll(asDir, 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(asDir, gkAutostartName), []byte(gkAutostartShadow), 0644))
+	files.place(t)
 
-	changes, err := Plan(Options{Mode: ModeRemote})
+	changes, err := Plan(t.Context(), Options{Mode: ModeRemote})
 	require.NoError(t, err)
 
 	assert.GreaterOrEqual(t, changeIndex(changes, "remove", dbusServiceFile), 0)
 	assert.GreaterOrEqual(t, changeIndex(changes, "remove", gkDropInName), 0)
 	assert.GreaterOrEqual(t, changeIndex(changes, "remove", gkAutostartName), 0)
-	assert.GreaterOrEqual(t, changeIndex(changes, "run", "try-restart "+string(gkServiceUnit)), 0)
+	assert.GreaterOrEqual(t, changeIndex(changes, "run", opTryRestart.commandFor(gkServiceUnit)), 0)
 
 	// Reading state must not modify it.
-	_, err = os.Stat(filepath.Join(dbusDir, dbusServiceFile))
-	assert.NoError(t, err)
+	assert.True(t, files.mask.file.Exists())
 }
 
 func TestPlanMirrorsInstall(t *testing.T) {
@@ -147,22 +137,70 @@ func TestPlanMirrorsInstall(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockLookPath(t, defaultLookPath)
-	mockBusctlOwner(t, 4242)
-	mockReadlink(t, func(string) (string, error) {
-		return "/usr/bin/gnome-keyring-daemon", nil
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
+		return "/usr/bin/gnome-keyring-daemon", true
 	})
-	mockSystemctl(t)
+	mockUnits(t)
 	shortOwnerWait(t)
 
 	opts := Options{Mode: ModeLocal, Start: true}
-	changes, err := Plan(opts)
+	changes, err := Plan(t.Context(), opts)
 	require.NoError(t, err)
 
-	require.NoError(t, Install(opts))
+	require.NoError(t, Install(t.Context(), opts))
 
 	for _, c := range changes {
 		if c.Op == "write" {
 			assert.FileExists(t, c.Target, "planned write did not happen: %s", c)
 		}
 	}
+}
+
+// The dry run lists the takeover files' changes, in Install's order.
+func TestPlanTakeoverFileChanges(t *testing.T) {
+	files := tempTakeoverFiles(t)
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	mockLookPath(t, defaultLookPath)
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) { return "/usr/bin/gnome-keyring-daemon", true })
+
+	mask, dropIn, shadow := files.mask.file.String(), files.dropIn.file.String(), files.shadow.file.String()
+	maskBackup, shadowBackup := files.mask.backup().String(), files.shadow.backup().String()
+	require.NoError(t, files.mask.file.Write("foreign"))
+	require.NoError(t, files.shadow.file.Write("foreign"))
+	changes, err := Plan(t.Context(), Options{Mode: ModeLocal})
+	require.NoError(t, err)
+	var got []string
+	for _, c := range changes[1:9] {
+		got = append(got, c.Op+"|"+c.Target+"|"+c.Note)
+	}
+	assert.Equal(t, []string{
+		"backup|" + mask + "|-> " + maskBackup,
+		"write|" + mask + "|mask D-Bus activation of org.freedesktop.secrets",
+		"write|" + dropIn + "|demote gnome-keyring to pkcs11-only (secrets move to the private backend)",
+		"backup|" + shadow + "|-> " + shadowBackup,
+		"write|" + shadow + "|hide the gnome-keyring secrets autostart kicker (Hidden=true)",
+		"run|systemctl --user daemon-reload|",
+		"run|systemctl --user try-restart gnome-keyring-daemon.service|restart without the secrets component",
+		"signal|SIGTERM -> pid 4242 (gnome-keyring)|current owner of org.freedesktop.secrets",
+	}, got)
+
+	// Plan remote after a takeover. The foreign mask from above is backed up
+	// when place writes ours. The shadow is removed first, so it has no backup.
+	require.NoError(t, files.shadow.file.Remove())
+	files.place(t)
+	changes, err = Plan(t.Context(), Options{Mode: ModeRemote})
+	require.NoError(t, err)
+	got = nil
+	for _, c := range changes[1:6] {
+		got = append(got, c.Op+"|"+c.Target+"|"+c.Note)
+	}
+	assert.Equal(t, []string{
+		"restore|" + maskBackup + "|-> " + mask,
+		"remove|" + dropIn + "|gnome-keyring demotion drop-in",
+		"remove|" + shadow + "|gnome-keyring autostart shadow",
+		"run|systemctl --user daemon-reload|",
+		"run|systemctl --user try-restart gnome-keyring-daemon.service|restart with all components",
+	}, got)
 }

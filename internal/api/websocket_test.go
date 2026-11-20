@@ -16,6 +16,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
 
@@ -29,7 +30,7 @@ func (m *mockClientProvider) Clients() []proxy.ClientInfo {
 }
 
 // Returns a provider that reports one client.
-func oneClient(name, socketPath string) *mockClientProvider {
+func oneClient(name approval.ClientName, socketPath unixsock.Path) *mockClientProvider {
 	return &mockClientProvider{clients: []proxy.ClientInfo{{Name: name, SocketPath: socketPath}}}
 }
 
@@ -223,7 +224,7 @@ func ghSecretRequest() *approval.Request {
 
 func TestConvertRequest_EncodesAutoApprovable(t *testing.T) {
 	noExe := ghSecretRequest()
-	noExe.SenderInfo.ProcessChain[0].Exe = ""
+	noExe.SenderInfo.ProcessChain[0].Exe = nil
 
 	tests := []struct {
 		name string

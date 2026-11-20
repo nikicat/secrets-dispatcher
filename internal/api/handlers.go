@@ -8,6 +8,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // ClientProvider is an interface for getting connected client information.
@@ -17,20 +18,20 @@ type ClientProvider interface {
 
 // Handlers provides HTTP handlers for the REST API.
 type Handlers struct {
-	resolver         *Resolver
-	clientProvider   ClientProvider
-	trimProcessChain bool
-	auth             *Auth
-	testMode         bool
+	resolver       *Resolver
+	clientProvider ClientProvider
+	chains         sender.ChainReader
+	auth           *Auth
+	testMode       bool
 }
 
 func NewHandlers(cfg ServerConfig, provider ClientProvider) *Handlers {
 	return &Handlers{
-		resolver:         cfg.Resolver,
-		clientProvider:   provider,
-		auth:             cfg.Auth,
-		trimProcessChain: cfg.TrimProcessChain,
-		testMode:         cfg.TestMode,
+		resolver:       cfg.Resolver,
+		clientProvider: provider,
+		auth:           cfg.Auth,
+		chains:         cfg.Chains,
+		testMode:       cfg.TestMode,
 	}
 }
 
@@ -238,31 +239,6 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// convertSenderInfo converts approval.SenderInfo to api.SenderInfo.
-func convertSenderInfo(s approval.SenderInfo) SenderInfo {
-	info := SenderInfo{
-		Sender:      s.Sender,
-		PID:         s.PID,
-		UID:         s.UID,
-		UserName:    s.UserName,
-		InvokerName: s.InvokerName,
-		SystemdUnit: s.SystemdUnit,
-	}
-	if len(s.ProcessChain) > 0 {
-		info.ProcessChain = make([]ProcessInfo, len(s.ProcessChain))
-		for i, p := range s.ProcessChain {
-			info.ProcessChain[i] = ProcessInfo{
-				Name: p.Name,
-				PID:  p.PID,
-				Exe:  p.Exe,
-				Args: p.Args,
-				CWD:  p.CWD,
-			}
-		}
-	}
-	return info
-}
-
 // convertHistoryEntry converts an approval.HistoryEntry to an API HistoryEntry.
 func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 	return HistoryEntry{
@@ -377,26 +353,6 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	approvalSender := approval.SenderInfo{
-		Sender:      entry.Request.SenderInfo.Sender,
-		PID:         entry.Request.SenderInfo.PID,
-		UID:         entry.Request.SenderInfo.UID,
-		UserName:    entry.Request.SenderInfo.UserName,
-		InvokerName: entry.Request.SenderInfo.InvokerName,
-	}
-	if len(entry.Request.SenderInfo.ProcessChain) > 0 {
-		approvalSender.ProcessChain = make([]approval.ProcessInfo, len(entry.Request.SenderInfo.ProcessChain))
-		for i, p := range entry.Request.SenderInfo.ProcessChain {
-			approvalSender.ProcessChain[i] = approval.ProcessInfo{
-				Name: p.Name,
-				PID:  p.PID,
-				Exe:  p.Exe,
-				Args: p.Args,
-				CWD:  p.CWD,
-			}
-		}
-	}
-
 	approvalEntry := approval.HistoryEntry{
 		Request: &approval.Request{
 			ID:               entry.Request.ID,
@@ -407,7 +363,7 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 			ExpiresAt:        entry.Request.ExpiresAt,
 			Type:             approval.RequestType(entry.Request.Type),
 			SearchAttributes: entry.Request.SearchAttributes,
-			SenderInfo:       approvalSender,
+			SenderInfo:       approval.SenderInfo{Info: entry.Request.SenderInfo},
 		},
 		Resolution: approval.Resolution(entry.Resolution),
 		ResolvedAt: entry.ResolvedAt,

@@ -5,21 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"os"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // Proxy connects to a front-facing D-Bus (where clients connect) and a backend
 // D-Bus (where the real Secret Service lives), registering as
 // org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
-	clientName   string
-	local        *localProcs
+	clientName   approval.ClientName
+	local        *sender.ChainReader
 	slowUpstream SlowUpstream
 
 	frontConn   *dbus.Conn // clients connect here (session bus or remote socket)
@@ -42,48 +41,95 @@ type Proxy struct {
 
 // Config holds configuration for the proxy.
 type Config struct {
-	ClientName string
-	// True only for the session bus, whose callers are processes on this
-	// machine. Any other front bus is forwarded (see SenderInfoResolver).
-	LocalProcesses bool
-	// Applies only with LocalProcesses.
-	TrimProcessChain bool
-	LogLevel         slog.Level
-	Approval         *approval.Manager
-	SlowUpstream     SlowUpstream
+	// Reads the callers' process chains. Nil for a forwarded bus, as
+	// SenderInfoResolver.local explains.
+	Local        *sender.ChainReader
+	SlowUpstream SlowUpstream
 }
 
-// Returns what the resolver needs to describe local processes, or nil for a
-// forwarded bus.
-func (cfg Config) localProcs() *localProcs {
-	if !cfg.LocalProcesses {
-		return nil
-	}
-	selfExe, _ := os.Executable()
-	return &localProcs{trimProcessChain: cfg.TrimProcessChain, selfExe: selfExe}
-}
-
-// New creates a new Proxy with the given configuration.
-func New(cfg Config) *Proxy {
-	clientName := cfg.ClientName
-	if clientName == "" {
-		clientName = approval.ClientUnknown
-	}
-
-	approvalMgr := cfg.Approval
-	if approvalMgr == nil {
-		// Create a disabled manager if none provided (auto-approve all)
-		approvalMgr = approval.NewDisabledManager()
-	}
-
+// Returns a proxy that serves the bus of clientName with cfg and gates its
+// requests through approvalMgr.
+func New(clientName approval.ClientName, approvalMgr *approval.Manager, cfg Config) *Proxy {
 	return &Proxy{
 		clientName:   clientName,
-		local:        cfg.localProcs(),
+		local:        cfg.Local,
 		sessions:     NewSessionManager(),
-		logger:       logging.New(cfg.LogLevel, clientName),
+		logger:       logging.New(clientName),
 		approval:     approvalMgr,
 		slowUpstream: cfg.SlowUpstream,
 	}
+}
+
+// Opens a connection to one bus.
+type Connector func() (*dbus.Conn, error)
+
+// Makes the proxies that serve one upstream to the downstream buses, one proxy
+// per client name.
+type Factory struct {
+	upstream     Connector
+	approval     *approval.Manager
+	slowUpstream SlowUpstream
+	chains       sender.ChainReader
+}
+
+// Returns a factory whose proxies serve upstream and gate requests through
+// approvalMgr. The session bus's proxy reads its callers' chains with chains.
+func NewFactory(upstream Connector, approvalMgr *approval.Manager, slowUpstream SlowUpstream, chains sender.ChainReader) Factory {
+	return Factory{upstream: upstream, approval: approvalMgr, slowUpstream: slowUpstream, chains: chains}
+}
+
+// Claims client for a forwarded bus. Errors when another bus holds it.
+func (f Factory) Claim(client approval.ClientName) (Claim, error) {
+	return f.claim(client, nil)
+}
+
+// Claims ClientLocal for the session bus. Errors when another bus holds it.
+func (f Factory) ClaimSessionBus() (Claim, error) {
+	return f.claim(approval.ClientLocal, &f.chains)
+}
+
+func (f Factory) claim(client approval.ClientName, local *sender.ChainReader) (Claim, error) {
+	if !f.approval.ClaimClient(client) {
+		return Claim{}, fmt.Errorf("another bus has the client name %q", client)
+	}
+	return Claim{client: client, local: local, factory: f}, nil
+}
+
+// A client name that a Factory has claimed, which no other bus can take until
+// Release.
+type Claim struct {
+	client  approval.ClientName
+	local   *sender.ChainReader
+	factory Factory
+}
+
+// Returns a proxy for the claimed client, serving the factory's upstream to the
+// bus that front opens. Errors as Proxy.Dial does.
+func (c Claim) Dial(front Connector) (*Proxy, error) {
+	f := c.factory
+	p := New(c.client, f.approval, Config{Local: c.local, SlowUpstream: f.slowUpstream})
+	if err := p.Dial(front, f.upstream); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// Gives the client name back once its proxy has stopped.
+func (c Claim) Release() { c.factory.approval.ReleaseClient(c.client) }
+
+// Connects to the front and backend buses and serves as ConnectWith does.
+// Errors when either connection fails, closing the one already open.
+func (p *Proxy) Dial(front, backend Connector) error {
+	frontConn, err := front()
+	if err != nil {
+		return fmt.Errorf("connect to downstream: %w", err)
+	}
+	backendConn, err := backend()
+	if err != nil {
+		frontConn.Close()
+		return fmt.Errorf("connect to upstream: %w", err)
+	}
+	return p.ConnectWith(frontConn, backendConn)
 }
 
 // Serves the Secret Service from backendConn to clients on frontConn.

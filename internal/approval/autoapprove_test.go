@@ -3,21 +3,21 @@ package approval
 import (
 	"context"
 	"errors"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"sync"
 	"testing"
 	"time"
 )
 
-// testSender builds a SenderInfo whose invoker process (PID) carries the given
-// comm and /proc/PID/exe, mirroring how the daemon resolves a live caller.
-// Auto-approve matching keys on the non-spoofable exe, so tests exercising a
-// match must supply one.
-func testSender(comm, exe string) SenderInfo {
+// Returns a sender whose invoker carries comm and exe, as the daemon resolves a
+// live caller. Auto-approve rules match only on the exe.
+func testSender(comm string, exe procutil.Path) SenderInfo {
 	const pid = 4242
 	return SenderInfo{
 		PID:          pid,
 		InvokerName:  comm,
-		ProcessChain: []ProcessInfo{{Name: comm, PID: pid, Exe: exe}},
+		ProcessChain: []procutil.Process{{Name: comm, PID: pid, Exe: &exe}},
 	}
 }
 
@@ -53,7 +53,7 @@ func TestRequestAutoApproveRule_RefusesRequestWithoutExe(t *testing.T) {
 		ID:         "remote-1",
 		Client:     "remote:laptop",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: SenderInfo{InvokerName: "gh"},
+		SenderInfo: SenderInfo{Info: sender.Info{InvokerName: "gh"}},
 	}
 
 	_, err := req.AutoApproveRule()

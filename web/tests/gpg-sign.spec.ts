@@ -491,7 +491,6 @@ test.describe("GPG Sign Corner Cases", () => {
         sender_info: {
           sender: ":1.42",
           pid: 1234,
-          user_name: "dev",
           invoker_name: "claude",
           process_chain: [
             {

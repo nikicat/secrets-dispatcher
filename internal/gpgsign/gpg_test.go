@@ -7,9 +7,7 @@ import (
 )
 
 func TestFindRealGPG(t *testing.T) {
-	// Save and restore PATH around each subtest.
 	origPath := os.Getenv("PATH")
-	t.Cleanup(func() { os.Setenv("PATH", origPath) }) //nolint:errcheck
 
 	t.Run("gpg exists and is not self", func(t *testing.T) {
 		dir := t.TempDir()
@@ -18,7 +16,7 @@ func TestFindRealGPG(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		os.Setenv("PATH", dir+":"+origPath) //nolint:errcheck
+		t.Setenv("PATH", dir+":"+origPath)
 
 		got, err := FindRealGPG()
 		if err != nil {
@@ -31,7 +29,7 @@ func TestFindRealGPG(t *testing.T) {
 
 	t.Run("gpg not found at all", func(t *testing.T) {
 		emptyDir := t.TempDir()
-		os.Setenv("PATH", emptyDir) //nolint:errcheck
+		t.Setenv("PATH", emptyDir)
 
 		_, err := FindRealGPG()
 		if err == nil {
@@ -68,7 +66,7 @@ func TestFindRealGPG(t *testing.T) {
 			t.Skip("hard link not supported across filesystems:", err)
 		}
 
-		os.Setenv("PATH", dir) //nolint:errcheck
+		t.Setenv("PATH", dir)
 
 		_, err = FindRealGPG()
 		if err == nil {
@@ -95,7 +93,7 @@ func TestFindRealGPG(t *testing.T) {
 		}
 
 		// Self is first in PATH; real gpg is second.
-		os.Setenv("PATH", dirSelf+":"+dirReal) //nolint:errcheck
+		t.Setenv("PATH", dirSelf+":"+dirReal)
 
 		got, err := FindRealGPG()
 		if err != nil {

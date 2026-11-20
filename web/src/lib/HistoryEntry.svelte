@@ -6,6 +6,7 @@
   } from "./types";
   import ProcessChain from "./ProcessChain.svelte";
   import PropsTable from "./PropsTable.svelte";
+  import { senderDisplayName } from "./sender";
 
   interface Props {
     entry: HistoryEntryType;
@@ -54,14 +55,12 @@
         ? entry.request.gpg_sign_info.repo_name + " · "
         : "";
 
-    const user = info.user_name || (info.uid ? `UID ${info.uid}` : "");
+    const user = info.uid !== undefined ? `UID ${info.uid}` : "";
 
-    // If we have a unit name, show that with user
-    if (info.invoker_name) {
-      return (
-        repoPrefix +
-        (user ? `${info.invoker_name} (${user})` : info.invoker_name)
-      );
+    // If we have a process or unit name, show that with user
+    const name = senderDisplayName(info);
+    if (name) {
+      return repoPrefix + (user ? `${name} (${user})` : name);
     }
 
     // Fall back to user with PID
@@ -104,7 +103,8 @@
     collection?: string;
     attributes?: Record<string, string>;
   } {
-    const process = req.sender_info?.invoker_name || undefined;
+    const process =
+      (req.sender_info && senderDisplayName(req.sender_info)) || undefined;
     const collection =
       req.items.length > 0
         ? extractCollection(req.items[0].path) || undefined

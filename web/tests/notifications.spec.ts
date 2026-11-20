@@ -122,7 +122,11 @@ test.describe("Browser Notifications", () => {
         id: "test-123",
         client: "my-app",
         items: [{ path: "/secrets/api-key", label: "API Key", attributes: {} }],
-        sender_info: { pid: 1234, invoker_name: "my-app.service" },
+        sender_info: {
+          pid: 1234,
+          invoker_name: "",
+          systemd_unit: "my-app.service",
+        },
       }),
     ]);
 

@@ -9,6 +9,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // ItemHandler handles Item interface calls for item objects.
@@ -41,9 +42,9 @@ func (i *ItemHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return i.localConn.Object(dbustypes.BusName, path)
 }
 
-// senderResolver returns a lazy resolver of sender's SenderInfo, suitable for an
-// UpstreamCallContext.ResolveSender field.
-func (i *ItemHandler) senderResolver(sender senderName) func() approval.SenderInfo {
+// Returns a lazy resolver of sender's SenderInfo, for the ResolveSender field
+// of an UpstreamCallContext.
+func (i *ItemHandler) senderResolver(sender sender.UniqueName) func() approval.SenderInfo {
 	return func() approval.SenderInfo { return i.resolver.Resolve(sender) }
 }
 

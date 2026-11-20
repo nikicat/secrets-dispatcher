@@ -81,6 +81,31 @@ INF dbus_call client=local method=GetSecrets result=ok items=[/org/freedesktop/s
 `serve --log-format json` (or `serve.log_format: json`) writes one JSON object
 per line instead.
 
+## Command line and settings
+
+Each command resolves its settings once, at the edge, in three layers: a flag
+that the user gives wins over the config file, and the config file wins over
+the program's defaults. A setting's zero value means unset in both layers. A
+flag left at its zero value does not override the file, and
+`Config.WithDefaults` fills every setting that neither layer sets. Because a
+zero flag already means unset, the flags merge over the file with `cmp.Or`, and
+no kong resolver is needed.
+
+The command line is parsed with [kong](https://github.com/alecthomas/kong). The
+settings keep their own types, such as `config.LogLevel`, `config.Path` and
+`service.Mode`. Each type decodes a flag and a config-file value through its
+`encoding.TextUnmarshaler`.
+
+## Service setup
+
+`service install`, `service uninstall`, `service status` and `try` drive the
+user's systemd manager over its D-Bus API, through
+[go-systemd](https://github.com/coreos/go-systemd), and do not run `systemctl`.
+Setup calls a library instead of running `systemctl --user` as a subprocess.
+A dry run still prints each manager call as the `systemctl --user` command that
+does the same, for people to read. The companion's PAM hook stays a
+`systemctl --user --machine=…` command line, because pam_exec runs a program.
+
 ## Scope
 
 secrets-dispatcher runs as your user and adds **visibility and control**, not a

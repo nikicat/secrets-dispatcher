@@ -34,7 +34,7 @@ func TestProxyAgent_ListPassthrough(t *testing.T) {
 	}
 
 	mgr := approval.NewDisabledManager()
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, "", slog.Default())
+	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, nil, slog.Default())
 
 	keys, err := proxy.List()
 	if err != nil {
@@ -63,7 +63,7 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 
 	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{
 		InvokerName: "test-proc",
-	}, "example.com", slog.Default())
+	}, new("example.com"), slog.Default())
 
 	// Pre-populate key cache (normally done by List())
 	keys, _ := upstream.List()
@@ -142,7 +142,7 @@ func TestProxyAgent_SignDenied(t *testing.T) {
 
 	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{
 		InvokerName: "test-proc",
-	}, "", slog.Default())
+	}, nil, slog.Default())
 
 	keys, _ := upstream.List()
 	proxy.keysMu.Lock()
@@ -198,7 +198,7 @@ func TestProxyAgent_SignDisabledManager(t *testing.T) {
 	}
 
 	mgr := approval.NewDisabledManager()
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, "", slog.Default())
+	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, nil, slog.Default())
 
 	keys, _ := proxy.List()
 	if len(keys) == 0 {
@@ -217,7 +217,7 @@ func TestProxyAgent_SignDisabledManager(t *testing.T) {
 func TestProxyAgent_ExtensionPassthrough(t *testing.T) {
 	upstream := agent.NewKeyring()
 	mgr := approval.NewDisabledManager()
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, "", slog.Default())
+	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, nil, slog.Default())
 
 	// Keyring doesn't support extensions, so we expect agent.ErrExtensionUnsupported
 	_, err := proxy.Extension("session-bind@openssh.com", []byte{})

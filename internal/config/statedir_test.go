@@ -126,25 +126,3 @@ func TestLoadStateDir(t *testing.T) {
 		})
 	}
 }
-
-func TestStateDirSet(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	for _, tc := range []struct {
-		value string
-		want  StateDir
-	}{
-		{value: "/var/lib/sd", want: "/var/lib/sd"},
-		{value: "state", want: StateDir(filepath.Join(wd, "state"))},
-	} {
-		var d StateDir
-		if err := d.Set(tc.value); err != nil {
-			t.Fatalf("Set(%q): %v", tc.value, err)
-		}
-		if d != tc.want {
-			t.Errorf("Set(%q) = %q, want %q", tc.value, d, tc.want)
-		}
-	}
-}

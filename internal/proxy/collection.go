@@ -9,6 +9,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // CollectionHandler handles Collection interface calls for collection objects.
@@ -41,9 +42,9 @@ func (c *CollectionHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return c.localConn.Object(dbustypes.BusName, path)
 }
 
-// senderResolver returns a lazy resolver of sender's SenderInfo, suitable for an
-// UpstreamCallContext.ResolveSender field.
-func (c *CollectionHandler) senderResolver(sender senderName) func() approval.SenderInfo {
+// Returns a lazy resolver of sender's SenderInfo, for the ResolveSender field
+// of an UpstreamCallContext.
+func (c *CollectionHandler) senderResolver(sender sender.UniqueName) func() approval.SenderInfo {
 	return func() approval.SenderInfo { return c.resolver.Resolve(sender) }
 }
 

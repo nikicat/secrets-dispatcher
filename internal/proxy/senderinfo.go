@@ -4,13 +4,16 @@ import (
 	"log/slog"
 
 	"github.com/godbus/dbus/v5"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
-// senderOf returns the unique D-Bus name of the sender of an incoming message.
-func senderOf(msg dbus.Message) senderName {
-	return senderName(msg.Headers[dbus.FieldSender].Value().(string))
+// Returns the unique D-Bus name of the sender of an incoming message.
+func senderOf(msg dbus.Message) sender.UniqueName {
+	return sender.UniqueName(msg.Headers[dbus.FieldSender].Value().(string))
 }
 
 // pathOf returns the object path an incoming message is addressed to.
@@ -20,35 +23,29 @@ func pathOf(msg dbus.Message) dbus.ObjectPath {
 
 // dbusClient abstracts D-Bus operations for testing.
 type dbusClient interface {
-	GetConnectionUnixProcessID(sender senderName) (uint32, error)
-	GetConnectionUnixUser(sender senderName) (uint32, error)
-	GetUnitByPID(pid uint32) (string, error)
+	GetConnectionUnixProcessID(sender sender.UniqueName) (procutil.PID, error)
+	GetConnectionUnixUser(sender sender.UniqueName) (procutil.UID, error)
+	GetUnitByPID(pid procutil.PID) (systemd.Unit, error)
 }
 
 // SenderInfoResolver resolves D-Bus sender information (PID, UID, systemd unit).
 type SenderInfoResolver struct {
 	client     dbusClient
-	clientName string // set as every resolved SenderInfo's Client
+	clientName approval.ClientName // set as every resolved SenderInfo's Client
 	// Nil when the bus is forwarded from another machine or container. Its PIDs
 	// belong to another PID namespace, so /proc and systemd here would describe
 	// an unrelated process.
-	local *localProcs
-}
-
-// How a resolver reads the process chain of a caller on this machine.
-type localProcs struct {
-	trimProcessChain bool
-	selfExe          string // our own binary path, filtered from process chains
+	local *sender.ChainReader
 }
 
 // Returns a resolver that asks conn about senders and names them clientName.
-func newSenderInfoResolver(conn *dbus.Conn, clientName string, local *localProcs) *SenderInfoResolver {
+func newSenderInfoResolver(conn *dbus.Conn, clientName approval.ClientName, local *sender.ChainReader) *SenderInfoResolver {
 	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, clientName: clientName, local: local}
 }
 
 // newSenderInfoResolverWithClient creates a resolver with a custom client (for testing).
 func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
-	return &SenderInfoResolver{client: client, local: &localProcs{}}
+	return &SenderInfoResolver{client: client, local: &sender.ChainReader{}}
 }
 
 // Resolve retrieves sender information for a D-Bus sender.
@@ -57,23 +54,23 @@ func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
 // Uses GetConnectionUnixProcessID and GetConnectionUnixUser instead of
 // GetConnectionCredentials to avoid ProcessFD which cannot be forwarded
 // over SSH tunneled sockets (dbus-broker v34+ includes ProcessFD).
-func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
-	info := approval.SenderInfo{Sender: string(sender), Client: r.clientName}
+func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo {
+	info := approval.SenderInfo{Client: r.clientName, Sender: &name}
 
 	// Get PID
-	pid, err := r.client.GetConnectionUnixProcessID(sender)
+	pid, err := r.client.GetConnectionUnixProcessID(name)
 	if err != nil {
-		slog.Warn("failed to get connection PID", "sender", sender, "error", err)
+		slog.Warn("failed to get connection PID", "sender", name, "error", err)
 	} else {
 		info.PID = pid
 	}
 
 	// Get UID (username resolution not possible - logind is on system bus, not session bus)
-	uid, err := r.client.GetConnectionUnixUser(sender)
+	uid, err := r.client.GetConnectionUnixUser(name)
 	if err != nil {
-		slog.Warn("failed to get connection UID", "sender", sender, "error", err)
+		slog.Warn("failed to get connection UID", "sender", name, "error", err)
 	} else {
-		info.UID = uid
+		info.UID = &uid
 	}
 
 	// A forwarded caller keeps only the PID and UID its bus reports.
@@ -93,31 +90,12 @@ func (r *SenderInfoResolver) Resolve(sender senderName) approval.SenderInfo {
 	}
 
 	// Resolve the user-facing invoker process via /proc.
-	// Falls back to the systemd unit as the display name if /proc walking fails.
 	if info.PID != 0 {
-		chain := procutil.ReadProcessChain(int32(info.PID), r.local.trimProcessChain)
-		if len(chain) > 0 {
-			// Populate the full process chain, filtering out our own binary.
-			info.ProcessChain = make([]approval.ProcessInfo, 0, len(chain))
-			for _, entry := range chain {
-				if r.local.selfExe != "" && entry.Exe == r.local.selfExe {
-					continue
-				}
-				info.ProcessChain = append(info.ProcessChain, approval.ProcessInfo{
-					Name: entry.Comm,
-					PID:  uint32(entry.PID),
-					Exe:  entry.Exe,
-					Args: entry.Args,
-					CWD:  entry.CWD,
-				})
+		if chain := r.local.Chain(info.PID); len(chain) > 0 {
+			info.ProcessChain = chain
+			if invoker, ok := info.PID.Invoker(); ok {
+				info.InvokerName, info.PID = invoker.Name, invoker.PID
 			}
-			// Resolve invoker (skip shells) for the display InvokerName (comm).
-			comm, invokerPID := procutil.ResolveInvoker(info.PID)
-			info.InvokerName = comm
-			info.PID = invokerPID
-		} else {
-			// No readable /proc chain: use the systemd unit as the display name too.
-			info.InvokerName = info.SystemdUnit
 		}
 	}
 
@@ -129,14 +107,14 @@ type realDBusClient struct {
 	conn *dbus.Conn
 }
 
-func (c *realDBusClient) GetConnectionUnixProcessID(sender senderName) (uint32, error) {
+func (c *realDBusClient) GetConnectionUnixProcessID(sender sender.UniqueName) (procutil.PID, error) {
 	obj := c.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
 	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixProcessID", 0, string(sender))
 	if call.Err != nil {
 		return 0, call.Err
 	}
 
-	var pid uint32
+	var pid procutil.PID
 	if err := call.Store(&pid); err != nil {
 		return 0, err
 	}
@@ -144,14 +122,14 @@ func (c *realDBusClient) GetConnectionUnixProcessID(sender senderName) (uint32, 
 	return pid, nil
 }
 
-func (c *realDBusClient) GetConnectionUnixUser(sender senderName) (uint32, error) {
+func (c *realDBusClient) GetConnectionUnixUser(sender sender.UniqueName) (procutil.UID, error) {
 	obj := c.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
 	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, string(sender))
 	if call.Err != nil {
 		return 0, call.Err
 	}
 
-	var uid uint32
+	var uid procutil.UID
 	if err := call.Store(&uid); err != nil {
 		return 0, err
 	}
@@ -159,7 +137,7 @@ func (c *realDBusClient) GetConnectionUnixUser(sender senderName) (uint32, error
 	return uid, nil
 }
 
-func (c *realDBusClient) GetUnitByPID(pid uint32) (string, error) {
+func (c *realDBusClient) GetUnitByPID(pid procutil.PID) (systemd.Unit, error) {
 	obj := c.conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
 	call := obj.Call("org.freedesktop.systemd1.Manager.GetUnitByPID", 0, pid)
 	if call.Err != nil {

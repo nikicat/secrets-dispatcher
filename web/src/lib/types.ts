@@ -13,11 +13,10 @@ export interface ProcessInfo {
 }
 
 export interface SenderInfo {
-  sender: string;
+  sender?: string; // absent when the request did not come over D-Bus
   pid: number;
-  uid: number;
-  user_name: string;
-  invoker_name: string; // invoker process comm (display); spoofable
+  uid?: number; // absent when the bus could not report it
+  invoker_name: string; // invoker process comm, empty without a /proc chain; spoofable
   systemd_unit?: string; // real systemd unit (authoritative)
   process_chain?: ProcessInfo[];
 }

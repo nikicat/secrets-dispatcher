@@ -8,13 +8,14 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 // One remote's signing socket. The socket identifies the remote (ADR 0011), so
 // it takes no token and serves only gpgsign.RemoteSignPath.
 type RemoteServer struct {
 	name       config.RemoteName
-	SocketPath string
+	SocketPath unixsock.Path
 	manager    *approval.Manager
 	httpServer *http.Server
 }
@@ -26,7 +27,7 @@ func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
 		return nil, fmt.Errorf("remote %s: the API server has no API socket", name)
 	}
 	rs := &RemoteServer{name: name, SocketPath: s.runtimeDir.RemoteSocket(name), manager: s.handlers.resolver.Manager}
-	listener, err := listenUnix(rs.SocketPath)
+	listener, err := rs.SocketPath.ListenPrivate()
 	if err != nil {
 		return nil, fmt.Errorf("remote %s: %w", name, err)
 	}
@@ -38,11 +39,6 @@ func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
 	return rs, nil
 }
 
-// The approval client every request from this remote is filed under.
-func (rs *RemoteServer) client() string {
-	return "remote:" + string(rs.name)
-}
-
 // Answers the remote's gpg-sign request with its resolution. A dropped
 // connection cancels the request.
 func (rs *RemoteServer) handleSign(w http.ResponseWriter, r *http.Request) {
@@ -50,8 +46,8 @@ func (rs *RemoteServer) handleSign(w http.ResponseWriter, r *http.Request) {
 	if !decodePost(w, r, &req) || !requireSignedBytes(w, req.GPGSignInfo) {
 		return
 	}
-	client := rs.client()
-	senderInfo := approval.SenderInfo{InvokerName: client}
+	client := rs.name.Client()
+	senderInfo := approval.SenderInfo{Client: client}
 	bindDisplayToSignedPayload(req.GPGSignInfo, senderInfo)
 
 	resolved, resolution, err := rs.manager.AwaitGPGSign(r.Context(), client, req.GPGSignInfo, senderInfo)

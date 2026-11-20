@@ -1,10 +1,10 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
@@ -17,11 +17,11 @@ type installInputs struct {
 	topology   topology
 	runtimeDir config.RuntimeDir
 	configPath config.File
-	execStart  string // proxy unit ExecStart
+	execStart  systemd.Command // proxy unit ExecStart
 }
 
-func resolveInstallInputs(opts Options) (installInputs, error) {
-	topology, err := opts.Mode.topology(opts.Backend)
+func resolveInstallInputs(ctx context.Context, opts Options) (installInputs, error) {
+	topology, err := opts.Mode.topology(ctx, opts.Backend)
 	if err != nil {
 		return installInputs{}, err
 	}
@@ -49,12 +49,12 @@ func resolveInstallInputs(opts Options) (installInputs, error) {
 		topology:   topology,
 		runtimeDir: runtimeDir,
 		configPath: source.File,
-		execStart:  strings.Join(append([]string{self}, config.ServeArgs(source.File)...), " "),
+		execStart:  systemd.NewCommand(self, config.ServeArgs(source.File)...),
 	}, nil
 }
 
-// A Change is one concrete action an install will perform: a file write, a
-// backup/restore, a removal, a command, or a signal.
+// One action that an install performs, as the dry run prints it. A unit
+// manager call prints as the systemctl command that does the same.
 type Change struct {
 	Op     string // "write", "backup", "restore", "remove", "run", "signal"
 	Target string
@@ -76,8 +76,8 @@ func (c Change) String() string {
 // files) but never writes. The unit contents and paths come from the same
 // helpers Install uses; only the sequence is mirrored here — keep it in sync
 // with Install.
-func Plan(opts Options) ([]Change, error) {
-	in, err := resolveInstallInputs(opts)
+func Plan(ctx context.Context, opts Options) ([]Change, error) {
+	in, err := resolveInstallInputs(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -86,18 +86,9 @@ func Plan(opts Options) ([]Change, error) {
 	if err != nil {
 		return nil, err
 	}
-	dbusDir, err := dbusServiceDir()
+	files, err := locateTakeoverFiles()
 	if err != nil {
 		return nil, err
-	}
-	asDir, err := autostartDir()
-	if err != nil {
-		return nil, err
-	}
-	files := takeoverFiles{
-		mask:   filepath.Join(dbusDir, dbusServiceFile),
-		dropIn: filepath.Join(unitsDir, gkDropInDirName, gkDropInName),
-		shadow: filepath.Join(asDir, gkAutostartName),
 	}
 
 	changes := []Change{
@@ -109,59 +100,50 @@ func Plan(opts Options) ([]Change, error) {
 	if err != nil {
 		return nil, err
 	}
+	notes, err := in.topology.unitNotes()
+	if err != nil {
+		return nil, err
+	}
 	for _, u := range allUnitNames {
-		path := u.Path(unitsDir)
-		if content, ok := needed[u]; ok {
-			note := ""
-			if u == backendServiceUnit {
-				// Surface the resolved backend — the one non-obvious content choice.
-				note = "private backend: " + execStartOf(content)
-			}
-			changes = append(changes, Change{"write", path, note})
-		} else if _, err := os.Stat(path); err == nil {
-			changes = append(changes, Change{"remove", path, "stale unit from a previous mode (stopped and disabled first)"})
+		file := unitsDir.UnitFile(u)
+		if _, ok := needed[u]; ok {
+			changes = append(changes, Change{"write", file.String(), notes[u]})
+		} else if file.Exists() {
+			changes = append(changes, Change{"remove", file.String(), "stale unit from a previous mode (stopped and disabled first)"})
 		}
 	}
 
-	changes = append(changes, daemonReloadChange())
+	changes = append(changes, reloadChange())
 	for _, u := range in.topology.activated() {
-		changes = append(changes, systemctlChange(verbEnable, u, ""))
+		changes = append(changes, unitChange(opEnable, u, ""))
 	}
 	if opts.Start {
 		for _, u := range in.topology.activated() {
-			changes = append(changes, systemctlChange(verbStart, u, ""))
+			changes = append(changes, unitChange(opStart, u, ""))
 		}
 	}
 	return changes, nil
 }
 
-// Returns the change that runs `systemctl --user verb u`.
-func systemctlChange(verb systemctlVerb, u systemd.Unit, note string) Change {
-	return Change{"run", "systemctl --user " + string(verb) + " " + string(u), note}
+// Returns the change that applies op to u, as the `systemctl --user` command
+// that does the same. Install makes the call over D-Bus (ARCHITECTURE.md,
+// "Service setup").
+func unitChange(op unitOp, u systemd.Unit, note string) Change {
+	return Change{"run", op.commandFor(u), note}
 }
 
-// Returns the change that runs `systemctl --user daemon-reload`.
-func daemonReloadChange() Change {
-	return Change{"run", "systemctl --user " + string(verbDaemonReload), ""}
-}
-
-// execStartOf extracts the ExecStart= command from a unit file body.
-func execStartOf(content string) string {
-	for line := range strings.Lines(content) {
-		if cmd, ok := strings.CutPrefix(line, "ExecStart="); ok {
-			return strings.TrimSpace(cmd)
-		}
-	}
-	return "?"
+// Returns unitManager.Reload as the dry run prints it.
+func reloadChange() Change {
+	return Change{"run", opReload.command(), ""}
 }
 
 // Prints the changes that Install(opts) would make.
-func PrintPlan(opts Options) error {
-	changes, err := Plan(opts)
+func PrintPlan(ctx context.Context, opts Options) error {
+	changes, err := Plan(ctx, opts)
 	if err != nil {
 		return err
 	}
-	fmt.Println("Dry run — `service install` would:")
+	fmt.Printf("Dry run — %s would:\n", InstallCommand.hint())
 	for _, c := range changes {
 		fmt.Println("  " + c.String())
 	}

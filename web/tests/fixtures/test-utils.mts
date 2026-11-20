@@ -129,7 +129,6 @@ export function pendingRequest({
       sender: ":1.100",
       pid: 1000,
       uid: 1000,
-      user_name: "testuser",
       invoker_name: "test.service",
       ...sender_info,
     },

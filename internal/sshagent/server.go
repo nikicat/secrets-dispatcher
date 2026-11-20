@@ -8,41 +8,39 @@ import (
 	"sync"
 
 	"golang.org/x/crypto/ssh/agent"
-	"golang.org/x/sys/unix"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
-	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
-// Server listens on a Unix socket and proxies SSH agent connections,
-// gating sign requests through the approval manager.
+// Listens on a unix socket and proxies SSH agent connections, gating sign
+// requests through the approval manager.
 type Server struct {
-	listenPath       string
-	upstreamPath     string
-	approval         *approval.Manager
-	trimProcessChain bool
-	logger           *slog.Logger
+	sockets  config.SSHConfig
+	approval *approval.Manager
+	chains   sender.ChainReader
+	logger   *slog.Logger
 }
 
-// NewServer creates a new SSH agent proxy server.
-func NewServer(listenPath, upstreamPath string, approvalMgr *approval.Manager, trimProcessChain bool, logger *slog.Logger) *Server {
+func NewServer(sockets config.SSHConfig, approvalMgr *approval.Manager, chains sender.ChainReader, logger *slog.Logger) *Server {
 	return &Server{
-		listenPath:       listenPath,
-		upstreamPath:     upstreamPath,
-		approval:         approvalMgr,
-		trimProcessChain: trimProcessChain,
-		logger:           logger,
+		sockets:  sockets,
+		approval: approvalMgr,
+		chains:   chains,
+		logger:   logger,
 	}
 }
 
-// Run starts the proxy server. It blocks until ctx is cancelled.
+// Serves the socket until ctx ends.
 func (s *Server) Run(ctx context.Context) error {
-	listener, err := net.Listen("unix", s.listenPath)
+	listener, err := s.sockets.Listen.Listen()
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.listenPath, err)
+		return fmt.Errorf("listen on %s: %w", s.sockets.Listen, err)
 	}
 
-	s.logger.Info("SSH agent proxy listening", "socket", s.listenPath, "upstream", s.upstreamPath)
+	s.logger.Info("SSH agent proxy listening", "socket", s.sockets.Listen, "upstream", s.sockets.Upstream)
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -76,17 +74,21 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	senderInfo.Client = approval.ClientSSHAgent
 
 	// Resolve SSH destination from the connecting process
-	destination := procutil.ResolveSSHDestination(int32(senderInfo.PID))
+	host, known := senderInfo.PID.SSHDestination()
+	var destination *string
+	if known {
+		destination = &host
+	}
 
 	s.logger.Debug("new SSH agent connection",
 		"pid", senderInfo.PID,
 		"invoker", senderInfo.InvokerName,
-		"destination", destination)
+		"destination", host)
 
 	// Dial upstream agent
-	upstreamConn, err := net.Dial("unix", s.upstreamPath)
+	upstreamConn, err := s.sockets.Upstream.Dial(ctx)
 	if err != nil {
-		s.logger.Error("failed to connect to upstream agent", "path", s.upstreamPath, "error", err)
+		s.logger.Error("failed to connect to upstream agent", "path", s.sockets.Upstream, "error", err)
 		return
 	}
 	defer upstreamConn.Close()
@@ -102,46 +104,19 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	}
 }
 
-// extractSenderInfo builds a SenderInfo from the Unix socket peer credentials.
+// Describes the process at the other end of conn.
 func (s *Server) extractSenderInfo(conn net.Conn) approval.SenderInfo {
-	uc, ok := conn.(*net.UnixConn)
+	peer, ok := unixsock.PeerOf(conn)
 	if !ok {
 		return approval.SenderInfo{}
 	}
-
-	raw, err := uc.SyscallConn()
-	if err != nil {
-		return approval.SenderInfo{}
+	info := approval.SenderInfo{
+		PID:          peer.PID,
+		UID:          new(peer.UID),
+		ProcessChain: s.chains.Chain(peer.PID),
 	}
-
-	var cred *unix.Ucred
-	var credErr error
-	raw.Control(func(fd uintptr) { //nolint:errcheck
-		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	})
-	if credErr != nil || cred == nil {
-		return approval.SenderInfo{}
+	if invoker, ok := peer.PID.Invoker(); ok {
+		info.InvokerName, info.PID = invoker.Name, invoker.PID
 	}
-
-	chain := procutil.ReadProcessChain(cred.Pid, s.trimProcessChain)
-	processChain := make([]approval.ProcessInfo, len(chain))
-	for i, entry := range chain {
-		processChain[i] = approval.ProcessInfo{
-			Name: entry.Comm,
-			PID:  uint32(entry.PID),
-			Exe:  entry.Exe,
-			Args: entry.Args,
-			CWD:  entry.CWD,
-		}
-	}
-
-	// Resolve invoker (skip shells)
-	comm, invokerPID := procutil.ResolveInvoker(uint32(cred.Pid))
-
-	return approval.SenderInfo{
-		PID:          invokerPID,
-		UID:          uint32(cred.Uid),
-		InvokerName:  comm,
-		ProcessChain: processChain,
-	}
+	return info
 }

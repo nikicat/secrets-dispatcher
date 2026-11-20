@@ -14,6 +14,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	. "github.com/nikicat/secrets-dispatcher/internal/daemon"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 // policyConfigTemplate is the dbus-daemon config for integration tests.
@@ -23,13 +24,13 @@ import (
 // The full default policy block must be present — without receive_type allows
 // the daemon's method_return replies to the bus are rejected (Pitfall 1).
 //
-// Args: sockPath, uid (numeric string)
+// Args: the bus address, uid (numeric string)
 const policyConfigTemplate = `<?xml version="1.0"?>
 <!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
   <type>session</type>
-  <listen>unix:path=%s</listen>
+  <listen>%s</listen>
   <policy context="default">
     <allow user="*"/>
     <deny own="*"/>
@@ -56,11 +57,11 @@ func startDBusDaemonWithPolicy(t *testing.T) string {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sock := unixsock.Dir(tmpDir).Socket("test")
 	confPath := filepath.Join(tmpDir, "policy.conf")
 
 	uid := fmt.Sprintf("%d", os.Getuid())
-	conf := fmt.Sprintf(policyConfigTemplate, sockPath, uid)
+	conf := fmt.Sprintf(policyConfigTemplate, sock.Address(), uid)
 
 	if err := os.WriteFile(confPath, []byte(conf), 0600); err != nil {
 		t.Fatalf("write policy config: %v", err)
@@ -80,8 +81,8 @@ func startDBusDaemonWithPolicy(t *testing.T) string {
 
 	// Wait for socket file to appear (50 * 100ms = 5s max).
 	for range 50 {
-		if _, err := os.Stat(sockPath); err == nil {
-			return "unix:path=" + sockPath
+		if sock.Exists() {
+			return sock.Address()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

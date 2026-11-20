@@ -269,3 +269,14 @@ func TestClient_Unauthorized(t *testing.T) {
 		t.Errorf("expected unauthorized error, got: %v", err)
 	}
 }
+
+// The CLI reads the invoker under the JSON key that the API writes.
+func TestPendingRequestDecodesInvokerName(t *testing.T) {
+	var req PendingRequest
+	if err := json.Unmarshal([]byte(`{"sender_info":{"pid":42,"invoker_name":"gh"}}`), &req); err != nil {
+		t.Fatal(err)
+	}
+	if req.SenderInfo.InvokerName != "gh" || req.SenderInfo.PID != 42 {
+		t.Errorf("sender_info = %+v, want invoker gh with pid 42", req.SenderInfo)
+	}
+}

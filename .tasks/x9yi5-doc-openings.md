@@ -5,9 +5,9 @@ tags: [unsmell]
 # Doc comments open with their declaration's name
 
 ## Goal
-Docs opening with their declaration's name (validate, namedGlob, globs, staticProvider, multiProvider, runConfig, runGPGSignSetup, setFlags); main.go:835 `runService handles…` is orphaned above runTry.
+Docs opening with their declaration's name (validate, namedGlob, globs, setFlags).
 
-Where: internal/config/config.go:70, internal/config/config.go:226, internal/config/config.go:252, internal/config/config.go:256, main.go:645, main.go:654, main.go:667, main.go:835, main.go:961, main.go:1102.
+Where: internal/config/config.go:70, internal/config/config.go:226, internal/config/config.go:252, internal/config/config.go:256.
 
 The docs of the two functions whose signatures the changeset changed open with their own names ("CheckTrustRules checks if…", "matchTrustRule returns true if…"), as do 53 more docs in manager.go and types.go; no linter here requires the Go form. Doc lines unchanged.
 
@@ -32,6 +32,6 @@ names; Provision's doc lists its steps (2026-11-20 run, r1c-14).
 Where: internal/companion/check.go:15, internal/gpgsign/run.go.
 
 ## Next
-- Drop the name and start at the verb or noun phrase; move or delete the orphaned runService line.
+- Drop the name and start at the verb or noun phrase.
 - Drop the names: 'Returns the first trust rule that matches the request, or nil.' on CheckTrustRules; 'Checks whether the request matches rule.' on matchTrustRule; the rest of the file in one pass.
 - Each doc drops the name and starts at the verb or noun phrase; tautologies such as 'NewService creates a new Service handler.' are deleted.

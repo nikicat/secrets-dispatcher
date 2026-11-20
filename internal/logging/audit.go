@@ -4,34 +4,30 @@ package logging
 import (
 	"context"
 	"log/slog"
+
+	"github.com/godbus/dbus/v5"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-// Logger wraps slog for structured audit logging.
+// Writes one audit record per D-Bus call, through the default slog handler.
 type Logger struct {
 	*slog.Logger
-	client string
+	client approval.ClientName
 }
 
-// New creates a new audit logger using the global default handler.
-func New(level slog.Level, client string) *Logger {
+// Returns a logger whose records name client.
+func New(client approval.ClientName) *Logger {
 	return &Logger{
 		Logger: slog.Default(),
 		client: client,
 	}
 }
 
-// WithClient returns a new Logger with the specified client name.
-func (l *Logger) WithClient(client string) *Logger {
-	return &Logger{
-		Logger: l.Logger,
-		client: client,
-	}
-}
-
-// LogMethod logs a D-Bus method call with its result.
+// Logs a D-Bus method call with its result.
 func (l *Logger) LogMethod(ctx context.Context, method string, args map[string]any, result string, err error) {
 	attrs := []slog.Attr{
-		slog.String("client", l.client),
+		slog.String("client", string(l.client)),
 		slog.String("method", method),
 		slog.String("result", result),
 	}
@@ -45,12 +41,11 @@ func (l *Logger) LogMethod(ctx context.Context, method string, args map[string]a
 	l.LogAttrs(ctx, slog.LevelInfo, "dbus_call", attrs...)
 }
 
-// LogGetSecrets logs a GetSecrets call with the requested items.
-func (l *Logger) LogGetSecrets(ctx context.Context, items []string, result string, err error) {
+// Logs a GetSecrets call with the requested items.
+func (l *Logger) LogGetSecrets(ctx context.Context, items []dbus.ObjectPath, result string, err error) {
 	l.LogMethod(ctx, "GetSecrets", map[string]any{"items": items}, result, err)
 }
 
-// LogOpenSession logs an OpenSession call.
 func (l *Logger) LogOpenSession(ctx context.Context, algorithm string, sessionPath string, result string, err error) {
 	l.LogMethod(ctx, "OpenSession", map[string]any{
 		"algorithm": algorithm,
@@ -58,7 +53,6 @@ func (l *Logger) LogOpenSession(ctx context.Context, algorithm string, sessionPa
 	}, result, err)
 }
 
-// LogSearchItems logs a SearchItems call.
 func (l *Logger) LogSearchItems(ctx context.Context, attributes map[string]string, unlocked, locked int, result string, err error) {
 	l.LogMethod(ctx, "SearchItems", map[string]any{
 		"attributes":     attributes,
@@ -67,15 +61,13 @@ func (l *Logger) LogSearchItems(ctx context.Context, attributes map[string]strin
 	}, result, err)
 }
 
-// LogUnlock logs an Unlock call.
-func (l *Logger) LogUnlock(ctx context.Context, objects []string, unlocked int, result string, err error) {
+func (l *Logger) LogUnlock(ctx context.Context, objects []dbus.ObjectPath, unlocked int, result string, err error) {
 	l.LogMethod(ctx, "Unlock", map[string]any{
 		"objects":        objects,
 		"unlocked_count": unlocked,
 	}, result, err)
 }
 
-// LogReadAlias logs a ReadAlias call.
 func (l *Logger) LogReadAlias(ctx context.Context, alias string, collection string, result string, err error) {
 	l.LogMethod(ctx, "ReadAlias", map[string]any{
 		"alias":      alias,
@@ -83,7 +75,6 @@ func (l *Logger) LogReadAlias(ctx context.Context, alias string, collection stri
 	}, result, err)
 }
 
-// LogItemGetSecret logs an Item.GetSecret call.
 func (l *Logger) LogItemGetSecret(ctx context.Context, itemPath string, result string, err error) {
 	l.LogMethod(ctx, "Item.GetSecret", map[string]any{"item": itemPath}, result, err)
 }

@@ -55,7 +55,7 @@ func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) (a
 
 // GPGSignRequest is the POST body for /api/v1/gpg-sign/request.
 type GPGSignRequest struct {
-	Client      string                `json:"client"`
+	Client      approval.ClientName   `json:"client"`
 	GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
 }
 
@@ -75,7 +75,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	if req.Client == "" {
 		req.Client = approval.ClientUnknown
 	}
-	senderInfo := resolvePeerInfo(r.Context(), h.trimProcessChain)
+	senderInfo := resolvePeerInfo(r.Context(), h.chains)
 
 	// WYSIWYS: bind the human-visible metadata to the exact bytes that will be
 	// fed to gpg, discarding the client's own kind/author/committer/message/
@@ -154,6 +154,7 @@ func bindDisplayToSignedPayload(info *approval.GPGSignInfo, senderInfo approval.
 	if p.Signer != info.Author || p.Committer != info.Committer ||
 		p.Message != info.CommitMsg || string(p.Kind) != info.Kind {
 		slog.Warn("gpg sign: client-supplied metadata does not match signed bytes; overriding with parsed values",
+			"client", senderInfo.Client,
 			"pid", senderInfo.PID,
 			"process", senderInfo.InvokerName,
 		)

@@ -4,15 +4,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 // forceColor pins the package colorize flag for one test and restores it after,
 // so styling can be asserted without a pty.
 func forceColor(t *testing.T, on bool) {
 	t.Helper()
-	orig := colorize
-	colorize = on
-	t.Cleanup(func() { colorize = orig })
+	testutil.Swap(t, &colorize, on)
 }
 
 func TestPaintDisabledReturnsPlain(t *testing.T) {

@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/poll"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -399,8 +402,8 @@ func (o *testObserver) Events() []Event {
 	return append([]Event{}, o.events...)
 }
 
-func (o *testObserver) WaitForEvents(count int, timeout time.Duration) []Event {
-	poll.Until(timeout, 10*time.Millisecond, func() bool { return len(o.Events()) >= count })
+func (o *testObserver) WaitForEvents(ctx context.Context, count int, timeout time.Duration) []Event {
+	poll.Until(ctx, timeout, 10*time.Millisecond, func() bool { return len(o.Events()) >= count })
 	return o.Events()
 }
 
@@ -417,7 +420,7 @@ func TestManager_Observer_Created(t *testing.T) {
 	})
 
 	// Wait for created event
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) < 1 {
 		t.Fatal("expected at least 1 event")
 	}
@@ -462,7 +465,7 @@ func TestManager_Observer_Approved(t *testing.T) {
 	wg.Wait()
 
 	// Wait for events
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -503,7 +506,7 @@ func TestManager_Observer_Denied(t *testing.T) {
 	wg.Wait()
 
 	// Wait for events
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -524,7 +527,7 @@ func TestManager_Observer_Expired(t *testing.T) {
 	_, _ = mgr.RequireApproval(context.Background(), []ItemInfo{{Path: "/test/item"}}, "/session/1", RequestTypeGetSecret, nil, SenderInfo{})
 
 	// Wait for events
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -569,7 +572,7 @@ func TestManager_Observer_CancelMethod(t *testing.T) {
 	wg.Wait()
 
 	// Wait for events
-	events := obs.WaitForEvents(2, time.Second)
+	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -600,7 +603,7 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 	})
 
 	// Wait for created event
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) < 1 {
 		t.Fatal("expected at least 1 event (created)")
 	}
@@ -610,7 +613,7 @@ func TestManager_Observer_Cancelled(t *testing.T) {
 	wg.Wait()
 
 	// Wait for cancelled event
-	events = obs.WaitForEvents(2, time.Second)
+	events = obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -662,8 +665,8 @@ func TestManager_Observer_MultipleObservers(t *testing.T) {
 	})
 
 	// Wait for created event on both observers
-	events1 := obs1.WaitForEvents(1, time.Second)
-	events2 := obs2.WaitForEvents(1, time.Second)
+	events1 := obs1.WaitForEvents(t.Context(), 1, time.Second)
+	events2 := obs2.WaitForEvents(t.Context(), 1, time.Second)
 
 	if len(events1) < 1 {
 		t.Error("observer 1 should receive events")
@@ -896,7 +899,7 @@ func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
 
 	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: ":1.100"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
 	// First request: must be manually approved
 	var wg sync.WaitGroup
@@ -933,7 +936,7 @@ func TestApprovalCache_Expired(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: 50 * time.Millisecond})
 
 	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: ":1.100"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
 	// Approve first request
 	var wg sync.WaitGroup
@@ -973,7 +976,7 @@ func TestApprovalCache_DifferentSender(t *testing.T) {
 	// Approve for sender1
 	var wg sync.WaitGroup
 	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.100"})
+		_, _ = mgr.RequireApproval(context.Background(), items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: new(sender.UniqueName(":1.100"))})
 	})
 
 	var reqID string
@@ -991,7 +994,7 @@ func TestApprovalCache_DifferentSender(t *testing.T) {
 	// Different sender should NOT be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.999"})
+	_, err := mgr.RequireApproval(ctx, items, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: new(sender.UniqueName(":1.999"))})
 	if err == nil {
 		t.Fatal("different sender should not be auto-approved from cache")
 	}
@@ -1001,7 +1004,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
 
 	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: ":1.100"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
 	// Approve a GetSecret request first — populates cache
 	var wg sync.WaitGroup
@@ -1043,7 +1046,7 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
 
 	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: ":1.100"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
 	// Approve a GetSecret request first — populates cache
 	var wg sync.WaitGroup
@@ -1078,7 +1081,7 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 func TestCacheItemForSender_AutoApprovesRead(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
 
-	sender := SenderInfo{Sender: ":1.200"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.200"))}
 	itemPath := "/org/freedesktop/secrets/collection/default/i123"
 
 	// Manually cache the item (simulates post-CreateItem caching)
@@ -1099,12 +1102,12 @@ func TestCacheItemForSender_DifferentSenderNotCached(t *testing.T) {
 	itemPath := "/org/freedesktop/secrets/collection/default/i123"
 
 	// Cache for sender :1.200
-	mgr.CacheItemForSender(SenderInfo{Sender: ":1.200"}, itemPath)
+	mgr.CacheItemForSender(SenderInfo{Sender: new(sender.UniqueName(":1.200"))}, itemPath)
 
 	// Different sender should NOT be auto-approved
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: ":1.300"})
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Sender: new(sender.UniqueName(":1.300"))})
 	if err == nil {
 		t.Fatal("different sender should not be auto-approved")
 	}
@@ -1116,13 +1119,29 @@ func TestCacheItemForSender_DifferentClientNotCached(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
 
 	itemPath := "/org/freedesktop/secrets/collection/default/i123"
-	mgr.CacheItemForSender(SenderInfo{Client: "a", Sender: ":1.200"}, itemPath)
+	mgr.CacheItemForSender(SenderInfo{Client: "a", Sender: new(sender.UniqueName(":1.200"))}, itemPath)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Client: "b", Sender: ":1.200"})
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{Client: "b", Sender: new(sender.UniqueName(":1.200"))})
 	if err == nil {
 		t.Fatal("the same sender name on another client should not be auto-approved")
+	}
+}
+
+// A request that did not come over D-Bus has no sender to tie an approval to,
+// so another process could reuse it.
+func TestCacheItemForSender_NoSenderNotCached(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+
+	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+	mgr.CacheItemForSender(SenderInfo{}, itemPath)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := mgr.RequireApproval(ctx, []ItemInfo{{Path: itemPath}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{})
+	if err == nil {
+		t.Fatal("a request without a sender should not be auto-approved")
 	}
 }
 
@@ -1132,7 +1151,7 @@ func TestReleaseClient_DropsCachedApprovals(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Minute})
 
 	itemPath := "/org/freedesktop/secrets/collection/default/i123"
-	sender := SenderInfo{Client: "vm", Sender: ":1.5"}
+	sender := SenderInfo{Client: "vm", Sender: new(sender.UniqueName(":1.5"))}
 	if !mgr.ClaimClient("vm") {
 		t.Fatal("first claim of vm failed")
 	}
@@ -1156,7 +1175,7 @@ func TestReleaseClient_DropsCachedApprovals(t *testing.T) {
 func TestApprovalCache_DifferentItem(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
 
-	sender := SenderInfo{Sender: ":1.100"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
 	// Approve for item1
 	var wg sync.WaitGroup
@@ -1200,7 +1219,7 @@ func TestManager_EventOrder_CancelledContext(t *testing.T) {
 
 		_, _ = mgr.RequireApproval(ctx, []ItemInfo{{Path: "/test/item"}}, "/s/1", RequestTypeGetSecret, nil, SenderInfo{})
 
-		events := obs.WaitForEvents(2, time.Second)
+		events := obs.WaitForEvents(t.Context(), 2, time.Second)
 		if len(events) < 2 {
 			t.Fatalf("iteration %d: expected 2 events, got %d", i, len(events))
 		}
@@ -1267,7 +1286,7 @@ func TestRecordIgnored(t *testing.T) {
 	mgr.RecordIgnored(items, "/session/1", SenderInfo{Client: "test-client"})
 
 	// Check event fired
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -1310,10 +1329,10 @@ func TestCheckTrustedSigner(t *testing.T) {
 	// set because the connection was opened by our thin client.
 	viaHelper := SenderInfo{
 		PeerTrusted: true,
-		ProcessChain: []ProcessInfo{
-			{Name: "git", Exe: "/usr/bin/git"},
-			{Name: "nvim", Exe: nvimExe},
-			{Name: "kgx", Exe: "/usr/bin/kgx"},
+		ProcessChain: []procutil.Process{
+			{Name: "git", Exe: new(procutil.Path("/usr/bin/git"))},
+			{Name: "nvim", Exe: new(procutil.Path(nvimExe))},
+			{Name: "kgx", Exe: new(procutil.Path("/usr/bin/kgx"))},
 		},
 	}
 
@@ -1391,10 +1410,10 @@ func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 	// speaking the protocol directly, not our thin client.
 	forged := SenderInfo{
 		PeerTrusted: false,
-		ProcessChain: []ProcessInfo{
-			{Name: "malware", Exe: "/tmp/malware"},
-			{Name: "git", Exe: "/usr/bin/git"},
-			{Name: "nvim", Exe: nvimExe},
+		ProcessChain: []procutil.Process{
+			{Name: "malware", Exe: new(procutil.Path("/tmp/malware"))},
+			{Name: "git", Exe: new(procutil.Path("/usr/bin/git"))},
+			{Name: "nvim", Exe: new(procutil.Path(nvimExe))},
 		},
 	}
 	assert.False(t, mgr.CheckTrustedSigner(forged, "any", nil),
@@ -1408,17 +1427,14 @@ func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 }
 
 func TestCheckTrustRules(t *testing.T) {
-	// Override extractCollection for tests
-	origExtract := extractCollection
-	extractCollection = func(path string) string {
+	testutil.Swap(t, &extractCollection, func(path string) string {
 		// Simple parser: /org/freedesktop/secrets/collection/<name>/... → <name>
 		parts := strings.Split(path, "/")
 		if len(parts) >= 6 {
 			return parts[5]
 		}
 		return ""
-	}
-	defer func() { extractCollection = origExtract }()
+	})
 
 	rules := []TrustRule{
 		{
@@ -1465,9 +1481,9 @@ func TestCheckTrustRules(t *testing.T) {
 		TrustRules: rules,
 	})
 
-	ghChain := []ProcessInfo{{Name: "gh", PID: 100, Exe: "/usr/bin/gh"}}
-	chromeChain := []ProcessInfo{{Name: "chrome", PID: 200, Exe: "/opt/google/chrome/chrome"}}
-	gopassSender := SenderInfo{Client: ClientLocal, InvokerName: "gopass", SystemdUnit: "gopass-secret-service.service", ProcessChain: []ProcessInfo{{Name: "gopass", PID: 300}}}
+	ghChain := []procutil.Process{{Name: "gh", PID: 100, Exe: new(procutil.Path("/usr/bin/gh"))}}
+	chromeChain := []procutil.Process{{Name: "chrome", PID: 200, Exe: new(procutil.Path("/opt/google/chrome/chrome"))}}
+	gopassSender := SenderInfo{Client: ClientLocal, InvokerName: "gopass", SystemdUnit: "gopass-secret-service.service", ProcessChain: []procutil.Process{{Name: "gopass", PID: 300}}}
 
 	t.Run("match process name + request type", func(t *testing.T) {
 		rule := mgr.CheckTrustRules(
@@ -1547,7 +1563,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Label: "GitHub Token",
 		}}
 		rule := mgr.CheckTrustRules(
-			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "random-app", PID: 999}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "random-app", PID: 999}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1559,7 +1575,7 @@ func TestCheckTrustRules(t *testing.T) {
 
 	t.Run("match search attributes", func(t *testing.T) {
 		rule := mgr.CheckTrustRules(
-			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "app", PID: 1}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "app", PID: 1}}},
 			nil,
 			RequestTypeSearch,
 			map[string]string{"xdg:schema": "org.gnome.keyring.Note"},
@@ -1576,7 +1592,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.NetworkPassword", "ssid": "home"},
 		}}
 		rule := mgr.CheckTrustRules(
-			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "nm-applet", PID: 500}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "nm-applet", PID: 500}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1604,7 +1620,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Attributes: map[string]string{"username": "kubelogin/tokencache/e91d908"},
 		}}
 		rule := m.CheckTrustRules(
-			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "kubectl", PID: 1}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1615,7 +1631,7 @@ func TestCheckTrustRules(t *testing.T) {
 		// Non-matching value
 		items[0].Attributes["username"] = "other/path"
 		rule = m.CheckTrustRules(
-			SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "kubectl", PID: 1}}},
+			SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "kubectl", PID: 1}}},
 			items,
 			RequestTypeGetSecret,
 			nil,
@@ -1650,11 +1666,13 @@ func TestCheckTrustRules(t *testing.T) {
 func TestMatchProcessArgs(t *testing.T) {
 	// Interpreter-run script: exe is the interpreter, the script path is only
 	// visible in argv — the case the args matcher exists for.
-	sender := SenderInfo{ProcessChain: []ProcessInfo{
-		{Name: "secret-tool", PID: 100, Exe: "/usr/bin/secret-tool", Args: []string{"secret-tool", "lookup", "service", "http-basic-auth"}},
-		{Name: "bash", PID: 99, Exe: "/usr/bin/bash", Args: []string{"bash", "/home/me/.local/bin/logcli", "query"}},
-		{Name: "fish", PID: 98, Exe: "/usr/bin/fish", Args: []string{"fish"}},
-	}}
+	sender := SenderInfo{
+		ProcessChain: []procutil.Process{
+			{Name: "secret-tool", PID: 100, Exe: new(procutil.Path("/usr/bin/secret-tool")), Args: []string{"secret-tool", "lookup", "service", "http-basic-auth"}},
+			{Name: "bash", PID: 99, Exe: new(procutil.Path("/usr/bin/bash")), Args: []string{"bash", "/home/me/.local/bin/logcli", "query"}},
+			{Name: "fish", PID: 98, Exe: new(procutil.Path("/usr/bin/fish")), Args: []string{"fish"}},
+		},
+	}
 
 	t.Run("matches script path in interpreter argv", func(t *testing.T) {
 		pm := &ProcessMatcher{Exe: "/usr/bin/bash", Args: "/home/me/.local/bin/logcli"}
@@ -1715,7 +1733,7 @@ func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 		context.Background(),
 		nil, "/s/1",
 		RequestTypeSearch, nil,
-		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "gh", PID: 1}}},
 	)
 	if err != nil {
 		t.Fatalf("expected nil (auto-approved), got %v", err)
@@ -1724,7 +1742,7 @@ func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 		t.Error("trust rule approve should not create pending request")
 	}
 
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) < 1 || events[0].Type != EventRequestAutoApproved {
 		t.Errorf("expected EventRequestAutoApproved, got %v", events)
 	}
@@ -1771,7 +1789,7 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 		t.Error("trust rule ignore should not create pending request")
 	}
 
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) < 1 || events[0].Type != EventRequestIgnored {
 		t.Errorf("expected EventRequestIgnored, got %v", events)
 	}
@@ -1803,7 +1821,7 @@ func TestTrustRules_RequireApproval_Deny(t *testing.T) {
 		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "epiphany-search", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "epiphany-search", PID: 1}}},
 	)
 	if err != ErrDeniedByRule {
 		t.Fatalf("expected ErrDeniedByRule, got %v", err)
@@ -1812,7 +1830,7 @@ func TestTrustRules_RequireApproval_Deny(t *testing.T) {
 		t.Error("trust rule deny should not create pending request")
 	}
 
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) < 1 || events[0].Type != EventRequestDenied {
 		t.Errorf("expected EventRequestDenied, got %v", events)
 	}
@@ -1843,7 +1861,7 @@ func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
 		context.Background(),
 		[]ItemInfo{{Path: "/test/item"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{ProcessChain: []ProcessInfo{{Name: "curl", PID: 1}}},
+		SenderInfo{ProcessChain: []procutil.Process{{Name: "curl", PID: 1}}},
 	)
 	if err != ErrTimeout {
 		t.Fatalf("expected ErrTimeout (no trust rule match), got %v", err)
@@ -1867,7 +1885,7 @@ func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
 		context.Background(),
 		nil, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "test", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "test", PID: 1}}},
 	)
 	if err != nil {
 		t.Fatalf("expected nil (default action approve), got %v", err)
@@ -1894,10 +1912,13 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{
-			{Name: "electron", PID: 100, Exe: "/usr/lib/electron39/electron", CWD: "/usr/lib/visual-studio-code-electron"},
-			{Name: "systemd", PID: 1},
-		}},
+		SenderInfo{
+			Client: ClientLocal,
+			ProcessChain: []procutil.Process{
+				{Name: "electron", PID: 100, Exe: new(procutil.Path("/usr/lib/electron39/electron")), CWD: new(procutil.Path("/usr/lib/visual-studio-code-electron"))},
+				{Name: "systemd", PID: 1},
+			},
+		},
 	)
 	if err != nil {
 		t.Fatalf("expected nil (CWD match), got %v", err)
@@ -1913,9 +1934,12 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 		context.Background(),
 		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}}, "/s/1",
 		RequestTypeGetSecret, nil,
-		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{
-			{Name: "electron", PID: 100, Exe: "/usr/lib/electron39/electron", CWD: "/opt/something-else"},
-		}},
+		SenderInfo{
+			Client: ClientLocal,
+			ProcessChain: []procutil.Process{
+				{Name: "electron", PID: 100, Exe: new(procutil.Path("/usr/lib/electron39/electron")), CWD: new(procutil.Path("/opt/something-else"))},
+			},
+		},
 	)
 	if err != ErrTimeout {
 		t.Fatalf("expected ErrTimeout (CWD mismatch), got %v", err)
@@ -1935,7 +1959,7 @@ func TestRequireApproval_AutoApproved_Disabled(t *testing.T) {
 
 func TestRequireApproval_AutoApproved_Cache(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
-	sender := SenderInfo{Sender: ":1.1"}
+	sender := SenderInfo{Sender: new(sender.UniqueName(":1.1"))}
 	items := []ItemInfo{{Path: "/test/item"}}
 
 	// Manually cache
@@ -1965,7 +1989,7 @@ func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
 		context.Background(),
 		[]ItemInfo{{Path: "/test/item"}}, "",
 		RequestTypeGetSecret, nil,
-		SenderInfo{Client: ClientLocal, ProcessChain: []ProcessInfo{{Name: "gh", PID: 1}}},
+		SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "gh", PID: 1}}},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -2038,12 +2062,12 @@ func TestRecordPassthrough(t *testing.T) {
 
 	items := []ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}
 	searchAttrs := map[string]string{"xdg:schema": "org.gnome.keyring.Note"}
-	sender := SenderInfo{Sender: ":1.42", Client: "test-client", InvokerName: "app.service", PID: 123}
+	sender := SenderInfo{Client: "test-client", Sender: new(sender.UniqueName(":1.42")), InvokerName: "app.service", PID: 123}
 
 	mgr.RecordPassthrough(items, "", RequestTypeSearch, searchAttrs, sender)
 
 	// Check event fired
-	events := obs.WaitForEvents(1, time.Second)
+	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -2065,9 +2089,7 @@ func TestRecordPassthrough(t *testing.T) {
 	if history[0].Request.Client != "test-client" {
 		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.Client)
 	}
-	if history[0].Request.SenderInfo.Sender != ":1.42" {
-		t.Errorf("expected sender ':1.42', got '%s'", history[0].Request.SenderInfo.Sender)
-	}
+	assert.Equal(t, sender.Sender, history[0].Request.SenderInfo.Sender)
 	if history[0].Request.SearchAttributes["xdg:schema"] != "org.gnome.keyring.Note" {
 		t.Errorf("expected search attributes preserved, got %v", history[0].Request.SearchAttributes)
 	}
@@ -2165,7 +2187,7 @@ func TestCheckTrustRules_Client(t *testing.T) {
 	})
 
 	cases := []struct {
-		client string
+		client ClientName
 		typ    RequestType
 		want   string
 	}{
@@ -2203,7 +2225,7 @@ func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
 		},
 	})
 
-	forwarded := SenderInfo{Client: "symbiosis", Sender: ":1.7", PID: 42}
+	forwarded := SenderInfo{Client: "symbiosis", Sender: new(sender.UniqueName(":1.7")), PID: 42}
 	assert.Nil(t, mgr.CheckTrustRules(forwarded, nil, RequestTypeGetSecret, nil), `unit "*"`)
 	assert.Nil(t, mgr.CheckTrustRules(forwarded, nil, RequestTypeSearch, nil), "empty process")
 

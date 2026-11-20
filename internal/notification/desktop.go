@@ -15,6 +15,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 const (
@@ -703,7 +704,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	esc := escapeMarkup
 
 	// writeChain appends the process chain (comm names), escaping each name.
-	writeChain := func(chain []approval.ProcessInfo) {
+	writeChain := func(chain []procutil.Process) {
 		for i, p := range chain {
 			if i == 0 {
 				b.WriteString("\n")
@@ -761,12 +762,12 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			writeChain(req.SenderInfo.ProcessChain)
 		} else {
 			// Fallback: old format for remote requests without process chain
-			if req.SenderInfo.InvokerName != "" {
-				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", esc(req.SenderInfo.InvokerName), esc(req.Client), req.SenderInfo.PID)
+			if name := req.SenderInfo.DisplayName(); name != "" {
+				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", esc(name), esc(string(req.Client)), req.SenderInfo.PID)
 			} else if req.SenderInfo.PID != 0 {
-				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", esc(req.Client), req.SenderInfo.PID)
+				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", esc(string(req.Client)), req.SenderInfo.PID)
 			} else {
-				fmt.Fprintf(&b, "<b>%s</b>: ", esc(req.Client))
+				fmt.Fprintf(&b, "<b>%s</b>: ", esc(string(req.Client)))
 			}
 
 			switch req.Type {

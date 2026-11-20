@@ -12,6 +12,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
 )
@@ -155,8 +157,10 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 			{Label: "GitHub Token", Path: "/org/secrets/github"},
 		},
 		SenderInfo: approval.SenderInfo{
-			PID:         1234,
-			InvokerName: "ssh-agent.service",
+			Info: sender.Info{
+				PID:         1234,
+				SystemdUnit: "ssh-agent.service",
+			},
 		},
 	}
 
@@ -183,7 +187,7 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 var localSender = approval.SenderInfo{
 	PID:          4242,
 	InvokerName:  "gh",
-	ProcessChain: []approval.ProcessInfo{{Name: "gh", PID: 4242, Exe: "/usr/bin/gh"}},
+	ProcessChain: []procutil.Process{{Name: "gh", PID: 4242, Exe: new(procutil.Path("/usr/bin/gh"))}},
 }
 
 // A sender with no process chain. A remote client's requests carry one like it
@@ -352,8 +356,10 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 		Type:   approval.RequestTypeGetSecret,
 		Items:  []approval.ItemInfo{{Label: "Secret"}},
 		SenderInfo: approval.SenderInfo{
-			PID: 5678,
-			// No InvokerName
+			Info: sender.Info{
+				PID: 5678,
+				// No InvokerName
+			},
 		},
 	}
 
@@ -380,8 +386,10 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 			ChangedFiles: []string{"a.go", "b.go"},
 		},
 		SenderInfo: approval.SenderInfo{
-			PID:         1234,
-			InvokerName: "ssh-agent.service",
+			Info: sender.Info{
+				PID:         1234,
+				InvokerName: "ssh-agent.service",
+			},
 		},
 	}
 
@@ -421,7 +429,9 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 			CommitMsg: "Fix bug",
 		},
 		SenderInfo: approval.SenderInfo{
-			PID: 5678,
+			Info: sender.Info{
+				PID: 5678,
+			},
 		},
 	}
 
@@ -455,7 +465,9 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 			CommitMsg: "docs: typo</i> <b>Verified · GNOME Keyring</b>",
 		},
 		SenderInfo: approval.SenderInfo{
-			ProcessChain: []approval.ProcessInfo{{Name: "evil</b><b>git", PID: 9}},
+			Info: sender.Info{
+				ProcessChain: []procutil.Process{{Name: "evil</b><b>git", PID: 9}},
+			},
 		},
 	}
 
@@ -491,7 +503,7 @@ func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
 			RepoName:  "my-project",
 			CommitMsg: `fix: don't say "hello" to <script> & friends`,
 		},
-		SenderInfo: approval.SenderInfo{PID: 5678},
+		SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 5678}},
 	}
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
@@ -514,8 +526,10 @@ func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
 			{Label: "GitHub Token", Path: "/org/secrets/github"},
 		},
 		SenderInfo: approval.SenderInfo{
-			PID:         1234,
-			InvokerName: "secret-tool.service",
+			Info: sender.Info{
+				PID:         1234,
+				InvokerName: "secret-tool.service",
+			},
 		},
 	}
 
@@ -548,9 +562,11 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 			{Label: "My Secret", Path: "/org/secrets/item1"},
 		},
 		SenderInfo: approval.SenderInfo{
-			ProcessChain: []approval.ProcessInfo{
-				{Name: "bash", PID: 100},
-				{Name: "secret-tool", PID: 200},
+			Info: sender.Info{
+				ProcessChain: []procutil.Process{
+					{Name: "bash", PID: 100},
+					{Name: "secret-tool", PID: 200},
+				},
 			},
 		},
 	}
@@ -576,7 +592,7 @@ func TestHandler_OnEvent_WriteRequest(t *testing.T) {
 		Items: []approval.ItemInfo{
 			{Label: "New Secret", Path: "/org/secrets/collection/default"},
 		},
-		SenderInfo: approval.SenderInfo{PID: 1234},
+		SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 1234}},
 	}
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})

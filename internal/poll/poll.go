@@ -1,13 +1,18 @@
 // Package poll waits for a condition by checking it at a fixed interval.
 package poll
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Reports whether cond returned true. cond is checked every interval, and the
 // last check can come up to one interval after timeout, so Until can return
-// that much late.
-func Until(timeout, interval time.Duration, cond func() bool) bool {
+// that much late. Returns false as soon as ctx is done.
+func Until(ctx context.Context, timeout, interval time.Duration, cond func() bool) bool {
 	deadline := time.Now().Add(timeout)
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
 	for {
 		if cond() {
 			return true
@@ -15,6 +20,10 @@ func Until(timeout, interval time.Duration, cond func() bool) bool {
 		if time.Now().After(deadline) {
 			return false
 		}
-		time.Sleep(interval)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
 	}
 }

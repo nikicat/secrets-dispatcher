@@ -56,7 +56,6 @@ const secretRequest: WSRequestCreatedMessage = {
     sender_info: {
       sender: ":1.142",
       pid: 48210,
-      user_name: "dev",
       invoker_name: "app-org.freedesktop.secrets.slice",
       process_chain: [
         {
@@ -97,7 +96,6 @@ const gpgSignRequest: WSRequestCreatedMessage = {
     sender_info: {
       sender: "local",
       pid: 49300,
-      user_name: "dev",
       invoker_name: "",
       process_chain: [
         {
@@ -217,7 +215,6 @@ function makeHistory(): HistoryEntry[] {
         type: r.type,
         sender_info: {
           pid: 10000,
-          user_name: "dev",
           invoker_name: r.unit,
         },
       }),

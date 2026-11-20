@@ -12,8 +12,8 @@ type ListenAddr string
 
 func (a ListenAddr) String() string { return string(a) }
 
-// Accepts an empty text as unset, for WithDefaults to fill. Errors when text
-// is not a host:port.
+// Parses a listen address. An empty text is unset (ARCHITECTURE.md, "Command
+// line and settings"). Errors when text is not a host:port.
 func (a *ListenAddr) UnmarshalText(text []byte) error {
 	if len(text) > 0 {
 		if _, _, err := net.SplitHostPort(string(text)); err != nil {
@@ -23,9 +23,6 @@ func (a *ListenAddr) UnmarshalText(text []byte) error {
 	*a = ListenAddr(text)
 	return nil
 }
-
-// Errors when value is empty or not a host:port.
-func (a *ListenAddr) Set(value string) error { return setText(a, value) }
 
 // Returns a, or DefaultListenAddr when a is empty.
 func (a ListenAddr) OrDefault() ListenAddr {

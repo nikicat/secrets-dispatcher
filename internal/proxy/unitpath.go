@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"strings"
+
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
 // DecodeUnitPath decodes a systemd unit path to extract the unit name.
@@ -11,7 +13,7 @@ import (
 //   - _5f → _
 //
 // Example: /org/freedesktop/systemd1/unit/ssh_2eservice → ssh.service
-func DecodeUnitPath(path string) string {
+func DecodeUnitPath(path string) systemd.Unit {
 	// Extract the unit name from the path
 	const prefix = "/org/freedesktop/systemd1/unit/"
 	if !strings.HasPrefix(path, prefix) {
@@ -19,7 +21,7 @@ func DecodeUnitPath(path string) string {
 	}
 
 	encoded := path[len(prefix):]
-	return decodeDBusPath(encoded)
+	return systemd.Unit(decodeDBusPath(encoded))
 }
 
 // decodeDBusPath decodes D-Bus path encoding.

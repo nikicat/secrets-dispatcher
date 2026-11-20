@@ -1,12 +1,16 @@
 package proxy
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
+)
 
 func TestDecodeUnitPath(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
-		want string
+		want systemd.Unit
 	}{
 		{
 			name: "ssh service",

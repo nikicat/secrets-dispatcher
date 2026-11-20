@@ -13,7 +13,8 @@ pinentry, which shows the key, not the commit.
 
 - `secrets-dispatcher gpg-sign setup` writes a wrapper script that runs
   `secrets-dispatcher gpg-sign`, a thin client, and points git's `gpg.program`
-  at it.
+  at it. git runs `gpg.program` as one executable path and does not split it
+  into words, so the setup writes a script, not the command line itself.
 - For a signing call, the thin client parses the payload (commit, annotated tag
   or push certificate), collects context from the repository it runs in (repo
   name via `git rev-parse --show-toplevel`, staged files via
@@ -25,6 +26,7 @@ pinentry, which shows the key, not the commit.
 - Calls that are not signing (verification, `--list-keys`, …) pass straight
   through to the real gpg.
 - `commit.gpgsign true` is recommended, so a plain `git commit` is gated too.
+  The setup leaves that setting to the user.
 
 ## Consequences
 

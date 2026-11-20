@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 func TestSlowUpstreamNotifier_SingleItem(t *testing.T) {
@@ -189,11 +191,13 @@ func TestSlowUpstreamNotifier_WithProcessChain(t *testing.T) {
 	ctx := proxy.UpstreamCallContext{
 		Items: []approval.ItemInfo{{Label: "my-password"}},
 		SenderInfo: approval.SenderInfo{
-			PID: 1234,
-			ProcessChain: []approval.ProcessInfo{
-				{Name: "git", PID: 1234},
-				{Name: "zsh", PID: 1000},
-				{Name: "claude", PID: 500},
+			Info: sender.Info{
+				PID: 1234,
+				ProcessChain: []procutil.Process{
+					{Name: "git", PID: 1234},
+					{Name: "zsh", PID: 1000},
+					{Name: "claude", PID: 500},
+				},
 			},
 		},
 	}
@@ -219,10 +223,12 @@ func TestSlowUpstreamNotifier_GPGWithProcessChain(t *testing.T) {
 		RequestType: approval.RequestTypeGPGSign,
 		Items:       []approval.ItemInfo{{Label: "my-repo: fix bug"}},
 		SenderInfo: approval.SenderInfo{
-			PID: 2000,
-			ProcessChain: []approval.ProcessInfo{
-				{Name: "git", PID: 2000},
-				{Name: "zsh", PID: 1000},
+			Info: sender.Info{
+				PID: 2000,
+				ProcessChain: []procutil.Process{
+					{Name: "git", PID: 2000},
+					{Name: "zsh", PID: 1000},
+				},
 			},
 		},
 	}
@@ -261,9 +267,11 @@ func TestSlowUpstreamNotifier_ProcessChainOnly(t *testing.T) {
 
 	ctx := proxy.UpstreamCallContext{
 		SenderInfo: approval.SenderInfo{
-			PID: 1234,
-			ProcessChain: []approval.ProcessInfo{
-				{Name: "secret-tool", PID: 1234},
+			Info: sender.Info{
+				PID: 1234,
+				ProcessChain: []procutil.Process{
+					{Name: "secret-tool", PID: 1234},
+				},
 			},
 		},
 	}

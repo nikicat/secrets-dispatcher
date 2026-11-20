@@ -11,29 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/systemd"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
-// shortOwnerWait shrinks the ownership-confirmation timeout so tests whose
-// fakes never produce the awaited owner don't stall for the full 5s.
+// Shrinks the ownership-confirmation timeout to 10ms for the rest of t.
 func shortOwnerWait(t *testing.T) {
 	t.Helper()
-	orig := ownerWaitTimeout
-	ownerWaitTimeout = 10 * time.Millisecond
-	t.Cleanup(func() { ownerWaitTimeout = orig })
+	testutil.Swap(t, &ownerWaitTimeout, 10*time.Millisecond)
 }
 
-// mockOwnerByInstallState wires DetectProvider to the realistic sequence: the
-// owner is gnome-keyring until the proxy unit file exists, secrets-dispatcher
-// while it does, and gnome-keyring again after uninstall. This keeps every
-// waitForOwner poll in Try/Install on its fast path.
-func mockOwnerByInstallState(t *testing.T, unitsDir string) {
+// Fakes gnome-keyring as the owner of org.freedesktop.secrets while the proxy
+// unit file in unitsDir is absent, and secrets-dispatcher while it exists.
+func mockOwnerByInstallState(t *testing.T, unitsDir systemd.UnitDir) {
 	t.Helper()
-	mockBusctlOwner(t, 4242)
-	mockReadlink(t, func(string) (string, error) {
-		if _, err := os.Stat(proxyServiceUnit.Path(unitsDir)); err == nil {
-			return "/usr/bin/secrets-dispatcher", nil
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
+		if unitsDir.UnitFile(proxyServiceUnit).Exists() {
+			return "/usr/bin/secrets-dispatcher", true
 		}
-		return "/usr/bin/gnome-keyring-daemon", nil
+		return "/usr/bin/gnome-keyring-daemon", true
 	})
 }
 
@@ -43,11 +41,10 @@ func TestTryRefusesWhenInstalled(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
-	unitsDir := filepath.Join(tmpDir, "systemd", "user")
-	require.NoError(t, os.MkdirAll(unitsDir, 0755))
-	require.NoError(t, os.WriteFile(proxyServiceUnit.Path(unitsDir), []byte("x"), 0644))
+	unitsDir := systemd.UserUnitDir(tmpDir)
+	require.NoError(t, unitsDir.UnitFile(proxyServiceUnit).Write("x"))
 
-	err := Try(context.Background(), TryOptions{})
+	err := Try(t.Context(), TryOptions{})
 	require.ErrorContains(t, err, "already installed")
 }
 
@@ -57,7 +54,7 @@ func TestTryMissingRuntimeDir(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", "")
 
-	err := Try(context.Background(), TryOptions{})
+	err := Try(t.Context(), TryOptions{})
 	require.ErrorIs(t, err, config.ErrNoRuntimeDir)
 }
 
@@ -68,12 +65,12 @@ func TestTryDryRunWritesNothing(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
 	mockLookPath(t, defaultLookPath)
-	mockBusctlOwner(t, 4242)
-	mockReadlink(t, func(string) (string, error) {
-		return "/usr/bin/gnome-keyring-daemon", nil
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
+		return "/usr/bin/gnome-keyring-daemon", true
 	})
 
-	require.NoError(t, Try(context.Background(), TryOptions{DryRun: true}))
+	require.NoError(t, Try(t.Context(), TryOptions{DryRun: true}))
 
 	entries, err := os.ReadDir(tmpDir)
 	require.NoError(t, err)
@@ -86,9 +83,11 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
-	unitsDir := filepath.Join(tmpDir, "systemd", "user")
+	unitsDir := systemd.UserUnitDir(tmpDir)
+	files, err := locateTakeoverFiles()
+	require.NoError(t, err)
 	mockLookPath(t, defaultLookPath)
-	mockSystemctl(t)
+	mockUnits(t)
 	mockOwnerByInstallState(t, unitsDir)
 
 	// A base config whose settings the trial must inherit without modifying it.
@@ -105,10 +104,7 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 
 	// Wait for the trial to be fully installed.
 	trialConfig := filepath.Join(tmpDir, "secrets-dispatcher", "try-config.yaml")
-	require.Eventually(t, func() bool {
-		_, err := os.Stat(proxyServiceUnit.Path(unitsDir))
-		return err == nil
-	}, 10*time.Second, 10*time.Millisecond, "trial never installed the proxy unit")
+	require.Eventually(t, unitsDir.UnitFile(proxyServiceUnit).Exists, 10*time.Second, 10*time.Millisecond, "trial never installed the proxy unit")
 
 	// The trial config inherits the base settings; the base is untouched.
 	trialData, err := os.ReadFile(trialConfig)
@@ -121,11 +117,9 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 
 	// Everything reverted: units, mask, demotion, trial config.
 	for _, name := range allUnitNames {
-		assert.NoFileExists(t, name.Path(unitsDir))
+		assert.False(t, unitsDir.UnitFile(name).Exists())
 	}
-	assert.NoFileExists(t, filepath.Join(tmpDir, "dbus-1", "services", dbusServiceFile))
-	assert.NoFileExists(t, filepath.Join(unitsDir, gkDropInDirName, gkDropInName))
-	assert.NoFileExists(t, filepath.Join(tmpDir, "autostart", gkAutostartName))
+	files.assertAbsent(t)
 	assert.NoFileExists(t, trialConfig)
 
 	data, err := os.ReadFile(baseConfig)
@@ -139,10 +133,10 @@ func TestTryRestoresAfterFailedInstall(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
-	mockSystemctl(t)
-	mockBusctlOwner(t, 4242)
-	mockReadlink(t, func(string) (string, error) {
-		return "/usr/bin/gnome-keyring-daemon", nil
+	mockUnits(t)
+	mockSession(t, 4242)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
+		return "/usr/bin/gnome-keyring-daemon", true
 	})
 	// Install fails at unit building (after mask + demotion already applied):
 	// gnome-keyring-daemon resolves, dbus-daemon does not.
@@ -153,13 +147,12 @@ func TestTryRestoresAfterFailedInstall(t *testing.T) {
 		return "/usr/bin/" + name, nil
 	})
 
-	err := Try(context.Background(), TryOptions{})
+	err := Try(t.Context(), TryOptions{})
 	require.ErrorContains(t, err, "dbus-daemon")
 
 	// The partial takeover state was rolled back.
-	unitsDir := filepath.Join(tmpDir, "systemd", "user")
-	assert.NoFileExists(t, filepath.Join(tmpDir, "dbus-1", "services", dbusServiceFile))
-	assert.NoFileExists(t, filepath.Join(unitsDir, gkDropInDirName, gkDropInName))
-	assert.NoFileExists(t, filepath.Join(tmpDir, "autostart", gkAutostartName))
+	files, err := locateTakeoverFiles()
+	require.NoError(t, err)
+	files.assertAbsent(t)
 	assert.NoFileExists(t, filepath.Join(tmpDir, "secrets-dispatcher", "try-config.yaml"))
 }

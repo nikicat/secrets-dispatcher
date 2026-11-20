@@ -1,32 +1,64 @@
 package service
 
 import (
-	"fmt"
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
-func mockReadlink(t *testing.T, fn func(string) (string, error)) {
+func mockExe(t *testing.T, fn func(procutil.PID) (procutil.Path, bool)) {
 	t.Helper()
-	orig := readlinkFunc
-	readlinkFunc = fn
-	t.Cleanup(func() { readlinkFunc = orig })
+	testutil.Swap(t, &exeOf, fn)
 }
 
-// mockBusctlOwner makes the busctl GetConnectionUnixProcessID call report pid
-// as the owner of org.freedesktop.secrets.
-func mockBusctlOwner(t *testing.T, pid int) {
-	t.Helper()
-	mockExecOutput(t, func(name string, args ...string) ([]byte, error) {
-		return fmt.Appendf(nil, "u %d\n", pid), nil
-	})
+// A session bus on which owner owns org.freedesktop.secrets, and nothing
+// does when owner is 0.
+type fakeSession struct {
+	owner procutil.PID
+	// The number of reloadConfig calls.
+	reloads int
 }
 
-func TestDetectProviderClassifiesByExe(t *testing.T) {
+func (s *fakeSession) secretsOwner(context.Context) (procutil.PID, error) {
+	if s.owner == 0 {
+		return 0, errors.New("the name has no owner")
+	}
+	return s.owner, nil
+}
+
+func (s *fakeSession) reloadConfig(context.Context) error {
+	s.reloads++
+	return nil
+}
+
+func (s *fakeSession) pokeSecrets(context.Context) error { return nil }
+
+// Replaces the session bus with a fake on which owner owns
+// org.freedesktop.secrets, or nothing does when owner is 0.
+func mockSession(t *testing.T, owner procutil.PID) *fakeSession {
+	t.Helper()
+	s := &fakeSession{owner: owner}
+	testutil.Swap[sessionBus](t, &session, s)
+	return s
+}
+
+// A provider whose owner runs exe.
+func ownedBy(exe procutil.Path) Provider { return Provider{&Owner{Exe: &exe}} }
+
+func TestOwnerKindClassifiesByExe(t *testing.T) {
 	tests := []struct {
-		exe  string
+		exe  procutil.Path
 		want ProviderKind
 	}{
 		{"/usr/bin/gnome-keyring-daemon", ProviderGnomeKeyring},
@@ -38,49 +70,58 @@ func TestDetectProviderClassifiesByExe(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.exe, func(t *testing.T) {
-			mockBusctlOwner(t, 4242)
-			mockReadlink(t, func(path string) (string, error) {
-				require.Equal(t, "/proc/4242/exe", path)
-				return tc.exe, nil
-			})
-
-			p := DetectProvider()
-			assert.Equal(t, tc.want, p.Kind)
-			assert.Equal(t, 4242, p.PID)
-			assert.Equal(t, tc.exe, p.Exe)
+		t.Run(string(tc.exe), func(t *testing.T) {
+			assert.Equal(t, tc.want, ownedBy(tc.exe).Owner.Kind())
 		})
 	}
 }
 
-func TestDetectProviderNameUnowned(t *testing.T) {
-	mockExecOutput(t, func(string, ...string) ([]byte, error) {
-		return nil, fmt.Errorf("Could not get owner: no such name")
+func TestDetectProviderResolvesExe(t *testing.T) {
+	exe := procutil.Path("/usr/bin/gnome-keyring-daemon")
+	mockSession(t, 4242)
+	mockExe(t, func(pid procutil.PID) (procutil.Path, bool) {
+		require.Equal(t, procutil.PID(4242), pid)
+		return exe, true
 	})
 
-	p := DetectProvider()
-	assert.Equal(t, ProviderNone, p.Kind)
-	assert.Zero(t, p.PID)
+	assert.Equal(t, Provider{&Owner{PID: 4242, Exe: &exe}}, DetectProvider(t.Context()))
+}
+
+func TestDetectProviderNameUnowned(t *testing.T) {
+	mockSession(t, 0)
+
+	assert.Equal(t, Provider{}, DetectProvider(t.Context()))
 }
 
 func TestDetectProviderUnreadableExe(t *testing.T) {
 	// PID resolved but /proc/<pid>/exe unreadable: owned by something unknown.
-	mockBusctlOwner(t, 977)
-	mockReadlink(t, func(string) (string, error) {
-		return "", fmt.Errorf("permission denied")
-	})
+	mockSession(t, 977)
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) { return "", false })
 
-	p := DetectProvider()
-	assert.Equal(t, ProviderUnknown, p.Kind)
-	assert.Equal(t, 977, p.PID)
-	assert.Empty(t, p.Exe)
+	p := DetectProvider(t.Context())
+	assert.Equal(t, Provider{&Owner{PID: 977}}, p)
+	assert.Equal(t, ProviderUnknown, p.Owner.Kind())
 }
 
-func TestDetectProviderReadsDesktop(t *testing.T) {
-	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
-	mockExecOutput(t, func(string, ...string) ([]byte, error) {
-		return nil, fmt.Errorf("no such name")
+// A dispatcher still running after an upgrade replaced its binary on disk is
+// the dispatcher, though Linux marks its exe "(deleted)".
+func TestDetectProviderReplacedBinary(t *testing.T) {
+	exe := filepath.Join(t.TempDir(), "secrets-dispatcher")
+	data, err := os.ReadFile("/bin/sleep")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(exe, data, 0o755))
+	cmd := exec.Command(exe, "60")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		cmd.Process.Kill()
+		cmd.Wait()
 	})
+	require.NoError(t, os.Remove(exe))
+	pid := procutil.PID(cmd.Process.Pid)
+	require.Eventually(t, func() bool { return slices.Equal(pid.Cmdline(), []string{exe, "60"}) }, 5*time.Second, 10*time.Millisecond)
+	mockSession(t, pid)
 
-	assert.Equal(t, "ubuntu:GNOME", DetectProvider().Desktop)
+	p := DetectProvider(t.Context())
+	assert.Equal(t, Provider{&Owner{PID: pid, Exe: new(procutil.Path(exe))}}, p)
+	assert.Equal(t, ProviderDispatcher, p.Owner.Kind())
 }

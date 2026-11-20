@@ -3,16 +3,15 @@ package gpgsign
 import (
 	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/coder/websocket"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -216,7 +215,7 @@ func waitForTestResolution(t *testing.T, ctx context.Context, msgs ...any) (Sign
 
 // Returns the request_resolved message for request testRequestID.
 func resolved(result approval.Resolution, out *approval.GPGResult) wsMsg {
-	return wsMsg{Type: wsmsg.RequestResolved, ID: testRequestID, SignOutcome: SignOutcome{Result: result, GPGResult: out}}
+	return wsMsg{Type: wsmsg.RequestResolved, ID: testRequestID, Result: result, GPGResult: out}
 }
 
 func TestWaitForResolution(t *testing.T) {
@@ -261,7 +260,7 @@ func TestWaitForResolution(t *testing.T) {
 		{
 			name: "skips other requests and message types",
 			msgs: []any{
-				wsMsg{Type: wsmsg.RequestResolved, ID: "other-req", SignOutcome: SignOutcome{Result: approval.ResolutionDenied}},
+				wsMsg{Type: wsmsg.RequestResolved, ID: "other-req", Result: approval.ResolutionDenied},
 				wsMsg{Type: wsmsg.RequestExpired, ID: "other-req-2"},
 				wsMsg{Type: wsmsg.Snapshot, ID: testRequestID},
 				wsMsg{Type: wsmsg.RequestCancelled, ID: testRequestID},
@@ -293,8 +292,8 @@ func TestWaitForResolution_ContextCancelled(t *testing.T) {
 }
 
 func TestSignRemote_ApprovedWithoutOutput(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "remote.sock")
-	ln, err := net.Listen("unix", socket)
+	socket := unixsock.Dir(t.TempDir()).Socket("remote")
+	ln, err := socket.Listen()
 	require.NoError(t, err)
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"result":"approved"}`)) //nolint:errcheck

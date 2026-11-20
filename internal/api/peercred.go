@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
-	"github.com/nikicat/secrets-dispatcher/internal/procutil"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
 type connContextKey struct{}
@@ -23,88 +21,44 @@ func connContext(ctx context.Context, c net.Conn) context.Context {
 	return context.WithValue(ctx, connContextKey{}, c)
 }
 
-// resolvePeerInfo extracts peer credentials from a Unix socket connection
-// in the request context and resolves the user-facing process that invoked
-// git commit.
-//
-// Process chain example: claude → zsh → git → secrets-dispatcher → (HTTP)
-// We walk up from the peer PID, skip the thin client and git, then skip
-// any intermediate shells to find the real invoker (e.g., "claude").
-func resolvePeerInfo(ctx context.Context, trimAtSessionLeader bool) approval.SenderInfo {
+// Describes the process behind the unix socket connection in ctx. The invoker
+// is the nearest process above git that is not a shell, since the peer is our
+// gpg-sign thin client run by git.
+func resolvePeerInfo(ctx context.Context, chains sender.ChainReader) approval.SenderInfo {
 	c, ok := ctx.Value(connContextKey{}).(net.Conn)
 	if !ok || c == nil {
 		return approval.SenderInfo{}
 	}
-
-	uc, ok := c.(*net.UnixConn)
+	peer, ok := unixsock.PeerOf(c)
 	if !ok {
 		return approval.SenderInfo{}
 	}
 
-	raw, err := uc.SyscallConn()
-	if err != nil {
-		return approval.SenderInfo{}
-	}
-
-	var cred *unix.Ucred
-	var credErr error
-	raw.Control(func(fd uintptr) { //nolint:errcheck
-		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
-	})
-	if credErr != nil || cred == nil {
-		return approval.SenderInfo{}
-	}
-
-	// Build the process chain from peer up to init.
-	chain := procutil.ReadProcessChain(cred.Pid, trimAtSessionLeader)
-
-	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+	chain := chains.Chain(peer.PID)
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
 		labels := make([]string, len(chain))
 		for i, p := range chain {
-			labels[i] = fmt.Sprintf("%s[%d]", p.Comm, p.PID)
+			labels[i] = fmt.Sprintf("%s[%d]", p.Name, p.PID)
 		}
 		slog.Debug("process chain", "chain", strings.Join(labels, " → "))
 	}
 
-	// chain[0] = thin client, chain[1] = git, chain[2+] = ancestors.
-	// Start from git's parent and skip shells.
-	invoker := chain[0] // fallback to peer
-	for i := 2; i < len(chain); i++ {
-		invoker = chain[i]
-		if !procutil.IsShell(chain[i].Comm) {
-			break
+	invokerName, invokerPID := peer.PID.Comm(), peer.PID
+	if aboveGit := peer.PID.Parent().Parent(); aboveGit > 1 {
+		if invoker, ok := aboveGit.Invoker(); ok {
+			invokerName, invokerPID = invoker.Name, invoker.PID
 		}
 	}
 
-	// Convert the full chain to ProcessChain for the API,
-	// filtering out our own binary (the thin client).
-	selfExe, _ := os.Executable()
-
-	// The peer (chain[0]) is the process that opened the socket. When it is our
-	// own binary, the request came through our gpg-sign thin client, so the
-	// repo/changed-file fields it reported were computed by our trusted code —
-	// see approval.SenderInfo.PeerTrusted / Manager.CheckTrustedSigner.
-	peerTrusted := len(chain) > 0 && selfExe != "" && chain[0].Exe == selfExe
-
-	processChain := make([]approval.ProcessInfo, 0, len(chain))
-	for _, p := range chain {
-		if selfExe != "" && p.Exe == selfExe {
-			continue
-		}
-		processChain = append(processChain, approval.ProcessInfo{
-			Name: p.Comm,
-			PID:  uint32(p.PID),
-			Exe:  p.Exe,
-			Args: p.Args,
-			CWD:  p.CWD,
-		})
-	}
-
+	peerExe, peerExeKnown := peer.PID.Exe()
 	return approval.SenderInfo{
-		PID:          uint32(invoker.PID),
-		UID:          uint32(cred.Uid),
-		InvokerName:  invoker.Comm,
-		ProcessChain: processChain,
-		PeerTrusted:  peerTrusted,
+		PID:          invokerPID,
+		UID:          new(peer.UID),
+		InvokerName:  invokerName,
+		ProcessChain: chain,
+		// A peer that runs our own binary is our gpg-sign thin client, so the
+		// repo and changed-file fields it reported were computed by our trusted
+		// code (Manager.CheckTrustedSigner).
+		PeerTrusted: peerExeKnown && chains.IsSelf(peerExe),
 	}
 }

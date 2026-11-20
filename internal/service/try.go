@@ -14,7 +14,7 @@ type TryOptions struct {
 	// The config file that the trial copies its settings from. Try never writes
 	// to it (README, "Temporary — try it").
 	ConfigPath config.Path
-	// The private backend; nil picks it from the provider.
+	// The private backend, as Options.Backend.
 	Backend *Backend
 	// DryRun prints the changes the trial would make, without making any.
 	DryRun bool
@@ -25,14 +25,12 @@ type TryOptions struct {
 // Puts secrets-dispatcher in front of the current Secret Service for as long
 // as ctx lives, then restores the original setup exactly.
 func Try(ctx context.Context, opts TryOptions) error {
-	unitsDir, err := unitDir()
+	l, err := locateLayout()
 	if err != nil {
 		return err
 	}
-	for _, u := range allUnitNames {
-		if unitsDir.UnitFile(u).Exists() {
-			return fmt.Errorf("%s is already installed — the trial would remove it on exit; run %s first (see %s)", u, UninstallCommand.hint(), StatusCommand.hint())
-		}
+	if installed := l.installed(); len(installed) > 0 {
+		return fmt.Errorf("%s is already installed — the trial would remove it on exit; run %s first (see %s)", installed[0], UninstallCommand.hint(), StatusCommand.hint())
 	}
 
 	runtimeDir, err := config.LookupRuntimeDir()
@@ -44,30 +42,25 @@ func Try(ctx context.Context, opts TryOptions) error {
 	if err != nil {
 		return err
 	}
-	baseConfig := base.File
 	installOpts := Options{ConfigPath: trialConfig.Path(), Start: true, Mode: ModeLocal, Backend: opts.Backend, Narration: opts.Narration}
+	p, err := l.planInstall(ctx, installOpts)
+	if err != nil {
+		return err
+	}
+	p.steps = append([]step{copyTrialConfigStep(base.File, trialConfig)}, p.steps...)
 
 	if opts.DryRun {
-		changes, err := Plan(ctx, installOpts)
-		if err != nil {
-			return err
-		}
-		printTrialPlan(baseConfig, trialConfig, changes)
+		printTrialPlan(changesOf(p.steps))
 		return nil
 	}
 
 	// Remember the provider being displaced so the restore can confirm it is
-	// back. Install re-detects (and prints) right after; both see the same
-	// pre-takeover state.
-	t := trial{config: trialConfig, narration: opts.Narration, orig: DetectProvider(ctx)}
-
-	if err := baseConfig.CopyTo(trialConfig); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("copy the base config to the trial: %w", err)
-	}
+	// back. No step has run yet, so this is the pre-takeover state.
+	t := trial{layout: l, config: trialConfig, narration: opts.Narration, orig: DetectProvider(ctx)}
 
 	// Ctrl-C has cancelled ctx by now, and the restore must still run.
 	restoreCtx := context.WithoutCancel(ctx)
-	if err := Install(ctx, installOpts); err != nil {
+	if err := p.run(ctx, opts.Narration); err != nil {
 		fmt.Println(cErr("Install failed — reverting partial changes…"))
 		if restoreErr := t.restore(restoreCtx); restoreErr != nil {
 			fmt.Printf("%s restore after failed install: %v\n", cWarn("WARNING:"), restoreErr)
@@ -86,17 +79,23 @@ func Try(ctx context.Context, opts TryOptions) error {
 // A takeover that is undone when the trial ends, so the user's setup comes
 // back exactly (ADR 0009).
 type trial struct {
+	layout    layout
 	config    config.File
 	narration Narration
 	orig      Provider
 }
 
-func printTrialPlan(baseConfig, trialConfig config.File, changes []Change) {
-	fmt.Println(cBold("Dry run — the trial would:"))
-	fmt.Printf("  %s\n", Change{"copy", fmt.Sprintf("%s -> %s", baseConfig, trialConfig), "trial config; your config is never modified"})
-	for _, c := range changes {
-		fmt.Println("  " + c.String())
-	}
+func copyTrialConfigStep(base, trial config.File) step {
+	return step{Change{changeCopy, fmt.Sprintf("%s -> %s", base, trial), "trial config; your config is never modified"}, func(context.Context, host) error {
+		if err := base.CopyTo(trial); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("copy the base config to the trial: %w", err)
+		}
+		return nil
+	}}
+}
+
+func printTrialPlan(changes []Change) {
+	printChanges(cBold("Dry run — the trial would:"), changes)
 	fmt.Println(cDim("On Ctrl-C every change is reverted: units stopped and removed, D-Bus"))
 	fmt.Println(cDim("activation and gnome-keyring restored, trial config deleted."))
 }
@@ -157,7 +156,7 @@ func watchOwnership(ctx context.Context) {
 // back to the provider it displaced. Errors when either of those fails. A
 // provider that has not taken org.freedesktop.secrets back yet is no error.
 func (t trial) restore(ctx context.Context) error {
-	err := Uninstall(ctx, t.narration)
+	err := t.layout.uninstall(ctx, t.narration)
 	if rmErr := t.config.Remove(); rmErr != nil && err == nil {
 		err = fmt.Errorf("remove trial config: %w", rmErr)
 	}

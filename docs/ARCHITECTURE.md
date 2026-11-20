@@ -101,10 +101,15 @@ settings keep their own types, such as `config.LogLevel`, `config.Path` and
 `service install`, `service uninstall`, `service status` and `try` drive the
 user's systemd manager over its D-Bus API, through
 [go-systemd](https://github.com/coreos/go-systemd), and do not run `systemctl`.
-Setup calls a library instead of running `systemctl --user` as a subprocess.
 A dry run still prints each manager call as the `systemctl --user` command that
+does the same, and each session bus call as the `busctl --user` command that
 does the same, for people to read. The companion's PAM hook stays a
 `systemctl --user --machine=…` command line, because pam_exec runs a program.
+
+An install is planned as a list of steps. Each step holds a change, as the dry
+run prints it, and the call that makes that change. `service install` runs the
+list that `service install --dry-run` prints, so the two cannot list different
+changes.
 
 ## Scope
 

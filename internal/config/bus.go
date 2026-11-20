@@ -144,6 +144,8 @@ type BusConfig struct{ Bus Bus }
 // An Upstream as the config file holds it, in BusConfig's form.
 type UpstreamConfig struct{ Bus Upstream }
 
+func SessionUpstream() UpstreamConfig { return UpstreamConfig{Bus: SessionBus{}} }
+
 type busConfigYAML struct {
 	Type BusType `yaml:"type"`
 	Path string  `yaml:"path,omitempty"`

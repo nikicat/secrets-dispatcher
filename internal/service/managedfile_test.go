@@ -9,23 +9,35 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/textfile"
 )
 
-// Returns the takeover files under a temporary XDG config and data home.
-func tempTakeoverFiles(t *testing.T) takeoverFiles {
+// Returns the layout under a temporary XDG config and data home.
+func tempLayout(t *testing.T) layout {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 	t.Setenv("XDG_DATA_HOME", tmp)
-	files, err := locateTakeoverFiles()
+	l, err := locateLayout()
 	require.NoError(t, err)
-	return files
+	return l
+}
+
+// Returns the takeover files under a temporary XDG config and data home.
+func tempTakeoverFiles(t *testing.T) takeoverFiles {
+	t.Helper()
+	return tempLayout(t).files
+}
+
+// Makes the steps' changes on a host without a unit manager.
+func applySteps(t *testing.T, steps []step) {
+	t.Helper()
+	require.NoError(t, host{}.run(t.Context(), steps))
 }
 
 // Places the three takeover files as the dispatcher's own.
 func (f takeoverFiles) place(t *testing.T) {
 	t.Helper()
-	require.NoError(t, f.mask.write(NarrateMilestones))
-	require.NoError(t, f.dropIn.write(NarrateMilestones, "x"))
-	require.NoError(t, f.shadow.write(NarrateMilestones))
+	applySteps(t, f.mask.writeSteps())
+	applySteps(t, []step{f.dropIn.writeStep("x")})
+	applySteps(t, f.shadow.writeSteps())
 }
 
 // Asserts that none of the dispatcher's takeover files is in place.
@@ -58,22 +70,20 @@ func TestManagedFileRoundTripKeepsForeignFile(t *testing.T) {
 	require.NoError(t, f.file.Write("user's\n"))
 
 	assert.Equal(t, []Change{
-		{"backup", f.file.String(), "-> " + f.backup().String()},
-		{"write", f.file.String(), "write the test file"},
-	}, f.planWrite())
-	require.NoError(t, f.write(NarrateMilestones))
+		{changeBackup, f.file.String(), "-> " + f.backup().String()},
+		{changeWrite, f.file.String(), "write the test file"},
+	}, changesOf(f.writeSteps()))
+	applySteps(t, f.writeSteps())
 	assert.Equal(t, "ours\n", readFile(t, f.file))
 	assert.Equal(t, "user's\n", readFile(t, f.backup()))
 
 	// A second write keeps the backup of the user's file.
-	assert.Equal(t, []Change{{"write", f.file.String(), "write the test file"}}, f.planWrite())
-	require.NoError(t, f.write(NarrateMilestones))
+	assert.Equal(t, []Change{{changeWrite, f.file.String(), "write the test file"}}, changesOf(f.writeSteps()))
+	applySteps(t, f.writeSteps())
 	assert.Equal(t, "user's\n", readFile(t, f.backup()))
 
-	assert.Equal(t, []Change{{"restore", f.backup().String(), "-> " + f.file.String()}}, f.planRestore())
-	restored, err := f.restore(NarrateMilestones)
-	require.NoError(t, err)
-	assert.True(t, restored)
+	assert.Equal(t, []Change{{changeRestore, f.backup().String(), "-> " + f.file.String()}}, changesOf(f.restoreSteps()))
+	applySteps(t, f.restoreSteps())
 	assert.Equal(t, "user's\n", readFile(t, f.file))
 	assert.False(t, f.backup().Exists())
 }
@@ -81,14 +91,12 @@ func TestManagedFileRoundTripKeepsForeignFile(t *testing.T) {
 func TestManagedFileRoundTripRemovesOurs(t *testing.T) {
 	f := newManagedFile(t)
 
-	assert.Equal(t, []Change{{"write", f.file.String(), "write the test file"}}, f.planWrite())
-	require.NoError(t, f.write(NarrateMilestones))
+	assert.Equal(t, []Change{{changeWrite, f.file.String(), "write the test file"}}, changesOf(f.writeSteps()))
+	applySteps(t, f.writeSteps())
 	assert.Equal(t, "ours\n", readFile(t, f.file))
 
-	assert.Equal(t, []Change{{"remove", f.file.String(), "test file"}}, f.planRestore())
-	restored, err := f.restore(NarrateMilestones)
-	require.NoError(t, err)
-	assert.True(t, restored)
+	assert.Equal(t, []Change{{changeRemove, f.file.String(), "test file"}}, changesOf(f.restoreSteps()))
+	applySteps(t, f.restoreSteps())
 	assert.False(t, f.file.Exists())
 }
 
@@ -96,24 +104,19 @@ func TestManagedFileRestoreLeavesForeignFileAlone(t *testing.T) {
 	f := newManagedFile(t)
 	require.NoError(t, f.file.Write("user's\n"))
 
-	assert.Empty(t, f.planRestore())
-	restored, err := f.restore(NarrateMilestones)
-	require.NoError(t, err)
-	assert.False(t, restored)
+	assert.Empty(t, f.restoreSteps())
 	assert.Equal(t, "user's\n", readFile(t, f.file))
 }
 
 func TestManagedDropInRoundTrip(t *testing.T) {
 	f := tempTakeoverFiles(t).dropIn
 
-	assert.Empty(t, f.planRestore())
-	assert.Equal(t, []Change{{"write", f.file.String(), f.purpose}}, f.planWrite())
-	require.NoError(t, f.write(NarrateMilestones, "any content\n"))
+	assert.Empty(t, f.restoreSteps())
+	assert.Equal(t, Change{changeWrite, f.file.String(), f.purpose}, f.writeStep("any content\n").Change)
+	applySteps(t, []step{f.writeStep("any content\n")})
 	assert.True(t, f.present(), "recognised by its name, whatever its content")
 
-	assert.Equal(t, []Change{{"remove", f.file.String(), "gnome-keyring demotion drop-in"}}, f.planRestore())
-	restored, err := f.restore(NarrateMilestones)
-	require.NoError(t, err)
-	assert.True(t, restored)
+	assert.Equal(t, []Change{{changeRemove, f.file.String(), "gnome-keyring demotion drop-in"}}, changesOf(f.restoreSteps()))
+	applySteps(t, f.restoreSteps())
 	assert.False(t, f.present())
 }

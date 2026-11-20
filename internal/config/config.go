@@ -38,7 +38,22 @@ const (
 func (cfg *Config) WithDefaults() (*Config, error) {
 	out := *cfg
 	out.Listen = out.Listen.OrDefault()
-	s := &out.Serve
+	serve, err := out.Serve.withDefaults()
+	if err != nil {
+		return nil, err
+	}
+	out.Serve = serve
+	if out.SSH != nil {
+		ssh, err := out.SSH.withDefaults()
+		if err != nil {
+			return nil, err
+		}
+		out.SSH = &ssh
+	}
+	return &out, nil
+}
+
+func (s ServeConfig) withDefaults() (ServeConfig, error) {
 	s.LogLevel = s.LogLevel.OrDefault()
 	s.LogFormat = s.LogFormat.OrDefault()
 	if s.Timeout == 0 {
@@ -73,40 +88,53 @@ func (cfg *Config) WithDefaults() (*Config, error) {
 		s.UpstreamSlowThreshold = &d
 	}
 	if s.Upstream.Bus == nil {
-		s.Upstream = UpstreamConfig{Bus: SessionBus{}}
+		s.Upstream = SessionUpstream()
 	}
 	if len(s.Downstream) == 0 {
-		dir, err := LookupRuntimeDir()
+		dir, err := runtimeDirFor("serve.downstream")
 		if err != nil {
-			return nil, fmt.Errorf("no default for serve.downstream: %w", err)
+			return ServeConfig{}, err
 		}
-		s.Downstream = []BusConfig{{Bus: Sockets{Dir: dir.ClientSockets()}}}
+		s.Downstream = []BusConfig{dir.ClientsDownstream()}
 	} else {
 		s.Downstream = slices.Clone(s.Downstream)
 	}
-	if len(s.Rules) > 0 {
-		s.Rules = slices.Clone(s.Rules)
-		for i := range s.Rules {
-			if s.Rules[i].Action == "" {
-				s.Rules[i].Action = approval.RuleApprove
-			}
-		}
+	s.Rules = slices.Clone(s.Rules)
+	for i := range s.Rules {
+		s.Rules[i] = s.Rules[i].withDefaults()
 	}
-	if out.SSH != nil {
-		ssh := *out.SSH
-		if ssh.Upstream == "" {
-			ssh.Upstream = unixsock.Path(os.Getenv("SSH_AUTH_SOCK"))
-		}
-		if ssh.Listen == "" {
-			dir, err := LookupRuntimeDir()
-			if err != nil {
-				return nil, fmt.Errorf("no default for ssh.listen: %w", err)
-			}
-			ssh.Listen = dir.SSHAgentSocket()
-		}
-		out.SSH = &ssh
+	return s, nil
+}
+
+func (r TrustRule) withDefaults() TrustRule {
+	if r.Action == "" {
+		r.Action = approval.RuleApprove
 	}
-	return &out, nil
+	return r
+}
+
+func (ssh SSHConfig) withDefaults() (SSHConfig, error) {
+	if ssh.Upstream == "" {
+		ssh.Upstream = unixsock.Path(os.Getenv("SSH_AUTH_SOCK"))
+	}
+	if ssh.Listen == "" {
+		dir, err := runtimeDirFor("ssh.listen")
+		if err != nil {
+			return SSHConfig{}, err
+		}
+		ssh.Listen = dir.SSHAgentSocket()
+	}
+	return ssh, nil
+}
+
+// Errors with ErrNoRuntimeDir, naming the config key whose default needed
+// the runtime directory.
+func runtimeDirFor(key string) (RuntimeDir, error) {
+	dir, err := LookupRuntimeDir()
+	if err != nil {
+		return "", fmt.Errorf("no default for %s: %w", key, err)
+	}
+	return dir, nil
 }
 
 // Returns a copy of cfg with defaults filled in, ready to run. Errors as
@@ -323,14 +351,8 @@ type TrustRule struct {
 	SearchAttributes map[string]string `yaml:"search_attributes,omitempty"`
 }
 
-// ProcessMatcher matches against sender process attributes.
-//
-// Exe is the security-grade matcher: it compares the kernel-resolved
-// /proc/PID/exe and cannot be spoofed. Name matches the process comm, which is
-// attacker-controllable (prctl(PR_SET_NAME)) — it is advisory only and must not
-// be relied on for deny rules. Args matches individual cmdline arguments, which
-// are equally self-reported (a process can rewrite its argv after exec) — also
-// advisory only. Unit matches the caller's real systemd unit.
+// Matches a request by the processes in its sender's chain. Only exe and unit
+// are authoritative (ADR 0005).
 type ProcessMatcher struct {
 	// A glob matched against /proc/PID/exe of every process in the chain.
 	Exe string `yaml:"exe,omitempty"`

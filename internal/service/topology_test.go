@@ -198,8 +198,8 @@ func TestTakeoverProblems(t *testing.T) {
 // Returns the ExecStart= lines of each unit file, in file order.
 func execStarts(units unitFiles) map[systemd.Unit][]string {
 	lines := map[systemd.Unit][]string{}
-	for u, content := range units {
-		for line := range strings.Lines(content) {
+	for u, file := range units {
+		for line := range strings.Lines(file.content) {
 			if strings.HasPrefix(line, "ExecStart=") {
 				lines[u] = append(lines[u], strings.TrimSuffix(line, "\n"))
 			}

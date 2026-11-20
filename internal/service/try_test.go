@@ -66,9 +66,7 @@ func TestTryDryRunWritesNothing(t *testing.T) {
 
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 4242)
-	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
-		return "/usr/bin/gnome-keyring-daemon", true
-	})
+	mockExePath(t, "/usr/bin/gnome-keyring-daemon")
 
 	require.NoError(t, Try(t.Context(), TryOptions{DryRun: true}))
 
@@ -83,17 +81,17 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
-	unitsDir := systemd.UserUnitDir(tmpDir)
-	files, err := locateTakeoverFiles()
+	l, err := locateLayout()
 	require.NoError(t, err)
 	mockLookPath(t, defaultLookPath)
 	mockUnits(t)
-	mockOwnerByInstallState(t, unitsDir)
+	mockOwnerByInstallState(t, l.unitDir)
 
 	// A base config whose settings the trial must inherit without modifying it.
-	baseDir := filepath.Join(tmpDir, "secrets-dispatcher")
-	require.NoError(t, os.MkdirAll(baseDir, 0755))
-	baseConfig := filepath.Join(baseDir, "config.yaml")
+	base, err := config.DefaultSource()
+	require.NoError(t, err)
+	baseConfig := base.File.String()
+	require.NoError(t, base.File.CreateDir())
 	baseContent := "listen: 127.0.0.1:9999\n"
 	require.NoError(t, os.WriteFile(baseConfig, []byte(baseContent), 0644))
 
@@ -103,8 +101,10 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	go func() { done <- Try(ctx, TryOptions{}) }()
 
 	// Wait for the trial to be fully installed.
-	trialConfig := filepath.Join(tmpDir, "secrets-dispatcher", "try-config.yaml")
-	require.Eventually(t, unitsDir.UnitFile(proxyServiceUnit).Exists, 10*time.Second, 10*time.Millisecond, "trial never installed the proxy unit")
+	runtimeDir, err := config.LookupRuntimeDir()
+	require.NoError(t, err)
+	trialConfig := runtimeDir.TrialConfig().String()
+	require.Eventually(t, l.unitDir.UnitFile(proxyServiceUnit).Exists, 10*time.Second, 10*time.Millisecond, "trial never installed the proxy unit")
 
 	// The trial config inherits the base settings; the base is untouched.
 	trialData, err := os.ReadFile(trialConfig)
@@ -116,10 +116,8 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	require.NoError(t, <-done)
 
 	// Everything reverted: units, mask, demotion, trial config.
-	for _, name := range allUnitNames {
-		assert.False(t, unitsDir.UnitFile(name).Exists())
-	}
-	files.assertAbsent(t)
+	assert.Empty(t, l.installed())
+	l.files.assertAbsent(t)
 	assert.NoFileExists(t, trialConfig)
 
 	data, err := os.ReadFile(baseConfig)
@@ -133,26 +131,24 @@ func TestTryRestoresAfterFailedInstall(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
 
+	mockLookPath(t, defaultLookPath)
 	mockUnits(t)
 	mockSession(t, 4242)
-	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
-		return "/usr/bin/gnome-keyring-daemon", true
-	})
-	// Install fails at unit building (after mask + demotion already applied):
-	// gnome-keyring-daemon resolves, dbus-daemon does not.
-	mockLookPath(t, func(name string) (string, error) {
-		if name == "dbus-daemon" {
-			return "", os.ErrNotExist
-		}
-		return "/usr/bin/" + name, nil
-	})
+	mockExePath(t, "/usr/bin/gnome-keyring-daemon")
+	// Install fails after masking D-Bus activation, at the first write into the
+	// unit directory: a plain file stands where that directory goes.
+	unitsDir := filepath.Join(tmpDir, "systemd", "user")
+	require.NoError(t, os.MkdirAll(filepath.Dir(unitsDir), 0755))
+	require.NoError(t, os.WriteFile(unitsDir, nil, 0644))
 
 	err := Try(t.Context(), TryOptions{})
-	require.ErrorContains(t, err, "dbus-daemon")
+	require.ErrorContains(t, err, "systemd/user")
 
 	// The partial takeover state was rolled back.
-	files, err := locateTakeoverFiles()
+	l, err := locateLayout()
 	require.NoError(t, err)
-	files.assertAbsent(t)
-	assert.NoFileExists(t, filepath.Join(tmpDir, "secrets-dispatcher", "try-config.yaml"))
+	l.files.assertAbsent(t)
+	runtimeDir, err := config.LookupRuntimeDir()
+	require.NoError(t, err)
+	assert.NoFileExists(t, runtimeDir.TrialConfig().String())
 }

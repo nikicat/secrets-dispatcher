@@ -20,15 +20,29 @@ func newGKFixture(t *testing.T) gkFixture {
 	return gkFixture{
 		files: files,
 		units: units,
-		host:  host{units: units, files: files},
+		host:  host{units: units},
 	}
+}
+
+// Makes the demotion's changes, and fails the test when one fails.
+func (f gkFixture) demote(t *testing.T) {
+	t.Helper()
+	steps, err := f.files.demoteSteps()
+	require.NoError(t, err)
+	require.NoError(t, f.host.run(t.Context(), steps))
+}
+
+// Makes the changes that undo the demotion, and fails the test when one fails.
+func (f gkFixture) restore(t *testing.T) {
+	t.Helper()
+	require.NoError(t, f.host.run(t.Context(), f.files.restoreKeyringSteps()))
 }
 
 func TestDemoteGnomeKeyringWritesDropInAndShadow(t *testing.T) {
 	f := newGKFixture(t)
 	mockLookPath(t, defaultLookPath)
 
-	require.NoError(t, f.host.demoteGnomeKeyring(t.Context()))
+	f.demote(t)
 
 	dropInContent, err := f.files.dropIn.file.Read()
 	require.NoError(t, err)
@@ -58,11 +72,11 @@ func TestDemoteGnomeKeyringBacksUpUserAutostart(t *testing.T) {
 	shadow := f.files.shadow
 	require.NoError(t, shadow.file.Write(userContent))
 
-	require.NoError(t, f.host.demoteGnomeKeyring(t.Context()))
+	f.demote(t)
 
 	assert.Equal(t, userContent, readFile(t, shadow.backup()))
 
-	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
+	f.restore(t)
 
 	assert.Equal(t, userContent, readFile(t, shadow.file))
 	assert.False(t, shadow.backup().Exists())
@@ -72,8 +86,8 @@ func TestRestoreGnomeKeyringRemovesOnlyOurFiles(t *testing.T) {
 	f := newGKFixture(t)
 	mockLookPath(t, defaultLookPath)
 
-	require.NoError(t, f.host.demoteGnomeKeyring(t.Context()))
-	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
+	f.demote(t)
+	f.restore(t)
 
 	assert.False(t, f.files.dropIn.file.Exists())
 	assert.False(t, f.files.shadow.file.Exists())
@@ -84,7 +98,7 @@ func TestRestoreGnomeKeyringRemovesOnlyOurFiles(t *testing.T) {
 func TestRestoreGnomeKeyringNoopWhenNeverDemoted(t *testing.T) {
 	f := newGKFixture(t)
 
-	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
+	f.restore(t)
 
 	// Nothing was ours to remove — no unit manager churn either.
 	assert.Empty(t, f.units.calls)
@@ -96,7 +110,7 @@ func TestRestoreGnomeKeyringLeavesForeignShadowAlone(t *testing.T) {
 	foreign := "[Desktop Entry]\nType=Application\nHidden=true\n"
 	require.NoError(t, f.files.shadow.file.Write(foreign))
 
-	require.NoError(t, f.host.restoreGnomeKeyring(t.Context()))
+	f.restore(t)
 
 	assert.Equal(t, foreign, readFile(t, f.files.shadow.file), "a user-authored shadow must not be touched")
 	assert.Empty(t, f.units.calls)

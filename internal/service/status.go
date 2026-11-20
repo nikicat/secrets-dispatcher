@@ -10,39 +10,18 @@ import (
 
 // Prints a doctor-style report on the owner of org.freedesktop.secrets, the
 // installed units and the takeover files. Errors when the report finds a
-// problem, such as an unreachable systemd manager. ctx bounds the query.
+// problem, such as an unreachable systemd manager.
 func Status(ctx context.Context) error {
-	unitsDir, err := unitDir()
+	l, err := locateLayout()
 	if err != nil {
 		return err
 	}
-	files, err := locateTakeoverFiles()
-	if err != nil {
-		return err
-	}
-
-	var installed []systemd.Unit
-	for _, u := range allUnitNames {
-		if unitsDir.UnitFile(u).Exists() {
-			installed = append(installed, u)
-		}
-	}
-
-	p := DetectProvider(ctx)
-	fmt.Printf("org.freedesktop.secrets owner: %s\n", p)
-
-	st := statusState{
-		provider:  p,
-		mask:      place(files.mask),
-		dropIn:    place(files.dropIn),
-		shadow:    place(files.shadow),
-		installed: installed,
-		states:    activeStates(ctx, installed),
-	}
+	st := l.readStatus(ctx)
 	inst := st.installation()
-	inst.report()
 	problems := inst.problems()
 
+	fmt.Printf("org.freedesktop.secrets owner: %s\n", st.provider)
+	inst.report()
 	if len(problems) == 0 {
 		fmt.Println("✓ no problems found")
 		return nil
@@ -51,6 +30,18 @@ func Status(ctx context.Context) error {
 		fmt.Printf("⚠ %s\n", pr)
 	}
 	return fmt.Errorf("%d problem(s) found", len(problems))
+}
+
+func (l layout) readStatus(ctx context.Context) statusState {
+	installed := l.installed()
+	return statusState{
+		provider:  DetectProvider(ctx),
+		mask:      place(l.files.mask),
+		dropIn:    place(l.files.dropIn),
+		shadow:    place(l.files.shadow),
+		installed: installed,
+		states:    activeStates(ctx, installed),
+	}
 }
 
 // The topology that the installed unit files set up, together with the state
@@ -146,7 +137,7 @@ type statusState struct {
 	provider Provider
 	// The takeover files, each with whether it is in place.
 	mask, dropIn, shadow placedFile
-	// The installed units, in allUnitNames order.
+	// The installed units, as layout.installed returns them.
 	installed []systemd.Unit
 	// The installed units' states.
 	states unitStates

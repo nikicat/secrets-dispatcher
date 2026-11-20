@@ -3,11 +3,8 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os/exec"
-	"syscall"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
@@ -24,8 +21,11 @@ const (
 	backendServiceUnit systemd.Unit = "secrets-dispatcher-backend.service"
 )
 
-// The content of each unit file, by unit.
-type unitFiles map[systemd.Unit]string
+// The note is what the dry run prints beside writing the unit file.
+type plannedUnit struct{ content, note string }
+
+// The unit files to install, by unit.
+type unitFiles map[systemd.Unit]plannedUnit
 
 // allUnitNames lists every unit file the package may install.
 var allUnitNames = []systemd.Unit{
@@ -136,61 +136,27 @@ type host struct {
 	// How much of the changes to the session print.
 	narration Narration
 	units     unitManager
-	// The takeover files under the user's XDG homes.
-	files takeoverFiles
 }
 
 // Returns a host on the user's systemd manager, which the caller closes.
 func openHost(ctx context.Context, n Narration) (host, error) {
-	files, err := locateTakeoverFiles()
-	if err != nil {
-		return host{}, err
-	}
 	units, err := openUnitManager(ctx)
 	if err != nil {
 		return host{}, err
 	}
-	return host{narration: n, units: units, files: files}, nil
+	return host{narration: n, units: units}, nil
 }
 
 func (h host) close() { h.units.Close() }
 
-func (h host) reload(ctx context.Context) error {
-	if err := h.units.Reload(ctx); err != nil {
-		return err
+// Makes each step's change in order. Errors with the first that fails.
+func (h host) run(ctx context.Context, steps []step) error {
+	for _, s := range steps {
+		if err := s.apply(ctx, h); err != nil {
+			return err
+		}
 	}
-	h.narration.printf("Reloaded systemd user units\n")
 	return nil
-}
-
-func (h host) enable(ctx context.Context, u systemd.Unit) error {
-	changes, err := h.units.Unit(u).Enable(ctx)
-	if err != nil {
-		return err
-	}
-	h.narrateFileChanges(changes)
-	h.narration.printf("Enabled %s\n", u)
-	return nil
-}
-
-func (h host) start(ctx context.Context, u systemd.Unit) error {
-	if err := h.units.Unit(u).Start(ctx); err != nil {
-		return err
-	}
-	h.narration.printf("Started %s\n", u)
-	return nil
-}
-
-// Stops and disables u. Failures are ignored, since u may not be loaded or
-// enabled.
-func (h host) retire(ctx context.Context, u systemd.Unit) {
-	unit := h.units.Unit(u)
-	if unit.Stop(ctx) == nil {
-		h.narration.printf("Stopped %s\n", u)
-	}
-	if changes, err := unit.Disable(ctx); err == nil {
-		h.narrateFileChanges(changes)
-	}
 }
 
 func (h host) narrateFileChanges(changes []unitFileChange) {
@@ -203,86 +169,35 @@ func (h host) narrateFileChanges(changes []unitFileChange) {
 // Replaced in tests.
 var lookPathFunc = exec.LookPath
 
-// Returns the systemd user unit directory, under the XDG config home.
-func unitDir() (systemd.UnitDir, error) {
-	configHome, err := config.ConfigHome()
-	if err != nil {
-		return systemd.UnitDir{}, err
-	}
-	return systemd.UserUnitDir(configHome), nil
-}
-
-// Installs and enables the service units for opts.Mode, and starts them when
-// opts.Start is set. A local or full install takes org.freedesktop.secrets over
-// (ADR 0009). Plan(opts) lists the same changes. ctx bounds each systemd call.
+// Installs and enables the units of opts.Mode, and starts them when opts.Start
+// is set. A local or full install takes org.freedesktop.secrets over (ADR
+// 0001). It makes the changes that Plan lists (ARCHITECTURE.md, "Service setup").
 func Install(ctx context.Context, opts Options) error {
-	in, err := resolveInstallInputs(ctx, opts)
+	l, err := locateLayout()
 	if err != nil {
 		return err
 	}
-	h, err := openHost(ctx, opts.Narration)
+	p, err := l.planInstall(ctx, opts)
+	if err != nil {
+		return err
+	}
+	return p.run(ctx, opts.Narration)
+}
+
+func (p installPlan) run(ctx context.Context, n Narration) error {
+	h, err := openHost(ctx, n)
 	if err != nil {
 		return err
 	}
 	defer h.close()
 
-	if err := in.writeTopology(); err != nil {
+	p.topology.announce()
+	if err := h.run(ctx, p.steps); err != nil {
 		return err
 	}
-	h.narration.printf("Wrote config: %s\n", in.configPath)
-
-	if err := in.topology.prepare(ctx, h); err != nil {
-		return err
+	if p.start {
+		p.topology.confirm(ctx)
 	}
-
-	needed, err := in.topology.units(in.execStart)
-	if err != nil {
-		return err
-	}
-
-	// Write needed units; stop/disable/remove stale ones from a different mode.
-	dir, err := unitDir()
-	if err != nil {
-		return err
-	}
-	for _, u := range allUnitNames {
-		file := dir.UnitFile(u)
-		if content, ok := needed[u]; ok {
-			if err := file.Write(content); err != nil {
-				return fmt.Errorf("write %s: %w", u, err)
-			}
-			h.narration.printf("Wrote unit file: %s\n", file)
-		} else {
-			// Clean up units from a previous mode if they exist.
-			if file.Exists() {
-				h.retire(ctx, u)
-				if rmErr := file.Remove(); rmErr != nil {
-					return fmt.Errorf("remove stale %s: %w", u, rmErr)
-				}
-				h.narration.printf("Removed stale unit: %s\n", file)
-			}
-		}
-	}
-
-	// Reload and enable.
-	if err := h.reload(ctx); err != nil {
-		return err
-	}
-	for _, u := range in.topology.activated() {
-		if err := h.enable(ctx, u); err != nil {
-			return err
-		}
-	}
-
-	if opts.Start {
-		for _, u := range in.topology.activated() {
-			if err := h.start(ctx, u); err != nil {
-				return err
-			}
-		}
-		in.topology.confirm(ctx)
-	}
-
 	return nil
 }
 
@@ -317,118 +232,106 @@ func reportOwnership(ctx context.Context) {
 	fmt.Printf("WARNING: org.freedesktop.secrets is owned by %s — secrets-dispatcher is NOT in front\n", p)
 }
 
-// Sets the serve upstream and downstream in the config file at in.configPath
-// to in.topology. Every other setting in the file is kept.
-func (in installInputs) writeTopology() error {
-	cfg, err := in.configPath.LoadOrEmpty()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	cfg.Serve.Upstream, cfg.Serve.Downstream = in.topology.serve(in.runtimeDir)
-	return in.configPath.Save(cfg)
+// Returns the step that writes the topology's serve upstream and downstream
+// into the config file.
+func (in installInputs) writeTopologyStep() step {
+	note := "set serve topology: " + in.mode.String() + " (other settings preserved)"
+	return step{Change{changeWrite, in.configPath.String(), note}, func(_ context.Context, h host) error {
+		cfg, err := in.configPath.LoadOrEmpty()
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		cfg.Serve.Upstream, cfg.Serve.Downstream = in.topology.serve(in.runtimeDir)
+		if err := in.configPath.Save(cfg); err != nil {
+			return err
+		}
+		h.narration.printf("Wrote config: %s\n", in.configPath)
+		return nil
+	}}
 }
 
 // Stops, disables and removes every service unit, and restores the Secret
-// Service setup that an install displaced (ADR 0009). ctx bounds each
-// systemd call.
+// Service setup that an install displaced (ADR 0009).
 func Uninstall(ctx context.Context, n Narration) error {
+	l, err := locateLayout()
+	if err != nil {
+		return err
+	}
+	return l.uninstall(ctx, n)
+}
+
+func (l layout) uninstall(ctx context.Context, n Narration) error {
+	steps := l.uninstallSteps()
 	h, err := openHost(ctx, n)
 	if err != nil {
 		return err
 	}
 	defer h.close()
+	return h.run(ctx, steps)
+}
+
+// Returns the steps of an uninstall from l, in order.
+func (l layout) uninstallSteps() []step {
+	var steps []step
 	for _, u := range allUnitNames {
-		h.retire(ctx, u)
+		steps = append(steps, unitStep(opStop, u, ""), unitStep(opDisable, u, ""))
 	}
-
-	dir, err := unitDir()
-	if err != nil {
-		return err
+	for _, u := range l.installed() {
+		steps = append(steps, l.unitFile(u, "").removeStep())
 	}
-
-	for _, u := range allUnitNames {
-		file := dir.UnitFile(u)
-		if err := file.Remove(); err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("remove %s: %w", u, err)
-			}
-			continue
-		}
-		h.narration.printf("Removed %s\n", file)
-	}
-
-	if err := h.leaveTakeover(ctx); err != nil {
-		return err
-	}
-
-	return h.reload(ctx)
+	steps = append(steps, l.files.leaveSteps()...)
+	return append(steps, reloadStep())
 }
 
 // Restarts the proxy unit and waits until it is back, or until ctx ends.
 func RestartProxy(ctx context.Context) error {
-	units, err := openUnitManager(ctx)
+	h, err := openHost(ctx, NarrateMilestones)
 	if err != nil {
 		return err
 	}
-	defer units.Close()
-	return units.Unit(proxyServiceUnit).Restart(ctx)
+	defer h.close()
+	return h.apply(ctx, opRestart, proxyServiceUnit)
 }
 
-// Returns the user D-Bus service directory, under the XDG data home.
-func dbusServiceDir() (textfile.Dir, error) {
-	dataHome, err := config.DataHome()
-	if err != nil {
-		return textfile.Dir{}, err
-	}
-	return textfile.DirAt(dataHome, "dbus-1", "services"), nil
-}
-
-// Returns the D-Bus activation mask of org.freedesktop.secrets, in the user
-// D-Bus service directory.
-func dbusMask() (managedFile, error) {
-	dir, err := dbusServiceDir()
-	if err != nil {
-		return managedFile{}, err
-	}
+// Returns the D-Bus activation mask of org.freedesktop.secrets in dir. The mask
+// keeps the bus from starting a provider that takes the name back (ADR 0001).
+func dbusMask(dir textfile.Dir) managedFile {
 	return managedFile{
 		file:    dir.File(dbusServiceFile),
 		name:    "D-Bus activation mask",
 		purpose: "mask D-Bus activation of org.freedesktop.secrets",
 		content: dbusActivationMask,
-	}, nil
+	}
 }
 
-func (h host) maskDBusActivation(ctx context.Context) error {
-	if err := h.files.mask.write(h.narration); err != nil {
-		return err
-	}
-	_ = session.reloadConfig(ctx)
-	return nil
+// Returns the step that has the session bus reread its service files, so that
+// a written or removed activation mask applies. A failure is ignored.
+func reloadBusConfigStep() step {
+	return step{Change{changeRun, reloadConfigCommand, "reread the D-Bus activation files"}, func(ctx context.Context, _ host) error {
+		_ = session.reloadConfig(ctx)
+		return nil
+	}}
 }
 
-func (h host) unmaskDBusActivation(ctx context.Context) error {
-	restored, err := h.files.mask.restore(h.narration)
-	if err != nil || !restored {
-		return err
-	}
-	_ = session.reloadConfig(ctx)
-	return nil
+// Returns the steps that write the D-Bus activation mask and have the session
+// bus reread its service files.
+func (f takeoverFiles) maskSteps() []step {
+	return append(f.mask.writeSteps(), reloadBusConfigStep())
 }
 
-// Gives org.freedesktop.secrets back to the desktop's own provider. Does
-// nothing to what no takeover changed.
-func (h host) leaveTakeover(ctx context.Context) error {
-	if err := h.unmaskDBusActivation(ctx); err != nil {
-		return err
+// Returns the steps that take the D-Bus activation mask away and have the session
+// bus reread its service files. A file that the mask replaced comes back. Returns
+// none when the mask is not ours.
+func (f takeoverFiles) unmaskSteps() []step {
+	steps := f.mask.restoreSteps()
+	if len(steps) == 0 {
+		return nil
 	}
-	return h.restoreGnomeKeyring(ctx)
+	return append(steps, reloadBusConfigStep())
 }
 
-func (h host) stopDBusActivatedService(ctx context.Context) {
-	pid, err := session.secretsOwner(ctx)
-	if err != nil {
-		return // name not owned
-	}
-	h.narration.printf("Stopping D-Bus activated owner of %s (PID %d)\n", dbusServiceFile, pid)
-	_ = pid.Signal(syscall.SIGTERM)
+// Returns the steps that give org.freedesktop.secrets back to the desktop's own
+// provider (ADR 0009). The steps leave alone what no takeover changed.
+func (f takeoverFiles) leaveSteps() []step {
+	return append(f.unmaskSteps(), f.restoreKeyringSteps()...)
 }

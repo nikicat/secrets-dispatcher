@@ -1,10 +1,8 @@
 package service
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 	"github.com/nikicat/secrets-dispatcher/internal/textfile"
 )
@@ -35,93 +33,53 @@ Name=Secret Storage Service
 Hidden=true
 `
 
-// Returns the drop-in that demotes gnome-keyring, in the systemd user unit
-// directory.
-func gkDropIn() (managedDropIn, error) {
-	dir, err := unitDir()
-	if err != nil {
-		return managedDropIn{}, err
-	}
+// Returns the drop-in that demotes gnome-keyring, in dir.
+func gkDropIn(dir systemd.UnitDir) managedDropIn {
 	return managedDropIn{narratedFile[systemd.DropIn]{
 		file:    dir.DropIn(gkServiceUnit, gkDropInName),
 		name:    "gnome-keyring demotion drop-in",
 		purpose: "demote gnome-keyring to pkcs11-only (secrets move to the private backend)",
-	}}, nil
+	}}
 }
 
-// Returns the user XDG autostart directory, under the XDG config home.
-func autostartDir() (textfile.Dir, error) {
-	configHome, err := config.ConfigHome()
-	if err != nil {
-		return textfile.Dir{}, err
-	}
-	return textfile.DirAt(configHome, "autostart"), nil
-}
-
-// Returns the shadow that hides gnome-keyring's secrets autostart entry, in
-// the user XDG autostart directory.
-func gkAutostart() (managedFile, error) {
-	dir, err := autostartDir()
-	if err != nil {
-		return managedFile{}, err
-	}
+// Returns the shadow in dir that hides gnome-keyring's secrets autostart entry
+// (ADR 0009).
+func gkAutostart(dir textfile.Dir) managedFile {
 	return managedFile{
 		file:    dir.File(gkAutostartName),
 		name:    "gnome-keyring autostart shadow",
 		purpose: "hide the gnome-keyring secrets autostart kicker (Hidden=true)",
 		content: gkAutostartShadow,
-	}, nil
+	}
 }
 
-// Applies the secrets-only demotion (ADR 0009) and restarts a running
-// unit-managed gnome-keyring onto it. Errors when gnome-keyring-daemon is not
-// installed.
-func (h host) demoteGnomeKeyring(ctx context.Context) error {
+// Returns the steps that limit gnome-keyring to its pkcs11 component, and
+// restart it when it runs as a unit (ADR 0009). Errors when
+// gnome-keyring-daemon is not installed.
+func (f takeoverFiles) demoteSteps() ([]step, error) {
 	gkDaemon, err := gnomeKeyringDaemon()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	demoted := systemd.NewCommand(gkDaemon, "--foreground", "--components=pkcs11", "--control-directory=%t/keyring")
-	if err := h.files.dropIn.write(h.narration, fmt.Sprintf(gkDropInTemplate, demoted.ExecLine())); err != nil {
-		return err
-	}
-	if err := h.files.shadow.write(h.narration); err != nil {
-		return err
-	}
-	return h.restartKeyring(ctx)
+	steps := []step{f.dropIn.writeStep(fmt.Sprintf(gkDropInTemplate, demoted.ExecLine()))}
+	steps = append(steps, f.shadow.writeSteps()...)
+	return append(steps, restartKeyringSteps("restart without the secrets component")...), nil
 }
 
-// The takeover files that the gnome-keyring demotion writes, in its order.
-func (f takeoverFiles) demotion() []takeoverFile { return []takeoverFile{f.dropIn, f.shadow} }
-
-// Restores gnome-keyring's stock secrets component, and restarts it when any
-// file changed.
-func (h host) restoreGnomeKeyring(ctx context.Context) error {
-	changed := false
-	for _, f := range h.files.demotion() {
-		restored, err := f.restore(h.narration)
-		if err != nil {
-			return err
-		}
-		changed = changed || restored
-	}
-	if !changed {
+// Returns the steps that undo demoteSteps, and restart gnome-keyring with all
+// its components when it runs as a unit (ADR 0009). Returns none when no file
+// of the demotion is in place.
+func (f takeoverFiles) restoreKeyringSteps() []step {
+	steps := append(f.dropIn.restoreSteps(), f.shadow.restoreSteps()...)
+	if len(steps) == 0 {
 		return nil
 	}
-	return h.restartKeyring(ctx)
+	return append(steps, restartKeyringSteps("restart with all components")...)
 }
 
-// Reloads unit files and restarts a running unit-managed gnome-keyring. A failed
-// restart only prints a note, since the unit may not exist outside
-// systemd-managed keyrings. Errors when the reload fails.
-func (h host) restartKeyring(ctx context.Context) error {
-	if err := h.reload(ctx); err != nil {
-		return err
-	}
-	if err := h.units.Unit(gkServiceUnit).TryRestart(ctx); err != nil {
-		fmt.Printf("note: %v\n", err)
-		return nil
-	}
-	h.narration.printf("Restarted %s if it was running\n", gkServiceUnit)
-	return nil
+// Returns the steps that reload the unit files and restart gnome-keyring if it
+// is running. The dry run shows the given note beside the restart.
+func restartKeyringSteps(note string) []step {
+	return []step{reloadStep(), unitStep(opTryRestart, gkServiceUnit, note)}
 }

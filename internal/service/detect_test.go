@@ -22,12 +22,20 @@ func mockExe(t *testing.T, fn func(procutil.PID) (procutil.Path, bool)) {
 	testutil.Swap(t, &exeOf, fn)
 }
 
+// Makes every process's executable resolve to the given path.
+func mockExePath(t *testing.T, path procutil.Path) {
+	t.Helper()
+	mockExe(t, func(procutil.PID) (procutil.Path, bool) { return path, true })
+}
+
 // A session bus on which owner owns org.freedesktop.secrets, and nothing
 // does when owner is 0.
 type fakeSession struct {
 	owner procutil.PID
 	// The number of reloadConfig calls.
 	reloads int
+	// The processes sent SIGTERM, in order.
+	terminated []procutil.PID
 }
 
 func (s *fakeSession) secretsOwner(context.Context) (procutil.PID, error) {
@@ -44,12 +52,16 @@ func (s *fakeSession) reloadConfig(context.Context) error {
 
 func (s *fakeSession) pokeSecrets(context.Context) error { return nil }
 
-// Replaces the session bus with a fake on which owner owns
-// org.freedesktop.secrets, or nothing does when owner is 0.
+// Replaces the session bus with a fakeSession for the given owner. Also
+// replaces terminate, so that the fake records each pid instead of signalling it.
 func mockSession(t *testing.T, owner procutil.PID) *fakeSession {
 	t.Helper()
 	s := &fakeSession{owner: owner}
 	testutil.Swap[sessionBus](t, &session, s)
+	testutil.Swap(t, &terminate, func(pid procutil.PID) error {
+		s.terminated = append(s.terminated, pid)
+		return nil
+	})
 	return s
 }
 

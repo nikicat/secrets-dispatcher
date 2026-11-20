@@ -52,6 +52,12 @@ func (d RuntimeDir) SSHAgentSocket() unixsock.Path { return d.dir().Socket(sshAg
 // Returns the default directory of per-client D-Bus sockets.
 func (d RuntimeDir) ClientSockets() unixsock.Dir { return d.dir().Sub(clientSocketsName) }
 
+// Returns the downstream that gives each remote client its own socket in
+// d.ClientSockets(), so that the socket identifies the client (ADR 0003).
+func (d RuntimeDir) ClientsDownstream() BusConfig {
+	return BusConfig{Bus: Sockets{Dir: d.ClientSockets()}}
+}
+
 // Returns the signing socket the daemon serves for the named remote (ADR 0011).
 func (d RuntimeDir) RemoteSocket(name RemoteName) unixsock.Path {
 	return d.dir().Sub(remoteSocketsName).Socket(string(name))

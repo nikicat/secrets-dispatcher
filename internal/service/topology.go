@@ -14,15 +14,14 @@ type topology interface {
 	// Returns the unit files to install. Errors when a program that a unit runs
 	// is not installed.
 	units(execStart systemd.Command) (unitFiles, error)
-	// Returns what the dry run notes beside the units it writes. Errors when a
-	// program that a unit runs is not installed.
-	unitNotes() (map[systemd.Unit]string, error)
 	// The units to enable and start, in order.
 	activated() []systemd.Unit
-	// Puts this desktop's Secret Service in place.
-	prepare(ctx context.Context, h host) error
-	// The changes that prepare would make, in its order.
-	planPrepare(takeoverFiles) []Change
+	// Prints the detected Secret Service provider when the topology takes
+	// org.freedesktop.secrets over. Prints nothing otherwise.
+	announce()
+	// Returns the steps that put this desktop's Secret Service in place.
+	// Errors when a program that a step runs is not installed.
+	prepare(takeoverFiles) ([]step, error)
 	// Prints whether the dispatcher now owns org.freedesktop.secrets, after a
 	// start.
 	confirm(ctx context.Context)
@@ -31,42 +30,20 @@ type topology interface {
 type remote struct{}
 
 func (remote) serve(rd config.RuntimeDir) (config.UpstreamConfig, []config.BusConfig) {
-	return config.UpstreamConfig{Bus: config.SessionBus{}},
-		[]config.BusConfig{{Bus: config.Sockets{Dir: rd.ClientSockets()}}}
+	return config.SessionUpstream(), []config.BusConfig{rd.ClientsDownstream()}
 }
 
 func (remote) units(execStart systemd.Command) (unitFiles, error) {
-	return unitFiles{proxyServiceUnit: fmt.Sprintf(unitTemplate, execStart.ExecLine())}, nil
+	return unitFiles{proxyServiceUnit: {content: fmt.Sprintf(unitTemplate, execStart.ExecLine())}}, nil
 }
-
-func (remote) unitNotes() (map[systemd.Unit]string, error) { return nil, nil }
 
 func (remote) activated() []systemd.Unit { return []systemd.Unit{proxyServiceUnit} }
 
-func (remote) prepare(ctx context.Context, h host) error { return h.leaveTakeover(ctx) }
+func (remote) announce() {}
 
-func (remote) planPrepare(f takeoverFiles) []Change {
-	// unmaskDBusActivation
-	changes := f.mask.planRestore()
-	// restoreGnomeKeyring
-	var keyring []Change
-	for _, file := range f.demotion() {
-		keyring = append(keyring, file.planRestore()...)
-	}
-	if len(keyring) > 0 {
-		changes = append(changes, keyring...)
-		changes = append(changes, restartKeyringChanges("restart with all components")...)
-	}
-	return changes
-}
+func (remote) prepare(f takeoverFiles) ([]step, error) { return f.leaveSteps(), nil }
 
 func (remote) confirm(context.Context) {}
-
-// Returns the changes that host.restartKeyring makes, as a dry run lists
-// them. The note goes on the restart.
-func restartKeyringChanges(note string) []Change {
-	return []Change{reloadChange(), unitChange(opTryRestart, gkServiceUnit, note)}
-}
 
 // The dispatcher sits in front of this desktop's Secret Service, with a private
 // backend behind it (ADR 0001).
@@ -111,56 +88,33 @@ func (t takeover) units(execStart systemd.Command) (unitFiles, error) {
 		return nil, err
 	}
 	return unitFiles{
-		busSocketUnit:      fmt.Sprintf(busSocketTemplate, config.SystemdRuntimeDir.BackendBusSocket()),
-		busServiceUnit:     fmt.Sprintf(busServiceTemplate, systemd.NewCommand(dbusDaemon, "--session", "--nofork", "--nopidfile", "--address=systemd:").ExecLine()),
-		backendServiceUnit: fmt.Sprintf(backendServiceTemplate, backendExec.ExecLine(), config.SystemdRuntimeDir.BackendBusSocket().Address()),
-		proxyServiceUnit:   fmt.Sprintf(localProxyTemplate, execStart.ExecLine()),
+		busSocketUnit:  {content: fmt.Sprintf(busSocketTemplate, config.SystemdRuntimeDir.BackendBusSocket())},
+		busServiceUnit: {content: fmt.Sprintf(busServiceTemplate, systemd.NewCommand(dbusDaemon, "--session", "--nofork", "--nopidfile", "--address=systemd:").ExecLine())},
+		backendServiceUnit: {
+			content: fmt.Sprintf(backendServiceTemplate, backendExec.ExecLine(), config.SystemdRuntimeDir.BackendBusSocket().Address()),
+			note:    "private backend: " + backendExec.ExecLine(),
+		},
+		proxyServiceUnit: {content: fmt.Sprintf(localProxyTemplate, execStart.ExecLine())},
 	}, nil
-}
-
-// Surfaces the resolved backend, the one choice in the units' content that is
-// not obvious.
-func (t takeover) unitNotes() (map[systemd.Unit]string, error) {
-	backend, err := t.backend.exec()
-	if err != nil {
-		return nil, err
-	}
-	return map[systemd.Unit]string{backendServiceUnit: "private backend: " + backend.ExecLine()}, nil
 }
 
 func (takeover) activated() []systemd.Unit { return []systemd.Unit{busSocketUnit, proxyServiceUnit} }
 
-func (t takeover) prepare(ctx context.Context, h host) error {
-	fmt.Printf("Detected Secret Service provider: %s\n", t.provider)
-	if err := h.maskDBusActivation(ctx); err != nil {
-		return err
-	}
+func (t takeover) announce() { fmt.Printf("Detected Secret Service provider: %s\n", t.provider) }
+
+func (t takeover) prepare(f takeoverFiles) ([]step, error) {
+	steps := f.maskSteps()
 	if t.displacesGnomeKeyring() {
-		if err := h.demoteGnomeKeyring(ctx); err != nil {
-			return err
+		demotion, err := f.demoteSteps()
+		if err != nil {
+			return nil, err
 		}
+		steps = append(steps, demotion...)
 	}
-	h.stopDBusActivatedService(ctx)
-	return nil
-}
-
-func (t takeover) planPrepare(f takeoverFiles) []Change {
-	// maskDBusActivation
-	changes := f.mask.planWrite()
-
-	// demoteGnomeKeyring
-	if t.displacesGnomeKeyring() {
-		for _, file := range f.demotion() {
-			changes = append(changes, file.planWrite()...)
-		}
-		changes = append(changes, restartKeyringChanges("restart without the secrets component")...)
-	}
-
-	// stopDBusActivatedService
 	if o := t.provider.displaced(); o != nil {
-		changes = append(changes, o.sigtermChange())
+		steps = append(steps, o.stopStep())
 	}
-	return changes
+	return steps, nil
 }
 
 func (takeover) confirm(ctx context.Context) { reportOwnership(ctx) }
@@ -169,5 +123,5 @@ type full struct{ takeover }
 
 func (f full) serve(rd config.RuntimeDir) (config.UpstreamConfig, []config.BusConfig) {
 	upstream, downstream := f.takeover.serve(rd)
-	return upstream, append(downstream, config.BusConfig{Bus: config.Sockets{Dir: rd.ClientSockets()}})
+	return upstream, append(downstream, rd.ClientsDownstream())
 }

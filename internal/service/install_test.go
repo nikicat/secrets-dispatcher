@@ -774,7 +774,7 @@ func TestInstallQuietByDefault(t *testing.T) {
 		require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
 	})
 
-	assert.NotContains(t, out, "Wrote unit file:")
+	assert.NotContains(t, out, "Wrote "+string(proxyServiceUnit)+": ")
 	assert.NotContains(t, out, "Wrote config:")
 	assert.NotContains(t, out, "Enabled ")
 	assert.NotContains(t, out, "Created symlink")
@@ -791,7 +791,7 @@ func TestInstallVerboseNarratesChanges(t *testing.T) {
 		require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote, Narration: NarrateChanges}))
 	})
 
-	assert.Contains(t, out, "Wrote unit file:")
+	assert.Contains(t, out, "Wrote "+string(proxyServiceUnit)+": ")
 	assert.Contains(t, out, "Wrote config:")
 	assert.Contains(t, out, "Enabled "+string(proxyServiceUnit))
 	assert.Contains(t, out, "Created symlink /wants/"+string(proxyServiceUnit)+" → /units/"+string(proxyServiceUnit)+".\n")

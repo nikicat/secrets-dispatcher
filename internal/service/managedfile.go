@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
@@ -17,36 +18,12 @@ type takeoverFile interface {
 	label() string
 	// Reports whether the dispatcher's file is in place.
 	present() bool
-	// Returns the changes that writing the file makes, as the dry run lists them.
-	planWrite() []Change
-	// Returns the changes that restore makes, as the dry run lists them.
-	planRestore() []Change
-	// Removes the dispatcher's file and reports whether it did. Errors when a
-	// file operation fails.
-	restore(n Narration) (bool, error)
 }
 
 // The files that entering takeover writes and leaving it removes.
 type takeoverFiles struct {
 	mask, shadow managedFile
 	dropIn       managedDropIn
-}
-
-// Returns the takeover files at their places under the user's XDG homes.
-func locateTakeoverFiles() (takeoverFiles, error) {
-	mask, err := dbusMask()
-	if err != nil {
-		return takeoverFiles{}, err
-	}
-	shadow, err := gkAutostart()
-	if err != nil {
-		return takeoverFiles{}, err
-	}
-	dropIn, err := gkDropIn()
-	if err != nil {
-		return takeoverFiles{}, err
-	}
-	return takeoverFiles{mask: mask, shadow: shadow, dropIn: dropIn}, nil
 }
 
 // The file operations that a takeover file of either kind narrates.
@@ -56,8 +33,6 @@ type diskFile interface {
 	Remove() error
 }
 
-// A takeover file with what it is called, and what writing it does, as the
-// dry run notes it.
 type narratedFile[F diskFile] struct {
 	file          F
 	name, purpose string
@@ -65,32 +40,24 @@ type narratedFile[F diskFile] struct {
 
 func (f narratedFile[F]) label() string { return f.name }
 
-// Writes content to f, and prints the change under NarrateChanges. Errors when
-// the write fails.
-func (f narratedFile[F]) write(n Narration, content string) error {
-	if err := f.file.Write(content); err != nil {
-		return fmt.Errorf("write %s: %w", f.name, err)
-	}
-	n.printf("Wrote %s: %s\n", f.name, f.file)
-	return nil
+func (f narratedFile[F]) writeStep(content string) step {
+	return step{Change{changeWrite, f.file.String(), f.purpose}, func(_ context.Context, h host) error {
+		if err := f.file.Write(content); err != nil {
+			return fmt.Errorf("write %s: %w", f.name, err)
+		}
+		h.narration.printf("Wrote %s: %s\n", f.name, f.file)
+		return nil
+	}}
 }
 
-// Removes f, prints the change under NarrateChanges, and reports whether it
-// did. Errors when the removal fails.
-func (f narratedFile[F]) remove(n Narration) (bool, error) {
-	if err := f.file.Remove(); err != nil {
-		return false, fmt.Errorf("remove %s: %w", f.name, err)
-	}
-	n.printf("Removed %s: %s\n", f.name, f.file)
-	return true, nil
-}
-
-func (f narratedFile[F]) writeChange() Change {
-	return Change{"write", f.file.String(), f.purpose}
-}
-
-func (f narratedFile[F]) removeChange() Change {
-	return Change{"remove", f.file.String(), f.name}
+func (f narratedFile[F]) removeStep() step {
+	return step{Change{changeRemove, f.file.String(), f.name}, func(_ context.Context, h host) error {
+		if err := f.file.Remove(); err != nil {
+			return fmt.Errorf("remove %s: %w", f.name, err)
+		}
+		h.narration.printf("Removed %s: %s\n", f.name, f.file)
+		return nil
+	}}
 }
 
 // A takeover file that the dispatcher recognises as its own by its content.
@@ -101,61 +68,70 @@ type managedFile struct {
 
 func (f managedFile) backup() textfile.File { return f.file.WithSuffix(backupSuffix) }
 
-func (f managedFile) present() bool {
+// What is at a managedFile's path.
+type occupant int
+
+const (
+	occupantAbsent occupant = iota
+	occupantOurs
+	occupantForeign
+)
+
+// An unreadable file counts as absent.
+func (f managedFile) occupant() occupant {
 	existing, err := f.file.Read()
-	return err == nil && existing == f.content
+	switch {
+	case err != nil:
+		return occupantAbsent
+	case existing == f.content:
+		return occupantOurs
+	default:
+		return occupantForeign
+	}
 }
 
-// Reports whether a file other than ours is at f's path.
-func (f managedFile) foreign() bool {
-	existing, err := f.file.Read()
-	return err == nil && existing != f.content
-}
+func (f managedFile) present() bool { return f.occupant() == occupantOurs }
 
-// Writes f, moving a foreign file at its path to its backup first. Errors
-// when a file operation fails.
-func (f managedFile) write(n Narration) error {
-	if f.foreign() {
+func (f managedFile) backupStep() step {
+	return step{Change{changeBackup, f.file.String(), "-> " + f.backup().String()}, func(_ context.Context, h host) error {
 		if err := f.file.RenameTo(f.backup()); err != nil {
 			return fmt.Errorf("back up %s: %w", f.name, err)
 		}
-		n.printf("Backed up %s\n", f.file)
-	}
-	return f.narratedFile.write(n, f.content)
+		h.narration.printf("Backed up %s\n", f.file)
+		return nil
+	}}
 }
 
-func (f managedFile) planWrite() []Change {
-	var changes []Change
-	if f.foreign() {
-		changes = append(changes, Change{"backup", f.file.String(), "-> " + f.backup().String()})
-	}
-	return append(changes, f.writeChange())
-}
-
-// Puts f's backup back in its place when there is one. A foreign file is left
-// alone.
-func (f managedFile) restore(n Narration) (bool, error) {
-	if !f.present() {
-		return false, nil
-	}
-	if f.backup().Exists() {
+func (f managedFile) restoreBackupStep() step {
+	return step{Change{changeRestore, f.backup().String(), "-> " + f.file.String()}, func(_ context.Context, h host) error {
 		if err := f.backup().RenameTo(f.file); err != nil {
-			return false, fmt.Errorf("restore %s: %w", f.file, err)
+			return fmt.Errorf("restore %s: %w", f.file, err)
 		}
-		n.printf("Restored %s from backup\n", f.file)
-		return true, nil
-	}
-	return f.remove(n)
+		h.narration.printf("Restored %s from backup\n", f.file)
+		return nil
+	}}
 }
 
-func (f managedFile) planRestore() []Change {
+// Returns the steps that write f. When a file that is not ours is at f's path,
+// the steps move it to f's backup, and restoreSteps puts it back (ADR 0009).
+func (f managedFile) writeSteps() []step {
+	var steps []step
+	if f.occupant() == occupantForeign {
+		steps = append(steps, f.backupStep())
+	}
+	return append(steps, f.writeStep(f.content))
+}
+
+// Returns the steps that replace f with its backup, or remove f when there is
+// no backup (ADR 0009). Returns none when the file at f's path is not ours.
+func (f managedFile) restoreSteps() []step {
 	switch {
-	case !f.present():
+	case f.occupant() != occupantOurs:
 		return nil
 	case f.backup().Exists():
-		return []Change{{"restore", f.backup().String(), "-> " + f.file.String()}}
+		return []step{f.restoreBackupStep()}
 	default:
-		return []Change{f.removeChange()}
+		return []step{f.removeStep()}
 	}
 }
 
@@ -165,18 +141,9 @@ type managedDropIn struct{ narratedFile[systemd.DropIn] }
 
 func (f managedDropIn) present() bool { return f.file.Exists() }
 
-func (f managedDropIn) planWrite() []Change { return []Change{f.writeChange()} }
-
-func (f managedDropIn) restore(n Narration) (bool, error) {
-	if !f.present() {
-		return false, nil
-	}
-	return f.remove(n)
-}
-
-func (f managedDropIn) planRestore() []Change {
+func (f managedDropIn) restoreSteps() []step {
 	if !f.present() {
 		return nil
 	}
-	return []Change{f.removeChange()}
+	return []step{f.removeStep()}
 }

@@ -13,10 +13,8 @@ import (
 )
 
 type statusFixture struct {
-	unitsDir systemd.UnitDir
-	files    takeoverFiles
-	ownerExe procutil.Path
-	units    *fakeUnits
+	layout layout
+	units  *fakeUnits
 }
 
 // Returns a fixture over a temporary XDG home. Its fakes report pid 4242 as
@@ -25,33 +23,33 @@ type statusFixture struct {
 func newStatusFixture(t *testing.T, ownerExe procutil.Path) *statusFixture {
 	t.Helper()
 	f := &statusFixture{
-		files:    tempTakeoverFiles(t),
-		ownerExe: ownerExe,
-		units:    mockUnits(t),
+		layout: tempLayout(t),
+		units:  mockUnits(t),
 	}
-	var err error
-	f.unitsDir, err = unitDir()
-	require.NoError(t, err)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockSession(t, 4242)
-	mockExe(t, func(procutil.PID) (procutil.Path, bool) {
-		return f.ownerExe, true
-	})
+	mockExePath(t, ownerExe)
 	return f
 }
 
 func (f *statusFixture) writeUnits(t *testing.T, units ...systemd.Unit) {
 	t.Helper()
 	for _, u := range units {
-		require.NoError(t, f.unitsDir.UnitFile(u).Write("x"))
+		require.NoError(t, f.layout.unitDir.UnitFile(u).Write("x"))
 	}
+}
+
+// Returns the problems that Status would report, without printing.
+func (f *statusFixture) problems(t *testing.T) []string {
+	t.Helper()
+	return f.layout.readStatus(t.Context()).installation().problems()
 }
 
 func TestStatusHealthyTakeover(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
 	f.writeUnits(t, allUnitNames...)
-	f.files.place(t)
+	f.layout.files.place(t)
 
 	assert.NoError(t, Status(t.Context()))
 }
@@ -59,42 +57,42 @@ func TestStatusHealthyTakeover(t *testing.T) {
 func TestStatusWarnsOnRegrab(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
 	f.writeUnits(t, allUnitNames...)
-	f.files.place(t)
+	f.layout.files.place(t)
 
-	assert.ErrorContains(t, Status(t.Context()), "problem")
+	assert.Equal(t, []string{"installed for takeover but NOT in front — the owner is gnome-keyring (pid 4242) (re-grab? try `systemctl --user restart secrets-dispatcher.service`)"}, f.problems(t))
 }
 
 func TestStatusWarnsOnMissingMask(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
 	f.writeUnits(t, allUnitNames...)
-	require.NoError(t, f.files.dropIn.write(NarrateMilestones, "x"))
-	require.NoError(t, f.files.shadow.write(NarrateMilestones))
+	applySteps(t, []step{f.layout.files.dropIn.writeStep("x")})
+	applySteps(t, f.layout.files.shadow.writeSteps())
 
-	assert.ErrorContains(t, Status(t.Context()), "problem")
+	assert.Equal(t, []string{"D-Bus activation of org.freedesktop.secrets is not masked — the stock provider can be activated back in front"}, f.problems(t))
 }
 
 func TestStatusWarnsOnInconsistentDemotion(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
 	f.writeUnits(t, allUnitNames...)
-	require.NoError(t, f.files.mask.write(NarrateMilestones))
-	require.NoError(t, f.files.dropIn.write(NarrateMilestones, "x")) // drop-in without the autostart shadow
+	applySteps(t, f.layout.files.mask.writeSteps())
+	applySteps(t, []step{f.layout.files.dropIn.writeStep("x")}) // drop-in without the autostart shadow
 
-	assert.ErrorContains(t, Status(t.Context()), "problem")
+	assert.Equal(t, []string{"gnome-keyring demotion is inconsistent (drop-in: true, autostart shadow: false) — reinstall or uninstall to converge"}, f.problems(t))
 }
 
 func TestStatusWarnsOnDeadBackend(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
 	f.writeUnits(t, allUnitNames...)
-	f.files.place(t)
+	f.layout.files.place(t)
 	f.units.states[backendServiceUnit] = "failed"
 
-	assert.ErrorContains(t, Status(t.Context()), "problem")
+	assert.Equal(t, []string{"secrets-dispatcher-backend.service is failed"}, f.problems(t))
 }
 
 func TestStatusNamesEachInactiveTakeoverUnit(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
 	f.writeUnits(t, allUnitNames...)
-	f.files.place(t)
+	f.layout.files.place(t)
 	f.units.states[proxyServiceUnit] = "inactive"
 	f.units.states[busSocketUnit] = "failed"
 
@@ -106,16 +104,16 @@ func TestStatusNamesEachInactiveTakeoverUnit(t *testing.T) {
 }
 
 func TestStatusNotInstalledClean(t *testing.T) {
-	newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
+	f := newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
 
-	assert.NoError(t, Status(t.Context()))
+	assert.Empty(t, f.problems(t))
 }
 
 func TestStatusWarnsOnLeftoverMask(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
-	require.NoError(t, f.files.mask.write(NarrateMilestones)) // takeover residue without any units
+	applySteps(t, f.layout.files.mask.writeSteps()) // takeover residue without any units
 
-	assert.ErrorContains(t, Status(t.Context()), "problem")
+	assert.Equal(t, []string{"leftover D-Bus activation mask but no units installed — run `secrets-dispatcher service uninstall` to restore"}, f.problems(t))
 }
 
 func TestStatusRemoteModeOwnerIsProvider(t *testing.T) {
@@ -123,7 +121,7 @@ func TestStatusRemoteModeOwnerIsProvider(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/gnome-keyring-daemon")
 	f.writeUnits(t, proxyServiceUnit)
 
-	assert.NoError(t, Status(t.Context()))
+	assert.Empty(t, f.problems(t))
 }
 
 func TestStatusRemoteModeWarnsOnUnowned(t *testing.T) {
@@ -133,7 +131,7 @@ func TestStatusRemoteModeWarnsOnUnowned(t *testing.T) {
 	f.writeUnits(t, proxyServiceUnit)
 	mockSession(t, 0)
 
-	assert.ErrorContains(t, Status(t.Context()), "problem")
+	assert.Equal(t, []string{"org.freedesktop.secrets has no owner — no Secret Service provider is running upstream, so secret lookups will hang"}, f.problems(t))
 }
 
 func TestStatusRemoteModeNamesInactiveProxy(t *testing.T) {
@@ -141,17 +139,13 @@ func TestStatusRemoteModeNamesInactiveProxy(t *testing.T) {
 	f.writeUnits(t, proxyServiceUnit)
 	f.units.states[proxyServiceUnit] = "failed"
 
-	var err error
-	out := captureStdout(t, func() { err = Status(t.Context()) })
-
-	assert.EqualError(t, err, "1 problem(s) found")
-	assert.Contains(t, out, "⚠ secrets-dispatcher.service is failed\n")
+	assert.Equal(t, []string{"secrets-dispatcher.service is failed"}, f.problems(t))
 }
 
 func TestStatusReportsUnreachableUserManagerOnce(t *testing.T) {
 	f := newStatusFixture(t, "/usr/bin/secrets-dispatcher")
 	f.writeUnits(t, allUnitNames...)
-	f.files.place(t)
+	f.layout.files.place(t)
 	mockUnitsUnreachable(t)
 
 	var err error

@@ -10,10 +10,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
-// installInputs are the resolved, side-effect-free facts an install is built
-// from. Shared by Install (the executor) and Plan (the --dry-run view) so the
-// two cannot disagree about mode, paths, or the proxy command line.
 type installInputs struct {
+	mode       Mode
 	topology   topology
 	runtimeDir config.RuntimeDir
 	configPath config.File
@@ -46,6 +44,7 @@ func resolveInstallInputs(ctx context.Context, opts Options) (installInputs, err
 	}
 
 	return installInputs{
+		mode:       opts.Mode,
 		topology:   topology,
 		runtimeDir: runtimeDir,
 		configPath: source.File,
@@ -53,10 +52,24 @@ func resolveInstallInputs(ctx context.Context, opts Options) (installInputs, err
 	}, nil
 }
 
-// One action that an install performs, as the dry run prints it. A unit
-// manager call prints as the systemctl command that does the same.
+// What a Change does to its target, as the dry run prints it.
+type changeOp string
+
+const (
+	changeWrite   changeOp = "write"
+	changeBackup  changeOp = "backup"
+	changeRestore changeOp = "restore"
+	changeRemove  changeOp = "remove"
+	// Runs the command that the target spells, or a call that does the same.
+	changeRun    changeOp = "run"
+	changeSignal changeOp = "signal"
+	changeCopy   changeOp = "copy"
+)
+
+// One action of the service setup, as the dry run prints it (ARCHITECTURE.md,
+// "Service setup").
 type Change struct {
-	Op     string // "write", "backup", "restore", "remove", "run", "signal"
+	Op     changeOp
 	Target string
 	Note   string
 }
@@ -71,81 +84,99 @@ func (c Change) String() string {
 	return s
 }
 
-// Plan computes the exact changes Install(opts) would make, in execution
-// order, without making any. It reads current state (name owner, existing
-// files) but never writes. The unit contents and paths come from the same
-// helpers Install uses; only the sequence is mirrored here — keep it in sync
-// with Install.
-func Plan(ctx context.Context, opts Options) ([]Change, error) {
+// A change together with how the service setup makes it (ARCHITECTURE.md,
+// "Service setup").
+type step struct {
+	Change
+	apply func(ctx context.Context, h host) error
+}
+
+// Returns the changes that steps make, in order.
+func changesOf(steps []step) []Change {
+	changes := make([]Change, len(steps))
+	for i, s := range steps {
+		changes[i] = s.Change
+	}
+	return changes
+}
+
+type installPlan struct {
+	steps    []step
+	topology topology
+	start    bool
+}
+
+// Returns the plan of an install with opts into the layout. It makes no
+// change. Errors as Mode.topology, topology.prepare and topology.units do,
+// and with config.ErrNoRuntimeDir when there is no runtime directory.
+func (l layout) planInstall(ctx context.Context, opts Options) (installPlan, error) {
 	in, err := resolveInstallInputs(ctx, opts)
 	if err != nil {
-		return nil, err
+		return installPlan{}, err
 	}
+	steps := []step{in.writeTopologyStep()}
 
-	unitsDir, err := unitDir()
+	prepare, err := in.topology.prepare(l.files)
 	if err != nil {
-		return nil, err
+		return installPlan{}, err
 	}
-	files, err := locateTakeoverFiles()
-	if err != nil {
-		return nil, err
-	}
-
-	changes := []Change{
-		{"write", in.configPath.String(), "set serve topology: " + opts.Mode.String() + " (other settings preserved)"},
-	}
-	changes = append(changes, in.topology.planPrepare(files)...)
+	steps = append(steps, prepare...)
 
 	needed, err := in.topology.units(in.execStart)
 	if err != nil {
-		return nil, err
-	}
-	notes, err := in.topology.unitNotes()
-	if err != nil {
-		return nil, err
+		return installPlan{}, err
 	}
 	for _, u := range allUnitNames {
-		file := unitsDir.UnitFile(u)
-		if _, ok := needed[u]; ok {
-			changes = append(changes, Change{"write", file.String(), notes[u]})
-		} else if file.Exists() {
-			changes = append(changes, Change{"remove", file.String(), "stale unit from a previous mode (stopped and disabled first)"})
+		want, ok := needed[u]
+		file := l.unitFile(u, want.note)
+		if ok {
+			steps = append(steps, file.writeStep(want.content))
+		} else if file.file.Exists() {
+			steps = append(steps,
+				unitStep(opStop, u, "stale unit from a previous mode"),
+				unitStep(opDisable, u, ""),
+				file.removeStep())
 		}
 	}
 
-	changes = append(changes, reloadChange())
+	steps = append(steps, reloadStep())
 	for _, u := range in.topology.activated() {
-		changes = append(changes, unitChange(opEnable, u, ""))
+		steps = append(steps, unitStep(opEnable, u, ""))
 	}
 	if opts.Start {
 		for _, u := range in.topology.activated() {
-			changes = append(changes, unitChange(opStart, u, ""))
+			steps = append(steps, unitStep(opStart, u, ""))
 		}
 	}
-	return changes, nil
+	return installPlan{steps: steps, topology: in.topology, start: opts.Start}, nil
 }
 
-// Returns the change that applies op to u, as the `systemctl --user` command
-// that does the same. Install makes the call over D-Bus (ARCHITECTURE.md,
-// "Service setup").
-func unitChange(op unitOp, u systemd.Unit, note string) Change {
-	return Change{"run", op.commandFor(u), note}
+// Returns the changes that Install(opts) makes, in order, without making any.
+func Plan(ctx context.Context, opts Options) ([]Change, error) {
+	l, err := locateLayout()
+	if err != nil {
+		return nil, err
+	}
+	p, err := l.planInstall(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	return changesOf(p.steps), nil
 }
 
-// Returns unitManager.Reload as the dry run prints it.
-func reloadChange() Change {
-	return Change{"run", opReload.command(), ""}
-}
-
-// Prints the changes that Install(opts) would make.
+// Prints the changes that Install(opts) makes, without making any.
 func PrintPlan(ctx context.Context, opts Options) error {
 	changes, err := Plan(ctx, opts)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Dry run — %s would:\n", InstallCommand.hint())
+	printChanges(fmt.Sprintf("Dry run — %s would:", InstallCommand.hint()), changes)
+	return nil
+}
+
+func printChanges(header string, changes []Change) {
+	fmt.Println(header)
 	for _, c := range changes {
 		fmt.Println("  " + c.String())
 	}
-	return nil
 }

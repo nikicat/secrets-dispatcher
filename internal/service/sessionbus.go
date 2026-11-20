@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -33,13 +34,19 @@ const pokeTimeout = 10 * time.Second
 
 func (godbusSession) secretsOwner(ctx context.Context) (procutil.PID, error) {
 	var pid procutil.PID
-	err := callSession(ctx, busDaemon, "org.freedesktop.DBus.GetConnectionUnixProcessID", []any{secretsService.dest}, &pid)
+	err := callSession(ctx, busDaemon, busDaemonInterface+".GetConnectionUnixProcessID", []any{secretsService.dest}, &pid)
 	return pid, err
 }
 
 func (godbusSession) reloadConfig(ctx context.Context) error {
-	return callSession(ctx, busDaemon, "org.freedesktop.DBus.ReloadConfig", nil)
+	return callSession(ctx, busDaemon, busDaemonInterface+"."+reloadConfigMethod, nil)
 }
+
+const reloadConfigMethod = "ReloadConfig"
+
+// The busctl command line that the dry run prints for reloadConfig
+// (ARCHITECTURE.md, "Service setup").
+var reloadConfigCommand = fmt.Sprintf("busctl --user call %s %s %s %s", busDaemon.dest, busDaemon.path, busDaemonInterface, reloadConfigMethod)
 
 func (godbusSession) pokeSecrets(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, pokeTimeout)
@@ -54,6 +61,8 @@ type busObject struct {
 	dest string
 	path dbus.ObjectPath
 }
+
+const busDaemonInterface = "org.freedesktop.DBus"
 
 var (
 	busDaemon      = busObject{"org.freedesktop.DBus", "/org/freedesktop/DBus"}

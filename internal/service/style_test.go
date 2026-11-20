@@ -45,9 +45,9 @@ func TestPaintEnabledWrapsInSGR(t *testing.T) {
 func TestChangeStringPlainWhenDisabled(t *testing.T) {
 	forceColor(t, false)
 	assert.Equal(t, "write   /etc/foo  # the note",
-		Change{Op: "write", Target: "/etc/foo", Note: "the note"}.String())
+		Change{Op: changeWrite, Target: "/etc/foo", Note: "the note"}.String())
 	assert.Equal(t, "remove  /etc/bar",
-		Change{Op: "remove", Target: "/etc/bar"}.String())
+		Change{Op: changeRemove, Target: "/etc/bar"}.String())
 }
 
 // When enabled, only the verb and the note are wrapped; the target (which the
@@ -56,7 +56,7 @@ func TestChangeStringPlainWhenDisabled(t *testing.T) {
 func TestChangeStringColorizedWhenEnabled(t *testing.T) {
 	forceColor(t, true)
 	assert.Equal(t, "\x1b[36mwrite  \x1b[0m /etc/foo\x1b[2m  # the note\x1b[0m",
-		Change{Op: "write", Target: "/etc/foo", Note: "the note"}.String())
+		Change{Op: changeWrite, Target: "/etc/foo", Note: "the note"}.String())
 }
 
 func TestDetectStdoutColorHonorsNoColor(t *testing.T) {

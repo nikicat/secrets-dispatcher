@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"syscall"
 
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
@@ -98,7 +100,19 @@ func (o Owner) String() string {
 	return fmt.Sprintf("%s (pid %d)", o.Kind(), o.PID)
 }
 
-// Returns the change that stops o, as the dry run lists it.
-func (o Owner) sigtermChange() Change {
-	return Change{"signal", fmt.Sprintf("SIGTERM -> pid %d (%s)", o.PID, o.Kind()), "current owner of org.freedesktop.secrets"}
+// Returns the step that sends SIGTERM to o. The step does nothing when o no
+// longer owns org.freedesktop.secrets by the time it runs.
+func (o Owner) stopStep() step {
+	change := Change{changeSignal, fmt.Sprintf("SIGTERM -> pid %d (%s)", o.PID, o.Kind()), "current owner of org.freedesktop.secrets"}
+	return step{change, func(ctx context.Context, h host) error {
+		if pid, err := session.secretsOwner(ctx); err != nil || pid != o.PID {
+			return nil
+		}
+		h.narration.printf("Stopping the owner of %s (pid %d)\n", dbustypes.BusName, o.PID)
+		_ = terminate(o.PID)
+		return nil
+	}}
 }
+
+// Sends SIGTERM to pid. Replaced in tests.
+var terminate = func(pid procutil.PID) error { return pid.Signal(syscall.SIGTERM) }

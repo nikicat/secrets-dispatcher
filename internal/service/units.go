@@ -65,6 +65,66 @@ func (op unitOp) command() string { return "systemctl --user " + string(op) }
 // Returns the systemctl command line that applies op to u.
 func (op unitOp) commandFor(u systemd.Unit) string { return op.command() + " " + string(u) }
 
+// Returns the step that applies op to u (ARCHITECTURE.md, "Service setup").
+func unitStep(op unitOp, u systemd.Unit, note string) step {
+	return step{Change{changeRun, op.commandFor(u), note}, func(ctx context.Context, h host) error { return h.apply(ctx, op, u) }}
+}
+
+// Applies op to u. Errors when enabling, starting or restarting u fails, and
+// when op is opReload, which is not an operation on one unit. A failed stop or
+// disable is ignored, and a failed try-restart prints a note.
+func (h host) apply(ctx context.Context, op unitOp, u systemd.Unit) error {
+	unit := h.units.Unit(u)
+	switch op {
+	case opEnable:
+		changes, err := unit.Enable(ctx)
+		if err != nil {
+			return err
+		}
+		h.narrateFileChanges(changes)
+		h.narration.printf("Enabled %s\n", u)
+	case opStart:
+		if err := unit.Start(ctx); err != nil {
+			return err
+		}
+		h.narration.printf("Started %s\n", u)
+	case opStop:
+		if unit.Stop(ctx) == nil {
+			h.narration.printf("Stopped %s\n", u)
+		}
+	case opDisable:
+		if changes, err := unit.Disable(ctx); err == nil {
+			h.narrateFileChanges(changes)
+		}
+	case opTryRestart:
+		if err := unit.TryRestart(ctx); err != nil {
+			fmt.Printf("note: %v\n", err)
+			return nil
+		}
+		h.narration.printf("Restarted %s if it was running\n", u)
+	case opRestart:
+		if err := unit.Restart(ctx); err != nil {
+			return err
+		}
+		h.narration.printf("Restarted %s\n", u)
+	default:
+		return fmt.Errorf("%s is not an operation on one unit", op)
+	}
+	return nil
+}
+
+func reloadStep() step {
+	return step{Change{changeRun, opReload.command(), ""}, func(ctx context.Context, h host) error { return h.reload(ctx) }}
+}
+
+func (h host) reload(ctx context.Context) error {
+	if err := h.units.Reload(ctx); err != nil {
+		return err
+	}
+	h.narration.printf("Reloaded systemd user units\n")
+	return nil
+}
+
 // A symlink that enabling or disabling a unit file created or removed.
 //
 // smell: destination only means something when kind is symlink — kept, mirrors

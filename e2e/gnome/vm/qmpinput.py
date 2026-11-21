@@ -24,15 +24,16 @@ moving pointer wouldn't be recorded (keystrokes need no such thing).
 Reads a command script on stdin, one per line:
   glide X Y   ease the pointer to guest pixel (X, Y) with a visible, moving cursor
   move  X Y   jump the pointer to (X, Y)
+  park        jump the pointer to the bottom centre, clear of the demo's windows
   click       left press + release at the current position
   type  TEXT  type TEXT into the focused window (rest of the line, spaces kept)
   key   NAME  press a named key: enter esc tab backspace space
   sleep S     wait S seconds (let a menu open/animate before the next click)
-Pointer coordinates are guest pixels in a WIDTHxHEIGHT screen (default 1280x800),
-mapped to QMP's 0..32767 absolute axis range. The pointer position is persisted
+Pointer coordinates are guest pixels in a WIDTHxHEIGHT screen, mapped to QMP's
+0..32767 absolute axis range. The pointer position is persisted
 between invocations so glides continue from where they stopped.
 
-Usage: qmpinput.py <qmp.sock> [WIDTH HEIGHT]   # script on stdin
+Usage: qmpinput.py <qmp.sock> WIDTH HEIGHT   # script on stdin
 """
 import json
 import math
@@ -41,11 +42,12 @@ import socket
 import sys
 import time
 
+if len(sys.argv) != 4:
+    sys.exit(__doc__)
 SOCK = sys.argv[1]
-W = int(sys.argv[2]) if len(sys.argv) > 2 else 1280
-H = int(sys.argv[3]) if len(sys.argv) > 3 else 800
+W, H = int(sys.argv[2]), int(sys.argv[3])
 STATE = os.path.expanduser("~/.cache/secrets-dispatcher-qmpcursor")
-PARKED = (640, 775)  # bottom-centre, clear of the demo's terminal windows
+PARKED = (W // 2, H - 25)
 
 # Character -> (QKeyCode, shift) for the text the demo types (the keyring
 # password + short shell-ish tokens). Only what's needed; unknown chars warn.
@@ -163,6 +165,9 @@ def main():
             q.key_named(arg.strip())
         elif cmd == "sleep":
             time.sleep(float(arg))
+        elif cmd == "park":
+            cx, cy = PARKED
+            q.abs_to(cx, cy)
         elif cmd in ("glide", "move"):
             parts = arg.split()
             tx, ty = float(parts[0]), float(parts[1])

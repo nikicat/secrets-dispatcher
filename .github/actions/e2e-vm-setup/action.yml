@@ -1,0 +1,45 @@
+name: E2E VM setup
+description: QEMU/KVM tooling, /dev/kvm access, and the cached provisioned desktop base for e2e/gnome/vm.
+
+inputs:
+  series:
+    description: Ubuntu series of the VM (noble, resolute); part of the image cache key.
+    required: true
+  extra-packages:
+    description: Further apt packages to install alongside the QEMU tooling.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install QEMU/KVM + cloud-image tooling
+      shell: bash
+      env:
+        EXTRA_PACKAGES: ${{ inputs.extra-packages }}
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd $EXTRA_PACKAGES
+        # GitHub-hosted runners expose /dev/kvm but not to the runner user.
+        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+          | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        sudo udevadm control --reload-rules
+        sudo udevadm trigger --name-match=kvm
+
+    # The key rotates weekly with no restore-keys, so a rollover re-provisions
+    # from the series' current cloud image and catches upstream drift. The
+    # user-data hash makes a provisioning edit invalidate the base at once.
+    - name: Compute image cache key (rotates weekly)
+      id: imgkey
+      shell: bash
+      run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+    # make's final `run.sh destroy` leaves only the images and the SSH keypair
+    # here. The keypair is baked into the base, so it travels with it. Caching
+    # the private key is fine: it reaches only a throwaway VM on the runner.
+    - name: Cache VM images and SSH key
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/secrets-dispatcher/e2e
+        key: e2e-vm-images-${{ inputs.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}

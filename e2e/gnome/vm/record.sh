@@ -23,7 +23,7 @@
 # it gets into the mp4 + webp preview.
 #
 # Two caveats the demo path must satisfy (see host-side-capture spike):
-#   - Resolution: run.sh pins the guest to 1280x800 via EDID.
+#   - Resolution: run.sh pins the guest screen via EDID (run.sh screen-size).
 #   - Cursor: VNC sends the pointer out-of-band (RFB cursor pseudo-encoding),
 #     which rfbsrc drops. demo.sh forces a *software* cursor
 #     (MUTTER_DEBUG_DISABLE_HW_CURSORS=1) so the pointer composites into the

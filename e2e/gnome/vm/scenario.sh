@@ -123,9 +123,7 @@ dump_try_log() { vmssh 'cat /tmp/try.log' >&2; }
 vmscp() { # <local-file> <remote-name-under-~/.local/bin>
     # scp to a temp name + mv: replaces the inode, so it works even when a
     # previous scenario run left a process running from this path (ETXTBSY).
-    scp -P "${SSH_PORT:-2222}" -i "${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/secrets-dispatcher/e2e}/id_ed25519" \
-        -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        "$1" "e2e@127.0.0.1:.local/bin/$2.new"
+    "$RUN" scp "$1" ".local/bin/$2.new"
     "$RUN" ssh "mv ~/.local/bin/$2.new ~/.local/bin/$2"
 }
 

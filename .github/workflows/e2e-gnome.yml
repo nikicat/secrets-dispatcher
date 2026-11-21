@@ -8,9 +8,8 @@ name: E2E GNOME
 # gdm autologin — the only honest coverage for the takeover acceptance gates
 # (owning the bus name, resisting a re-grab across a session restart, full
 # reversal). One VM leg per supported Ubuntu series (24.04 LTS + 26.04 LTS),
-# in parallel on every PR (~1.5 min with warm image cache, ~4 min cold); the
-# weekly cache key forces a fresh provision so Ubuntu package drift in each
-# series' /current image still gets caught. The "full" job is the aggregate
+# in parallel on every PR (~1.5 min with warm image cache, ~4 min cold; image
+# caching lives in .github/actions/e2e-vm-setup). The "full" job is the aggregate
 # gate over the legs — branch protection requires a check named exactly
 # "full", so that name must stay stable. See docs/adr/0010-e2e-on-a-real-desktop-vm.md.
 
@@ -59,43 +58,9 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install QEMU/KVM + cloud-image tooling
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq --no-install-recommends \
-            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd
-          # GitHub-hosted runners expose /dev/kvm but not to the runner user.
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      # The provisioned desktop base is cached with a weekly-rotating key (no
-      # restore-keys fallback, deliberately: on rollover the job re-provisions
-      # from the series' current cloud image, so upstream drift is picked up
-      # at least weekly). The user-data hash is part of the key: editing the
-      # provisioning input (e.g. its package list) must invalidate the base
-      # immediately, not at the next weekly rollover. Both files must travel
-      # together — the qcow2 overlay references the pristine image as its
-      # backing file.
-      - name: Compute image cache key (rotates weekly)
-        id: imgkey
-        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
-
-      # The SSH keypair is generated at provision time and baked into the
-      # desktop base's authorized_keys, so it must travel with the base image
-      # (a restored base is unreachable without it). Caching the private key
-      # is fine: it authenticates only to a throwaway localhost-forwarded VM
-      # that lives for minutes inside a runner.
-      - name: Cache VM images (pristine + provisioned desktop base + SSH key)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: ./.github/actions/e2e-vm-setup
         with:
-          path: |
-            ~/.cache/secrets-dispatcher/e2e/${{ matrix.series }}-server-cloudimg-amd64.img
-            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ matrix.series }}.qcow2
-            ~/.cache/secrets-dispatcher/e2e/id_ed25519
-            ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
-          key: e2e-vm-images-${{ matrix.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
+          series: ${{ matrix.series }}
 
       - run: make test-e2e-gnome-vm
 

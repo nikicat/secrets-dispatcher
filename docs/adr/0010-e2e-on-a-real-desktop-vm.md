@@ -18,7 +18,7 @@ proxy logic but none of these.
   (`e2e/gnome/fast.sh`), for prompt forwarding and approval plumbing.
 - **Tier 2:** a real Ubuntu GNOME desktop in **raw QEMU, booted from a cloud
   image with cloud-init** (`e2e/gnome/vm/`), on every PR and as a required check
-  on master. QEMU gives the same script and image locally and in CI
+  on master. QEMU gives the same script and series locally and in CI
   (GitHub-hosted runners expose `/dev/kvm`), with no daemon or snap.
 - **A server VM is rejected** as a middle tier: it misses exactly the
   desktop-only re-grab and notification behavior, and is neither faster than
@@ -30,5 +30,8 @@ proxy logic but none of these.
 ## Consequences
 
 - The Tier-2 gate takes about 1.5 minutes with the weekly image cache.
+- The guest runs the host's architecture, because KVM accelerates no other. An
+  arm64 host boots the arm64 cloud image of the same Ubuntu series, so CI, on
+  amd64 runners, tests only amd64.
 - Approving through a notification button is not driven in tests yet: GNOME 46
   exposes the buttons over AT-SPI but with no actions to invoke (task Tjqr70).

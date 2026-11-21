@@ -17,7 +17,7 @@
 #     over QEMU's QMP socket (the gui_* helpers below). It types the keyring
 #     password and glides the real cursor onto a located button and clicks it.
 #     Guest pixels map 1:1 to the locator's logical-pixel output (the guest is
-#     pinned to 1280x800, scale 1). Doing input host-side — instead of the old
+#     at scale 1). Doing input host-side — instead of the old
 #     in-guest RemoteDesktop agent — means no ScreenCast session is ever created,
 #     so the "screen is being shared" indicator never flashes on camera, and the
 #     same path can open the top-panel menus (the logout) that RemoteDesktop
@@ -62,25 +62,21 @@ EXT_UUID=secrets-demo-locator@secrets-dispatcher.nikicat
 DOCK_UUID=ubuntu-dock@ubuntu.com
 KEYRING_PW=opensesame
 SECRET_VALUE='ghp_super_secret_key_123##@!'
-SSH_PORT=${SSH_PORT:-2222}
-CACHE_DIR=${CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/secrets-dispatcher/e2e}
-UBUNTU_SERIES=${UBUNTU_SERIES:-noble}
-# QEMU QMP socket (run.sh's start_qemu creates it per instance) — the demo drives
-# the pointer host-side through it for the logout menu; see qmpinput.py.
-QMP_SOCK=${VM_DIR:-$CACHE_DIR/instance-$UBUNTU_SERIES}/qmp.sock
+QMP_SOCK=$("$RUN" qmp-sock)
+read -r SCREEN_W SCREEN_H < <("$RUN" screen-size)
 
 log() { printf '\n=== %s\n' "$*"; }
 
 # qmp runs a host-side input script (read on stdin: glide/move/click/type/key/
 # sleep) against the guest via QMP — the demo's only pointer + keyboard path.
-# Coordinates are guest pixels for the pinned 1280x800 screen.
-qmp() { python3 "$SCRIPT_DIR/qmpinput.py" "$QMP_SOCK"; }
+# Coordinates are guest pixels on the screen that run.sh pins.
+qmp() { python3 "$SCRIPT_DIR/qmpinput.py" "$QMP_SOCK" "$SCREEN_W" "$SCREEN_H"; }
 
 # gui_esc leaves the Activities overview (a fresh/SSH-launched session parks
 # there); gui_park moves the cursor clear of the terminal windows so it never
 # obscures typed text. Both are host-side keystroke/motion, no indicator.
 gui_esc() { printf 'key esc\n' | qmp; }
-gui_park() { printf 'move 640 775\n' | qmp; }
+gui_park() { printf 'park\n' | qmp; }
 
 # wait_locate_snippet emits an in-guest bash snippet that polls the locator for a
 # labelled element and prints its centre "X Y" (guest px) once found, or exits 1
@@ -140,6 +136,15 @@ gui_click() { # <label>
     return 1
 }
 
+# gui_press waits for a labelled shell element, glides the cursor onto it and
+# clicks it with a real pointer click. The top-panel menus need a real click to
+# open, unlike the notification buttons gui_click activates in-process.
+gui_press() { # <label>
+    local xy
+    xy=$(vmssh "$(wait_locate_snippet "$1" 10)") || return 1
+    printf 'glide %s\nclick\n' "$xy" | qmp
+}
+
 # verify_secret confirms the secret value actually printed in a client terminal
 # (the whole point of an approve beat) — so a click that silently failed to
 # register fails the demo loudly instead of producing a recording where nothing
@@ -155,12 +160,6 @@ vmssh() {
         export XDG_RUNTIME_DIR=/run/user/\$(id -u)
         export DBUS_SESSION_BUS_ADDRESS=unix:path=\$XDG_RUNTIME_DIR/bus
         $*"
-}
-
-scp_in() {
-    scp -P "$SSH_PORT" -i "$CACHE_DIR/id_ed25519" -o IdentitiesOnly=yes \
-        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        "$@"
 }
 
 reboot_and_wait() {
@@ -185,10 +184,10 @@ prep_common() {
     vmssh 'sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a \
         apt-get install -y -qq --no-install-recommends gnome-shell-extension-ubuntu-dock >/dev/null 2>&1'
     vmssh "mkdir -p ~/.local/share/gnome-shell/extensions/$EXT_UUID ~/go/bin"
-    scp_in "$SCRIPT_DIR/locator-extension/metadata.json" "$SCRIPT_DIR/locator-extension/extension.js" \
-        "e2e@127.0.0.1:.local/share/gnome-shell/extensions/$EXT_UUID/"
-    scp_in "$SCRIPT_DIR/demo-stage.sh" "$SCRIPT_DIR/demo-driver.sh" \
-        "$SCRIPT_DIR/demo-driver-install.sh" "e2e@127.0.0.1:"
+    "$RUN" scp "$SCRIPT_DIR/locator-extension/metadata.json" "$SCRIPT_DIR/locator-extension/extension.js" \
+        ".local/share/gnome-shell/extensions/$EXT_UUID/"
+    "$RUN" scp "$SCRIPT_DIR/demo-stage.sh" "$SCRIPT_DIR/demo-driver.sh" \
+        "$SCRIPT_DIR/demo-driver-install.sh" .
     vmssh "
         gsettings set org.gnome.shell disable-extension-version-validation true
         gsettings set org.gnome.shell enabled-extensions \"['$DOCK_UUID', '$EXT_UUID']\""
@@ -234,7 +233,7 @@ prep_common() {
     # the unlock would hang. Stash the caller-provided (fixed) build; the driver
     # swaps it in off-camera right after the on-camera install. TODO: once the
     # fix ships in a release, drop the stash/swap and let `go install` stand.
-    scp_in "$BIN" "e2e@127.0.0.1:secrets-dispatcher-fixed"
+    "$RUN" scp "$BIN" secrets-dispatcher-fixed
 
     # Host-side VNC capture (record.sh) only sees the cursor if mutter renders
     # it into the framebuffer instead of a virtio-gpu HW cursor plane (which VNC
@@ -339,19 +338,12 @@ demo_install() {
     log "mouse-driven logout (host-side QMP) — GDM's TimedLogin re-logs-in"
     local oldshell
     oldshell=$(vmssh 'pgrep -u e2e -x gnome-shell | head -1' 2>/dev/null || true)
-    qmp <<'EOF' || true
-glide 1256 15
-click
-sleep 0.9
-glide 1236 76
-click
-sleep 0.9
-glide 946 322
-click
-sleep 1.3
-glide 749 472
-click
-EOF
+    # "System" and "Power Off Menu" are the accessible names GNOME 46 gives the
+    # panel's quick-settings button and the power button, which show no text.
+    { gui_press System && sleep 0.9 \
+        && gui_press 'Power Off Menu' && sleep 0.9 \
+        && gui_press 'Log Out…' && sleep 1.3 \
+        && gui_press 'Log Out'; } || echo "warning: the mouse-driven logout missed a target" >&2
     # Wait for TimedLogin to bring up a NEW gnome-shell (a different pid — the old
     # one lingers briefly while the session tears down).
     local i newshell=

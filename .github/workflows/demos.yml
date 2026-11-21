@@ -27,6 +27,7 @@ on:
       - 'go.mod'
       - 'e2e/gnome/vm/**'
       - '.github/workflows/demos.yml'
+      - '.github/actions/e2e-vm-setup/**'
   push:
     branches: [master]
     paths:
@@ -35,6 +36,7 @@ on:
       - 'go.mod'
       - 'e2e/gnome/vm/**'
       - '.github/workflows/demos.yml'
+      - '.github/actions/e2e-vm-setup/**'
   workflow_dispatch:
 
 concurrency:
@@ -67,35 +69,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install QEMU/KVM + cloud-image tooling + ffmpeg + gstreamer
-        run: |
-          sudo apt-get update -qq
-          # gstreamer (rfbsrc in -plugins-bad, vp8/webmmux in -plugins-good) is
-          # the host-side VNC recorder — see e2e/gnome/vm/record.sh.
-          sudo apt-get install -y -qq --no-install-recommends \
-            qemu-system-x86 qemu-utils cloud-image-utils genisoimage netcat-openbsd ffmpeg webp \
-            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-          # GitHub-hosted runners expose /dev/kvm but not to the runner user.
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Compute image cache key (rotates weekly, mirrors e2e-gnome.yml)
-        id: imgkey
-        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
-
-      # Same key as e2e-gnome.yml's VM leg, so the two workflows share one
-      # provisioned desktop base (whichever runs first fills the cache).
-      - name: Cache VM images (pristine + provisioned desktop base + SSH key)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # gstreamer (rfbsrc in -plugins-bad, vp8/webmmux in -plugins-good) is
+      # the host-side VNC recorder — see e2e/gnome/vm/record.sh.
+      - uses: ./.github/actions/e2e-vm-setup
         with:
-          path: |
-            ~/.cache/secrets-dispatcher/e2e/${{ matrix.series }}-server-cloudimg-amd64.img
-            ~/.cache/secrets-dispatcher/e2e/desktop-base-${{ matrix.series }}.qcow2
-            ~/.cache/secrets-dispatcher/e2e/id_ed25519
-            ~/.cache/secrets-dispatcher/e2e/id_ed25519.pub
-          key: e2e-vm-images-${{ matrix.series }}-${{ steps.imgkey.outputs.week }}-${{ hashFiles('e2e/gnome/vm/user-data') }}
+          series: ${{ matrix.series }}
+          extra-packages: >-
+            ffmpeg webp gstreamer1.0-tools gstreamer1.0-plugins-base
+            gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
 
       - run: make demo
 

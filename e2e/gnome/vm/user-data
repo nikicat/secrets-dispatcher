@@ -61,6 +61,8 @@ write_files:
     content: "yes"
 
 runcmd:
+  # Stop at the first failed step, so the marker below means every step worked.
+  - set -e
   - systemctl set-default graphical.target
   # Linger so the e2e user's systemd user instance (and user bus) survives
   # SSH session churn during tests.
@@ -68,11 +70,15 @@ runcmd:
   # Current stable Go from upstream (see the packages comment). The weekly
   # CI cache rotation re-provisions, so this tracks Go releases closely
   # enough to stay >= go.mod's requirement.
-  - GOV=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1) && curl -fsSL "https://go.dev/dl/${GOV}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+  - GOV=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -1) && curl -fsSL "https://go.dev/dl/${GOV}.linux-$(dpkg --print-architecture).tar.gz" | tar -C /usr/local -xz
   - printf 'export PATH=$PATH:/usr/local/go/bin\n' > /etc/profile.d/go-path.sh
+  # packages: carries on past a failed install. It installs the list in one apt
+  # transaction, so gnome-shell stands for the whole list.
+  - dpkg -s gnome-shell >/dev/null
   - touch /var/tmp/cloud-init-ready
 
+# Power off only after a successful provision. A failed one leaves the VM up.
 power_state:
   mode: poweroff
   message: provisioning complete
-  condition: true
+  condition: test -f /var/tmp/cloud-init-ready

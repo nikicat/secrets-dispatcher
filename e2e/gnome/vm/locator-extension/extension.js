@@ -60,12 +60,13 @@ export default class LocatorExtension extends Extension {
 
     // Locate returns the on-screen rectangle of the clickable element whose
     // visible label equals `label`. It matches the label text anywhere (an
-    // St.Label, or an St.Button's label property) and then walks up to the
+    // St.Label, or an St.Button's label property), or the accessible name of a
+    // button that shows only an icon, and then walks up to the
     // nearest clickable ancestor — notification action buttons and dialog
     // buttons are built differently, so matching by text is more robust than
     // matching a specific widget class. Coordinates are stage (screen) logical
     // pixels, which map 1:1 to the QMP tablet's guest-pixel coordinate space
-    // (the guest is pinned to 1280x800, scale 1).
+    // (the guest runs at scale 1).
     Locate(label) {
         const target = this._matchByText(global.stage, label);
         if (!target)
@@ -190,7 +191,7 @@ export default class LocatorExtension extends Extension {
     _matchByText(actor, label) {
         if (!actor.visible)
             return null;
-        if (this._textOf(actor) === label)
+        if (this._textOf(actor) === label || actor.accessible_name === label)
             return actor;
         for (const child of actor.get_children()) {
             const found = this._matchByText(child, label);

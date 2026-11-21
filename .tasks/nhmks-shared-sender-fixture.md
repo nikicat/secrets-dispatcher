@@ -31,7 +31,8 @@ Done when each item below is fixed as its "Fix" says.
   sender with an exe" (PID 4242, ProcessChain [{name, 4242, /usr/bin/name}])
   is testSender in approval, `local` in resolver_test.go and ghSecretRequest's
   sender in websocket_test.go (both added by the changeset), localSender in
-  desktop_test.go (added), and exeSender in gpgsign_test.go:383-387
+  desktop_test.go (added), localSender in api/handlers_test.go:62, and
+  exeSender in gpgsign_test.go:383-387
   (unchanged). "A remote request" is Client "remote:laptop" plus a sender
   without a chain, in autoapprove_test.go:40-44, resolver_test.go:48,
   desktop_test.go:199 and :1035-1038; the client value is inert, since

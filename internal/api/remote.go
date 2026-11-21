@@ -51,11 +51,11 @@ func (rs *RemoteServer) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resolved, resolution, err := rs.manager.AwaitGPGSign(r.Context(), request)
+	resolved, err := rs.manager.AwaitGPGSign(r.Context(), request)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	slog.Info("remote gpg sign request resolved", "request_id", resolved.ID, "remote", rs.name, "repo", request.GPGSignInfo.RepoName, "resolution", resolution)
-	writeJSON(w, gpgsign.SignOutcome{Result: resolution, GPGResult: resolved.GPGOutput()})
+	slog.Info("remote gpg sign request resolved", "request_id", resolved.Request.ID, "remote", rs.name, "repo", request.GPGSignInfo.RepoName, "resolution", resolved.Resolution)
+	writeJSON(w, gpgsign.OutcomeOf(resolved))
 }

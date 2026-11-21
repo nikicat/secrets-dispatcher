@@ -7,7 +7,7 @@ state_dir: "~/.local/state/secrets-dispatcher"
 serve:
   log_level: info                  # debug, info, warn, error
   timeout: 5m                      # approval request timeout
-  approval_window: 2s              # batch concurrent requests
+  approval_window: 5s              # an approval also answers the same sender's repeats
   notification_delay: 1s           # suppress short-lived requests
   notifications: true              # desktop notifications
   ignore_chrome_dummy_secret: true # suppress Chrome's dummy secret probe

@@ -4,11 +4,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// sampleGPGSignInfo returns a valid GPGSignInfo for use in tests.
-func sampleGPGSignInfo() *GPGSignInfo {
-	return &GPGSignInfo{
+// Returns a valid gpg_sign request with an empty sender.
+func sampleGPGSignRequest() RequestInfo {
+	info := &GPGSignInfo{
 		RepoName:     "myrepo",
 		CommitMsg:    "fix: thing",
 		Author:       "Alice <alice@example.com>",
@@ -17,11 +20,12 @@ func sampleGPGSignInfo() *GPGSignInfo {
 		ChangedFiles: []string{"main.go"},
 		CommitObject: "tree 0\n",
 	}
+	return info.RequestInfo(SenderInfo{})
 }
 
 func mustCreateSampleGPGSign(t *testing.T, mgr *Manager) string {
 	t.Helper()
-	id, err := mgr.CreateGPGSignRequest(sampleGPGSignInfo().RequestInfo(SenderInfo{}))
+	id, err := mgr.CreateGPGSignRequest(sampleGPGSignRequest())
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -38,9 +42,8 @@ func findEvent(events []Event, et EventType) *Event {
 	return nil
 }
 
-// TestCreateGPGSignRequest_ValidInfo verifies Case 1:
-// CreateGPGSignRequest with valid GPGSignInfo returns a non-empty ID and
-// the request appears in the pending list. EventRequestCreated fires.
+// A valid request gets an ID, is listed as pending, and fires
+// EventRequestCreated.
 func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
@@ -71,8 +74,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 	}
 }
 
-// TestCreateGPGSignRequest_NilInfo verifies Case 2:
-// CreateGPGSignRequest with nil GPGSignInfo returns "", non-nil error.
+// A request with no GPGSignInfo gets no ID and an error.
 func TestCreateGPGSignRequest_NilInfo(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
@@ -85,9 +87,8 @@ func TestCreateGPGSignRequest_NilInfo(t *testing.T) {
 	}
 }
 
-// TestCreateGPGSignRequest_Expiry verifies Case 3 (ERR-03):
-// A gpg_sign request fires EventRequestExpired after the manager timeout and
-// is then removed from the pending map.
+// A gpg_sign request fires EventRequestExpired after the manager's timeout,
+// and is no longer pending afterwards.
 func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 50 * time.Millisecond, HistoryMax: 100})
 	obs := &testObserver{}
@@ -101,16 +102,10 @@ func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 		t.Fatalf("expected 2 events (Created, Expired), got %d", len(events))
 	}
 
-	// Both event types must be present (order is non-deterministic due to async dispatch).
-	if findEvent(events, EventRequestCreated) == nil {
-		t.Errorf("EventRequestCreated not found in events: %v", events)
-	}
-	expiredEv := findEvent(events, EventRequestExpired)
-	if expiredEv == nil {
-		t.Errorf("EventRequestExpired not found in events: %v", events)
-	} else if expiredEv.Request.ID != id {
-		t.Errorf("expired event request ID %q != created ID %q", expiredEv.Request.ID, id)
-	}
+	// addPending arms the expiry only after the created event is delivered.
+	assert.Equal(t, EventRequestCreated, events[0].Type)
+	assert.Equal(t, EventRequestExpired, events[1].Type)
+	assert.Equal(t, id, events[1].Request.ID)
 
 	// Request must no longer be in pending after expiry.
 	pending := mgr.List()
@@ -121,8 +116,8 @@ func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 	}
 }
 
-// TestCreateGPGSignRequest_Approve verifies Case 4:
-// Approve(id) fires EventRequestApproved and removes the request from pending.
+// Approving a gpg_sign request fires EventRequestApproved, and the request is
+// no longer pending.
 func TestCreateGPGSignRequest_Approve(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
@@ -134,14 +129,12 @@ func TestCreateGPGSignRequest_Approve(t *testing.T) {
 		t.Fatalf("Approve failed: %v", err)
 	}
 
-	// Wait for Created + Approved (order non-deterministic due to async dispatch).
 	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Approved), got %d", len(events))
 	}
-	if findEvent(events, EventRequestApproved) == nil {
-		t.Errorf("EventRequestApproved not found in events: %v", events)
-	}
+	assert.Equal(t, EventRequestCreated, events[0].Type)
+	assert.Equal(t, EventRequestApproved, events[1].Type)
 
 	// Request must be gone from pending.
 	pending := mgr.List()
@@ -152,8 +145,7 @@ func TestCreateGPGSignRequest_Approve(t *testing.T) {
 	}
 }
 
-// TestCreateGPGSignRequest_Deny verifies Case 5:
-// Deny(id) fires EventRequestDenied.
+// Denying a gpg_sign request fires EventRequestDenied.
 func TestCreateGPGSignRequest_Deny(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	obs := &testObserver{}
@@ -165,14 +157,12 @@ func TestCreateGPGSignRequest_Deny(t *testing.T) {
 		t.Fatalf("Deny failed: %v", err)
 	}
 
-	// Wait for Created + Denied (order non-deterministic due to async dispatch).
 	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Denied), got %d", len(events))
 	}
-	if findEvent(events, EventRequestDenied) == nil {
-		t.Errorf("EventRequestDenied not found in events: %v", events)
-	}
+	assert.Equal(t, EventRequestCreated, events[0].Type)
+	assert.Equal(t, EventRequestDenied, events[1].Type)
 }
 
 // TestCreateGPGSignRequest_Cancel verifies that Cancel(id) fires EventRequestCancelled
@@ -188,14 +178,12 @@ func TestCreateGPGSignRequest_Cancel(t *testing.T) {
 		t.Fatalf("Cancel failed: %v", err)
 	}
 
-	// Wait for Created + Cancelled events.
 	events := obs.WaitForEvents(t.Context(), 2, time.Second)
 	if len(events) < 2 {
 		t.Fatalf("expected 2 events (Created, Cancelled), got %d", len(events))
 	}
-	if findEvent(events, EventRequestCancelled) == nil {
-		t.Errorf("EventRequestCancelled not found in events: %v", events)
-	}
+	assert.Equal(t, EventRequestCreated, events[0].Type)
+	assert.Equal(t, EventRequestCancelled, events[1].Type)
 
 	// Request must be gone from pending.
 	pending := mgr.List()
@@ -221,8 +209,9 @@ func TestCreateGPGSignRequest_Cancel(t *testing.T) {
 func TestCreateGPGSignRequest_GPGSignInfoPreserved(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
-	info := sampleGPGSignInfo()
-	id, err := mgr.CreateGPGSignRequest(info.RequestInfo(SenderInfo{}))
+	in := sampleGPGSignRequest()
+	info := in.GPGSignInfo
+	id, err := mgr.CreateGPGSignRequest(in)
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -266,7 +255,7 @@ func TestCreateGPGSignRequest_Concurrent(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			id, err := mgr.CreateGPGSignRequest(sampleGPGSignInfo().RequestInfo(SenderInfo{}))
+			id, err := mgr.CreateGPGSignRequest(sampleGPGSignRequest())
 			if err != nil {
 				t.Errorf("CreateGPGSignRequest failed: %v", err)
 				return
@@ -303,7 +292,7 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.RecordAutoApprovedGPGSign(sampleGPGSignInfo().RequestInfo(SenderInfo{}), GPGResult{Signature: []byte("sig"), Status: []byte("status")})
+	id, err := mgr.RecordAutoApprovedGPGSign(sampleGPGSignRequest(), GPGResult{Signature: []byte("sig"), Status: []byte("status")})
 	if err != nil {
 		t.Fatalf("RecordAutoApprovedGPGSign returned unexpected error: %v", err)
 	}
@@ -336,7 +325,7 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 	}
 }
 
-func TestRequestGPGOutput(t *testing.T) {
+func TestHistoryEntryGPGOutput(t *testing.T) {
 	tests := []struct {
 		name       string
 		reqType    RequestType
@@ -348,13 +337,12 @@ func TestRequestGPGOutput(t *testing.T) {
 		{"gpg_sign denied", RequestTypeGPGSign, ResolutionDenied, false},
 		{"gpg_sign cancelled", RequestTypeGPGSign, ResolutionCancelled, false},
 		{"gpg_sign expired", RequestTypeGPGSign, ResolutionExpired, false},
-		{"gpg_sign pending", RequestTypeGPGSign, "", false},
 		{"get_secret approved", RequestTypeGetSecret, ResolutionApproved, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := &Request{Type: tt.reqType, resolution: tt.resolution, GPGResult: GPGResult{Signature: []byte("sig")}}
-			got := req.GPGOutput()
+			req := &Request{Type: tt.reqType, GPGResult: GPGResult{Signature: []byte("sig")}}
+			got := HistoryEntry{Request: req, Resolution: tt.resolution}.GPGOutput()
 			if (got != nil) != tt.want {
 				t.Fatalf("GPGOutput() = %v, want non-nil %v", got, tt.want)
 			}
@@ -363,4 +351,17 @@ func TestRequestGPGOutput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// AwaitGPGSign returns the History entry of an expired request, and the entry
+// carries no gpg output.
+func TestAwaitGPGSign_Expiry(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 20 * time.Millisecond, HistoryMax: 100})
+
+	got, err := mgr.AwaitGPGSign(t.Context(), sampleGPGSignRequest())
+
+	require.NoError(t, err)
+	assert.Equal(t, ResolutionExpired, got.Resolution)
+	assert.Nil(t, got.GPGOutput())
+	assert.Zero(t, mgr.PendingCount())
 }

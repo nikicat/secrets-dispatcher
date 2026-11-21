@@ -13,6 +13,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
@@ -21,7 +22,7 @@ const (
 	// Time allowed to write a message to the peer.
 	writeWait = 10 * time.Second
 
-	// Send pings to peer with this period.
+	// How often to ping the peer.
 	pingPeriod = 30 * time.Second
 
 	// Maximum message size allowed from peer.
@@ -33,7 +34,8 @@ type WSMessage struct {
 	Type    wsmsg.Type `json:"type"`
 	Version string     `json:"version,omitempty"`
 
-	// For snapshot - no omitempty to ensure arrays are always present in JSON
+	// Snapshot fields. They have no omitempty, so the arrays are always present
+	// in the JSON.
 	Requests                   []PendingRequest           `json:"requests"`
 	Clients                    []proxy.ClientInfo         `json:"clients"`
 	History                    []HistoryEntry             `json:"history"`
@@ -47,10 +49,8 @@ type WSMessage struct {
 	Request *PendingRequest `json:"request,omitempty"`
 
 	// For request_resolved
-	ID     string              `json:"id,omitempty"`
-	Result approval.Resolution `json:"result,omitempty"`
-	// Set when a gpg_sign request is approved or auto-approved.
-	*approval.GPGResult
+	ID string `json:"id,omitempty"`
+	gpgsign.SignOutcome
 
 	// For client_connected/client_disconnected
 	Client *proxy.ClientInfo `json:"client,omitempty"`
@@ -102,9 +102,9 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Any Origin passes; the auth check above is the gate. A browser sends the
-		// SameSite=Strict session cookie (ADR 0006) only from same-site pages, so a
-		// cross-site page cannot open the socket, but a page on another local port can.
+		// Accepts any Origin, since the auth check above decides who may connect.
+		// The SameSite=Strict session cookie (ADR 0006) keeps out cross-site pages,
+		// but a page on another local port is same-site and can still connect.
 		OriginPatterns: []string{"*"},
 	})
 	if err != nil {
@@ -114,7 +114,7 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	conn.SetReadLimit(maxMessageSize)
 
-	// Use background context - the WebSocket connection lives beyond the HTTP request
+	// The connection outlives the HTTP request, so it gets its own context.
 	ctx, cancel := context.WithCancel(context.Background())
 	wsc := &wsConnection{
 		handler: h,
@@ -144,6 +144,15 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	go wsc.readPump()
 }
 
+// Returns the request_resolved message for a settled request.
+func resolvedMessage(entry approval.HistoryEntry) WSMessage {
+	return WSMessage{
+		Type:        wsmsg.RequestResolved,
+		ID:          entry.Request.ID,
+		SignOutcome: gpgsign.OutcomeOf(entry),
+	}
+}
+
 // OnEvent implements approval.Observer.
 func (wsc *wsConnection) OnEvent(event approval.Event) {
 	var msgs []WSMessage
@@ -155,19 +164,8 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			Type:    wsmsg.RequestCreated,
 			Request: &req,
 		})
-	case approval.EventRequestApproved:
-		msgs = append(msgs, WSMessage{
-			Type:      wsmsg.RequestResolved,
-			ID:        event.Request.ID,
-			Result:    event.History.Resolution,
-			GPGResult: event.Request.GPGOutput(),
-		})
-	case approval.EventRequestDenied:
-		msgs = append(msgs, WSMessage{
-			Type:   wsmsg.RequestResolved,
-			ID:     event.Request.ID,
-			Result: event.History.Resolution,
-		})
+	case approval.EventRequestApproved, approval.EventRequestDenied:
+		msgs = append(msgs, resolvedMessage(*event.History))
 	case approval.EventRequestExpired:
 		msgs = append(msgs, WSMessage{
 			Type: wsmsg.RequestExpired,
@@ -180,16 +178,11 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		})
 	case approval.EventRequestAutoApproved:
 		// GPG sign auto-approvals carry signature data that the thin client needs.
-		if out := event.Request.GPGOutput(); out != nil {
-			msgs = append(msgs, WSMessage{
-				Type:      wsmsg.RequestResolved,
-				ID:        event.Request.ID,
-				Result:    event.History.Resolution,
-				GPGResult: out,
-			})
+		if msg := resolvedMessage(*event.History); msg.GPGResult != nil {
+			msgs = append(msgs, msg)
 		}
 	case approval.EventRequestIgnored:
-		// Only the history entry below.
+		// An ignored request sends only the history entry below.
 	case approval.EventAutoApproveRuleAdded:
 		msgs = append(msgs, WSMessage{
 			Type:            wsmsg.AutoApproveRuleAdded,
@@ -218,7 +211,7 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			continue
 		}
 
-		// Non-blocking send - drop message if client is slow
+		// Drops the message when the client is too slow to take it.
 		select {
 		case wsc.send <- data:
 			slog.Debug("ws send", "type", msg.Type, "id", msg.ID)
@@ -324,8 +317,8 @@ func (wsc *wsConnection) writePump() {
 	}
 }
 
-// readPump reads messages from the WebSocket connection.
-// We don't expect any messages from the client, this is just for close detection.
+// Reads only to notice that the client closed the connection. The client sends
+// no messages.
 func (wsc *wsConnection) readPump() {
 	defer wsc.close()
 

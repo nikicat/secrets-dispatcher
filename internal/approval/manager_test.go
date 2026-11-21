@@ -2,7 +2,7 @@ package approval
 
 import (
 	"context"
-	"strings"
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,8 +11,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/poll"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
-	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestManager_RequireApproval_Approved(t *testing.T) {
@@ -920,7 +920,8 @@ func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
 	mgr.Approve(reqID)
 	wg.Wait()
 
-	// Second request: same sender+item within window → auto-approved (no pending)
+	// A second request from the same sender for the same item, within the window,
+	// is approved without going pending.
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
 	if err != nil {
 		t.Fatalf("expected auto-approval from cache, got: %v", err)
@@ -1004,7 +1005,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 	items := []ItemInfo{{Path: "/test/item1"}}
 	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
-	// Approve a GetSecret request first — populates cache
+	// Approving a GetSecret request first fills the cache.
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
@@ -1031,7 +1032,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 		t.Fatalf("GetSecret should be auto-approved from cache, got: %v", err)
 	}
 
-	// Delete should NOT use cache — must create a pending request
+	// A delete request does not use the cache, so it goes pending.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	_, err = mgr.RequireApproval(ctx, RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeDelete, SenderInfo: sender})
@@ -1046,7 +1047,7 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 	items := []ItemInfo{{Path: "/test/item1"}}
 	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
 
-	// Approve a GetSecret request first — populates cache
+	// Approving a GetSecret request first fills the cache.
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
@@ -1203,10 +1204,8 @@ func TestApprovalCache_DifferentItem(t *testing.T) {
 }
 
 func TestManager_EventOrder_CancelledContext(t *testing.T) {
-	// Regression test: with async notify (go o.OnEvent), EventRequestCancelled
-	// can arrive before EventRequestCreated when the context is already cancelled.
-	// The client processes request_cancelled first (no-op, request not in list),
-	// then request_created (adds it), leaving a stale request in the UI forever.
+	// The created event must reach observers before the cancelled one, even
+	// when the context is already cancelled.
 	for i := range 100 {
 		mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 		obs := &testObserver{}
@@ -1236,7 +1235,7 @@ func TestShouldIgnore_ChromeDummy(t *testing.T) {
 	chromeItems := []ItemInfo{{
 		Path:       "/org/freedesktop/secrets/collection/default/123",
 		Label:      "Chrome Safe Storage",
-		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
+		Attributes: map[string]string{"xdg:schema": chromeDummySchema},
 	}}
 	normalItems := []ItemInfo{{
 		Path:       "/org/freedesktop/secrets/collection/default/456",
@@ -1278,7 +1277,7 @@ func TestRecordIgnored(t *testing.T) {
 	items := []ItemInfo{{
 		Path:       "/org/freedesktop/secrets/collection/default/123",
 		Label:      "Chrome Safe Storage",
-		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
+		Attributes: map[string]string{"xdg:schema": chromeDummySchema},
 	}}
 
 	mgr.RecordIgnored(RequestInfo{Items: items, Session: "/session/1", Type: RequestTypeWrite, SenderInfo: SenderInfo{Client: "test-client"}})
@@ -1312,7 +1311,8 @@ func TestRecordIgnored(t *testing.T) {
 	mgr.Unsubscribe(obs)
 }
 
-// Returns a gpg_sign request from sender for repo with files changed.
+// Returns a gpg_sign request from the given sender for the given repo, with the
+// given files changed.
 func signRequest(sender SenderInfo, repo RepoName, files []string) RequestInfo {
 	return (&GPGSignInfo{RepoName: repo, ChangedFiles: files}).RequestInfo(sender)
 }
@@ -1371,8 +1371,8 @@ func TestCheckTrustedSigner(t *testing.T) {
 	})
 }
 
-// Guards against Vuln 6. A process that sets its comm to a unit name must not
-// match a `unit` rule, which compares the caller's real systemd unit (ADR 0005).
+// A process that sets its comm to a unit name must not match a `unit` rule,
+// which compares the caller's real systemd unit (ADR 0005).
 func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	mgr.trustRules = []TrustRule{{
@@ -1393,8 +1393,8 @@ func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
 		"unit rule must not match a comm spoofed to look like a unit name")
 }
 
-// Guards against Vuln 5. Malware that speaks the socket protocol directly, with
-// a trusted signer among its ancestors, must still get a prompt (ADR 0008).
+// Malware that speaks the socket protocol directly, with a trusted signer among
+// its ancestors, must still get a prompt (ADR 0008).
 func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 	const nvimExe = "/usr/bin/nvim"
 	mgr := NewManager(ManagerConfig{
@@ -1416,23 +1416,14 @@ func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 	assert.False(t, mgr.CheckTrustedSigner(signRequest(forged, "any", nil)),
 		"a direct protocol speaker must not silently sign even with a trusted ancestor")
 
-	// Flipping only the PeerTrusted gate lets the trusted ancestor match again,
-	// confirming the gate — not the ancestry — is what blocked the forged request.
+	// Setting only PeerTrusted lets the trusted ancestor match again. So the
+	// gate, not the ancestry, blocked the forged request.
 	trusted := forged
 	trusted.PeerTrusted = true
 	assert.True(t, mgr.CheckTrustedSigner(signRequest(trusted, "any", nil)))
 }
 
 func TestCheckTrustRules(t *testing.T) {
-	testutil.Swap(t, &extractCollection, func(path string) string {
-		// Simple parser: /org/freedesktop/secrets/collection/<name>/... → <name>
-		parts := strings.Split(path, "/")
-		if len(parts) >= 6 {
-			return parts[5]
-		}
-		return ""
-	})
-
 	rules := []TrustRule{
 		{
 			Name:         "approve-gh-search",
@@ -1497,9 +1488,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 		})
-		// gh doing get_secret: doesn't match rule 0 (search only), no other process match
-		// Could match rule 3 (label) or rule 5 (attributes) depending on items
-		// With nil items, no label or attributes to match, so no match
+		// No rule matches. Rule 0 covers only search, and with no items neither
+		// the label rule nor the attribute rule can match.
 		if rule != nil {
 			t.Errorf("expected no match, got %v", rule.Name)
 		}
@@ -1530,7 +1520,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeWrite,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: chromeChain},
 		})
-		// Chrome write to "login" collection: rule 1 requires "default", so no match
+		// Rule 1 requires the default collection, so a write to the login
+		// collection matches no rule.
 		if rule != nil {
 			t.Errorf("expected no match, got %v", rule.Name)
 		}
@@ -1648,8 +1639,8 @@ func TestCheckTrustRules(t *testing.T) {
 }
 
 func TestMatchProcessArgs(t *testing.T) {
-	// Interpreter-run script: exe is the interpreter, the script path is only
-	// visible in argv — the case the args matcher exists for.
+	// An interpreter runs the script, so exe is the interpreter and only argv
+	// shows the script path. The args matcher exists for this case.
 	sender := SenderInfo{
 		ProcessChain: []procutil.Process{
 			{Name: "secret-tool", PID: 100, Exe: new(procutil.Path("/usr/bin/secret-tool")), Args: []string{"secret-tool", "lookup", "service", "http-basic-auth"}},
@@ -1757,7 +1748,7 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 				Name:         "ignore-chrome",
 				Action:       "ignore",
 				RequestTypes: []RequestType{"write"},
-				Secret:       &SecretMatcher{Attributes: map[string]Glob{"xdg:schema": MustGlob("_chrome_dummy_schema_for_unlocking")}},
+				Secret:       &SecretMatcher{Attributes: map[string]Glob{"xdg:schema": MustGlob(chromeDummySchema)}},
 			},
 		},
 	})
@@ -1766,7 +1757,7 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 
 	items := []ItemInfo{{
 		Path:       "/org/freedesktop/secrets/collection/default/1",
-		Attributes: map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"},
+		Attributes: map[string]string{"xdg:schema": chromeDummySchema},
 	}}
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Items:      items,
@@ -1848,7 +1839,7 @@ func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
 		},
 	})
 
-	// Non-matching request should go to pending and eventually timeout
+	// A request that no rule matches goes pending and times out.
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Items:      []ItemInfo{{Path: "/test/item"}},
 		Session:    "/s/1",
@@ -1868,7 +1859,7 @@ func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
 			{
 				Name:    "default-action-rule",
 				Process: &ProcessMatcher{Name: MustGlob("test")},
-				// Action is empty — should default to "approve"
+				// An empty action means approve.
 			},
 		},
 	})
@@ -1898,7 +1889,7 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 		},
 	})
 
-	// Matching CWD in process chain → auto-approve
+	// A matching working directory in the process chain approves the request.
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Items:   []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}},
 		Session: "/s/1",
@@ -1915,7 +1906,7 @@ func TestTrustRules_CWDMatch(t *testing.T) {
 		t.Fatalf("expected nil (CWD match), got %v", err)
 	}
 
-	// Non-matching CWD → timeout
+	// A working directory that does not match leaves the request to time out.
 	mgr2 := NewManager(ManagerConfig{
 		Timeout:    100 * time.Millisecond,
 		HistoryMax: 100,
@@ -1990,7 +1981,7 @@ func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
 }
 
 func TestRequireApproval_AutoApproved_AutoApproveRule(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	mustAddRule(t, mgr, &Request{
 		ID:         "r1",
 		Type:       RequestTypeGetSecret,
@@ -2220,4 +2211,44 @@ func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
 
 	local := SenderInfo{Client: ClientLocal, SystemdUnit: "app.service"}
 	assert.NotNil(t, mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: local}), `unit "*" on a local sender`)
+}
+
+// An expired request ends exactly once. It leaves no pending request and one
+// expired entry in History.
+func TestManager_RequireApproval_ExpiryEndsRequestOnce(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 20 * time.Millisecond, HistoryMax: 100})
+
+	_, err := mgr.RequireApproval(t.Context(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Type: RequestTypeGetSecret})
+
+	require.ErrorIs(t, err, ErrTimeout)
+	assert.Zero(t, mgr.PendingCount())
+	history := mgr.History()
+	require.Len(t, history, 1)
+	assert.Equal(t, ResolutionExpired, history[0].Resolution)
+}
+
+// A request resolved before its timeout is not expired later.
+func TestManager_ResolvedRequestDoesNotExpire(t *testing.T) {
+	mgr := NewManager(ManagerConfig{Timeout: 20 * time.Millisecond, HistoryMax: 100})
+	id := mustCreateSampleGPGSign(t, mgr)
+
+	require.NoError(t, mgr.Deny(id))
+	time.Sleep(60 * time.Millisecond)
+
+	history := mgr.History()
+	require.Len(t, history, 1)
+	assert.Equal(t, ResolutionDenied, history[0].Resolution)
+}
+
+func TestResolution_UnmarshalText(t *testing.T) {
+	for _, r := range resolutions {
+		data, err := json.Marshal(r)
+		require.NoError(t, err)
+		var got Resolution
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, r, got)
+	}
+	var got Resolution
+	assert.Error(t, json.Unmarshal([]byte(`"bogus"`), &got))
+	assert.Error(t, json.Unmarshal([]byte(`""`), &got))
 }

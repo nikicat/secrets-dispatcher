@@ -2,8 +2,10 @@
 package approval
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -17,7 +19,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-// ErrDenied is returned when a request is denied by the user.
+// Reports a request that the user denied, or that Manager.Cancel ended.
 var ErrDenied = errors.New("access denied by user")
 
 // ErrTimeout is returned when a request times out waiting for approval.
@@ -55,9 +57,10 @@ const (
 type Event struct {
 	Type    EventType
 	Request *Request
-	Rule    *AutoApproveRule // For EventAutoApproveRuleAdded/Removed
-	// The entry that History records for the request this event ends, and nil
-	// for an event that ends no request.
+	// Set for EventAutoApproveRuleAdded and EventAutoApproveRuleRemoved only.
+	Rule *AutoApproveRule
+	// The History entry of the request that this event ends. It is nil when the
+	// event ends no request.
 	History *HistoryEntry
 }
 
@@ -73,6 +76,12 @@ type ItemInfo struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
+// Returns the collection that the item's path names. The name may be an alias
+// such as "default". Returns "" when the path names no collection.
+func (i ItemInfo) Collection() string {
+	return dbustypes.ExtractCollection(i.Path)
+}
+
 // RequestType indicates the type of secret access request.
 type RequestType string
 
@@ -84,6 +93,13 @@ const (
 	RequestTypeSSHSign   RequestType = "ssh_sign"
 	RequestTypeUnlock    RequestType = "unlock"
 )
+
+// Checks whether a recent approval of the same items may answer a request of
+// type t. Delete and write requests always ask, since each one changes the
+// keyring.
+func (t RequestType) cacheable() bool {
+	return t != RequestTypeDelete && t != RequestTypeWrite
+}
 
 // What a caller knows about one secret access request before the manager
 // decides on it.
@@ -98,15 +114,16 @@ type RequestInfo struct {
 	GPGSignInfo *GPGSignInfo
 }
 
-// Returns a new Request for info, created now and expiring after ttl.
-func (info RequestInfo) newRequest(ttl time.Duration) *Request {
+// Returns a new record of the request. The record is for a request that was
+// settled as soon as it arrived, so its ExpiresAt equals its CreatedAt.
+func (info RequestInfo) newRecord() *Request {
 	now := time.Now()
 	return &Request{
 		ID:               uuid.New().String(),
 		Items:            info.Items,
 		Session:          info.Session,
 		CreatedAt:        now,
-		ExpiresAt:        now.Add(ttl),
+		ExpiresAt:        now,
 		Type:             info.Type,
 		SearchAttributes: info.SearchAttributes,
 		SenderInfo:       info.SenderInfo,
@@ -114,7 +131,8 @@ func (info RequestInfo) newRequest(ttl time.Duration) *Request {
 	}
 }
 
-// Request represents a secret access request awaiting approval.
+// A secret access request. The Manager holds it as pending while it waits for
+// the user, and History keeps it once it is settled.
 type Request struct {
 	ID        string          `json:"id"`
 	Items     []ItemInfo      `json:"items"`
@@ -133,26 +151,34 @@ type Request struct {
 	// GPGSignInfo contains signing context for gpg_sign requests; nil for other types.
 	GPGSignInfo *GPGSignInfo `json:"gpg_sign_info,omitempty"`
 
-	// Handed back to the thin client once a gpg_sign request is approved. Set by
-	// ApproveGPGSign and RecordAutoApprovedGPGSign.
+	// What gpg produced for a gpg_sign request. The thin client receives it once
+	// the request is approved.
 	GPGResult GPGResult `json:"-"`
-
-	// Internal: channel closed when the request is resolved
-	done       chan struct{}
-	resolution Resolution // set before done is closed
 }
 
-// Checks whether an auto-approve rule made from r could match a later request.
-// Rules match only on the invoker's executable (ADR 0005), and a request that
-// came over a tunnel, or whose invoker was not resolved, has none.
+// A request that waits for the user's decision. It ends exactly once, through
+// Manager.resolve.
+type pendingRequest struct {
+	req *Request
+	// Closed when the request ends, after the outcome field is set.
+	done    chan struct{}
+	outcome HistoryEntry
+	// Ends the request with ResolutionExpired at req.ExpiresAt.
+	expiry *time.Timer
+}
+
+// Checks whether an auto-approve rule made from this request could match a
+// later one.
+// Rules match only on the invoker's executable (ADR 0005). A request that came
+// over a tunnel, or whose invoker was not resolved, has none.
 func (r *Request) AutoApprovable() bool {
 	_, ok := r.SenderInfo.invokerExe()
 	return ok
 }
 
-// Returns a temporary rule that auto-approves requests like r (ADR 0004) once
-// Manager.AddAutoApproveRule installs it. Errors with ErrNotAutoApprovable when
-// r is not AutoApprovable.
+// Returns a temporary rule that auto-approves requests like this one (ADR 0004)
+// once Manager.AddAutoApproveRule installs it. Errors with ErrNotAutoApprovable
+// when the request is not AutoApprovable.
 func (r *Request) AutoApproveRule() (AutoApproveRule, error) {
 	exe, ok := r.SenderInfo.invokerExe()
 	if !ok {
@@ -166,7 +192,7 @@ func (r *Request) AutoApproveRule() (AutoApproveRule, error) {
 	}
 
 	if len(r.Items) > 0 {
-		rule.Collection = extractCollection(r.Items[0].Path)
+		rule.Collection = r.Items[0].Collection()
 		rule.Attributes = r.Items[0].Attributes
 	}
 	if r.Type == RequestTypeSearch && len(r.SearchAttributes) > 0 {
@@ -187,9 +213,56 @@ const (
 	ResolutionIgnored      Resolution = "ignored"
 )
 
+var resolutions = []Resolution{
+	ResolutionApproved, ResolutionDenied, ResolutionExpired,
+	ResolutionCancelled, ResolutionAutoApproved, ResolutionIgnored,
+}
+
 // Checks whether the request was approved, by the user or by a rule.
 func (r Resolution) Approves() bool {
 	return r == ResolutionApproved || r == ResolutionAutoApproved
+}
+
+// Returns nil when the resolution approves the request, ErrTimeout when the
+// request expired, and ErrDenied otherwise.
+func (r Resolution) err() error {
+	switch {
+	case r.Approves():
+		return nil
+	case r == ResolutionExpired:
+		return ErrTimeout
+	}
+	return ErrDenied
+}
+
+// Returns the type of the event that tells observers a request ended with this
+// resolution. Panics when the resolution is not one of the Resolution constants.
+func (r Resolution) event() EventType {
+	switch r {
+	case ResolutionApproved:
+		return EventRequestApproved
+	case ResolutionDenied:
+		return EventRequestDenied
+	case ResolutionExpired:
+		return EventRequestExpired
+	case ResolutionCancelled:
+		return EventRequestCancelled
+	case ResolutionAutoApproved:
+		return EventRequestAutoApproved
+	case ResolutionIgnored:
+		return EventRequestIgnored
+	}
+	panic(fmt.Sprintf("approval: unknown resolution %q", r))
+}
+
+// Errors when the text is not one of the Resolution constants.
+func (r *Resolution) UnmarshalText(text []byte) error {
+	v := Resolution(text)
+	if !slices.Contains(resolutions, v) {
+		return fmt.Errorf("unknown resolution %q", text)
+	}
+	*r = v
+	return nil
 }
 
 // HistoryEntry represents a resolved approval request.
@@ -211,12 +284,53 @@ type AutoApproveRule struct {
 	ExpiresAt   time.Time         `json:"expires_at"`
 }
 
+func (r AutoApproveRule) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("rule_id", r.ID),
+		slog.String("invoker", r.InvokerName),
+		slog.Any("type", r.RequestType),
+		slog.String("collection", r.Collection),
+		slog.Time("expires_at", r.ExpiresAt),
+	)
+}
+
+// Checks whether the rule has expired by the given time.
+func (r AutoApproveRule) expired(now time.Time) bool {
+	return !r.ExpiresAt.After(now)
+}
+
+// Checks whether the rule approves the given request. Like an approve trust
+// rule, it must cover every item of the request (ADR 0005). A request with no
+// items matches only a rule with no collection and no attributes.
+func (r AutoApproveRule) matches(info RequestInfo) bool {
+	exe, ok := info.SenderInfo.invokerExe()
+	if !ok || r.InvokerExe != exe || r.RequestType != info.Type {
+		return false
+	}
+	if len(info.Items) == 0 {
+		return r.Collection == "" && len(r.Attributes) == 0
+	}
+	for _, it := range info.Items {
+		if r.Collection != "" && r.Collection != it.Collection() {
+			return false
+		}
+		if !attributesContain(it.Attributes, r.Attributes) {
+			return false
+		}
+	}
+	return true
+}
+
+// The default lifetime of an auto-approve rule (ADR 0004).
+const DefaultAutoApproveDuration = 2 * time.Minute
+
 // Manager tracks pending approval requests and handles blocking until decision.
 type Manager struct {
-	mu       sync.RWMutex
-	pending  map[string]*Request
-	timeout  time.Duration
-	disabled bool // when true, auto-approve all requests
+	mu      sync.RWMutex
+	pending map[string]*pendingRequest
+	timeout time.Duration
+	// True if every request is approved without asking. False otherwise.
+	disabled bool
 
 	observersMu sync.RWMutex
 	observers   map[Observer]struct{}
@@ -235,7 +349,7 @@ type Manager struct {
 	autoApproveDuration time.Duration
 	trustedSigners      []TrustedSigner
 	ignoreChromeDummy   bool
-	trustRules          []TrustRule // persistent config-defined trust rules
+	trustRules          []TrustRule
 }
 
 // ManagerConfig holds configuration for the approval Manager.
@@ -244,11 +358,11 @@ type ManagerConfig struct {
 	Timeout time.Duration
 	// HistoryMax is the maximum number of resolved requests kept in history.
 	HistoryMax int
-	// ApprovalWindow controls how long an approved (sender, item) pair is cached;
-	// a second request for the same pair within this window is auto-approved.
-	// Set to 0 to disable caching.
+	// How long the user's approval of an item also approves later requests from
+	// the same sender for that item. Zero turns this off.
 	ApprovalWindow time.Duration
-	// AutoApproveDuration controls how long an auto-approve rule lasts after creation.
+	// How long an auto-approve rule lasts after it is added. Zero means
+	// DefaultAutoApproveDuration.
 	AutoApproveDuration time.Duration
 	TrustedSigners      []TrustedSigner
 	// IgnoreChromeDummy silently ignores Chrome's dummy secret writes.
@@ -260,13 +374,13 @@ type ManagerConfig struct {
 // NewManager creates a new approval manager.
 func NewManager(cfg ManagerConfig) *Manager {
 	return &Manager{
-		pending:             make(map[string]*Request),
+		pending:             make(map[string]*pendingRequest),
 		timeout:             cfg.Timeout,
 		observers:           make(map[Observer]struct{}),
 		historyMax:          cfg.HistoryMax,
 		approvalWindow:      cfg.ApprovalWindow,
 		cache:               make(map[approvalCacheKey]time.Time),
-		autoApproveDuration: cfg.AutoApproveDuration,
+		autoApproveDuration: cmp.Or(cfg.AutoApproveDuration, DefaultAutoApproveDuration),
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
 		trustRules:          cfg.TrustRules,
@@ -276,10 +390,11 @@ func NewManager(cfg ManagerConfig) *Manager {
 // NewDisabledManager creates a manager that auto-approves all requests.
 func NewDisabledManager() *Manager {
 	return &Manager{
-		pending:    make(map[string]*Request),
-		disabled:   true,
-		observers:  make(map[Observer]struct{}),
-		historyMax: 100,
+		pending:             make(map[string]*pendingRequest),
+		disabled:            true,
+		observers:           make(map[Observer]struct{}),
+		historyMax:          100,
+		autoApproveDuration: DefaultAutoApproveDuration,
 	}
 }
 
@@ -297,18 +412,21 @@ func (m *Manager) Unsubscribe(o Observer) {
 	delete(m.observers, o)
 }
 
-// Records the end of a request in History when event ends one, then delivers
-// event to every observer in the caller's goroutine. An event that ends a
-// request carries the recorded entry.
+// Returns the event that tells observers the given request ended with the
+// given resolution. The event carries the History entry that records the end.
+func endEvent(res Resolution, req *Request) Event {
+	return Event{
+		Type:    res.event(),
+		Request: req,
+		History: &HistoryEntry{Request: req, Resolution: res, ResolvedAt: time.Now()},
+	}
+}
+
+// Records the History entry that the given event carries, if any, and delivers
+// the event to every observer in the caller's goroutine.
 func (m *Manager) notify(event Event) {
-	if resolution, ok := event.Type.Resolution(); ok {
-		entry := HistoryEntry{
-			Request:    event.Request,
-			Resolution: resolution,
-			ResolvedAt: time.Now(),
-		}
-		m.addHistory(entry)
-		event.History = &entry
+	if event.History != nil {
+		m.pushHistory(*event.History)
 	}
 
 	m.observersMu.RLock()
@@ -318,35 +436,12 @@ func (m *Manager) notify(event Event) {
 	}
 }
 
-// Returns how a request ends when this event fires, or false for an event that
-// ends none.
-func (t EventType) Resolution() (Resolution, bool) {
-	switch t {
-	case EventRequestApproved:
-		return ResolutionApproved, true
-	case EventRequestDenied:
-		return ResolutionDenied, true
-	case EventRequestExpired:
-		return ResolutionExpired, true
-	case EventRequestCancelled:
-		return ResolutionCancelled, true
-	case EventRequestAutoApproved:
-		return ResolutionAutoApproved, true
-	case EventRequestIgnored:
-		return ResolutionIgnored, true
-	}
-	return "", false
-}
-
-// addHistory records a resolved request in history.
-func (m *Manager) addHistory(entry HistoryEntry) {
+// Puts the given entry first in History, and keeps at most historyMax entries
+// by dropping the oldest.
+func (m *Manager) pushHistory(entry HistoryEntry) {
 	m.historyMu.Lock()
 	defer m.historyMu.Unlock()
-
-	// Prepend to slice (newest first)
 	m.history = append([]HistoryEntry{entry}, m.history...)
-
-	// Trim to historyMax
 	if len(m.history) > m.historyMax {
 		m.history = m.history[:m.historyMax]
 	}
@@ -363,105 +458,120 @@ func (m *Manager) History() []HistoryEntry {
 func (m *Manager) GetHistoryEntry(requestID string) *HistoryEntry {
 	m.historyMu.RLock()
 	defer m.historyMu.RUnlock()
-	for i := range m.history {
-		if m.history[i].Request.ID == requestID {
-			return &m.history[i]
-		}
+	i := slices.IndexFunc(m.history, func(e HistoryEntry) bool { return e.Request.ID == requestID })
+	if i < 0 {
+		return nil
 	}
-	return nil
+	return &m.history[i]
 }
 
 // AddHistoryEntry adds an entry directly to history. For testing only.
 func (m *Manager) AddHistoryEntry(entry HistoryEntry) {
-	m.historyMu.Lock()
-	defer m.historyMu.Unlock()
-
-	// Prepend to slice (newest first)
-	m.history = append([]HistoryEntry{entry}, m.history...)
-
-	// Trim to historyMax
-	if len(m.history) > m.historyMax {
-		m.history = m.history[:m.historyMax]
-	}
+	m.pushHistory(entry)
 }
 
 // Blocks until the user decides, unless the approval cache or a rule decides
-// first (ADR 0004). prompted is true when the user approved at a prompt.
-// Errors with ErrDenied, ErrTimeout, ErrDeniedByRule or ErrIgnored.
+// first (ADR 0004). The prompted result is true when the user approved at a
+// prompt. Errors with ErrDenied, ErrTimeout, ErrDeniedByRule or ErrIgnored,
+// and with the context's error when the context ends.
 func (m *Manager) RequireApproval(ctx context.Context, info RequestInfo) (prompted bool, err error) {
 	if m.disabled {
 		return false, nil
 	}
 
-	// Check approval cache: if all items were recently approved for this sender, skip.
-	// Delete and write requests always require explicit approval — never use cached approvals.
-	if info.Type != RequestTypeDelete && info.Type != RequestTypeWrite && m.approvalWindow > 0 && len(info.Items) > 0 {
-		if m.checkApprovalCache(info.SenderInfo, info.Items) {
-			return false, nil
-		}
-	}
-
-	// Check auto-approve rules (for timed-out client retries).
-	if rule := m.checkAutoApproveRules(info); rule != nil {
-		slog.Info("auto-approve rule matched",
-			"rule_id", rule.ID,
-			"invoker", rule.InvokerName,
-			"type", rule.RequestType)
-		m.record(EventRequestAutoApproved, info)
+	if m.cachedApproval(info) {
 		return false, nil
 	}
 
-	// Check persistent trust rules from config.
+	if rule := m.CheckAutoApproveRules(info); rule != nil {
+		slog.Info("auto-approve rule matched", "rule", *rule)
+		m.record(ResolutionAutoApproved, info)
+		return false, nil
+	}
+
 	if rule := m.CheckTrustRules(info); rule != nil {
 		slog.Info("trust rule matched",
 			"rule_name", rule.Name,
 			"action", rule.Action)
-		switch rule.Action {
-		case RuleIgnore:
-			m.record(EventRequestIgnored, info)
-			return false, ErrIgnored
-		case RuleDeny:
-			m.record(EventRequestDenied, info)
-			return false, ErrDeniedByRule
-		}
-		m.record(EventRequestAutoApproved, info)
-		return false, nil
+		res, err := rule.Action.outcome()
+		m.record(res, info)
+		return false, err
 	}
 
-	req := info.newRequest(m.timeout)
-	req.done = make(chan struct{})
-
-	m.mu.Lock()
-	m.pending[req.ID] = req
-	m.mu.Unlock()
-
-	// Notify observers of new request
-	m.notify(Event{Type: EventRequestCreated, Request: req})
-
-	// Ensure cleanup when we exit
-	defer func() {
-		m.mu.Lock()
-		delete(m.pending, req.ID)
-		m.mu.Unlock()
-	}()
-
-	// Create timeout timer
-	timer := time.NewTimer(m.timeout)
-	defer timer.Stop()
-
-	select {
-	case <-req.done:
-		if req.resolution.Approves() {
-			return true, nil
-		}
-		return false, ErrDenied
-	case <-timer.C:
-		m.notify(Event{Type: EventRequestExpired, Request: req})
-		return false, ErrTimeout
-	case <-ctx.Done():
-		m.notify(Event{Type: EventRequestCancelled, Request: req})
+	entry := m.await(ctx, info)
+	if entry.Resolution == ResolutionCancelled && ctx.Err() != nil {
 		return false, ctx.Err()
 	}
+	return entry.Resolution.Approves(), entry.Resolution.err()
+}
+
+// Adds the request as pending, waits until it ends, and returns the History
+// entry of its end. Ending the context cancels the request. The entry is then
+// ResolutionCancelled, unless the request ended another way first.
+func (m *Manager) await(ctx context.Context, info RequestInfo) HistoryEntry {
+	p := m.addPending(info)
+	select {
+	case <-p.done:
+	case <-ctx.Done():
+		m.Cancel(p.req.ID) //nolint:errcheck // resolved meanwhile is fine
+		<-p.done
+	}
+	return p.outcome
+}
+
+// Adds the request as pending, tells observers it was created, and returns it
+// without waiting. It expires after the manager's timeout unless it is resolved
+// first (ADR 0004).
+func (m *Manager) addPending(info RequestInfo) *pendingRequest {
+	req := info.newRecord()
+	req.ExpiresAt = req.CreatedAt.Add(m.timeout)
+	p := &pendingRequest{req: req, done: make(chan struct{})}
+
+	m.mu.Lock()
+	m.pending[req.ID] = p
+	m.mu.Unlock()
+
+	m.notify(Event{Type: EventRequestCreated, Request: req})
+
+	// Armed after the created event, so that observers never see the request
+	// expire before they see it created.
+	m.mu.Lock()
+	if _, ok := m.pending[req.ID]; ok {
+		p.expiry = time.AfterFunc(time.Until(req.ExpiresAt), func() {
+			m.resolve(req.ID, ResolutionExpired, nil) //nolint:errcheck // resolved meanwhile is fine
+		})
+	}
+	m.mu.Unlock()
+	return p
+}
+
+// Ends the pending request with the given id and resolution, and tells
+// observers. Errors with ErrNotFound when no such request is pending, and with
+// the admit function's error, which leaves the request pending.
+func (m *Manager) resolve(id string, res Resolution, admit func(*Request) error) (*Request, error) {
+	m.mu.Lock()
+	p, ok := m.pending[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, ErrNotFound
+	}
+	if admit != nil {
+		if err := admit(p.req); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
+	}
+	delete(m.pending, id)
+	if p.expiry != nil {
+		p.expiry.Stop()
+	}
+	event := endEvent(res, p.req)
+	p.outcome = *event.History
+	close(p.done)
+	m.mu.Unlock()
+
+	m.notify(event)
+	return p.req, nil
 }
 
 // List returns all pending requests.
@@ -471,97 +581,55 @@ func (m *Manager) List() []*Request {
 
 	now := time.Now()
 	result := make([]*Request, 0, len(m.pending))
-	for _, req := range m.pending {
-		// Only include non-expired requests
-		if req.ExpiresAt.After(now) {
-			result = append(result, req)
+	for _, p := range m.pending {
+		if p.req.ExpiresAt.After(now) {
+			result = append(result, p.req)
 		}
 	}
 	return result
 }
 
-// Approve approves a pending request by ID.
+// Approves the pending request with the given id and caches the approval of its
+// items. Errors with ErrNotFound when no such request is pending.
 func (m *Manager) Approve(id string) error {
-	m.mu.Lock()
-	req, ok := m.pending[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
+	req, err := m.resolve(id, ResolutionApproved, nil)
+	if err != nil {
+		return err
 	}
-
-	req.resolution = ResolutionApproved
-	delete(m.pending, id)
-	close(req.done)
-	m.mu.Unlock()
-
-	m.notify(Event{Type: EventRequestApproved, Request: req})
 	m.cacheApproval(req)
 	return nil
 }
 
-// Approves the pending request with that id, as Approve does, and adds an
+// Approves the pending request with the given id, as Approve does, and adds an
 // auto-approve rule for later requests like it (ADR 0004). Errors with
 // ErrNotFound when no such request is pending, and with ErrNotAutoApprovable
-// when it is not AutoApprovable. The request then stays pending.
+// when it is not AutoApprovable. In that case the request stays pending.
 func (m *Manager) ApproveAndAutoApprove(id string) error {
-	m.mu.Lock()
-	req, ok := m.pending[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
-	}
-	rule, err := req.AutoApproveRule()
+	var rule AutoApproveRule
+	req, err := m.resolve(id, ResolutionApproved, func(req *Request) (err error) {
+		rule, err = req.AutoApproveRule()
+		return err
+	})
 	if err != nil {
-		m.mu.Unlock()
 		return err
 	}
-
-	req.resolution = ResolutionApproved
-	delete(m.pending, id)
-	close(req.done)
-	m.mu.Unlock()
-
-	m.notify(Event{Type: EventRequestApproved, Request: req})
 	m.cacheApproval(req)
 	m.AddAutoApproveRule(rule)
 	return nil
 }
 
-// Deny denies a pending request by ID.
+// Ends the pending request with the given id as denied by the user. Cancel ends
+// it with no decision. Errors with ErrNotFound when no such request is pending.
 func (m *Manager) Deny(id string) error {
-	m.mu.Lock()
-	req, ok := m.pending[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
-	}
-
-	req.resolution = ResolutionDenied
-	delete(m.pending, id)
-	close(req.done)
-	m.mu.Unlock()
-
-	m.notify(Event{Type: EventRequestDenied, Request: req})
-	return nil
+	_, err := m.resolve(id, ResolutionDenied, nil)
+	return err
 }
 
-// Cancel cancels a pending request by ID. This is a system/client-driven
-// cleanup (e.g. thin client interrupted), distinct from user-initiated Deny.
+// Ends the pending request with the given id as cancelled, recording no decision
+// by the user. Errors with ErrNotFound when no such request is pending.
 func (m *Manager) Cancel(id string) error {
-	m.mu.Lock()
-	req, ok := m.pending[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
-	}
-
-	req.resolution = ResolutionCancelled
-	delete(m.pending, id)
-	close(req.done)
-	m.mu.Unlock()
-
-	m.notify(Event{Type: EventRequestCancelled, Request: req})
-	return nil
+	_, err := m.resolve(id, ResolutionCancelled, nil)
+	return err
 }
 
 // PendingCount returns the number of pending requests.
@@ -577,32 +645,24 @@ func (m *Manager) Timeout() time.Duration {
 }
 
 // GetPending returns the pending request with the given ID, or nil if not found.
-// Uses a read lock so it does not block concurrent approvals.
 func (m *Manager) GetPending(id string) *Request {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.pending[id]
+	if p, ok := m.pending[id]; ok {
+		return p.req
+	}
+	return nil
 }
 
 // Approves a pending gpg_sign request with what gpg produced. A failed gpg run
 // is approved too, and the thin client then exits with its ExitCode.
 // Errors with ErrNotFound when no request with that id is pending.
 func (m *Manager) ApproveGPGSign(id string, res GPGResult) error {
-	m.mu.Lock()
-	req, ok := m.pending[id]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNotFound
-	}
-
-	req.GPGResult = res
-	req.resolution = ResolutionApproved
-	delete(m.pending, id)
-	close(req.done)
-	m.mu.Unlock()
-
-	m.notify(Event{Type: EventRequestApproved, Request: req})
-	return nil
+	_, err := m.resolve(id, ResolutionApproved, func(req *Request) error {
+		req.GPGResult = res
+		return nil
+	})
+	return err
 }
 
 // Identifies an item approved for a sender. Each bus numbers its own senders,
@@ -613,9 +673,9 @@ type approvalCacheKey struct {
 	itemPath string
 }
 
-// Returns the key that caches an approval of itemPath for s. Reports false
-// when s has no sender, since another process could then reuse the approval
-// (ADR 0004).
+// Returns the cache key for an approval of the item at the given path for this
+// sender. Reports false when the sender has no unique bus name, since another
+// process could then reuse the approval (ADR 0004).
 func (s SenderInfo) cacheKey(itemPath string) (approvalCacheKey, bool) {
 	if s.Sender == nil {
 		return approvalCacheKey{}, false
@@ -623,10 +683,15 @@ func (s SenderInfo) cacheKey(itemPath string) (approvalCacheKey, bool) {
 	return approvalCacheKey{s.Client, *s.Sender, itemPath}, true
 }
 
-// checkApprovalCache returns true if ALL items have a valid cache entry for the sender.
-// Expired entries encountered during the check are lazily deleted.
-func (m *Manager) checkApprovalCache(senderInfo SenderInfo, items []ItemInfo) bool {
-	if m.approvalWindow <= 0 {
+func (m *Manager) cachesApprovals() bool {
+	return m.approvalWindow > 0
+}
+
+// Checks whether every item of the given request was recently approved for the
+// same sender (ADR 0004). A request with no items, or of a type that is not
+// cacheable, is never answered from the cache.
+func (m *Manager) cachedApproval(info RequestInfo) bool {
+	if !m.cachesApprovals() || !info.Type.cacheable() || len(info.Items) == 0 {
 		return false
 	}
 	now := time.Now()
@@ -635,8 +700,8 @@ func (m *Manager) checkApprovalCache(senderInfo SenderInfo, items []ItemInfo) bo
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
 
-	for _, item := range items {
-		key, ok := senderInfo.cacheKey(item.Path)
+	for _, item := range info.Items {
+		key, ok := info.SenderInfo.cacheKey(item.Path)
 		if !ok {
 			return false
 		}
@@ -651,11 +716,10 @@ func (m *Manager) checkApprovalCache(senderInfo SenderInfo, items []ItemInfo) bo
 	return true
 }
 
-// CacheItemForSender records an item approval in the cache for a specific sender.
-// This allows auto-approving a subsequent read of an item that was just written
-// (e.g., gh verifies keyring storage by reading back a secret right after CreateItem).
+// Caches an approval of the item at the given path for the given sender, as if
+// the user had approved it.
 func (m *Manager) CacheItemForSender(senderInfo SenderInfo, itemPath string) {
-	if m.approvalWindow <= 0 || m.disabled {
+	if !m.cachesApprovals() {
 		return
 	}
 
@@ -667,8 +731,9 @@ func (m *Manager) CacheItemForSender(senderInfo SenderInfo, itemPath string) {
 	}
 }
 
-// Takes name for a bus and reports whether no other bus held it. One name never
-// stands for two buses while approvals for it can be cached.
+// Claims the given client name for a bus. Reports false when another bus
+// already holds the name, so that one name never stands for two buses while
+// approvals for it may be cached.
 func (m *Manager) ClaimClient(name ClientName) bool {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
@@ -682,8 +747,9 @@ func (m *Manager) ClaimClient(name ClientName) bool {
 	return true
 }
 
-// Gives name back once its bus has stopped, and forgets the approvals cached
-// for it, since the next bus to claim the name numbers its senders afresh.
+// Releases the given client name after its bus has stopped, and forgets the
+// approvals cached for that name, because the next bus to claim it numbers its
+// senders afresh.
 func (m *Manager) ReleaseClient(name ClientName) {
 	m.cacheMu.Lock()
 	defer m.cacheMu.Unlock()
@@ -695,17 +761,9 @@ func (m *Manager) ReleaseClient(name ClientName) {
 	}
 }
 
-// AutoApproveDuration returns the configured auto-approve rule duration.
 func (m *Manager) AutoApproveDuration() time.Duration {
-	d := m.autoApproveDuration
-	if d <= 0 {
-		d = 2 * time.Minute
-	}
-	return d
+	return m.autoApproveDuration
 }
-
-// extractCollection extracts the collection name from a Secret Service item path.
-var extractCollection = dbustypes.ExtractCollection
 
 func (r AutoApproveRule) sameScope(o AutoApproveRule) bool {
 	return r.InvokerExe == o.InvokerExe &&
@@ -720,107 +778,49 @@ func (r AutoApproveRule) sameScope(o AutoApproveRule) bool {
 func (m *Manager) AddAutoApproveRule(rule AutoApproveRule) string {
 	rule.ExpiresAt = time.Now().Add(m.AutoApproveDuration())
 
+	msg := "auto-approve rule added"
 	m.autoApproveMu.Lock()
-	for i := range m.autoApproveRules {
-		existing := &m.autoApproveRules[i]
-		if existing.sameScope(rule) {
-			existing.ExpiresAt = rule.ExpiresAt
-			refreshed := *existing
-			m.autoApproveMu.Unlock()
-			m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: &refreshed})
-			slog.Info("auto-approve rule refreshed",
-				"rule_id", refreshed.ID,
-				"invoker", refreshed.InvokerName,
-				"expires_at", refreshed.ExpiresAt)
-			return refreshed.ID
-		}
+	if i := slices.IndexFunc(m.autoApproveRules, rule.sameScope); i >= 0 {
+		m.autoApproveRules[i].ExpiresAt = rule.ExpiresAt
+		rule = m.autoApproveRules[i]
+		msg = "auto-approve rule refreshed"
+	} else {
+		m.autoApproveRules = append(m.autoApproveRules, rule)
 	}
-	m.autoApproveRules = append(m.autoApproveRules, rule)
 	m.autoApproveMu.Unlock()
 
 	m.notify(Event{Type: EventAutoApproveRuleAdded, Rule: &rule})
-	slog.Info("auto-approve rule added",
-		"rule_id", rule.ID,
-		"invoker", rule.InvokerName,
-		"type", rule.RequestType,
-		"collection", rule.Collection,
-		"expires_at", rule.ExpiresAt)
+	slog.Info(msg, "rule", rule)
 	return rule.ID
 }
 
-// Returns the active auto-approve rule that matches the request, or nil. It is
-// for callers that run their own request flow, such as the gpg_sign handler.
+// Returns a copy of the first active auto-approve rule that matches the
+// request, or nil.
 func (m *Manager) CheckAutoApproveRules(info RequestInfo) *AutoApproveRule {
-	return m.checkAutoApproveRules(info)
-}
-
-// Returns the active auto-approve rule that matches the request, or nil, and
-// drops the expired rules.
-func (m *Manager) checkAutoApproveRules(info RequestInfo) *AutoApproveRule {
 	m.autoApproveMu.Lock()
 	defer m.autoApproveMu.Unlock()
 
+	rules := m.activeRules()
+	i := slices.IndexFunc(rules, func(r AutoApproveRule) bool { return r.matches(info) })
+	if i < 0 {
+		return nil
+	}
+	match := rules[i]
+	return &match
+}
+
+// Drops the expired auto-approve rules and returns the ones still active. The
+// caller holds autoApproveMu, and the result is valid only while it does.
+func (m *Manager) activeRules() []AutoApproveRule {
 	now := time.Now()
-	// Clean expired rules while iterating
-	active := m.autoApproveRules[:0]
-	var match *AutoApproveRule
-
-	for i := range m.autoApproveRules {
-		rule := &m.autoApproveRules[i]
-		if rule.ExpiresAt.Before(now) {
-			continue // expired, skip
-		}
-		active = append(active, *rule)
-
-		if match != nil {
-			continue // already found a match, just cleaning
-		}
-
-		callerExe, ok := info.SenderInfo.invokerExe()
-		if !ok || rule.InvokerExe != callerExe {
-			continue
-		}
-		// Match request type
-		if rule.RequestType != info.Type {
-			continue
-		}
-		// Match collection + attributes for EVERY item in the batch. An
-		// auto-approve rule is permissive, so a single decision covers the whole
-		// batch only when every item falls within the rule's scope; matching just
-		// items[0] would let a batch smuggle an out-of-scope secret past a rule
-		// scoped to a benign collection.
-		if autoApproveCoversAll(rule, info.Items) {
-			matched := *rule
-			match = &matched
-		}
-	}
-
-	m.autoApproveRules = active
-	return match
+	m.autoApproveRules = slices.DeleteFunc(m.autoApproveRules, func(r AutoApproveRule) bool {
+		return r.expired(now)
+	})
+	return m.autoApproveRules
 }
 
-// autoApproveCoversAll reports whether an auto-approve rule covers every item in
-// the batch (collection and attributes). An auto-approve rule is permissive, so
-// it may only authorize a batch when all items are in scope. An empty batch is
-// covered only when the rule imposes no secret-scope constraints — the case that
-// carries the itemless gpg_sign path.
-func autoApproveCoversAll(rule *AutoApproveRule, items []ItemInfo) bool {
-	if len(items) == 0 {
-		return rule.Collection == "" && len(rule.Attributes) == 0
-	}
-	for _, it := range items {
-		if rule.Collection != "" && rule.Collection != extractCollection(it.Path) {
-			return false
-		}
-		if !attributesContain(it.Attributes, rule.Attributes) {
-			return false
-		}
-	}
-	return true
-}
-
-// Checks whether have holds every key of want with the same value. A missing
-// key reads as the empty string.
+// Checks whether the first map holds every key of the second with the same
+// value. A missing key reads as the empty string.
 func attributesContain(have, want map[string]string) bool {
 	for k, v := range want {
 		if have[k] != v {
@@ -835,14 +835,7 @@ func (m *Manager) ListAutoApproveRules() []AutoApproveRule {
 	m.autoApproveMu.Lock()
 	defer m.autoApproveMu.Unlock()
 
-	now := time.Now()
-	var active []AutoApproveRule
-	for _, rule := range m.autoApproveRules {
-		if rule.ExpiresAt.After(now) {
-			active = append(active, rule)
-		}
-	}
-	return active
+	return slices.Clone(m.activeRules())
 }
 
 // ListTrustedSigners returns the configured trusted signers.
@@ -853,24 +846,17 @@ func (m *Manager) ListTrustedSigners() []TrustedSigner {
 // RemoveAutoApproveRule removes an auto-approve rule by ID.
 func (m *Manager) RemoveAutoApproveRule(id string) error {
 	m.autoApproveMu.Lock()
-	var removed AutoApproveRule
-	found := false
-	for i, rule := range m.autoApproveRules {
-		if rule.ID == id {
-			removed = rule
-			m.autoApproveRules = append(m.autoApproveRules[:i], m.autoApproveRules[i+1:]...)
-			found = true
-			break
-		}
-	}
-	m.autoApproveMu.Unlock()
-
-	if !found {
+	i := slices.IndexFunc(m.autoApproveRules, func(r AutoApproveRule) bool { return r.ID == id })
+	if i < 0 {
+		m.autoApproveMu.Unlock()
 		return ErrNotFound
 	}
+	removed := m.autoApproveRules[i]
+	m.autoApproveRules = slices.Delete(m.autoApproveRules, i, i+1)
+	m.autoApproveMu.Unlock()
 
 	m.notify(Event{Type: EventAutoApproveRuleRemoved, Rule: &removed})
-	slog.Info("auto-approve rule removed", "rule_id", id)
+	slog.Info("auto-approve rule removed", "rule", removed)
 	return nil
 }
 
@@ -899,14 +885,11 @@ func (s SenderInfo) invokerExe() (procutil.Path, bool) {
 
 // Returns the first configured trust rule that matches the request, or nil.
 func (m *Manager) CheckTrustRules(info RequestInfo) *TrustRule {
-	for i := range m.trustRules {
-		rule := &m.trustRules[i]
-		if !rule.matches(info) {
-			continue
-		}
-		return rule
+	i := slices.IndexFunc(m.trustRules, func(r TrustRule) bool { return r.matches(info) })
+	if i < 0 {
+		return nil
 	}
-	return nil
+	return &m.trustRules[i]
 }
 
 // ListTrustRules returns the configured trust rules.
@@ -923,39 +906,36 @@ func (m *Manager) ShouldIgnore(info RequestInfo) bool {
 	if !m.ignoreChromeDummy || info.Type != RequestTypeWrite {
 		return false
 	}
-	for _, item := range info.Items {
-		if item.Attributes["xdg:schema"] == chromeDummySchema {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(info.Items, func(item ItemInfo) bool {
+		return item.Attributes["xdg:schema"] == chromeDummySchema
+	})
 }
 
 // Records a request that went upstream without approval, such as SearchItems
 // or Unlock, as auto-approved.
 func (m *Manager) RecordPassthrough(info RequestInfo) {
-	m.record(EventRequestAutoApproved, info)
+	m.record(ResolutionAutoApproved, info)
 }
 
 // Records a request that was dropped without asking the user.
 func (m *Manager) RecordIgnored(info RequestInfo) {
-	m.record(EventRequestIgnored, info)
+	m.record(ResolutionIgnored, info)
 }
 
 // Records a request that a trust rule denied.
 func (m *Manager) RecordDenied(info RequestInfo) {
-	m.record(EventRequestDenied, info)
+	m.record(ResolutionDenied, info)
 }
 
 // Notifies subscribers of a request that was settled without waiting for the
 // user.
-func (m *Manager) record(t EventType, info RequestInfo) {
-	m.notify(Event{Type: t, Request: info.newRequest(0)})
+func (m *Manager) record(res Resolution, info RequestInfo) {
+	m.notify(endEvent(res, info.newRecord()))
 }
 
 // cacheApproval records approved (sender, item) pairs in the cache.
 func (m *Manager) cacheApproval(req *Request) {
-	if m.approvalWindow <= 0 {
+	if !m.cachesApprovals() {
 		return
 	}
 	now := time.Now()

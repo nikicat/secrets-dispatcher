@@ -19,11 +19,16 @@ const (
 	exitSystemError ExitStatus = 2
 )
 
-// How the daemon resolved one sign request, on either signing path. GPGResult
-// is set when Result approves the request.
+// How the daemon resolved one request. GPGResult is set as
+// approval.HistoryEntry.GPGOutput says.
 type SignOutcome struct {
-	Result approval.Resolution `json:"result"`
+	Result approval.Resolution `json:"result,omitempty"`
 	*approval.GPGResult
+}
+
+// Returns the outcome of a settled sign request, as History records it.
+func OutcomeOf(entry approval.HistoryEntry) SignOutcome {
+	return SignOutcome{Result: entry.Resolution, GPGResult: entry.GPGOutput()}
 }
 
 // Errors when the outcome approves the request without gpg's output.
@@ -34,8 +39,8 @@ func (o SignOutcome) check() error {
 	return nil
 }
 
-// Hands the outcome back to git: gpg's output when the request was approved,
-// and a message on stderr otherwise. Returns the process exit status.
+// Writes gpg's output for git when the request was approved, and a message on
+// stderr otherwise. Returns the process exit status.
 func (o SignOutcome) report() ExitStatus {
 	if o.Result.Approves() {
 		return o.emit()

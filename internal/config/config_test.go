@@ -129,6 +129,22 @@ serve:
 	}
 }
 
+// A negative auto_approve_duration would expire every rule as it is added.
+func TestLoadAutoApproveDurationSign(t *testing.T) {
+	load := func(value string) (*Config, error) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("serve:\n  auto_approve_duration: "+value+"\n"), 0o644))
+		return File{path}.Load()
+	}
+
+	_, err := load("-5m")
+	assert.ErrorContains(t, err, "negative duration -5m0s")
+
+	cfg, err := load("5m")
+	require.NoError(t, err)
+	assert.Equal(t, Duration(5*time.Minute), cfg.Serve.AutoApproveDuration)
+}
+
 func TestDurationYAMLRoundTrip(t *testing.T) {
 	in := ServeConfig{Timeout: Duration(90 * time.Second)}
 	data, err := yaml.Marshal(in)

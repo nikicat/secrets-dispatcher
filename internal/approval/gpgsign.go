@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 )
 
-// RequestTypeGPGSign is the request type for GPG commit signing approval requests.
 const RequestTypeGPGSign RequestType = "gpg_sign"
 
 // The kind of git object that a gpg_sign request signs. git hands commits,
@@ -60,8 +58,8 @@ type GPGResult struct {
 // Checks whether gpg ran and produced a signature.
 func (r GPGResult) Succeeded() bool { return r.ExitCode == 0 }
 
-// The exit code of a gpg sign request: the real gpg process's own, or one of
-// the codes below when gpg did not run. Zero means gpg succeeded.
+// The exit code of gpg for one sign request. It is the gpg process's own code,
+// or one of the codes below when gpg did not run.
 type GPGExitCode int
 
 // Exit codes the daemon reports when it could not run gpg.
@@ -74,11 +72,11 @@ const (
 
 // Returns what gpg produced for an approved or auto-approved gpg_sign request,
 // and nil for any other request or resolution.
-func (r *Request) GPGOutput() *GPGResult {
-	if r.Type != RequestTypeGPGSign || !r.resolution.Approves() {
+func (e HistoryEntry) GPGOutput() *GPGResult {
+	if e.Request.Type != RequestTypeGPGSign || !e.Resolution.Approves() {
 		return nil
 	}
-	return &r.GPGResult
+	return &e.Request.GPGResult
 }
 
 // Errors for a sign request with no bytes to sign.
@@ -87,8 +85,8 @@ var (
 	ErrNoCommitObject = errors.New("gpg sign info has no commit object")
 )
 
-// Errors with ErrNoGPGSignInfo when i is nil, and with ErrNoCommitObject when
-// it has no CommitObject.
+// Errors with ErrNoGPGSignInfo when the info is nil, and with ErrNoCommitObject
+// when it has no CommitObject.
 func (i *GPGSignInfo) RequireSignedBytes() error {
 	if i == nil {
 		return ErrNoGPGSignInfo
@@ -99,8 +97,9 @@ func (i *GPGSignInfo) RequireSignedBytes() error {
 	return nil
 }
 
-// Returns the gpg_sign RequestInfo of sender's request to sign info. Its one
-// item is labelled with the repository name and the commit's subject.
+// Returns the gpg_sign request that the given sender makes to sign this object.
+// The request's one item is labelled with the repository name and the first
+// line of the object's message.
 func (info *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
 	label := string(info.RepoName)
 	if info.CommitMsg != "" {
@@ -121,19 +120,17 @@ func (info *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
 	}
 }
 
-// Records a gpg_sign request that was approved without a prompt, with res as
-// its result, and returns its ID. Errors as GPGSignInfo.RequireSignedBytes does.
+// Records the gpg_sign request as approved without a prompt, and stores the
+// given gpg result on it. Returns the request's ID. Errors as
+// GPGSignInfo.RequireSignedBytes does.
 func (m *Manager) RecordAutoApprovedGPGSign(info RequestInfo, res GPGResult) (string, error) {
 	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
 		return "", err
 	}
 
-	req := info.newRequest(0)
+	req := info.newRecord()
 	req.GPGResult = res
-	req.done = make(chan struct{})
-	req.resolution = ResolutionAutoApproved
-	close(req.done)
-	m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+	m.notify(endEvent(ResolutionAutoApproved, req))
 	return req.ID, nil
 }
 
@@ -141,60 +138,18 @@ func (m *Manager) RecordAutoApprovedGPGSign(info RequestInfo, res GPGResult) (st
 // (ADR 0004), and returns its ID without waiting, unlike AwaitGPGSign. Errors
 // as GPGSignInfo.RequireSignedBytes does.
 func (m *Manager) CreateGPGSignRequest(info RequestInfo) (string, error) {
-	req, err := m.createGPGSignRequest(info)
-	if err != nil {
+	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
 		return "", err
 	}
-	return req.ID, nil
+	return m.addPending(info).req.ID, nil
 }
 
-// Creates a gpg_sign request, waits until it is resolved, and returns it with
-// its resolution (ADR 0011). Ending ctx cancels the request. Errors as
-// GPGSignInfo.RequireSignedBytes does.
-func (m *Manager) AwaitGPGSign(ctx context.Context, info RequestInfo) (*Request, Resolution, error) {
-	req, err := m.createGPGSignRequest(info)
-	if err != nil {
-		return nil, "", err
-	}
-	select {
-	case <-req.done:
-	case <-ctx.Done():
-		m.Cancel(req.ID) //nolint:errcheck // resolved meanwhile is fine
-		<-req.done
-	}
-	return req, req.resolution, nil
-}
-
-func (m *Manager) createGPGSignRequest(info RequestInfo) (*Request, error) {
+// Creates a gpg_sign request, waits until it is resolved, and returns the
+// entry that History records for it (ADR 0011). Ending the context cancels
+// the request. Errors as GPGSignInfo.RequireSignedBytes does.
+func (m *Manager) AwaitGPGSign(ctx context.Context, info RequestInfo) (HistoryEntry, error) {
 	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
-		return nil, err
+		return HistoryEntry{}, err
 	}
-
-	req := info.newRequest(m.timeout)
-	req.done = make(chan struct{})
-	m.mu.Lock()
-	m.pending[req.ID] = req
-	m.mu.Unlock()
-	m.notify(Event{Type: EventRequestCreated, Request: req})
-
-	// Timeout goroutine — mirrors the timer.C branch in RequireApproval.
-	// ERR-03: gpg_sign requests expire via the existing timeout mechanism.
-	go func() {
-		select {
-		case <-req.done:
-			// resolved by Approve or Deny — no action needed
-		case <-time.After(m.timeout):
-			m.mu.Lock()
-			if _, ok := m.pending[req.ID]; !ok {
-				m.mu.Unlock()
-				return // resolved as the timer fired
-			}
-			delete(m.pending, req.ID)
-			req.resolution = ResolutionExpired
-			close(req.done)
-			m.mu.Unlock()
-			m.notify(Event{Type: EventRequestExpired, Request: req})
-		}
-	}()
-	return req, nil
+	return m.await(ctx, info), nil
 }

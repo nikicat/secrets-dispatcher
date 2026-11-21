@@ -160,7 +160,7 @@ Config lives at `~/.config/secrets-dispatcher/config.yaml`:
 listen: "127.0.0.1:8484"           # web UI address
 serve:
   timeout: 5m                      # approval request timeout
-  approval_window: 2s              # batch concurrent requests into one prompt
+  approval_window: 5s              # an approval also answers the same sender's repeats
   notifications: true              # desktop notifications
   ignore_chrome_dummy_secret: true # suppress Chrome's probe
   rules: []                        # trust rules — see docs/TRUST-RULES.md

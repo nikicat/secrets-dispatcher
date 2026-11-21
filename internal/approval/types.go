@@ -27,7 +27,7 @@ const (
 	ClientUnknown ClientName = "unknown"
 )
 
-// Returns the client name of the bus forwarded through socket, as
+// Returns the client name of the bus forwarded through the given socket, as
 // unixsock.Path.Name reads it. Errors when that name is empty or one the
 // dispatcher reserves.
 func ClientFromSocket(socket unixsock.Path) (ClientName, error) {
@@ -229,6 +229,18 @@ func (a RuleAction) Restrictive() bool {
 	return a == RuleDeny || a == RuleIgnore
 }
 
+// Returns how a request ends when a rule with this action decides it (ADR 0005),
+// and the error the request then fails with, or nil when the action approves.
+func (a RuleAction) outcome() (Resolution, error) {
+	switch a {
+	case RuleIgnore:
+		return ResolutionIgnored, ErrIgnored
+	case RuleDeny:
+		return ResolutionDenied, ErrDeniedByRule
+	}
+	return ResolutionAutoApproved, nil
+}
+
 // Selects requests by the processes in the sender's chain. Only Exe and Unit
 // are authoritative (ADR 0005). An omitted field constrains nothing, but no
 // ProcessMatcher matches a sender without a local process (ADR 0005).
@@ -293,9 +305,9 @@ type SecretMatcher struct {
 	Attributes map[string]Glob `yaml:"attributes,omitempty" json:"attributes,omitempty"`
 }
 
-// Checks whether the batch is in the scope that action needs (ADR 0005). An
-// empty matcher matches every batch, and any other matcher never matches an
-// empty one.
+// Checks whether the items are in the scope that the given action needs
+// (ADR 0005). An empty matcher matches any items, and any other matcher never
+// matches an empty list.
 func (sm *SecretMatcher) matches(items []ItemInfo, action RuleAction) bool {
 	if sm.Collection.IsZero() && sm.Label.IsZero() && len(sm.Attributes) == 0 {
 		return true
@@ -309,7 +321,7 @@ func (sm *SecretMatcher) matches(items []ItemInfo, action RuleAction) bool {
 }
 
 func (sm *SecretMatcher) matchesItem(item ItemInfo) bool {
-	if !sm.Collection.IsZero() && !sm.Collection.Matches(extractCollection(item.Path)) {
+	if !sm.Collection.IsZero() && !sm.Collection.Matches(item.Collection()) {
 		return false
 	}
 	if !sm.Label.IsZero() && !sm.Label.Matches(item.Label) {

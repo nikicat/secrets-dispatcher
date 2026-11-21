@@ -22,7 +22,6 @@ const (
 	DefaultLogLevel                = LogInfo
 	DefaultLogFormat               = LogText
 	DefaultApprovalWindow          = 5 * time.Second
-	DefaultAutoApproveDuration     = 2 * time.Minute
 	DefaultNotificationDelay       = 500 * time.Millisecond
 	DefaultUpstreamSlowThreshold   = 1500 * time.Millisecond
 	DefaultUpstreamSlowAlways      = false
@@ -67,7 +66,7 @@ func (s ServeConfig) withDefaults() (ServeSettings, error) {
 		ShowPIDs:                orDefault(s.ShowPIDs, DefaultShowPIDs),
 		TrimProcessChain:        orDefault(s.TrimProcessChain, DefaultTrimProcessChain),
 		ApprovalWindow:          cmp.Or(s.ApprovalWindow, Duration(DefaultApprovalWindow)),
-		AutoApproveDuration:     cmp.Or(s.AutoApproveDuration, Duration(DefaultAutoApproveDuration)),
+		AutoApproveDuration:     cmp.Or(s.AutoApproveDuration, Duration(approval.DefaultAutoApproveDuration)),
 		NotificationDelay:       cmp.Or(s.NotificationDelay, Duration(DefaultNotificationDelay)),
 		TrustedSigners:          s.TrustedSigners,
 		IgnoreChromeDummySecret: orDefault(s.IgnoreChromeDummySecret, DefaultIgnoreChromeDummySecret),
@@ -181,11 +180,15 @@ func (d Duration) String() string { return time.Duration(d).String() }
 
 func (d Duration) MarshalText() ([]byte, error) { return []byte(d.String()), nil }
 
-// Parses a duration in Go syntax, such as 90s or 5m.
+// Parses a duration in Go syntax, such as 90s or 5m. Errors when the duration
+// is negative, since no setting gives a negative duration a meaning.
 func (d *Duration) UnmarshalText(text []byte) error {
 	parsed, err := time.ParseDuration(string(text))
 	if err != nil {
 		return err
+	}
+	if parsed < 0 {
+		return fmt.Errorf("negative duration %s", parsed)
 	}
 	*d = Duration(parsed)
 	return nil

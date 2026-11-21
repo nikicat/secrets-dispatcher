@@ -74,15 +74,6 @@ Done when each item below is fixed as its "Fix" says.
 
 ### approval
 
-- `internal/approval/manager.go:178-188`, `internal/api/types.go:77`,
-  `internal/api/handlers.go:335-374` (unparsed input). approval.Resolution is
-  a string type with no parser, so any string decodes into it.
-  HandleTestInjectHistory passes the decoded value straight to
-  Manager.AddHistoryEntry, so an unknown resolution reaches the history and
-  the WebSocket clients. The edge is test-mode only.
-  Fix: Resolution gets an UnmarshalText that accepts only its six constants,
-  with a round-trip test. The test-inject handler then answers 400 for an
-  unknown value through decodePost. (b2-6)
 - `internal/approval/gpgsign.go:28-50`, `internal/gpgsign/commit.go:12-32`
   (algebraic blindness, duplicated knowledge). GPGSignInfo and
   gpgsign.SignedPayload are both flat over three kinds of signed object.
@@ -98,24 +89,11 @@ Done when each item below is fixed as its "Fix" says.
   is either kept by a custom marshaller or changed together with web
   (.tasks/rt113 has the TS side) and with cli's copy (cli/client.go:41).
   (b4-6, b6-14, x-4)
-- `internal/approval/gpgsign.go:181-199`, `internal/approval/manager.go:452-459`
-  (repeated derivation). The expiry of a pending request is written twice.
-  createGPGSignRequest's goroutine says it "mirrors the timer.C branch in
-  RequireApproval", but the copies have drifted: the gpg copy deletes the
-  request, sets ResolutionExpired and closes done, while RequireApproval's
-  only notifies. The resolution and the event type are also set as pairs by
-  hand (gpgsign.go:135 with :137, :194 with :197), although
-  EventType.Resolution (manager.go:322) owns that mapping. The goroutine also
-  races done against time.After by hand.
-  Fix: One Manager method ends a request from an event. It sets the
-  resolution from EventType.Resolution, deletes the request, closes done and
-  notifies. It is the resolve that .tasks/nmzpt plans, extended to expiry.
-  Both paths arm it with time.AfterFunc(m.timeout). (b4-7, x-20)
-- `internal/approval/gpgsign.go:128-130`,
-  `internal/approval/gpgsign.go:170-172`, `internal/api/gpgsign.go:107-118`,
+- `internal/approval/gpgsign.go` (RecordAutoApprovedGPGSign,
+  CreateGPGSignRequest, AwaitGPGSign), `internal/api/gpgsign.go:107-118`,
   `internal/api/remote.go:46` (unparsed input). The api edge checks the
-  signed bytes with requireSignedBytes in both gpg-sign handlers, and
-  RecordAutoApprovedGPGSign and createGPGSignRequest check them again. The
+  signed bytes with requireSignedBytes in both gpg-sign handlers, and the
+  three Manager methods check them again. The
   second check can no longer fail, yet the api maps its error to a 500
   (api/gpgsign.go:92, :146 and remote.go:54). CommitObject stays a string
   that each use converts to []byte.
@@ -128,12 +106,6 @@ Done when each item below is fixed as its "Fix" says.
   holds the checked bytes as a type, such as SignedObject []byte, and the
   Manager methods lose the check and the error return that only it produced.
   (b4-8, x-21, r2-3)
-- `internal/approval/gpgsign.go:10` (ambiguous noun). RequestTypeGPGSign's
-  doc reads its name back and calls the requests "GPG commit signing"
-  requests. The GPGSignKind doc below it says that the signed bytes are not
-  always a commit.
-  Fix: Delete the doc, since the type and the constant's name say it, or
-  write "git object signing" if a lint wants a doc. (b4-11)
 - `internal/approval/manager.go:67-71`, `internal/approval/manager.go:115-139`,
   `internal/approval/manager.go:196-200`, `internal/approval/types.go:331-337`
   (speculative generality). Request, HistoryEntry, ItemInfo and SenderInfo
@@ -144,58 +116,12 @@ Done when each item below is fixed as its "Fix" says.
   Fix: Delete the json tags of those four types, so that only the api DTOs
   spell the wire keys. Or keep them and plan the merge of the api DTOs
   (.tasks/tkncw, .tasks/b4jsb). (b5-1)
-- `internal/approval/manager.go:395-397` (misplaced rule). The rule that
-  delete and write requests never use the approval cache is a fact about
-  RequestType. It is written inline in RequireApproval's condition, beside
-  the approvalWindow and empty-items checks.
-  Fix: A RequestType method, such as `(t RequestType) cacheable() bool`, owns
-  the rule, and the body comment that explains it moves onto that method.
-  (b5-5)
-- `internal/approval/manager.go:697-703`, `internal/config/config.go:25`
-  (duplicated knowledge). The default lifetime of an auto-approve rule, two
-  minutes, is spelled twice: as config.DefaultAutoApproveDuration and as the
-  fallback inside Manager.AutoApproveDuration. The fallback only serves
-  managers built without the config (tests and NewDisabledManager).
-  Fix: approval owns the default as a constant that config uses, and
-  NewManager applies it once with cmp.Or, so AutoApproveDuration becomes a
-  plain getter. (b5-6)
-- `internal/approval/manager.go:397`, `internal/approval/manager.go:628`,
-  `internal/approval/manager.go:657`, `internal/approval/manager.go:970`
-  (repeated derivation). "Caching is on" is written four times as
-  approvalWindow > 0 or <= 0: in RequireApproval and again in the
-  checkApprovalCache it calls, in CacheItemForSender, and in cacheApproval.
-  CacheItemForSender also checks `|| m.disabled`, which is redundant, since a
-  disabled manager has a zero window.
-  Fix: One `(m *Manager) cachesApprovals() bool`. checkApprovalCache,
-  CacheItemForSender and cacheApproval each guard with it, and
-  RequireApproval drops its copy. (b5-7)
-- `internal/approval/manager.go:387-389` (incomplete doc). RequireApproval's
-  doc lists ErrDenied, ErrTimeout, ErrDeniedByRule and ErrIgnored. It also
-  returns ctx.Err() when ctx ends, and a request cancelled through
-  Manager.Cancel comes back as ErrDenied (manager_test.go:195 has to say so).
-  Callers handle a cancelled context differently, so the doc leaves out a
-  fact they need.
-  Fix: The error sentence adds "or with ctx's error when ctx ends", and says
-  that a request cancelled by Manager.Cancel errors with ErrDenied. (b5-8)
-- `internal/approval/manager.go:865-888` (inline generic machinery).
-  RemoveAutoApproveRule writes find-and-delete by hand, with a found flag, a
-  copy and an append splice.
-  Fix: `i := slices.IndexFunc(...)`, then `removed := m.autoApproveRules[i]`
-  and slices.Delete, under the same lock. (b5-9)
-- `internal/approval/manager.go:98-143`, `internal/approval/manager.go:431-432`,
-  `internal/approval/manager.go:963-966`, `internal/approval/gpgsign.go:132-136`
-  (algebraic blindness). Request is two things. A pending request has a done
-  channel, a resolution and a real ExpiresAt. A settled record, built by
-  record() with newRequest(0), has no done channel and an ExpiresAt equal to
-  its CreatedAt. RecordAutoApprovedGPGSign builds yet another shape by hand,
-  with a closed done channel and a resolution. RequireApproval and
-  createGPGSignRequest make done themselves after newRequest, so the order is
-  kept by hand. The doc "a secret access request awaiting approval" is false
-  for history records.
-  Fix: Split the pending state off. A pending wrapper (or newPendingRequest)
-  owns done, resolution and ExpiresAt, and the settled record is the plain
-  description. One constructor builds each, and RecordAutoApprovedGPGSign
-  uses it. The doc states what the type is in both cases. (b5-10)
+- `internal/approval/manager.go:131-136` (algebraic blindness). The
+  pending state (done, outcome, expiry timer) now lives in pendingRequest,
+  but Request still carries ExpiresAt, which a settled record sets to its
+  CreatedAt. The api DTOs (convertRequest, HistoryEntry) send it to the web.
+  Fix: ExpiresAt moves to pendingRequest, and the api reads it from the
+  pending list only, together with .tasks/b4jsb's conversions. (b5-10)
 - `internal/approval/manager.go:57`, `internal/approval/manager.go:93-96`,
   `internal/approval/manager.go:126-133`, `internal/api/resolver.go:36`,
   `internal/api/resolver.go:78` (algebraic blindness). Several fields matter
@@ -219,29 +145,6 @@ Done when each item below is fixed as its "Fix" says.
   Fix: invokerExe's doc keeps only that it returns the invoker's
   /proc/PID/exe, or false. ReleaseClient points to approvalCacheKey for the
   reason, and the two test docs say only what each test guards. (b5-13)
-- `internal/approval/manager.go:706-707`,
-  `internal/approval/manager_test.go:1422-1429`,
-  `internal/approval/autoapprove_test.go:400` (speculative generality).
-  extractCollection is a package variable only so that TestCheckTrustRules can
-  swap it. The swap reimplements dbus.ExtractCollection with a "simple
-  parser" that returns the same collection for every path the test uses, so
-  the seam tests nothing the real function would not, and the copy can drift
-  from it.
-  Fix: The test drops the swap, and manager.go calls
-  dbustypes.ExtractCollection directly. TestExtractCollection then tests the
-  dbus function, or moves to internal/dbus. (b5-14)
-- `internal/approval/manager.go:437`, `internal/approval/manager.go:440`,
-  `internal/approval/manager.go:447`, `internal/approval/manager.go:474`,
-  `internal/approval/manager.go:579`,
-  `internal/approval/manager_test.go:1206-1209` (narrating comments). The
-  body comments "Notify observers of new request", "Ensure cleanup when we
-  exit", "Create timeout timer" and "Only include non-expired requests" read
-  the next line back. GetPending's doc describes its read lock. A regression
-  test explains a bug of an asynchronous notify ("go o.OnEvent") that no
-  longer exists.
-  Fix: Delete the body comments and GetPending's lock sentence. The
-  regression test's comment keeps one sentence: the created event must reach
-  observers before the cancelled one. (b5-15)
 - `internal/gpgsign/daemon.go:98`, `internal/gpgsign/daemon.go:114`,
   `internal/gpgsign/daemon.go:138`, `internal/gpgsign/daemon.go:177`,
   `internal/gpgsign/daemon.go:185`, `internal/approval/gpgsign.go:144`,
@@ -500,13 +403,12 @@ Done when each item below is fixed as its "Fix" says.
   reason stays without the id, citing ADR 0008 where a decision stands behind
   the line. Comments that only restate the call go, and test docs keep only
   what the test's name does not say. (b4-13, b6-11, x-22)
-- `internal/api/websocket.go:52`, `internal/approval/manager.go:135-137`,
-  `internal/approval/gpgsign.go:76-77` (duplicated knowledge). That a gpg
-  result is set for an approved or auto-approved gpg_sign request is stated
-  on WSMessage's embedded GPGResult, on Request.GPGOutput, which owns the
-  rule, and on Request.GPGResult's doc, which lists its producers instead.
-  Fix: GPGOutput keeps the rule. The WSMessage field comment and
-  Request.GPGResult's doc point to it, or go. (b3-7, x-7, b5-11)
+- `internal/approval/gpgsign.go` (HistoryEntry.GPGOutput),
+  `internal/approval/manager.go` (Request.GPGResult) (duplicated knowledge).
+  That a gpg result exists only for an approved gpg_sign request is stated on
+  HistoryEntry.GPGOutput, which owns the rule, and again on Request.GPGResult's
+  doc. Fix: Request.GPGResult's doc points to GPGOutput or goes.
+  (b3-7, x-7, b5-11, x-5)
 - `internal/api/websocket_test.go:357-360`, `internal/gpgsign/daemon.go:181-184`
   (duplicated knowledge, long comment). The test doc is four lines, over the
   three-line limit. Its second half explains that the thin client loops past
@@ -531,3 +433,30 @@ b5-5, b5-6, b5-7, b5-8, b5-9, b5-10, b5-11, b5-13, b5-14, b5-15, b6-7, b6-8,
 b6-9, b6-10, b6-11, b6-12, b6-13, b6-14, b7-3, b7-4, b7-5, b7-6, b7-7, b7-9,
 b7-10, b8-8, b8-9, b8-10, b8-11, b9-3, b9-4, b9-5, b9-6, b9-7, b9-8, b9-12,
 b9-13, b9-14, b9-15, x-4, x-7, x-20, x-21, x-22, x-23, x-27).
+
+## Leftovers of the 2026-11-21 18:21 unsmell run (approval lifecycle batch)
+
+- `internal/approval/manager.go` (Event, endEvent), `internal/api/websocket.go`
+  (OnEvent) (algebraic blindness). An event that ends a request carries the
+  request twice, as Event.Request and as Event.History.Request, and History
+  is nil for every other event. OnEvent reads the id from one and the gpg
+  output from the other, and relies on Type to know History is set.
+  Fix: a request-ending event carries only its HistoryEntry. Do it together
+  with the typed Event entry above (b5-11). (b3-9)
+- `internal/approval/manager.go` (approvalCacheKey, cachedApproval,
+  CacheItemForSender, cacheApproval, ReleaseClient) (inline generic
+  machinery). The approval cache is an age-evicted map built by hand across
+  four methods: a timestamp per key, lazy delete on read, and nothing evicts
+  entries that are never read again. internal/expiryset is close, but its
+  Add refuses a live key.
+  Fix: a small expiring map in internal/expiryset (put, has, delete by
+  predicate) that the approval cache uses. Consider with .tasks/v3k8d.
+  (b1-24, s-50)
+- `docs/adr/0004-per-request-approval.md:14-15` (duplicated knowledge). The
+  bullet "Approving one secret authorizes only that request" now sits beside
+  the approval_window bullet, which lets an approval answer the same sender's
+  later requests for that item. Why approval_window became a cache lifetime
+  instead of a prompt-batching window is recorded nowhere.
+  Fix: the user records the reason, and the first bullet names the exception.
+  (r-1)
+

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,10 +38,10 @@ func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 }
 
 // Builds the approval manager the api tests share. Its requests wait five
-// minutes, so none expires mid-test, and its auto-approve rules last two
-// minutes. Each edit adjusts the config before the manager is built.
+// minutes, so none expires mid-test. Each edit adjusts the config before the
+// manager is built.
 func newTestManager(edits ...func(*approval.ManagerConfig)) *approval.Manager {
-	cfg := approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute}
+	cfg := approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100}
 	for _, edit := range edits {
 		edit(&cfg)
 	}
@@ -485,4 +486,19 @@ func TestWriteJSON_Unencodable(t *testing.T) {
 	if body := rr.Body.String(); body != `{"error":"failed to encode response"}`+"\n" {
 		t.Errorf("unexpected body %q", body)
 	}
+}
+
+// POST /api/v1/test/history refuses an entry whose resolution is not one of the
+// approval.Resolution constants, and History stays empty.
+func TestHandleTestInjectHistory_UnknownResolution(t *testing.T) {
+	mgr := newTestManager()
+	h := testHandlers(t, mgr)
+	h.testMode = true
+	body := `{"request":{"id":"r1","items":[],"type":"get_secret"},"resolution":"bogus","resolved_at":"2026-11-21T00:00:00Z"}`
+
+	rr := httptest.NewRecorder()
+	h.HandleTestInjectHistory(rr, httptest.NewRequest(http.MethodPost, "/api/v1/test/history", strings.NewReader(body)))
+
+	require.Equal(t, http.StatusBadRequest, rr.Code)
+	require.Empty(t, mgr.History())
 }

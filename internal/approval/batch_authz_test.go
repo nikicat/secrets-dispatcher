@@ -8,18 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// itemInCollection builds an ItemInfo whose path places it in the named collection.
-func itemInCollection(collection, name string) ItemInfo {
-	return ItemInfo{Path: "/org/freedesktop/secrets/collection/" + collection + "/" + name}
-}
-
-// TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem is a regression test for
-// the batch authorization bypass (Vuln 3). An ephemeral auto-approve rule scoped
-// to a benign collection must not authorize a whole batch that also pulls a secret
-// from a different collection — matching must consider every item, not just
-// items[0].
+// An auto-approve rule scoped to one collection does not cover a batch that
+// also reads another collection.
 func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 2 * time.Minute})
+	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	sender := testSender("someapp", "/usr/bin/someapp")
 
@@ -35,7 +27,7 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	assert.Nil(t, mgr.checkAutoApproveRules(RequestInfo{Items: batch, Type: RequestTypeGetSecret, SenderInfo: sender}),
+	assert.Nil(t, mgr.CheckAutoApproveRules(RequestInfo{Items: batch, Type: RequestTypeGetSecret, SenderInfo: sender}),
 		"auto-approve scoped to 'public' must not cover a batch that also reads 'login'")
 
 	// A batch fully inside the approved collection is still covered.
@@ -43,13 +35,12 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("public", "y"),
 	}
-	assert.NotNil(t, mgr.checkAutoApproveRules(RequestInfo{Items: inScope, Type: RequestTypeGetSecret, SenderInfo: sender}),
+	assert.NotNil(t, mgr.CheckAutoApproveRules(RequestInfo{Items: inScope, Type: RequestTypeGetSecret, SenderInfo: sender}),
 		"auto-approve scoped to 'public' should still cover an all-'public' batch")
 }
 
-// TestBatchGetSecrets_DenyRuleFiresOnAnyItem verifies that a deny rule scoped to a
-// sensitive collection fires when a batch smuggles that collection in behind a
-// benign first item (deny is restrictive: any in-scope item triggers it).
+// A deny rule fires when any item of the batch is in its scope, even behind a
+// benign first item (ADR 0005).
 func TestBatchGetSecrets_DenyRuleFiresOnAnyItem(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	mgr.trustRules = []TrustRule{{
@@ -67,10 +58,8 @@ func TestBatchGetSecrets_DenyRuleFiresOnAnyItem(t *testing.T) {
 	assert.Equal(t, "deny-login", rule.Name)
 }
 
-// TestBatchGetSecrets_ApproveRuleRequiresEveryItem verifies that a permissive
-// approve rule scoped to a benign collection does not silently authorize a batch
-// that also reads a foreign collection (approve is permissive: every item must be
-// in scope).
+// An approve rule fires only when every item of the batch is in its scope
+// (ADR 0005).
 func TestBatchGetSecrets_ApproveRuleRequiresEveryItem(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 	mgr.trustRules = []TrustRule{{

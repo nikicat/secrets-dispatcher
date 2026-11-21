@@ -167,6 +167,30 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 	<-done
 }
 
+func TestWSHandler_HistoryEntryIsTheStoredEntry(t *testing.T) {
+	f := newWSFixture(t, newTestManager())
+	conn := f.dial()
+	f.read(conn, wsmsg.Snapshot)
+
+	done := startRequest(t.Context(), f.mgr, approval.ItemInfo{Path: "/test/item"})
+
+	created := f.read(conn, wsmsg.RequestCreated)
+	require.NotNil(t, created.Request, "expected request in message")
+	f.mgr.Approve(created.Request.ID)
+	f.read(conn, wsmsg.RequestResolved)
+	msg := f.read(conn, wsmsg.HistoryEntry)
+	<-done
+
+	require.NotNil(t, msg.HistoryEntry, "expected history entry in message")
+	history := f.mgr.History()
+	require.Len(t, history, 1)
+	want, err := json.Marshal(convertHistoryEntry(history[0]))
+	require.NoError(t, err)
+	got, err := json.Marshal(msg.HistoryEntry)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), string(got))
+}
+
 func TestWSHandler_RequestExpired(t *testing.T) {
 	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = 100 * time.Millisecond })
 	f := newWSFixture(t, mgr)
@@ -349,7 +373,7 @@ func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
 			conn := f.dial()
 			f.read(conn, wsmsg.Snapshot)
 
-			id, err := f.mgr.CreateGPGSignRequest("test-client", &approval.GPGSignInfo{KeyID: "ABCD1234", CommitObject: "tree 0\n"}, approval.SenderInfo{})
+			id, err := f.mgr.CreateGPGSignRequest(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
 			require.NoError(t, err, "create gpg_sign request")
 			require.NoError(t, tt.resolve(f.mgr, id), "resolve request")
 

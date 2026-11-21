@@ -5,7 +5,6 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
-	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
@@ -13,10 +12,8 @@ func TestSlowUpstreamNotifier_SingleItem(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}}
+	dismiss := n.NotifySlowUpstream(req)
 
 	mock.mu.Lock()
 	if len(mock.notified) != 1 {
@@ -51,14 +48,12 @@ func TestSlowUpstreamNotifier_MultipleItems(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		Items: []approval.ItemInfo{
-			{Label: "secret-a"},
-			{Label: "secret-b"},
-			{Label: "secret-c"},
-		},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Items: []approval.ItemInfo{
+		{Label: "secret-a"},
+		{Label: "secret-b"},
+		{Label: "secret-c"},
+	}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -75,7 +70,7 @@ func TestSlowUpstreamNotifier_EmptyItems(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	dismiss := n.NotifySlowUpstream(proxy.UpstreamCallContext{})
+	dismiss := n.NotifySlowUpstream(approval.RequestInfo{})
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -92,11 +87,8 @@ func TestSlowUpstreamNotifier_GPGSignSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		RequestType: approval.RequestTypeGPGSign,
-		Items:       []approval.ItemInfo{{Label: "my-repo: fix bug"}},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Type: approval.RequestTypeGPGSign, Items: []approval.ItemInfo{{Label: "my-repo: fix bug"}}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -110,11 +102,8 @@ func TestSlowUpstreamNotifier_SSHSignSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		RequestType: approval.RequestTypeSSHSign,
-		Items:       []approval.ItemInfo{{Label: "ed25519-key"}},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Type: approval.RequestTypeSSHSign, Items: []approval.ItemInfo{{Label: "ed25519-key"}}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -128,11 +117,8 @@ func TestSlowUpstreamNotifier_SearchSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		RequestType: approval.RequestTypeSearch,
-		Items:       []approval.ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Type: approval.RequestTypeSearch, Items: []approval.ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -147,10 +133,8 @@ func TestSlowUpstreamNotifier_PathFallback(t *testing.T) {
 	n := newSlowUpstreamNotifier(mock)
 
 	// Items with Path but no Label (e.g. upstream locked, label fetch failed)
-	ctx := proxy.UpstreamCallContext{
-		Items: []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/Login"}},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Items: []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/Login"}}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -167,13 +151,11 @@ func TestSlowUpstreamNotifier_PathFallbackMultiple(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		Items: []approval.ItemInfo{
-			{Label: "Login", Path: "/org/freedesktop/secrets/collection/Login"},
-			{Path: "/org/freedesktop/secrets/collection/Other"},
-		},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Items: []approval.ItemInfo{
+		{Label: "Login", Path: "/org/freedesktop/secrets/collection/Login"},
+		{Path: "/org/freedesktop/secrets/collection/Other"},
+	}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -188,20 +170,17 @@ func TestSlowUpstreamNotifier_WithProcessChain(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		Items: []approval.ItemInfo{{Label: "my-password"}},
-		SenderInfo: approval.SenderInfo{
-			Info: sender.Info{
-				PID: 1234,
-				ProcessChain: []procutil.Process{
-					{Name: "git", PID: 1234},
-					{Name: "zsh", PID: 1000},
-					{Name: "claude", PID: 500},
-				},
+	req := approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-password"}}, SenderInfo: approval.SenderInfo{
+		Info: sender.Info{
+			PID: 1234,
+			ProcessChain: []procutil.Process{
+				{Name: "git", PID: 1234},
+				{Name: "zsh", PID: 1000},
+				{Name: "claude", PID: 500},
 			},
 		},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -219,20 +198,16 @@ func TestSlowUpstreamNotifier_GPGWithProcessChain(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		RequestType: approval.RequestTypeGPGSign,
-		Items:       []approval.ItemInfo{{Label: "my-repo: fix bug"}},
-		SenderInfo: approval.SenderInfo{
-			Info: sender.Info{
-				PID: 2000,
-				ProcessChain: []procutil.Process{
-					{Name: "git", PID: 2000},
-					{Name: "zsh", PID: 1000},
-				},
+	req := approval.RequestInfo{Type: approval.RequestTypeGPGSign, Items: []approval.ItemInfo{{Label: "my-repo: fix bug"}}, SenderInfo: approval.SenderInfo{
+		Info: sender.Info{
+			PID: 2000,
+			ProcessChain: []procutil.Process{
+				{Name: "git", PID: 2000},
+				{Name: "zsh", PID: 1000},
 			},
 		},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -247,11 +222,8 @@ func TestSlowUpstreamNotifier_UnlockSummary(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		RequestType: approval.RequestTypeUnlock,
-		Items:       []approval.ItemInfo{{Label: "Login"}},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	req := approval.RequestInfo{Type: approval.RequestTypeUnlock, Items: []approval.ItemInfo{{Label: "Login"}}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
@@ -265,22 +237,40 @@ func TestSlowUpstreamNotifier_ProcessChainOnly(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	ctx := proxy.UpstreamCallContext{
-		SenderInfo: approval.SenderInfo{
-			Info: sender.Info{
-				PID: 1234,
-				ProcessChain: []procutil.Process{
-					{Name: "secret-tool", PID: 1234},
-				},
+	req := approval.RequestInfo{SenderInfo: approval.SenderInfo{
+		Info: sender.Info{
+			PID: 1234,
+			ProcessChain: []procutil.Process{
+				{Name: "secret-tool", PID: 1234},
 			},
 		},
-	}
-	dismiss := n.NotifySlowUpstream(ctx)
+	}}
+	dismiss := n.NotifySlowUpstream(req)
 	defer dismiss()
 
 	mock.mu.Lock()
 	defer mock.mu.Unlock()
 	if mock.notified[0].body != "secret-tool" {
 		t.Errorf("unexpected body: %q", mock.notified[0].body)
+	}
+}
+
+func TestSlowUpstreamNotifier_EscapesMarkup(t *testing.T) {
+	mock := &mockNotifier{}
+	n := newSlowUpstreamNotifier(mock)
+
+	dismiss := n.NotifySlowUpstream(approval.RequestInfo{
+		Items: []approval.ItemInfo{{Label: "<b>&"}},
+		SenderInfo: approval.SenderInfo{
+			Info: sender.Info{ProcessChain: []procutil.Process{{Name: "git<", PID: 1}, {Name: "zsh", PID: 2}}},
+		},
+	})
+	defer dismiss()
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	expected := "&lt;b&gt;&amp;\ngit&lt; ← zsh"
+	if mock.notified[0].body != expected {
+		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
 	}
 }

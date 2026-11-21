@@ -146,17 +146,26 @@ func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	return h, mock, approver
 }
 
+// Returns a GetSecret request for one item labelled "Secret", with no sender.
+func secretRequest(id string) *approval.Request {
+	return &approval.Request{
+		ID:    id,
+		Type:  approval.RequestTypeGetSecret,
+		Items: []approval.ItemInfo{{Label: "Secret"}},
+	}
+}
+
 func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "test-123",
-		Client: "user@remote",
-		Type:   approval.RequestTypeGetSecret,
+		ID:   "test-123",
+		Type: approval.RequestTypeGetSecret,
 		Items: []approval.ItemInfo{
 			{Label: "GitHub Token", Path: "/org/secrets/github"},
 		},
 		SenderInfo: approval.SenderInfo{
+			Client: "user@remote",
 			Info: sender.Info{
 				PID:         1234,
 				SystemdUnit: "ssh-agent.service",
@@ -230,12 +239,7 @@ func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
 func TestHandler_OnEvent_RequestResolved_ClosesNotification(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
-	req := &approval.Request{
-		ID:     "test-456",
-		Client: "user@remote",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("test-456")
 
 	// Create notification
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
@@ -270,12 +274,7 @@ func TestHandler_OnEvent_AllResolutionTypes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h, mock, _ := newTestHandler()
 
-			req := &approval.Request{
-				ID:     "test-req",
-				Client: "client",
-				Type:   approval.RequestTypeGetSecret,
-				Items:  []approval.ItemInfo{{Label: "Secret"}},
-			}
+			req := secretRequest("test-req")
 
 			h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 			h.OnEvent(approval.Event{Type: resolution, Request: req})
@@ -306,9 +305,8 @@ func TestHandler_FormatBody_Search(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "search-1",
-		Client: "searcher@host",
-		Type:   approval.RequestTypeSearch,
+		ID:   "search-1",
+		Type: approval.RequestTypeSearch,
 		SearchAttributes: map[string]string{
 			"service": "github",
 		},
@@ -329,9 +327,8 @@ func TestHandler_FormatBody_MultipleItems(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "multi-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
+		ID:   "multi-1",
+		Type: approval.RequestTypeGetSecret,
 		Items: []approval.ItemInfo{
 			{Label: "Secret1"},
 			{Label: "Secret2"},
@@ -351,11 +348,11 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "pid-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
+		ID:    "pid-1",
+		Type:  approval.RequestTypeGetSecret,
+		Items: []approval.ItemInfo{{Label: "Secret"}},
 		SenderInfo: approval.SenderInfo{
+			Client: "user@host",
 			Info: sender.Info{
 				PID: 5678,
 				// No InvokerName
@@ -371,13 +368,47 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 	}
 }
 
+func TestHandler_FormatBody_SenderHeader(t *testing.T) {
+	tests := []struct {
+		name   string
+		sender approval.SenderInfo
+		want   string
+	}{
+		{
+			name:   "name, client and pid",
+			sender: approval.SenderInfo{Client: "a<b", Info: sender.Info{PID: 7, InvokerName: "x&y"}},
+			want:   "<b>x&amp;y</b>@a&lt;b[7]: ",
+		},
+		{
+			name:   "client and pid",
+			sender: approval.SenderInfo{Client: "a<b", Info: sender.Info{PID: 7}},
+			want:   "<b>a&lt;b</b>[7]: ",
+		},
+		{
+			name:   "client only",
+			sender: approval.SenderInfo{Client: "a<b"},
+			want:   "<b>a&lt;b</b>: ",
+		},
+	}
+	h, _, _ := newTestHandler()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &approval.Request{
+				Type:       approval.RequestTypeGetSecret,
+				Items:      []approval.ItemInfo{{Label: "Secret"}},
+				SenderInfo: tt.sender,
+			}
+			assert.Equal(t, tt.want+"<i>Secret</i>", h.formatBody(req))
+		})
+	}
+}
+
 func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "gpg-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGPGSign,
+		ID:   "gpg-1",
+		Type: approval.RequestTypeGPGSign,
 		GPGSignInfo: &approval.GPGSignInfo{
 			RepoName:     "my-project",
 			CommitMsg:    "Add feature\n\nSome body text",
@@ -421,9 +452,8 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "gpg-pid-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGPGSign,
+		ID:   "gpg-pid-1",
+		Type: approval.RequestTypeGPGSign,
 		GPGSignInfo: &approval.GPGSignInfo{
 			RepoName:  "my-project",
 			CommitMsg: "Fix bug",
@@ -457,9 +487,8 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 	// A crafted commit message that tries to close the <i> and inject a bold
 	// "Verified" reassurance, plus a process comm that injects markup too.
 	req := &approval.Request{
-		ID:     "inject-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGPGSign,
+		ID:   "inject-1",
+		Type: approval.RequestTypeGPGSign,
 		GPGSignInfo: &approval.GPGSignInfo{
 			RepoName:  "repo<script>",
 			CommitMsg: "docs: typo</i> <b>Verified · GNOME Keyring</b>",
@@ -496,9 +525,8 @@ func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "quotes-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGPGSign,
+		ID:   "quotes-1",
+		Type: approval.RequestTypeGPGSign,
 		GPGSignInfo: &approval.GPGSignInfo{
 			RepoName:  "my-project",
 			CommitMsg: `fix: don't say "hello" to <script> & friends`,
@@ -519,9 +547,8 @@ func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "delete-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeDelete,
+		ID:   "delete-1",
+		Type: approval.RequestTypeDelete,
 		Items: []approval.ItemInfo{
 			{Label: "GitHub Token", Path: "/org/secrets/github"},
 		},
@@ -555,9 +582,8 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "delete-chain-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeDelete,
+		ID:   "delete-chain-1",
+		Type: approval.RequestTypeDelete,
 		Items: []approval.ItemInfo{
 			{Label: "My Secret", Path: "/org/secrets/item1"},
 		},
@@ -582,13 +608,39 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 	}
 }
 
+func TestHandler_FormatBody_ProcessChainExact(t *testing.T) {
+	req := &approval.Request{
+		Type:  approval.RequestTypeDelete,
+		Items: []approval.ItemInfo{{Label: "My Secret"}},
+		SenderInfo: approval.SenderInfo{
+			Client: "user@host",
+			Info: sender.Info{
+				ProcessChain: []procutil.Process{
+					{Name: "a<b", PID: 100},
+					{Name: "secret-tool", PID: 200},
+				},
+			},
+		},
+	}
+
+	for _, tt := range []struct {
+		showPIDs bool
+		want     string
+	}{
+		{false, "<b>My Secret</b>\na&lt;b ← secret-tool"},
+		{true, "<b>My Secret</b>\na&lt;b[100] ← secret-tool[200]"},
+	} {
+		h := NewHandler(&mockNotifier{}, &mockApprover{}, "127.0.0.1:8484", tt.showPIDs, 2*time.Minute, 0)
+		assert.Equal(t, tt.want, h.formatBody(req), "showPIDs=%v", tt.showPIDs)
+	}
+}
+
 func TestHandler_OnEvent_WriteRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "write-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeWrite,
+		ID:   "write-1",
+		Type: approval.RequestTypeWrite,
 		Items: []approval.ItemInfo{
 			{Label: "New Secret", Path: "/org/secrets/collection/default"},
 		},
@@ -613,10 +665,9 @@ func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:     "secret-icon-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "MySecret"}},
+		ID:    "secret-icon-1",
+		Type:  approval.RequestTypeGetSecret,
+		Items: []approval.ItemInfo{{Label: "MySecret"}},
 	}
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
@@ -637,12 +688,7 @@ func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
 func TestHandler_ListenActions_Approve(t *testing.T) {
 	h, mock, approver := newTestHandler()
 
-	req := &approval.Request{
-		ID:     "action-approve-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("action-approve-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 	notifID := mock.lastNotify() // get the notification ID
@@ -678,12 +724,7 @@ func TestHandler_ListenActions_Approve(t *testing.T) {
 func TestHandler_ListenActions_Deny(t *testing.T) {
 	h, mock, approver := newTestHandler()
 
-	req := &approval.Request{
-		ID:     "action-deny-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("action-deny-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 	_ = mock
@@ -719,12 +760,7 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 	var opened string
 	h.openURL = func(u string) error { opened = u; return nil }
 
-	req := &approval.Request{
-		ID:     "action-default-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("action-default-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
@@ -785,12 +821,7 @@ func TestHandler_ListenActions_ApproverError(t *testing.T) {
 	h, _, approver := newTestHandler()
 	approver.err = fmt.Errorf("not found")
 
-	req := &approval.Request{
-		ID:     "err-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("err-1")
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
 	h.mu.Lock()
@@ -817,12 +848,7 @@ func TestHandler_ListenActions_ApproverError(t *testing.T) {
 func TestHandler_ReverseMapCleanup(t *testing.T) {
 	h, _, _ := newTestHandler()
 
-	req := &approval.Request{
-		ID:     "cleanup-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("cleanup-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
@@ -874,12 +900,7 @@ func newTestHandlerWithDelay(delay time.Duration) (*Handler, *mockNotifier, *moc
 func TestHandler_DelayedNotification_SuppressesQuickCancel(t *testing.T) {
 	h, mock, _ := newTestHandlerWithDelay(200 * time.Millisecond)
 
-	req := &approval.Request{
-		ID:     "quick-cancel-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("quick-cancel-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
@@ -905,12 +926,7 @@ func TestHandler_DelayedNotification_SuppressesQuickCancel(t *testing.T) {
 func TestHandler_DelayedNotification_FiresAfterDelay(t *testing.T) {
 	h, mock, _ := newTestHandlerWithDelay(50 * time.Millisecond)
 
-	req := &approval.Request{
-		ID:     "delayed-fire-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("delayed-fire-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 
@@ -925,12 +941,7 @@ func TestHandler_DelayedNotification_FiresAfterDelay(t *testing.T) {
 func TestHandler_DelayedNotification_ResolvedDuringDelay(t *testing.T) {
 	h, mock, _ := newTestHandlerWithDelay(200 * time.Millisecond)
 
-	req := &approval.Request{
-		ID:     "resolve-during-delay-1",
-		Client: "user@host",
-		Type:   approval.RequestTypeGetSecret,
-		Items:  []approval.ItemInfo{{Label: "Secret"}},
-	}
+	req := secretRequest("resolve-during-delay-1")
 
 	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
 	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
@@ -948,7 +959,6 @@ func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
 
 	req := &approval.Request{
 		ID:         "cancel-after-shown-1",
-		Client:     "user@host",
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Label: "Secret"}},
 		SenderInfo: localSender,
@@ -1051,7 +1061,6 @@ func TestHandler_CancelledRemoteRequest_NoFollowUp(t *testing.T) {
 
 	req := &approval.Request{
 		ID:         "cancel-remote-1",
-		Client:     "remote:laptop",
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Label: "Secret"}},
 		SenderInfo: remoteSender,

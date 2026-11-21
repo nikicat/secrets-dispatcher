@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/poll"
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 	"github.com/stretchr/testify/assert"
@@ -21,7 +23,6 @@ import (
 // The display fields agree with commit_object; the handler re-derives them
 // from the raw bytes (WYSIWYS), so a mismatch would be overridden.
 const validGPGSignBody = `{
-	"client": "test",
 	"gpg_sign_info": {
 		"repo_name":     "myrepo",
 		"commit_msg":    "fix: thing",
@@ -50,7 +51,7 @@ func TestHandleGPGSignRequest_ValidBody(t *testing.T) {
 		t.Fatalf("expected 200, got %d — body: %s", rr.Code, rr.Body.String())
 	}
 
-	var resp GPGSignResponse
+	var resp gpgsign.SignResponse
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestHandleGPGSignRequest_MissingGPGSignInfo(t *testing.T) {
 	handlers := testHandlers(t, newTestManager())
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request",
-		strings.NewReader(`{"client":"test"}`))
+		strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 
@@ -93,7 +94,6 @@ func TestHandleGPGSignRequest_MissingCommitObject(t *testing.T) {
 	handlers := testHandlers(t, mgr)
 
 	body := `{
-		"client": "test",
 		"gpg_sign_info": {
 			"repo_name":  "myrepo",
 			"commit_msg": "fix: thing",
@@ -110,6 +110,28 @@ func TestHandleGPGSignRequest_MissingCommitObject(t *testing.T) {
 	handlers.HandleGPGSignRequest(rr, req)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code, "empty commit_object must be rejected")
+	assert.Empty(t, mgr.List(), "no pending request may be created")
+}
+
+// A commit object the daemon cannot parse in full is refused with 400, so the
+// prompt never shows a truncated message.
+func TestHandleGPGSignRequest_OversizedLineRejected(t *testing.T) {
+	mgr := newTestManager()
+	handlers := testHandlers(t, mgr)
+
+	body, err := json.Marshal(gpgsign.SignRequest{GPGSignInfo: &approval.GPGSignInfo{
+		RepoName:     "myrepo",
+		KeyID:        "ABCD1234",
+		CommitObject: "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A\n\n" + strings.Repeat("a", 2<<20) + "\n",
+	}})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/gpg-sign/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	handlers.HandleGPGSignRequest(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
 	assert.Empty(t, mgr.List(), "no pending request may be created")
 }
 
@@ -173,6 +195,8 @@ func TestHandleGPGSignRequest_KeyIDVisibleInPendingList(t *testing.T) {
 	if pr.Type != approval.RequestTypeGPGSign {
 		t.Errorf("expected type %q, got %q", approval.RequestTypeGPGSign, pr.Type)
 	}
+	// httptest gives the handler no unix peer, so the client is unknown.
+	assert.Equal(t, approval.ClientUnknown, pr.Client)
 }
 
 // TestHandleGPGSignRequest_DisplayBoundToCommitObject is the regression test for
@@ -196,7 +220,6 @@ func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
 		"backdoor: exfiltrate secrets\n"
 
 	body := map[string]any{
-		"client": "test",
 		"gpg_sign_info": map[string]any{
 			"repo_name":     "myrepo",
 			"commit_msg":    "docs: fix typo",
@@ -249,7 +272,6 @@ func TestHandleGPGSignRequest_DisplayBoundToTagObject(t *testing.T) {
 		"release: v9.9.9\n"
 
 	body := map[string]any{
-		"client": "test",
 		"gpg_sign_info": map[string]any{
 			"repo_name": "myrepo",
 			// The client lies: claims a benign commit, hiding the tag.
@@ -277,7 +299,7 @@ func TestHandleGPGSignRequest_DisplayBoundToTagObject(t *testing.T) {
 	info := pending[0].GPGSignInfo
 	require.NotNil(t, info)
 
-	assert.Equal(t, "tag", info.Kind, "kind must be re-derived from the signed bytes")
+	assert.Equal(t, approval.GPGSignTag, info.Kind, "kind must be re-derived from the signed bytes")
 	assert.Equal(t, "Real Tagger <tag@example.com> 1700000000 +0000", info.Author, "tagger must be bound to the tag object")
 	assert.Equal(t, "v9.9.9", info.TagName, "tag name must be bound to the tag object")
 	assert.Equal(t, "1111111111111111111111111111111111111111", info.Target, "tag target must be bound to the tag object")
@@ -426,16 +448,7 @@ func TestHandleGPGSignRequest_WSSignatureOnApproval(t *testing.T) {
 	mgr.Subscribe(obs)
 
 	// Create a gpg_sign request via the manager directly (same path the handler uses).
-	info := &approval.GPGSignInfo{
-		RepoName:     "myrepo",
-		CommitMsg:    "fix: thing",
-		Author:       "A",
-		Committer:    "A",
-		KeyID:        "ABCD1234",
-		ChangedFiles: []string{"main.go"},
-		CommitObject: "tree 0\n",
-	}
-	id, err := mgr.CreateGPGSignRequest("test-client", info, approval.SenderInfo{})
+	id, err := mgr.CreateGPGSignRequest(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}

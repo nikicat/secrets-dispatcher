@@ -40,8 +40,7 @@ func (s *Service) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return s.localConn.Object(dbustypes.BusName, path)
 }
 
-// Returns a lazy resolver of sender's SenderInfo, for the ResolveSender field
-// of an UpstreamCallContext.
+// Returns a lazy resolver of sender's SenderInfo, for SenderCall.
 func (s *Service) senderResolver(sender sender.UniqueName) func() approval.SenderInfo {
 	return func() approval.SenderInfo { return s.resolver.Resolve(sender) }
 }
@@ -84,11 +83,9 @@ func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Varian
 // Signature: SearchItems(attributes Dict<String,String>) -> (unlocked Array<ObjectPath>, locked Array<ObjectPath>)
 func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
 	obj := s.upstream(dbustypes.ServicePath)
-	infos := searchAttributesToItemInfo(attributes)
-	sender := senderOf(msg)
-	senderInfo := s.resolver.Resolve(sender)
+	senderInfo := s.resolver.Resolve(senderOf(msg))
 
-	info := approval.RequestInfo{Items: infos, Type: approval.RequestTypeSearch, SearchAttributes: attributes, SenderInfo: senderInfo}
+	info := approval.RequestInfo{Items: searchAttributesToItemInfo(attributes), Type: approval.RequestTypeSearch, SearchAttributes: attributes, SenderInfo: senderInfo}
 	// Check if request should be denied by a trust rule
 	if rule := s.approval.CheckTrustRules(info); rule != nil && rule.Action == approval.RuleDeny {
 		s.approval.RecordDenied(info)
@@ -96,11 +93,7 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	}
 
 	s.approval.RecordPassthrough(info)
-	call := s.upstreamWithContext(UpstreamCallContext{
-		RequestType:   approval.RequestTypeSearch,
-		Items:         infos,
-		ResolveSender: s.senderResolver(sender),
-	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
+	call := s.upstreamWithContext(RequestCall(info), func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		s.logger.LogSearchItems(context.Background(), attributes, 0, 0, "error", call.Err)
 		return nil, nil, dbustypes.ErrFailed(call.Err)
@@ -121,9 +114,7 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
 	// Fetch item info (label + attributes) for each item
 	sender := senderOf(msg)
-	senderCtx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	senderCtx := SenderCall(s.senderResolver(sender))
 	itemInfos := make([]approval.ItemInfo, len(items))
 	for i, path := range items {
 		itemInfos[i] = s.getItemInfo(path, senderCtx)
@@ -137,7 +128,8 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	senderInfo := s.resolver.Resolve(sender)
 
 	// Require approval before accessing secrets
-	prompted, err := s.approval.RequireApproval(ctx, approval.RequestInfo{Items: itemInfos, Session: session, Type: approval.RequestTypeGetSecret, SenderInfo: senderInfo})
+	info := approval.RequestInfo{Items: itemInfos, Session: session, Type: approval.RequestTypeGetSecret, SenderInfo: senderInfo}
+	upstreamCall, err := requireApproval(ctx, s.approval, info)
 	if err != nil {
 		s.logger.LogGetSecrets(ctx, items, "denied", err)
 		return nil, dbustypes.ErrAccessDenied(err.Error())
@@ -151,12 +143,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	}
 
 	obj := s.upstream(dbustypes.ServicePath)
-	call := s.upstreamWithContext(UpstreamCallContext{
-		RequestType: approval.RequestTypeGetSecret,
-		Items:       itemInfos,
-		SenderInfo:  senderInfo,
-		Prompted:    prompted,
-	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
+	call := s.upstreamWithContext(upstreamCall, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, items, localSession) })
 	if call.Err != nil {
 		s.logger.LogGetSecrets(context.Background(), items, "error", call.Err)
 		return nil, dbustypes.ErrFailed(call.Err)
@@ -189,9 +176,7 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	senderCtx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	senderCtx := SenderCall(s.senderResolver(sender))
 	infos := s.getUnlockInfo(objects, senderCtx)
 	senderInfo := s.resolver.Resolve(sender)
 
@@ -203,11 +188,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	}
 
 	s.approval.RecordPassthrough(info)
-	call := s.upstreamWithContext(UpstreamCallContext{
-		RequestType:   approval.RequestTypeUnlock,
-		Items:         infos,
-		ResolveSender: s.senderResolver(sender),
-	}, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
+	call := s.upstreamWithContext(RequestCall(info), func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Unlock", 0, objects) })
 	if call.Err != nil {
 		s.logger.LogUnlock(context.Background(), objects, 0, "error", call.Err)
 		return nil, "/", dbustypes.ErrFailed(call.Err)
@@ -229,9 +210,7 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".Lock", 0, objects) })
 	if call.Err != nil {
 		return nil, "/", dbustypes.ErrFailed(call.Err)
@@ -251,9 +230,7 @@ func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Obje
 func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *dbus.Error) {
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".ReadAlias", 0, name) })
 	if call.Err != nil {
 		s.logger.LogReadAlias(context.Background(), name, "", "error", call.Err)
@@ -275,9 +252,7 @@ func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *db
 func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.ObjectPath) *dbus.Error {
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call(dbustypes.ServiceInterface+".SetAlias", 0, name, collection) })
 	if call.Err != nil {
 		return dbustypes.ErrFailed(call.Err)
@@ -290,9 +265,7 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	call := s.upstreamWithContext(ctx, func() *dbus.Call {
 		return obj.Call(dbustypes.ServiceInterface+".CreateCollection", 0, properties, alias)
 	})
@@ -316,9 +289,7 @@ func (s *Service) Get(msg dbus.Message, iface, property string) (dbus.Variant, *
 
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	variant, err := s.upstreamGetProperty(obj, iface+"."+property, ctx)
 	if err != nil {
 		return dbus.Variant{}, dbustypes.ErrFailed(err)
@@ -335,9 +306,7 @@ func (s *Service) GetAll(msg dbus.Message, iface string) (map[string]dbus.Varian
 
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	call := s.upstreamWithContext(ctx, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
 		return nil, dbustypes.ErrFailed(call.Err)
@@ -359,9 +328,7 @@ func (s *Service) Set(msg dbus.Message, iface, property string, value dbus.Varia
 
 	obj := s.upstream(dbustypes.ServicePath)
 	sender := senderOf(msg)
-	ctx := UpstreamCallContext{
-		ResolveSender: s.senderResolver(sender),
-	}
+	ctx := SenderCall(s.senderResolver(sender))
 	call := s.upstreamWithContext(ctx, func() *dbus.Call {
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})

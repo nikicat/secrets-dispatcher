@@ -18,11 +18,12 @@ type ClientName string
 
 // Client names the dispatcher gives its own clients. No forwarded bus may take one.
 const (
-	// The session bus.
+	// The session bus, and the local API socket that the gpg-sign thin client uses.
 	ClientLocal ClientName = "local"
 	// The SSH agent socket.
 	ClientSSHAgent ClientName = "ssh-agent"
-	// A client that was given no name.
+	// A request that came over a connection with no unix peer, such as one to the
+	// API's TCP listener.
 	ClientUnknown ClientName = "unknown"
 )
 

@@ -102,7 +102,9 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Allow same-origin connections only
+		// Any Origin passes; the auth check above is the gate. A browser sends the
+		// SameSite=Strict session cookie (ADR 0006) only from same-site pages, so a
+		// cross-site page cannot open the socket, but a page on another local port can.
 		OriginPatterns: []string{"*"},
 	})
 	if err != nil {
@@ -157,44 +159,24 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		msgs = append(msgs, WSMessage{
 			Type:      wsmsg.RequestResolved,
 			ID:        event.Request.ID,
-			Result:    approval.ResolutionApproved,
+			Result:    event.History.Resolution,
 			GPGResult: event.Request.GPGOutput(),
-		})
-		entry := makeHistoryEntry(event.Request, "approved")
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
 		})
 	case approval.EventRequestDenied:
 		msgs = append(msgs, WSMessage{
 			Type:   wsmsg.RequestResolved,
 			ID:     event.Request.ID,
-			Result: approval.ResolutionDenied,
-		})
-		entry := makeHistoryEntry(event.Request, "denied")
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
+			Result: event.History.Resolution,
 		})
 	case approval.EventRequestExpired:
 		msgs = append(msgs, WSMessage{
 			Type: wsmsg.RequestExpired,
 			ID:   event.Request.ID,
 		})
-		entry := makeHistoryEntry(event.Request, "expired")
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
-		})
 	case approval.EventRequestCancelled:
 		msgs = append(msgs, WSMessage{
 			Type: wsmsg.RequestCancelled,
 			ID:   event.Request.ID,
-		})
-		entry := makeHistoryEntry(event.Request, "cancelled")
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
 		})
 	case approval.EventRequestAutoApproved:
 		// GPG sign auto-approvals carry signature data that the thin client needs.
@@ -202,21 +184,12 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 			msgs = append(msgs, WSMessage{
 				Type:      wsmsg.RequestResolved,
 				ID:        event.Request.ID,
-				Result:    approval.ResolutionAutoApproved,
+				Result:    event.History.Resolution,
 				GPGResult: out,
 			})
 		}
-		entry := makeHistoryEntry(event.Request, "auto_approved")
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
-		})
 	case approval.EventRequestIgnored:
-		entry := makeHistoryEntry(event.Request, "ignored")
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
-		})
+		// Only the history entry below.
 	case approval.EventAutoApproveRuleAdded:
 		msgs = append(msgs, WSMessage{
 			Type:            wsmsg.AutoApproveRuleAdded,
@@ -229,6 +202,13 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		})
 	default:
 		return
+	}
+	if event.History != nil {
+		entry := convertHistoryEntry(*event.History)
+		msgs = append(msgs, WSMessage{
+			Type:         wsmsg.HistoryEntry,
+			HistoryEntry: &entry,
+		})
 	}
 
 	for _, msg := range msgs {
@@ -245,15 +225,6 @@ func (wsc *wsConnection) OnEvent(event approval.Event) {
 		default:
 			slog.Warn("WebSocket send buffer full, dropping message", "type", msg.Type, "id", msg.ID)
 		}
-	}
-}
-
-// makeHistoryEntry creates a HistoryEntry for WebSocket messages.
-func makeHistoryEntry(req *approval.Request, resolution string) HistoryEntry {
-	return HistoryEntry{
-		Request:    convertRequest(req),
-		Resolution: resolution,
-		ResolvedAt: time.Now(),
 	}
 }
 
@@ -396,7 +367,7 @@ func convertRequest(req *approval.Request) PendingRequest {
 	}
 	return PendingRequest{
 		ID:               req.ID,
-		Client:           req.Client,
+		Client:           req.SenderInfo.Client,
 		Items:            items,
 		Session:          req.Session,
 		CreatedAt:        req.CreatedAt,

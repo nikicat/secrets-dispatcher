@@ -54,6 +54,10 @@ func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) str
 	return mgr.AddAutoApproveRule(rule)
 }
 
+func signableGPGSignInfo() *approval.GPGSignInfo {
+	return &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}
+}
+
 func localSender(comm string, exe procutil.Path) approval.SenderInfo {
 	const pid = 4242
 	return approval.SenderInfo{

@@ -73,9 +73,9 @@ type LogResponse struct {
 
 // HistoryEntry represents a resolved approval request in API responses.
 type HistoryEntry struct {
-	Request    PendingRequest `json:"request"`
-	Resolution string         `json:"resolution"` // approved, denied, expired, cancelled
-	ResolvedAt time.Time      `json:"resolved_at"`
+	Request    PendingRequest      `json:"request"`
+	Resolution approval.Resolution `json:"resolution"`
+	ResolvedAt time.Time           `json:"resolved_at"`
 }
 
 // HistoryResponse is returned by GET /api/v1/log.

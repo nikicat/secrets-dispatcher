@@ -14,24 +14,22 @@ import (
 
 type connContextKey struct{}
 
-// connContext returns a ConnContext function for http.Server that stores
-// the net.Conn in the request context. This allows handlers to retrieve
-// the underlying connection (e.g., for Unix socket peer credentials).
+// Stores c in the request context, for resolvePeerInfo.
 func connContext(ctx context.Context, c net.Conn) context.Context {
 	return context.WithValue(ctx, connContextKey{}, c)
 }
 
-// Describes the process behind the unix socket connection in ctx. The invoker
-// is the nearest process above git that is not a shell, since the peer is our
-// gpg-sign thin client run by git.
+// Returns the sender behind the unix socket connection in ctx, as ClientLocal.
+// Without a unix peer, the sender holds only ClientUnknown. The invoker is the
+// nearest non-shell process above git, since git runs the thin client (ADR 0008).
 func resolvePeerInfo(ctx context.Context, chains sender.ChainReader) approval.SenderInfo {
 	c, ok := ctx.Value(connContextKey{}).(net.Conn)
 	if !ok || c == nil {
-		return approval.SenderInfo{}
+		return approval.SenderInfo{Client: approval.ClientUnknown}
 	}
 	peer, ok := unixsock.PeerOf(c)
 	if !ok {
-		return approval.SenderInfo{}
+		return approval.SenderInfo{Client: approval.ClientUnknown}
 	}
 
 	chain := chains.Chain(peer.PID)
@@ -52,6 +50,7 @@ func resolvePeerInfo(ctx context.Context, chains sender.ChainReader) approval.Se
 
 	peerExe, peerExeKnown := peer.PID.Exe()
 	return approval.SenderInfo{
+		Client:       approval.ClientLocal,
 		PID:          invokerPID,
 		UID:          new(peer.UID),
 		InvokerName:  invokerName,

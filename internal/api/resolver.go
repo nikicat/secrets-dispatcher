@@ -3,7 +3,6 @@ package api
 import (
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
@@ -92,10 +91,10 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 	return r.Manager.ApproveAndAutoApprove(id)
 }
 
-// Signs info's commit object with the real gpg. A slow gpg is reported as
-// proxy.WithSlowNotify decides for call. Errors when gpg cannot be found or
-// started, and the result then carries GPGNotFound or GPGNotStarted.
-func (r *Resolver) signGPG(info *approval.GPGSignInfo, call proxy.UpstreamCallContext) (approval.GPGResult, error) {
+// Signs the commit object of the gpg_sign request with the real gpg, reporting a slow gpg
+// as proxy.WithSlowNotify decides for call(request). Errors when gpg cannot be found
+// or started, and the result then carries GPGNotFound or GPGNotStarted.
+func (r *Resolver) signGPG(request approval.RequestInfo, call func(approval.RequestInfo) proxy.UpstreamCallContext) (approval.GPGResult, error) {
 	gpgPath, err := r.GPGRunner.FindGPG()
 	if err != nil {
 		return approval.GPGResult{ExitCode: approval.GPGNotFound}, fmt.Errorf("find gpg: %w", err)
@@ -105,39 +104,19 @@ func (r *Resolver) signGPG(info *approval.GPGSignInfo, call proxy.UpstreamCallCo
 		res approval.GPGResult
 		err error
 	}
-	call.RequestType = approval.RequestTypeGPGSign
-	call.Items = gpgSignItems(info)
-	out := proxy.WithSlowNotify(r.SlowUpstream, call, func() run {
-		res, err := r.GPGRunner.RunGPG(gpgPath, info.KeyID, []byte(info.CommitObject))
+	sign := request.GPGSignInfo
+	out := proxy.WithSlowNotify(r.SlowUpstream, call(request), func() run {
+		res, err := r.GPGRunner.RunGPG(gpgPath, sign.KeyID, []byte(sign.CommitObject))
 		return run{res, err}
 	})
 	return out.res, out.err
-}
-
-// gpgSignItems builds ItemInfo for GPG signing notifications.
-func gpgSignItems(info *approval.GPGSignInfo) []approval.ItemInfo {
-	if info == nil {
-		return nil
-	}
-	label := string(info.RepoName)
-	if info.CommitMsg != "" {
-		subject := info.CommitMsg
-		if i := len(subject); i > 60 {
-			subject = subject[:60]
-		}
-		if nl := strings.IndexByte(subject, '\n'); nl >= 0 {
-			subject = subject[:nl]
-		}
-		label += ": " + subject
-	}
-	return []approval.ItemInfo{{Label: label}}
 }
 
 // Signs the pending gpg_sign request req with the real gpg and approves it
 // with what gpg produced, failure included. Returns that result. Errors as
 // Manager.ApproveGPGSign does.
 func (r *Resolver) approveGPGSign(id string, req *approval.Request) (approval.GPGResult, error) {
-	res, err := r.signGPG(req.GPGSignInfo, proxy.UpstreamCallContext{SenderInfo: req.SenderInfo, Prompted: true})
+	res, err := r.signGPG(req.GPGSignInfo.RequestInfo(req.SenderInfo), proxy.PromptedCall)
 	if err != nil || !res.Succeeded() {
 		slog.Error("gpg signing failed", "error", err, "exit_code", res.ExitCode)
 	}

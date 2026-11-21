@@ -44,8 +44,8 @@ Done when each item below is fixed as its "Fix" says.
   a Handler method that never uses its receiver
   Fix: a free function (or a table keyed by approval.RequestType)
 - `internal/notification/desktop.go:640-642` (pass-through). escapeMarkup only
-  calls markupEscaper.Replace, and its one caller aliases it again as esc
-  (:661).
-  Fix: formatBody uses markupEscaper.Replace as esc; escapeMarkup goes
+  calls markupEscaper.Replace. formatBody aliases it again as esc, and
+  formatProcessChain, senderHeader and itemsLine call it too.
+  Fix: formatBody calls escapeMarkup and the esc alias goes
 
 Found by the 2026-11-19 unsmell run (b2-8, b2-16, b2-17, b2-18, b2-19, b2-20).

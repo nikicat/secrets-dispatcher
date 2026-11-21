@@ -324,8 +324,8 @@ func TestManager_RequestFields(t *testing.T) {
 	}
 
 	req := reqs[0]
-	if req.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", req.Client)
+	if req.SenderInfo.Client != "test-client" {
+		t.Errorf("expected client 'test-client', got '%s'", req.SenderInfo.Client)
 	}
 	if len(req.Items) != 2 {
 		t.Errorf("expected 2 items, got %d", len(req.Items))
@@ -1300,8 +1300,8 @@ func TestRecordIgnored(t *testing.T) {
 	if history[0].Resolution != ResolutionIgnored {
 		t.Errorf("expected resolution 'ignored', got '%s'", history[0].Resolution)
 	}
-	if history[0].Request.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.Client)
+	if history[0].Request.SenderInfo.Client != "test-client" {
+		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.SenderInfo.Client)
 	}
 
 	// No pending requests
@@ -1310,6 +1310,11 @@ func TestRecordIgnored(t *testing.T) {
 	}
 
 	mgr.Unsubscribe(obs)
+}
+
+// Returns a gpg_sign request from sender for repo with files changed.
+func signRequest(sender SenderInfo, repo RepoName, files []string) RequestInfo {
+	return (&GPGSignInfo{RepoName: repo, ChangedFiles: files}).RequestInfo(sender)
 }
 
 func TestCheckTrustedSigner(t *testing.T) {
@@ -1335,15 +1340,15 @@ func TestCheckTrustedSigner(t *testing.T) {
 	}
 
 	t.Run("trusted ancestor via helper", func(t *testing.T) {
-		assert.True(t, mgr.CheckTrustedSigner(viaHelper, "my-repo", nil))
+		assert.True(t, mgr.CheckTrustedSigner(signRequest(viaHelper, "my-repo", nil)))
 	})
 
 	t.Run("wrong repo", func(t *testing.T) {
-		assert.False(t, mgr.CheckTrustedSigner(viaHelper, "other-repo", nil))
+		assert.False(t, mgr.CheckTrustedSigner(signRequest(viaHelper, "other-repo", nil)))
 	})
 
 	t.Run("empty chain", func(t *testing.T) {
-		assert.False(t, mgr.CheckTrustedSigner(SenderInfo{PeerTrusted: true}, "my-repo", nil))
+		assert.False(t, mgr.CheckTrustedSigner(signRequest(SenderInfo{PeerTrusted: true}, "my-repo", nil)))
 	})
 
 	t.Run("empty repo matches any", func(t *testing.T) {
@@ -1352,7 +1357,7 @@ func TestCheckTrustedSigner(t *testing.T) {
 			HistoryMax:     100,
 			TrustedSigners: []TrustedSigner{{ExePath: nvimExe}},
 		})
-		assert.True(t, m.CheckTrustedSigner(viaHelper, "any-repo", nil))
+		assert.True(t, m.CheckTrustedSigner(signRequest(viaHelper, "any-repo", nil)))
 	})
 
 	t.Run("file prefix match and reject", func(t *testing.T) {
@@ -1361,8 +1366,8 @@ func TestCheckTrustedSigner(t *testing.T) {
 			HistoryMax:     100,
 			TrustedSigners: []TrustedSigner{{ExePath: nvimExe, FilePrefix: "secret-service/"}},
 		})
-		assert.True(t, m.CheckTrustedSigner(viaHelper, "any", []string{"secret-service/default/i1.age", "secret-service/login/i2.age"}))
-		assert.False(t, m.CheckTrustedSigner(viaHelper, "any", []string{"secret-service/default/i1.age", "other/sneaky.gpg"}))
+		assert.True(t, m.CheckTrustedSigner(signRequest(viaHelper, "any", []string{"secret-service/default/i1.age", "secret-service/login/i2.age"})))
+		assert.False(t, m.CheckTrustedSigner(signRequest(viaHelper, "any", []string{"secret-service/default/i1.age", "other/sneaky.gpg"})))
 	})
 }
 
@@ -1408,14 +1413,14 @@ func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 			{Name: "nvim", Exe: new(procutil.Path(nvimExe))},
 		},
 	}
-	assert.False(t, mgr.CheckTrustedSigner(forged, "any", nil),
+	assert.False(t, mgr.CheckTrustedSigner(signRequest(forged, "any", nil)),
 		"a direct protocol speaker must not silently sign even with a trusted ancestor")
 
 	// Flipping only the PeerTrusted gate lets the trusted ancestor match again,
 	// confirming the gate — not the ancestry — is what blocked the forged request.
 	trusted := forged
 	trusted.PeerTrusted = true
-	assert.True(t, mgr.CheckTrustedSigner(trusted, "any", nil))
+	assert.True(t, mgr.CheckTrustedSigner(signRequest(trusted, "any", nil)))
 }
 
 func TestCheckTrustRules(t *testing.T) {
@@ -2070,8 +2075,8 @@ func TestRecordPassthrough(t *testing.T) {
 	if history[0].Resolution != ResolutionAutoApproved {
 		t.Errorf("expected resolution 'auto_approved', got '%s'", history[0].Resolution)
 	}
-	if history[0].Request.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.Client)
+	if history[0].Request.SenderInfo.Client != "test-client" {
+		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.SenderInfo.Client)
 	}
 	assert.Equal(t, sender.Sender, history[0].Request.SenderInfo.Sender)
 	if history[0].Request.SearchAttributes["xdg:schema"] != "org.gnome.keyring.Note" {

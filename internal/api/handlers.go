@@ -243,7 +243,7 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 	return HistoryEntry{
 		Request:    convertRequest(entry.Request),
-		Resolution: string(entry.Resolution),
+		Resolution: entry.Resolution,
 		ResolvedAt: entry.ResolvedAt,
 	}
 }
@@ -356,16 +356,15 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 	approvalEntry := approval.HistoryEntry{
 		Request: &approval.Request{
 			ID:               entry.Request.ID,
-			Client:           entry.Request.Client,
 			Items:            items,
 			Session:          entry.Request.Session,
 			CreatedAt:        entry.Request.CreatedAt,
 			ExpiresAt:        entry.Request.ExpiresAt,
 			Type:             entry.Request.Type,
 			SearchAttributes: entry.Request.SearchAttributes,
-			SenderInfo:       approval.SenderInfo{Info: entry.Request.SenderInfo},
+			SenderInfo:       approval.SenderInfo{Info: entry.Request.SenderInfo, Client: entry.Request.Client},
 		},
-		Resolution: approval.Resolution(entry.Resolution),
+		Resolution: entry.Resolution,
 		ResolvedAt: entry.ResolvedAt,
 	}
 

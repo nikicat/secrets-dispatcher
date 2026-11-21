@@ -42,8 +42,7 @@ func (c *CollectionHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return c.localConn.Object(dbustypes.BusName, path)
 }
 
-// Returns a lazy resolver of sender's SenderInfo, for the ResolveSender field
-// of an UpstreamCallContext.
+// Returns a lazy resolver of sender's SenderInfo, for SenderCall.
 func (c *CollectionHandler) senderResolver(sender sender.UniqueName) func() approval.SenderInfo {
 	return func() approval.SenderInfo { return c.resolver.Resolve(sender) }
 }
@@ -94,9 +93,7 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 
 	// Fetch collection label for the approval prompt
 	sender := senderOf(msg)
-	senderCtx := UpstreamCallContext{
-		ResolveSender: c.senderResolver(sender),
-	}
+	senderCtx := SenderCall(c.senderResolver(sender))
 	collectionInfo := c.getCollectionInfo(path, senderCtx)
 
 	// Get a context that will be cancelled if the client disconnects
@@ -107,20 +104,15 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 	senderInfo := c.resolver.Resolve(sender)
 
 	// Require approval before deleting
-	items := []approval.ItemInfo{collectionInfo}
-	prompted, err := c.approval.RequireApproval(ctx, approval.RequestInfo{Items: items, Type: approval.RequestTypeDelete, SenderInfo: senderInfo})
+	info := approval.RequestInfo{Items: []approval.ItemInfo{collectionInfo}, Type: approval.RequestTypeDelete, SenderInfo: senderInfo}
+	upstreamCall, err := requireApproval(ctx, c.approval, info)
 	if err != nil {
 		c.logger.LogMethod(ctx, "Collection.Delete", map[string]any{"collection": string(path)}, "denied", err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	obj := c.upstream(path)
-	call := c.upstreamWithContext(UpstreamCallContext{
-		RequestType: approval.RequestTypeDelete,
-		Items:       items,
-		SenderInfo:  senderInfo,
-		Prompted:    prompted,
-	}, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".Delete", 0) })
+	call := c.upstreamWithContext(upstreamCall, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".Delete", 0) })
 	if call.Err != nil {
 		return "/", dbustypes.ErrFailed(call.Err)
 	}
@@ -180,11 +172,9 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	}
 
 	obj := c.upstream(path)
-	infos := searchAttributesToItemInfo(attributes)
-	sender := senderOf(msg)
-	senderInfo := c.resolver.Resolve(sender)
+	senderInfo := c.resolver.Resolve(senderOf(msg))
 
-	info := approval.RequestInfo{Items: infos, Type: approval.RequestTypeSearch, SearchAttributes: attributes, SenderInfo: senderInfo}
+	info := approval.RequestInfo{Items: searchAttributesToItemInfo(attributes), Type: approval.RequestTypeSearch, SearchAttributes: attributes, SenderInfo: senderInfo}
 	// Check if request should be denied by a trust rule
 	if rule := c.approval.CheckTrustRules(info); rule != nil && rule.Action == approval.RuleDeny {
 		c.approval.RecordDenied(info)
@@ -192,11 +182,7 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	}
 
 	c.approval.RecordPassthrough(info)
-	call := c.upstreamWithContext(UpstreamCallContext{
-		RequestType:   approval.RequestTypeSearch,
-		Items:         infos,
-		ResolveSender: c.senderResolver(sender),
-	}, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes) })
+	call := c.upstreamWithContext(RequestCall(info), func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes) })
 	if call.Err != nil {
 		return nil, dbustypes.ErrFailed(call.Err)
 	}
@@ -235,8 +221,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	senderInfo := c.resolver.Resolve(sender)
 
 	// Short-circuit Chrome dummy secret writes
-	items := []approval.ItemInfo{itemInfo}
-	info := approval.RequestInfo{Items: items, Session: secret.Session, Type: approval.RequestTypeWrite, SenderInfo: senderInfo}
+	info := approval.RequestInfo{Items: []approval.ItemInfo{itemInfo}, Session: secret.Session, Type: approval.RequestTypeWrite, SenderInfo: senderInfo}
 	if c.approval.ShouldIgnore(info) {
 		c.approval.RecordIgnored(info)
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
@@ -246,7 +231,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	// Require approval before creating item
-	prompted, err := c.approval.RequireApproval(ctx, info)
+	upstreamCall, err := requireApproval(ctx, c.approval, info)
 	if err != nil {
 		if errors.Is(err, approval.ErrIgnored) {
 			c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
@@ -270,12 +255,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	obj := c.upstream(path)
-	call := c.upstreamWithContext(UpstreamCallContext{
-		RequestType: approval.RequestTypeWrite,
-		Items:       items,
-		SenderInfo:  senderInfo,
-		Prompted:    prompted,
-	}, func() *dbus.Call {
+	call := c.upstreamWithContext(upstreamCall, func() *dbus.Call {
 		return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace)
 	})
 	if call.Err != nil {
@@ -307,9 +287,7 @@ func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.
 
 	obj := c.upstream(path)
 	sender := senderOf(msg)
-	r := WithSlowNotify(c.slowUpstream, UpstreamCallContext{
-		ResolveSender: c.senderResolver(sender),
-	}, func() propResult {
+	r := WithSlowNotify(c.slowUpstream, SenderCall(c.senderResolver(sender)), func() propResult {
 		v, err := obj.GetProperty(iface + "." + property)
 		return propResult{v, err}
 	})
@@ -329,9 +307,7 @@ func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]d
 
 	obj := c.upstream(path)
 	sender := senderOf(msg)
-	call := c.upstreamWithContext(UpstreamCallContext{
-		ResolveSender: c.senderResolver(sender),
-	}, func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
+	call := c.upstreamWithContext(SenderCall(c.senderResolver(sender)), func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
 	if call.Err != nil {
 		return nil, dbustypes.ErrFailed(call.Err)
 	}
@@ -353,9 +329,7 @@ func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value 
 
 	obj := c.upstream(path)
 	sender := senderOf(msg)
-	call := c.upstreamWithContext(UpstreamCallContext{
-		ResolveSender: c.senderResolver(sender),
-	}, func() *dbus.Call {
+	call := c.upstreamWithContext(SenderCall(c.senderResolver(sender)), func() *dbus.Call {
 		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
 	})
 	if call.Err != nil {

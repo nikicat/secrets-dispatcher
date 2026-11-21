@@ -684,6 +684,20 @@ func escapeMarkup(s string) string {
 	return markupEscaper.Replace(s)
 }
 
+// Returns the process names of chain joined by " ← ", escaped for a
+// notification body (ADR 0007). Each name is followed by its PID in brackets
+// when showPIDs is true.
+func formatProcessChain(chain []procutil.Process, showPIDs bool) string {
+	names := make([]string, len(chain))
+	for i, p := range chain {
+		names[i] = escapeMarkup(p.Name)
+		if showPIDs {
+			names[i] += fmt.Sprintf("[%d]", p.PID)
+		}
+	}
+	return strings.Join(names, " ← ")
+}
+
 // commitSubject returns the first line of a commit message.
 func commitSubject(msg string) string {
 	if before, _, ok := strings.Cut(msg, "\n"); ok {
@@ -692,29 +706,29 @@ func commitSubject(msg string) string {
 	return msg
 }
 
+// Returns the markup header "<b>name</b>@client[pid]: " for s, with each value
+// escaped. The name and the pid are left out when unknown. A request without a
+// process chain is shown by the client it came from (ADR 0003).
+func senderHeader(s approval.SenderInfo) string {
+	client := escapeMarkup(string(s.Client))
+	if name := s.DisplayName(); name != "" {
+		return fmt.Sprintf("<b>%s</b>@%s[%d]: ", escapeMarkup(name), client, s.PID)
+	}
+	if s.PID != 0 {
+		return fmt.Sprintf("<b>%s</b>[%d]: ", client, s.PID)
+	}
+	return fmt.Sprintf("<b>%s</b>: ", client)
+}
+
 func (h *Handler) formatBody(req *approval.Request) string {
 	var b strings.Builder
 
-	// esc escapes client-controlled substrings before they are interpolated into
-	// the org.freedesktop.Notifications markup body. Every dynamic value here
-	// (repo/commit/label/search attrs, and process comm which is itself
-	// attacker-settable via prctl) must be escaped; only our own literal <b>/<i>
-	// tags are emitted raw. The notification carries approve/deny action buttons,
-	// so unescaped markup could forge reassuring content on the consent surface.
+	// Every value that a client controls is escaped (ADR 0007).
 	esc := escapeMarkup
 
-	// writeChain appends the process chain (comm names), escaping each name.
 	writeChain := func(chain []procutil.Process) {
-		for i, p := range chain {
-			if i == 0 {
-				b.WriteString("\n")
-			} else {
-				b.WriteString(" ← ")
-			}
-			b.WriteString(esc(p.Name))
-			if h.showPIDs {
-				fmt.Fprintf(&b, "[%d]", p.PID)
-			}
+		if len(chain) > 0 {
+			b.WriteString("\n" + formatProcessChain(chain, h.showPIDs))
 		}
 	}
 
@@ -761,14 +775,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			}
 			writeChain(req.SenderInfo.ProcessChain)
 		} else {
-			// Fallback: old format for remote requests without process chain
-			if name := req.SenderInfo.DisplayName(); name != "" {
-				fmt.Fprintf(&b, "<b>%s</b>@%s[%d]: ", esc(name), esc(string(req.Client)), req.SenderInfo.PID)
-			} else if req.SenderInfo.PID != 0 {
-				fmt.Fprintf(&b, "<b>%s</b>[%d]: ", esc(string(req.Client)), req.SenderInfo.PID)
-			} else {
-				fmt.Fprintf(&b, "<b>%s</b>: ", esc(string(req.Client)))
-			}
+			b.WriteString(senderHeader(req.SenderInfo))
 
 			switch req.Type {
 			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:

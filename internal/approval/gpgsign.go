@@ -3,39 +3,48 @@ package approval
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // RequestTypeGPGSign is the request type for GPG commit signing approval requests.
 const RequestTypeGPGSign RequestType = "gpg_sign"
 
-// GPGSignInfo carries the signing context for a gpg_sign approval request.
-// All fields are supplied by the thin client; CommitObject is the raw object
-// bytes (UTF-8 text) that the daemon feeds to real gpg's stdin on approval.
-//
-// git signs three kinds of object through the same invocation (see
-// gpgsign.PayloadKind): commits, annotated tags, and signed-push certificates.
-// The common fields are reused across kinds — Author holds the commit author /
-// tag tagger / push pusher, and CommitMsg holds the commit message / tag
-// message / pushed ref-update lines — while Kind and the kind-specific fields
-// below let the approval UI label them correctly. Committer and ParentHash are
-// commit-only; TagName/Target are tag-only; Pushee is push-only.
+// The kind of git object that a gpg_sign request signs. git hands commits,
+// annotated tags and push certificates to the same gpg.program, so the signed
+// bytes are not always a commit (ADR 0008).
+type GPGSignKind string
+
+const (
+	GPGSignCommit  GPGSignKind = "commit"
+	GPGSignTag     GPGSignKind = "tag"
+	GPGSignPush    GPGSignKind = "push"
+	GPGSignUnknown GPGSignKind = "unknown"
+)
+
+// RepoName and ChangedFiles describe the working tree, not the signed object
+// (ADR 0008).
 type GPGSignInfo struct {
-	RepoName     RepoName `json:"repo_name"`
-	Kind         string   `json:"kind,omitempty"`
-	CommitMsg    string   `json:"commit_msg"`
-	Author       string   `json:"author"`
+	RepoName RepoName    `json:"repo_name"`
+	Kind     GPGSignKind `json:"kind,omitempty"`
+	// A commit's or a tag's message, or the ref updates of a push certificate.
+	CommitMsg string `json:"commit_msg"`
+	// A commit's author, a tag's tagger, or a push certificate's pusher.
+	Author string `json:"author"`
+	// Commit only.
 	Committer    string   `json:"committer"`
 	KeyID        string   `json:"key_id"`
 	Fingerprint  string   `json:"fingerprint,omitempty"`
 	ChangedFiles []string `json:"changed_files"`
-	ParentHash   string   `json:"parent_hash,omitempty"`
-	TagName      string   `json:"tag_name,omitempty"`
-	Target       string   `json:"target,omitempty"`
-	Pushee       string   `json:"pushee,omitempty"`
-	// CommitObject is the raw signed object bytes (UTF-8 text) fed to gpg's stdin.
+	// The first parent. Commit only.
+	ParentHash string `json:"parent_hash,omitempty"`
+	// Tag only.
+	TagName string `json:"tag_name,omitempty"`
+	// The hash of the object that the tag points at. Tag only.
+	Target string `json:"target,omitempty"`
+	// The URL that a push certificate pushes to. Push only.
+	Pushee string `json:"pushee,omitempty"`
+	// The bytes that gpg signs, as UTF-8 text.
 	CommitObject string `json:"commit_object,omitempty"`
 }
 
@@ -78,7 +87,8 @@ var (
 	ErrNoCommitObject = errors.New("gpg sign info has no commit object")
 )
 
-// Errors when there is nothing to sign and nothing to bind the approval display to.
+// Errors with ErrNoGPGSignInfo when i is nil, and with ErrNoCommitObject when
+// it has no CommitObject.
 func (i *GPGSignInfo) RequireSignedBytes() error {
 	if i == nil {
 		return ErrNoGPGSignInfo
@@ -89,51 +99,60 @@ func (i *GPGSignInfo) RequireSignedBytes() error {
 	return nil
 }
 
-// RecordAutoApprovedGPGSign creates a resolved gpg_sign request for history and
-// WebSocket delivery WITHOUT firing EventRequestCreated (so no desktop notification
-// appears). Fires EventRequestAutoApproved so the history entry shows "auto_approved".
-// The request is never added to pending and no timeout goroutine is started.
-// res is the gpg output to deliver to the thin client via WebSocket.
-func (m *Manager) RecordAutoApprovedGPGSign(client ClientName, info *GPGSignInfo, senderInfo SenderInfo, res GPGResult) (string, error) {
-	if err := info.RequireSignedBytes(); err != nil {
+// Returns the gpg_sign RequestInfo of sender's request to sign info. Its one
+// item is labelled with the repository name and the commit's subject.
+func (info *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
+	label := string(info.RepoName)
+	if info.CommitMsg != "" {
+		subject := info.CommitMsg
+		if i := len(subject); i > 60 {
+			subject = subject[:60]
+		}
+		if nl := strings.IndexByte(subject, '\n'); nl >= 0 {
+			subject = subject[:nl]
+		}
+		label += ": " + subject
+	}
+	return RequestInfo{
+		Type:        RequestTypeGPGSign,
+		Items:       []ItemInfo{{Label: label}},
+		SenderInfo:  sender,
+		GPGSignInfo: info,
+	}
+}
+
+// Records a gpg_sign request that was approved without a prompt, with res as
+// its result, and returns its ID. Errors as GPGSignInfo.RequireSignedBytes does.
+func (m *Manager) RecordAutoApprovedGPGSign(info RequestInfo, res GPGResult) (string, error) {
+	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
 		return "", err
 	}
 
-	now := time.Now()
-	req := &Request{
-		ID:          uuid.New().String(),
-		Client:      client,
-		CreatedAt:   now,
-		ExpiresAt:   now,
-		Type:        RequestTypeGPGSign,
-		GPGSignInfo: info,
-		SenderInfo:  senderInfo,
-		GPGResult:   res,
-		done:        make(chan struct{}),
-		resolution:  ResolutionAutoApproved,
-	}
+	req := info.newRequest(0)
+	req.GPGResult = res
+	req.done = make(chan struct{})
+	req.resolution = ResolutionAutoApproved
 	close(req.done)
 	m.notify(Event{Type: EventRequestAutoApproved, Request: req})
 	return req.ID, nil
 }
 
-// CreateGPGSignRequest creates a pending gpg_sign approval request and returns its ID.
-// It does NOT block — the result is delivered to the caller via the WebSocket observer
-// pipeline (EventRequestApproved / EventRequestDenied / EventRequestExpired).
-// Uses context.Background() for the timeout goroutine so a dropped HTTP connection does
-// not cancel a request the user is actively reviewing in the web UI.
-func (m *Manager) CreateGPGSignRequest(client ClientName, info *GPGSignInfo, senderInfo SenderInfo) (string, error) {
-	req, err := m.createGPGSignRequest(client, info, senderInfo)
+// Creates a pending gpg_sign request that expires after the manager's timeout
+// (ADR 0004), and returns its ID without waiting, unlike AwaitGPGSign. Errors
+// as GPGSignInfo.RequireSignedBytes does.
+func (m *Manager) CreateGPGSignRequest(info RequestInfo) (string, error) {
+	req, err := m.createGPGSignRequest(info)
 	if err != nil {
 		return "", err
 	}
 	return req.ID, nil
 }
 
-// Creates a gpg_sign request and returns it with its resolution once it is
-// resolved. Ending ctx cancels the request.
-func (m *Manager) AwaitGPGSign(ctx context.Context, client ClientName, info *GPGSignInfo, senderInfo SenderInfo) (*Request, Resolution, error) {
-	req, err := m.createGPGSignRequest(client, info, senderInfo)
+// Creates a gpg_sign request, waits until it is resolved, and returns it with
+// its resolution (ADR 0011). Ending ctx cancels the request. Errors as
+// GPGSignInfo.RequireSignedBytes does.
+func (m *Manager) AwaitGPGSign(ctx context.Context, info RequestInfo) (*Request, Resolution, error) {
+	req, err := m.createGPGSignRequest(info)
 	if err != nil {
 		return nil, "", err
 	}
@@ -146,22 +165,13 @@ func (m *Manager) AwaitGPGSign(ctx context.Context, client ClientName, info *GPG
 	return req, req.resolution, nil
 }
 
-func (m *Manager) createGPGSignRequest(client ClientName, info *GPGSignInfo, senderInfo SenderInfo) (*Request, error) {
-	if err := info.RequireSignedBytes(); err != nil {
+func (m *Manager) createGPGSignRequest(info RequestInfo) (*Request, error) {
+	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
 		return nil, err
 	}
 
-	now := time.Now()
-	req := &Request{
-		ID:          uuid.New().String(),
-		Client:      client,
-		CreatedAt:   now,
-		ExpiresAt:   now.Add(m.timeout),
-		Type:        RequestTypeGPGSign,
-		GPGSignInfo: info,
-		SenderInfo:  senderInfo,
-		done:        make(chan struct{}),
-	}
+	req := info.newRequest(m.timeout)
+	req.done = make(chan struct{})
 	m.mu.Lock()
 	m.pending[req.ID] = req
 	m.mu.Unlock()

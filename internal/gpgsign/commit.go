@@ -3,28 +3,17 @@ package gpgsign
 import (
 	"bufio"
 	"bytes"
+	"fmt"
+	"slices"
 	"strings"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-// PayloadKind identifies what kind of git object the signer was asked to sign.
-// git routes commits, annotated tags, and signed-push certificates through the
-// same signing invocation (--status-fd=2 -bsau <key>), so the raw bytes on
-// stdin are not always a commit.
-type PayloadKind string
-
-const (
-	KindCommit  PayloadKind = "commit"
-	KindTag     PayloadKind = "tag"
-	KindPush    PayloadKind = "push"
-	KindUnknown PayloadKind = "unknown"
-)
-
-// SignedPayload is the parsed, human-displayable context of the bytes git asked
-// us to sign. Only the fields relevant to Kind are populated; the rest are
-// empty. It backs the approval prompt so a user can see *what* they are signing
-// — a commit, a release tag, or a push to a specific remote.
+// What the approval prompt shows about a signed git object. Only the fields of
+// its Kind are set.
 type SignedPayload struct {
-	Kind PayloadKind
+	Kind approval.GPGSignKind
 	// Signer is the identity in the payload: a commit's author, a tag's tagger,
 	// or a push certificate's pusher.
 	Signer string
@@ -43,23 +32,38 @@ type SignedPayload struct {
 	Pushee string
 }
 
-// ParseSignedPayload detects the kind of git object in data and extracts the
-// fields worth showing in the approval prompt.
-//
-// The three payloads git may feed to gpg.program share a "headers, blank line,
-// body" shape but differ in their leading header:
-//
-//	commit:  tree <sha> / parent* / author <id> / committer <id>  \n\n <message>
-//	tag:     object <sha> / type <t> / tag <name> / tagger <id>    \n\n <message>
-//	push:    certificate version <v> / pusher <id> / pushee <url>  \n\n <ref updates>
-//	         / nonce <n> / push-option*
-func ParseSignedPayload(data []byte) SignedPayload {
+// Replaces the fields of info that the signed bytes determine, so the prompt
+// shows what the daemon signs (ADR 0008). Returns true if any field changed.
+// RepoName and ChangedFiles stay as the client sent them.
+func (p SignedPayload) BindDisplay(info *approval.GPGSignInfo) bool {
+	changes := []bool{
+		set(&info.Kind, p.Kind),
+		set(&info.Author, p.Signer),
+		set(&info.Committer, p.Committer),
+		set(&info.CommitMsg, p.Message),
+		set(&info.ParentHash, p.ParentHash),
+		set(&info.TagName, p.TagName),
+		set(&info.Target, p.Target),
+		set(&info.Pushee, p.Pushee),
+	}
+	return slices.Contains(changes, true)
+}
+
+func set[T comparable](dst *T, v T) bool {
+	changed := *dst != v
+	*dst = v
+	return changed
+}
+
+// The longest line of a signed object that ParseSignedPayload reads.
+const maxSignedLine = 1 << 20
+
+// Returns the kind of git object in data and the fields that the approval
+// prompt shows. Data that gitformat-signature(5) does not describe gets Kind
+// GPGSignUnknown. Errors when a line of data is longer than maxSignedLine.
+func ParseSignedPayload(data []byte) (SignedPayload, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// Commit/tag messages and push certificates are small, but a single long
-	// line (e.g. a paragraph-per-line message) can exceed the 64KB default and
-	// silently truncate the scan; size the buffer to the daemon's 1MB payload
-	// limit so parsing never loses trailing headers/body.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSignedLine)
 
 	var headers, bodyLines []string
 	inBody := false
@@ -75,22 +79,25 @@ func ParseSignedPayload(data []byte) SignedPayload {
 		}
 		headers = append(headers, line)
 	}
+	if err := scanner.Err(); err != nil {
+		return SignedPayload{}, fmt.Errorf("signed object has a line longer than %d bytes: %w", maxSignedLine, err)
+	}
 
 	p := SignedPayload{
-		Kind:    KindUnknown,
+		Kind:    approval.GPGSignUnknown,
 		Message: strings.TrimRight(strings.Join(bodyLines, "\n"), "\n"),
 	}
 	if len(headers) == 0 {
-		return p
+		return p, nil
 	}
 
 	switch {
 	case strings.HasPrefix(headers[0], "tree "):
-		p.Kind = KindCommit
+		p.Kind = approval.GPGSignCommit
 	case strings.HasPrefix(headers[0], "object "):
-		p.Kind = KindTag
+		p.Kind = approval.GPGSignTag
 	case strings.HasPrefix(headers[0], "certificate version "):
-		p.Kind = KindPush
+		p.Kind = approval.GPGSignPush
 	}
 
 	for _, h := range headers {
@@ -114,14 +121,14 @@ func ParseSignedPayload(data []byte) SignedPayload {
 			p.Pushee = strings.TrimPrefix(h, "pushee ")
 		}
 	}
-	return p
+	return p, nil
 }
 
 // ParseCommitObject parses a raw git commit object and returns the author,
 // committer, commit message, and first parent hash. It is a thin wrapper over
 // ParseSignedPayload retained for callers and tests that only handle commits;
 // for a commit, Signer is the author.
-func ParseCommitObject(data []byte) (author, committer, message, parentHash string) {
-	p := ParseSignedPayload(data)
-	return p.Signer, p.Committer, p.Message, p.ParentHash
+func ParseCommitObject(data []byte) (author, committer, message, parentHash string, err error) {
+	p, err := ParseSignedPayload(data)
+	return p.Signer, p.Committer, p.Message, p.ParentHash, err
 }

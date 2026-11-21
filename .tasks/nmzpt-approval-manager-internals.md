@@ -2,7 +2,7 @@
 status: todo
 tags: [refactor, approval]
 ---
-# approval.Manager internals repeat themselves, and notify's doc is false
+# approval.Manager internals repeat themselves
 
 ## Goal
 Done when each item below is fixed as its "Fix" says.
@@ -47,11 +47,5 @@ Done when each item below is fixed as its "Fix" says.
   cites it. The manager.go lines are unchanged.
   Fix: autoApproveCoversAll's doc points to ADR 0005 instead of restating the
   rule, and the body comment goes.
-- `internal/approval/manager.go:296` (restated code). notify's doc says it
-  sends to observers "asynchronously". It calls each OnEvent synchronously
-  while holding observersMu, and it also records history, which the doc leaves
-  out. The line is unchanged.
-  Fix: "Delivers event to every observer, in the caller's goroutine, and
-  records a request's end in History."
 
 Found by the 2026-11-19 unsmell run (b1-10, b1-11, b1-15, b1-16, b1-18).

@@ -16,13 +16,13 @@ type mockNotifier struct {
 	mu           sync.Mutex
 	notifyCalls  int
 	dismissCalls int
-	lastCtx      UpstreamCallContext
+	lastRequest  approval.RequestInfo
 }
 
-func (m *mockNotifier) NotifySlowUpstream(ctx UpstreamCallContext) func() {
+func (m *mockNotifier) NotifySlowUpstream(req approval.RequestInfo) func() {
 	m.mu.Lock()
 	m.notifyCalls++
-	m.lastCtx = ctx
+	m.lastRequest = req
 	m.mu.Unlock()
 	return func() {
 		m.mu.Lock()
@@ -33,7 +33,7 @@ func (m *mockNotifier) NotifySlowUpstream(ctx UpstreamCallContext) func() {
 
 func TestWithSlowNotify_FastCall(t *testing.T) {
 	notifier := &mockNotifier{}
-	ctx := UpstreamCallContext{Items: []approval.ItemInfo{{Label: "test-secret"}}}
+	ctx := RequestCall(approval.RequestInfo{Items: []approval.ItemInfo{{Label: "test-secret"}}})
 
 	call := WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 100 * time.Millisecond}, ctx, func() *dbus.Call {
 		// Completes instantly
@@ -53,11 +53,7 @@ func TestWithSlowNotify_FastCall(t *testing.T) {
 
 func TestWithSlowNotify_SlowCall(t *testing.T) {
 	notifier := &mockNotifier{}
-	ctx := UpstreamCallContext{
-		RequestType: approval.RequestTypeGetSecret,
-		Items:       []approval.ItemInfo{{Label: "my-password"}},
-		SenderInfo:  approval.SenderInfo{Info: sender.Info{PID: 1234}},
-	}
+	ctx := RequestCall(approval.RequestInfo{Type: approval.RequestTypeGetSecret, Items: []approval.ItemInfo{{Label: "my-password"}}, SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 1234}}})
 
 	call := WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
 		time.Sleep(150 * time.Millisecond)
@@ -76,14 +72,14 @@ func TestWithSlowNotify_SlowCall(t *testing.T) {
 	if notifier.dismissCalls != 1 {
 		t.Errorf("expected 1 dismiss call after slow call completes, got %d", notifier.dismissCalls)
 	}
-	if len(notifier.lastCtx.Items) != 1 || notifier.lastCtx.Items[0].Label != "my-password" {
-		t.Errorf("expected items passed through, got %v", notifier.lastCtx.Items)
+	if len(notifier.lastRequest.Items) != 1 || notifier.lastRequest.Items[0].Label != "my-password" {
+		t.Errorf("expected items passed through, got %v", notifier.lastRequest.Items)
 	}
-	if notifier.lastCtx.RequestType != approval.RequestTypeGetSecret {
-		t.Errorf("expected reqType get_secret, got %q", notifier.lastCtx.RequestType)
+	if notifier.lastRequest.Type != approval.RequestTypeGetSecret {
+		t.Errorf("expected reqType get_secret, got %q", notifier.lastRequest.Type)
 	}
-	if notifier.lastCtx.SenderInfo.PID != 1234 {
-		t.Errorf("expected SenderInfo.PID 1234, got %d", notifier.lastCtx.SenderInfo.PID)
+	if notifier.lastRequest.SenderInfo.PID != 1234 {
+		t.Errorf("expected SenderInfo.PID 1234, got %d", notifier.lastRequest.SenderInfo.PID)
 	}
 }
 
@@ -112,72 +108,41 @@ func TestWithSlowNotify_ZeroThreshold(t *testing.T) {
 func TestWithSlowNotify_LazyResolution(t *testing.T) {
 	resolved := false
 	notifier := &mockNotifier{}
-	ctx := UpstreamCallContext{
-		RequestType: approval.RequestTypeSearch,
-		ResolveSender: func() approval.SenderInfo {
-			resolved = true
-			return approval.SenderInfo{
-				PID: 5678,
-				ProcessChain: []procutil.Process{
-					{Name: "git", PID: 5678},
-					{Name: "zsh", PID: 1000},
-				},
-			}
-		},
-	}
+	ctx := SenderCall(func() approval.SenderInfo {
+		resolved = true
+		return approval.SenderInfo{
+			PID: 5678,
+			ProcessChain: []procutil.Process{
+				{Name: "git", PID: 5678},
+				{Name: "zsh", PID: 1000},
+			},
+		}
+	})
 
-	// Fast call: ResolveSender must NOT be called
+	// Fast call: the sender must NOT be called
 	WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 100 * time.Millisecond}, ctx, func() *dbus.Call {
 		return &dbus.Call{}
 	})
 	if resolved {
-		t.Fatal("ResolveSender should not be called on fast path")
+		t.Fatal("sender should not be resolved on fast path")
 	}
 
-	// Slow call: ResolveSender must be called
+	// Slow call: the sender must be called
 	WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
 		time.Sleep(150 * time.Millisecond)
 		return &dbus.Call{}
 	})
 	if !resolved {
-		t.Fatal("ResolveSender should be called on slow path")
+		t.Fatal("sender should be resolved on slow path")
 	}
 
 	notifier.mu.Lock()
 	defer notifier.mu.Unlock()
-	if notifier.lastCtx.SenderInfo.PID != 5678 {
-		t.Errorf("expected resolved PID 5678, got %d", notifier.lastCtx.SenderInfo.PID)
+	if notifier.lastRequest.SenderInfo.PID != 5678 {
+		t.Errorf("expected resolved PID 5678, got %d", notifier.lastRequest.SenderInfo.PID)
 	}
-	if len(notifier.lastCtx.SenderInfo.ProcessChain) != 2 {
-		t.Errorf("expected 2 process chain entries, got %d", len(notifier.lastCtx.SenderInfo.ProcessChain))
-	}
-}
-
-func TestWithSlowNotify_PrefilledSenderSkipsResolve(t *testing.T) {
-	resolved := false
-	notifier := &mockNotifier{}
-	ctx := UpstreamCallContext{
-		RequestType: approval.RequestTypeGetSecret,
-		SenderInfo:  approval.SenderInfo{Info: sender.Info{PID: 999}},
-		ResolveSender: func() approval.SenderInfo {
-			resolved = true
-			return approval.SenderInfo{PID: 0}
-		},
-	}
-
-	// Slow call with pre-filled SenderInfo: ResolveSender must NOT be called
-	WithSlowNotify(SlowUpstream{Notifier: notifier, Threshold: 50 * time.Millisecond}, ctx, func() *dbus.Call {
-		time.Sleep(150 * time.Millisecond)
-		return &dbus.Call{}
-	})
-	if resolved {
-		t.Fatal("ResolveSender should not be called when SenderInfo is pre-filled")
-	}
-
-	notifier.mu.Lock()
-	defer notifier.mu.Unlock()
-	if notifier.lastCtx.SenderInfo.PID != 999 {
-		t.Errorf("expected pre-filled PID 999, got %d", notifier.lastCtx.SenderInfo.PID)
+	if len(notifier.lastRequest.SenderInfo.ProcessChain) != 2 {
+		t.Errorf("expected 2 process chain entries, got %d", len(notifier.lastRequest.SenderInfo.ProcessChain))
 	}
 }
 
@@ -187,19 +152,19 @@ func TestWithSlowNotify_Always(t *testing.T) {
 	tests := []struct {
 		name      string
 		always    bool
-		prompted  bool
+		call      func(approval.RequestInfo) UpstreamCallContext
 		wantCalls int
 	}{
-		{"default, unprompted", false, false, 1},
-		{"default, prompted", false, true, 0},
-		{"always, unprompted", true, false, 1},
-		{"always, prompted", true, true, 1},
+		{"default, unprompted", false, RequestCall, 1},
+		{"default, prompted", false, PromptedCall, 0},
+		{"always, unprompted", true, RequestCall, 1},
+		{"always, prompted", true, PromptedCall, 1},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			notifier := &mockNotifier{}
 			slow := SlowUpstream{Notifier: notifier, Threshold: 20 * time.Millisecond, Always: tc.always}
-			WithSlowNotify(slow, UpstreamCallContext{Prompted: tc.prompted}, func() *dbus.Call {
+			WithSlowNotify(slow, tc.call(approval.RequestInfo{}), func() *dbus.Call {
 				time.Sleep(80 * time.Millisecond)
 				return &dbus.Call{}
 			})

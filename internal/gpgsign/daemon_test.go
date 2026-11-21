@@ -3,6 +3,7 @@ package gpgsign
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,23 +84,23 @@ func newTestClient(srv *httptest.Server) *DaemonClient {
 func TestPostSigningRequest_Success(t *testing.T) {
 	var gotPath, gotMethod, gotContentType string
 	var gotAuth config.AuthToken
-	var gotBody struct {
-		Client      string                `json:"client"`
-		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
-	}
+	var rawBody map[string]json.RawMessage
+	var gotBody SignRequest
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotMethod = r.Method
 		gotContentType = r.Header.Get("Content-Type")
 		gotAuth, _ = config.ParseAuthorization(r.Header)
-		json.NewDecoder(r.Body).Decode(&gotBody)
-		json.NewEncoder(w).Encode(map[string]string{"request_id": "req-abc-123"})
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &rawBody)
+		json.Unmarshal(body, &gotBody)
+		json.NewEncoder(w).Encode(SignResponse{RequestID: "req-abc-123"})
 	}))
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	reqID, err := client.PostSigningRequest(context.Background(), "my-repo", &approval.GPGSignInfo{
+	reqID, err := client.PostSigningRequest(context.Background(), &approval.GPGSignInfo{
 		RepoName:  "my-repo",
 		CommitMsg: "feat: add tests",
 		Author:    "Alice <alice@example.com>",
@@ -123,8 +124,8 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	if gotAuth != testToken {
 		t.Errorf("Bearer token = %q, want %q", string(gotAuth), string(testToken))
 	}
-	if gotBody.Client != "my-repo" {
-		t.Errorf("body.client = %q, want %q", gotBody.Client, "my-repo")
+	if client, ok := rawBody["client"]; ok {
+		t.Errorf("body.client = %s, want none: the daemon names the client by its socket", client)
 	}
 	if gotBody.GPGSignInfo.CommitMsg != "feat: add tests" {
 		t.Errorf("body.gpg_sign_info.commit_msg = %q, want %q", gotBody.GPGSignInfo.CommitMsg, "feat: add tests")
@@ -138,7 +139,7 @@ func TestPostSigningRequest_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	_, err := client.PostSigningRequest(context.Background(), "repo", &approval.GPGSignInfo{})
+	_, err := client.PostSigningRequest(context.Background(), &approval.GPGSignInfo{})
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
 	}
@@ -154,7 +155,7 @@ func TestPostSigningRequest_EmptyRequestID(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	_, err := client.PostSigningRequest(context.Background(), "repo", &approval.GPGSignInfo{})
+	_, err := client.PostSigningRequest(context.Background(), &approval.GPGSignInfo{})
 	if err == nil {
 		t.Fatal("expected error for empty request_id, got nil")
 	}

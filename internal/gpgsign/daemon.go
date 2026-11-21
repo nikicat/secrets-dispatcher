@@ -17,6 +17,11 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/wsmsg"
 )
 
+// The largest WebSocket message the thin client reads from the daemon. A
+// snapshot carries the signed objects of pending requests, so coder/websocket's
+// 32KB default is too small.
+const wsReadLimit = 1 << 20
+
 // DaemonClient communicates with the secrets-dispatcher daemon over a Unix socket.
 type DaemonClient struct {
 	socketPath unixsock.Path
@@ -26,11 +31,6 @@ type DaemonClient struct {
 
 // Placeholder host of URLs sent over a unix socket. The dialer ignores it.
 const socketHost = "localhost"
-
-// Largest WebSocket message read from the daemon. The default limit (32KB) is
-// too small for snapshot messages that carry large commit objects. 1MB holds
-// any realistic commit.
-const wsReadLimit = 1 << 20
 
 // Builds the http URL of path on a server reached through UnixSocketClient.
 func SocketURL(path string) string { return "http://" + socketHost + path }
@@ -94,20 +94,13 @@ func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, erro
 	return conn, nil
 }
 
-// Files info as a gpg-sign approval request on behalf of requester, and
-// returns its id.
-func (c *DaemonClient) PostSigningRequest(ctx context.Context, requester string, info *approval.GPGSignInfo) (string, error) {
-	body := struct {
-		Client      string                `json:"client"`
-		GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
-	}{Client: requester, GPGSignInfo: info}
-
-	var result struct {
-		RequestID string `json:"request_id"`
-	}
+// Files info as a gpg-sign request with the daemon, and returns the request's
+// ID without waiting for its resolution, unlike SignRemote.
+func (c *DaemonClient) PostSigningRequest(ctx context.Context, info *approval.GPGSignInfo) (string, error) {
+	var result SignResponse
 	header := http.Header{}
 	c.token.Authorize(header)
-	if err := postJSON(ctx, c.httpClient, "/api/v1/gpg-sign/request", header, body, &result); err != nil {
+	if err := postJSON(ctx, c.httpClient, "/api/v1/gpg-sign/request", header, SignRequest{GPGSignInfo: info}, &result); err != nil {
 		return "", err
 	}
 	if result.RequestID == "" {
@@ -145,16 +138,15 @@ type pendingSignRequest struct {
 	id     string
 }
 
-// Files info as a gpg-sign request on behalf of requester. The event
-// WebSocket opens first, so the resolution event cannot come before anyone
-// listens. The caller closes the request. Errors when the daemon does not
-// answer or refuses the request.
-func (c *DaemonClient) startSignRequest(ctx context.Context, requester string, info *approval.GPGSignInfo) (*pendingSignRequest, error) {
+// Files info as a gpg-sign request and returns it while it is pending. The
+// returned request already listens for its resolution, so Wait cannot miss it.
+// The caller closes it.
+func (c *DaemonClient) startSignRequest(ctx context.Context, info *approval.GPGSignInfo) (*pendingSignRequest, error) {
 	conn, err := c.DialWebSocket(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("daemon unreachable at %s (is secrets-dispatcher running?): %w", c.socketPath, err)
 	}
-	id, err := c.PostSigningRequest(ctx, requester, info)
+	id, err := c.PostSigningRequest(ctx, info)
 	if err != nil {
 		conn.CloseNow()
 		return nil, fmt.Errorf("failed to send signing request: %w", err)

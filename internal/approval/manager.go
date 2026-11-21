@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -55,6 +56,9 @@ type Event struct {
 	Type    EventType
 	Request *Request
 	Rule    *AutoApproveRule // For EventAutoApproveRuleAdded/Removed
+	// The entry that History records for the request this event ends, and nil
+	// for an event that ends no request.
+	History *HistoryEntry
 }
 
 // Observer receives notifications about approval events.
@@ -90,6 +94,8 @@ type RequestInfo struct {
 	// Set for search requests only.
 	SearchAttributes map[string]string
 	SenderInfo       SenderInfo
+	// Set for gpg_sign requests only.
+	GPGSignInfo *GPGSignInfo
 }
 
 // Returns a new Request for info, created now and expiring after ttl.
@@ -97,7 +103,6 @@ func (info RequestInfo) newRequest(ttl time.Duration) *Request {
 	now := time.Now()
 	return &Request{
 		ID:               uuid.New().String(),
-		Client:           info.SenderInfo.Client,
 		Items:            info.Items,
 		Session:          info.Session,
 		CreatedAt:        now,
@@ -105,19 +110,18 @@ func (info RequestInfo) newRequest(ttl time.Duration) *Request {
 		Type:             info.Type,
 		SearchAttributes: info.SearchAttributes,
 		SenderInfo:       info.SenderInfo,
+		GPGSignInfo:      info.GPGSignInfo,
 	}
 }
 
 // Request represents a secret access request awaiting approval.
 type Request struct {
 	ID        string          `json:"id"`
-	Client    ClientName      `json:"client"`
 	Items     []ItemInfo      `json:"items"`
 	Session   dbus.ObjectPath `json:"session"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt time.Time       `json:"expires_at"`
 
-	// Type indicates whether this is a get_secret or search request.
 	Type RequestType `json:"type"`
 
 	// SearchAttributes contains the search criteria for search requests.
@@ -293,19 +297,24 @@ func (m *Manager) Unsubscribe(o Observer) {
 	delete(m.observers, o)
 }
 
-// notify sends an event to all observers asynchronously.
+// Records the end of a request in History when event ends one, then delivers
+// event to every observer in the caller's goroutine. An event that ends a
+// request carries the recorded entry.
 func (m *Manager) notify(event Event) {
+	if resolution, ok := event.Type.Resolution(); ok {
+		entry := HistoryEntry{
+			Request:    event.Request,
+			Resolution: resolution,
+			ResolvedAt: time.Now(),
+		}
+		m.addHistory(entry)
+		event.History = &entry
+	}
+
 	m.observersMu.RLock()
 	defer m.observersMu.RUnlock()
 	for o := range m.observers {
 		o.OnEvent(event)
-	}
-
-	// Record history for terminal request events (not rule-management events)
-	if event.Type != EventRequestCreated &&
-		event.Type != EventAutoApproveRuleAdded &&
-		event.Type != EventAutoApproveRuleRemoved {
-		m.addHistory(event)
 	}
 }
 
@@ -330,18 +339,7 @@ func (t EventType) Resolution() (Resolution, bool) {
 }
 
 // addHistory records a resolved request in history.
-func (m *Manager) addHistory(event Event) {
-	resolution, ok := event.Type.Resolution()
-	if !ok {
-		return
-	}
-
-	entry := HistoryEntry{
-		Request:    event.Request,
-		Resolution: resolution,
-		ResolvedAt: time.Now(),
-	}
-
+func (m *Manager) addHistory(entry HistoryEntry) {
 	m.historyMu.Lock()
 	defer m.historyMu.Unlock()
 
@@ -713,7 +711,7 @@ func (r AutoApproveRule) sameScope(o AutoApproveRule) bool {
 	return r.InvokerExe == o.InvokerExe &&
 		r.RequestType == o.RequestType &&
 		r.Collection == o.Collection &&
-		attributesEqual(r.Attributes, o.Attributes)
+		maps.Equal(r.Attributes, o.Attributes)
 }
 
 // Adds the given rule for the duration that Manager.AutoApproveDuration
@@ -821,19 +819,6 @@ func autoApproveCoversAll(rule *AutoApproveRule, items []ItemInfo) bool {
 	return true
 }
 
-// attributesEqual returns true if both maps have the same keys and values.
-func attributesEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
 // Checks whether have holds every key of want with the same value. A missing
 // key reads as the empty string.
 func attributesContain(have, want map[string]string) bool {
@@ -891,13 +876,13 @@ func (m *Manager) RemoveAutoApproveRule(id string) error {
 
 // Checks whether a trusted_signers entry lets a git signing request skip the
 // prompt. A request that did not come through the thin client never skips it,
-// since its repoName and changedFiles may be forged (ADR 0008).
-func (m *Manager) CheckTrustedSigner(senderInfo SenderInfo, repoName RepoName, changedFiles []string) bool {
-	if !senderInfo.PeerTrusted {
+// since its repo name and changed files may be forged (ADR 0008).
+func (m *Manager) CheckTrustedSigner(info RequestInfo) bool {
+	if info.GPGSignInfo == nil || !info.SenderInfo.PeerTrusted {
 		return false
 	}
 	return slices.ContainsFunc(m.trustedSigners, func(ts TrustedSigner) bool {
-		return ts.matches(senderInfo.ProcessChain, repoName, changedFiles)
+		return ts.matches(info.SenderInfo.ProcessChain, info.GPGSignInfo.RepoName, info.GPGSignInfo.ChangedFiles)
 	})
 }
 

@@ -3,10 +3,10 @@ package notification
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
-	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 // persistentNotifier sends persistent notifications and can dismiss them.
@@ -32,11 +32,9 @@ func newSlowUpstreamNotifier(notifier persistentNotifier) *SlowUpstreamNotifier 
 	return &SlowUpstreamNotifier{notifier: notifier}
 }
 
-// NotifySlowUpstream shows a notification with the secret label(s) and
-// optional process chain, then returns a function that dismisses it.
-func (s *SlowUpstreamNotifier) NotifySlowUpstream(ctx proxy.UpstreamCallContext) func() {
-	summary := slowUpstreamSummary(ctx.RequestType)
-	body := formatSlowUpstreamBody(ctx)
+func (s *SlowUpstreamNotifier) NotifySlowUpstream(req approval.RequestInfo) func() {
+	summary := slowUpstreamSummary(req.Type)
+	body := formatSlowUpstreamBody(req)
 
 	id, err := s.notifier.NotifyPersistent(summary, body, "dialog-password")
 	if err != nil {
@@ -67,7 +65,6 @@ func slowUpstreamSummary(reqType approval.RequestType) string {
 	}
 }
 
-// itemDisplayLabel returns the item's Label if non-empty, otherwise its Path.
 func itemDisplayLabel(item approval.ItemInfo) string {
 	if item.Label != "" {
 		return item.Label
@@ -75,37 +72,27 @@ func itemDisplayLabel(item approval.ItemInfo) string {
 	return item.Path
 }
 
-// formatSlowUpstreamBody builds the notification body from item labels and
-// optional process chain.
-func formatSlowUpstreamBody(ctx proxy.UpstreamCallContext) string {
-	var b strings.Builder
-
-	// Item labels (fall back to Path when Label is empty)
-	switch len(ctx.Items) {
-	case 0:
-		// no items
-	case 1:
-		b.WriteString(itemDisplayLabel(ctx.Items[0]))
-	default:
-		labels := make([]string, len(ctx.Items))
-		for i, item := range ctx.Items {
-			labels[i] = itemDisplayLabel(item)
-		}
-		fmt.Fprintf(&b, "%s (%d items)", strings.Join(labels, ", "), len(ctx.Items))
+// Returns the escaped labels of items, with their count when there are several.
+// An item with no label shows its path.
+func itemsLine(items []approval.ItemInfo) string {
+	labels := make([]string, len(items))
+	for i, item := range items {
+		labels[i] = escapeMarkup(itemDisplayLabel(item))
 	}
-
-	// Process chain (Name ← Name convention, matching desktop.go)
-	if len(ctx.SenderInfo.ProcessChain) > 0 {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		for i, p := range ctx.SenderInfo.ProcessChain {
-			if i > 0 {
-				b.WriteString(" \u2190 ")
-			}
-			b.WriteString(p.Name)
-		}
+	line := strings.Join(labels, ", ")
+	if len(items) > 1 {
+		line += fmt.Sprintf(" (%d items)", len(items))
 	}
+	return line
+}
 
-	return b.String()
+// Returns the markup body of a slow upstream notification for req. It names
+// req's items and its sender's process chain, with every value escaped
+// (ADR 0007).
+func formatSlowUpstreamBody(req approval.RequestInfo) string {
+	lines := []string{
+		itemsLine(req.Items),
+		formatProcessChain(req.SenderInfo.ProcessChain, false),
+	}
+	return strings.Join(slices.DeleteFunc(lines, func(l string) bool { return l == "" }), "\n")
 }

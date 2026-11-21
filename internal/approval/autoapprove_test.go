@@ -52,9 +52,8 @@ func waitPendingID(t *testing.T, mgr *Manager) string {
 func TestRequestAutoApproveRule_RefusesRequestWithoutExe(t *testing.T) {
 	req := &Request{
 		ID:         "remote-1",
-		Client:     "remote:laptop",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: SenderInfo{Info: sender.Info{InvokerName: "gh"}},
+		SenderInfo: SenderInfo{Client: "remote:laptop", Info: sender.Info{InvokerName: "gh"}},
 	}
 
 	_, err := req.AutoApproveRule()
@@ -102,9 +101,8 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 
 	// Simulate a cancelled request
 	req := &Request{
-		ID:     "req-1",
-		Client: "test",
-		Type:   RequestTypeWrite,
+		ID:   "req-1",
+		Type: RequestTypeWrite,
 		Items: []ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i1",
 			Label:      "gh:github.com",
@@ -395,6 +393,38 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 
 	rules := mgr.ListAutoApproveRules()
 	if len(rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(rules))
+	}
+}
+
+// Attribute maps of the same size but different keys are different scopes,
+// even when the missing key of one would read as the other's empty value.
+func TestAutoApproveRule_DifferentAttributeKeysNotDeduped(t *testing.T) {
+	mgr := newRuleManager()
+
+	writeRequest := func(id string, attrs map[string]string) *Request {
+		return &Request{
+			ID:         id,
+			Type:       RequestTypeWrite,
+			Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/" + id, Attributes: attrs}},
+			SenderInfo: testSender("gh", "/usr/bin/gh"),
+		}
+	}
+	rule1, err := writeRequest("i1", map[string]string{"a": ""}).AutoApproveRule()
+	if err != nil {
+		t.Fatalf("AutoApproveRule: %v", err)
+	}
+	rule2, err := writeRequest("i2", map[string]string{"b": "x"}).AutoApproveRule()
+	if err != nil {
+		t.Fatalf("AutoApproveRule: %v", err)
+	}
+
+	if rule1.sameScope(rule2) {
+		t.Error("rules with attributes {a: \"\"} and {b: x} share a scope")
+	}
+	mgr.AddAutoApproveRule(rule1)
+	mgr.AddAutoApproveRule(rule2)
+	if rules := mgr.ListAutoApproveRules(); len(rules) != 2 {
 		t.Fatalf("expected 2 rules, got %d", len(rules))
 	}
 }

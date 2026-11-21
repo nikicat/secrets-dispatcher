@@ -80,34 +80,27 @@ func (c thinClient) collectSignInfo(keyID string, stdin io.Reader) (*approval.GP
 		return nil, fmt.Errorf("failed to read stdin: %w", err)
 	}
 
-	// Parse the signed payload for display context (SIGN-02). git signs
-	// commits, annotated tags, and push certificates through this same path;
-	// detect which so the approval prompt shows the right fields.
-	payload := ParseSignedPayload(commitBytes)
+	payload, err := ParseSignedPayload(commitBytes)
+	if err != nil {
+		return nil, err
+	}
 
 	// Collect git context (SIGN-03, SIGN-04). Changed files describe a
 	// commit's staged tree — they are meaningless for tag/push signing and
 	// could mislead both the prompt and trusted-signer matching, so gather them
 	// for commits only.
-	repoName := c.resolveRepoName()
 	var changedFiles []string
-	if payload.Kind == KindCommit {
+	if payload.Kind == approval.GPGSignCommit {
 		changedFiles = c.collectChangedFiles()
 	}
-	return &approval.GPGSignInfo{
-		RepoName:     repoName,
-		Kind:         string(payload.Kind),
-		CommitMsg:    payload.Message,
-		Author:       payload.Signer,
-		Committer:    payload.Committer,
+	info := &approval.GPGSignInfo{
+		RepoName:     c.resolveRepoName(),
 		KeyID:        keyID,
 		ChangedFiles: changedFiles,
-		ParentHash:   payload.ParentHash,
-		TagName:      payload.TagName,
-		Target:       payload.Target,
-		Pushee:       payload.Pushee,
 		CommitObject: string(commitBytes),
-	}, nil
+	}
+	payload.BindDisplay(info)
+	return info, nil
 }
 
 // Signs info through the remote socket that remoteSocketEnv names, or through
@@ -129,7 +122,7 @@ func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (
 	}
 
 	// File the request with the daemon (SIGN-05).
-	req, err := client.startSignRequest(ctx, string(info.RepoName), info)
+	req, err := client.startSignRequest(ctx, info)
 	if err != nil {
 		return SignOutcome{}, err
 	}

@@ -35,3 +35,8 @@ is not shipped.
   burst of requests can evict a pending approval (task Thaxg6).
 - `NotificationClosed` and `ActionInvoked` are unicast to the sender, so tests
   observe them only through the notifier's own connection.
+- Notification servers render the body as markup, so every value in a
+  notification body that a client controls (item labels and attributes,
+  repository and commit text, process names) is escaped. An approval
+  notification carries the Approve button, and unescaped markup could show
+  forged, reassuring text next to it.

@@ -19,6 +19,15 @@ func sampleGPGSignInfo() *GPGSignInfo {
 	}
 }
 
+func mustCreateSampleGPGSign(t *testing.T, mgr *Manager) string {
+	t.Helper()
+	id, err := mgr.CreateGPGSignRequest(sampleGPGSignInfo().RequestInfo(SenderInfo{}))
+	if err != nil {
+		t.Fatalf("CreateGPGSignRequest failed: %v", err)
+	}
+	return id
+}
+
 // findEvent returns the first event of the given type in the slice, or nil if not found.
 func findEvent(events []Event, et EventType) *Event {
 	for i := range events {
@@ -37,10 +46,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
-	if err != nil {
-		t.Fatalf("CreateGPGSignRequest returned unexpected error: %v", err)
-	}
+	id := mustCreateSampleGPGSign(t, mgr)
 	if id == "" {
 		t.Fatal("expected non-empty request ID")
 	}
@@ -70,7 +76,7 @@ func TestCreateGPGSignRequest_ValidInfo(t *testing.T) {
 func TestCreateGPGSignRequest_NilInfo(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
-	id, err := mgr.CreateGPGSignRequest("test-client", nil, SenderInfo{})
+	id, err := mgr.CreateGPGSignRequest(RequestInfo{Type: RequestTypeGPGSign})
 	if err == nil {
 		t.Fatal("expected error for nil GPGSignInfo, got nil")
 	}
@@ -87,10 +93,7 @@ func TestCreateGPGSignRequest_Expiry(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
-	if err != nil {
-		t.Fatalf("CreateGPGSignRequest failed: %v", err)
-	}
+	id := mustCreateSampleGPGSign(t, mgr)
 
 	// Wait for Created + Expired events (budget: 200ms, well within 10s test timeout).
 	events := obs.WaitForEvents(t.Context(), 2, 200*time.Millisecond)
@@ -125,10 +128,7 @@ func TestCreateGPGSignRequest_Approve(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
-	if err != nil {
-		t.Fatalf("CreateGPGSignRequest failed: %v", err)
-	}
+	id := mustCreateSampleGPGSign(t, mgr)
 
 	if err := mgr.Approve(id); err != nil {
 		t.Fatalf("Approve failed: %v", err)
@@ -159,10 +159,7 @@ func TestCreateGPGSignRequest_Deny(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
-	if err != nil {
-		t.Fatalf("CreateGPGSignRequest failed: %v", err)
-	}
+	id := mustCreateSampleGPGSign(t, mgr)
 
 	if err := mgr.Deny(id); err != nil {
 		t.Fatalf("Deny failed: %v", err)
@@ -185,10 +182,7 @@ func TestCreateGPGSignRequest_Cancel(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
-	if err != nil {
-		t.Fatalf("CreateGPGSignRequest failed: %v", err)
-	}
+	id := mustCreateSampleGPGSign(t, mgr)
 
 	if err := mgr.Cancel(id); err != nil {
 		t.Fatalf("Cancel failed: %v", err)
@@ -228,7 +222,7 @@ func TestCreateGPGSignRequest_GPGSignInfoPreserved(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	info := sampleGPGSignInfo()
-	id, err := mgr.CreateGPGSignRequest("test-client", info, SenderInfo{})
+	id, err := mgr.CreateGPGSignRequest(info.RequestInfo(SenderInfo{}))
 	if err != nil {
 		t.Fatalf("CreateGPGSignRequest failed: %v", err)
 	}
@@ -272,7 +266,7 @@ func TestCreateGPGSignRequest_Concurrent(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			id, err := mgr.CreateGPGSignRequest("test-client", sampleGPGSignInfo(), SenderInfo{})
+			id, err := mgr.CreateGPGSignRequest(sampleGPGSignInfo().RequestInfo(SenderInfo{}))
 			if err != nil {
 				t.Errorf("CreateGPGSignRequest failed: %v", err)
 				return
@@ -309,7 +303,7 @@ func TestRecordAutoApprovedGPGSign_Resolution(t *testing.T) {
 	obs := &testObserver{}
 	mgr.Subscribe(obs)
 
-	id, err := mgr.RecordAutoApprovedGPGSign("test-client", sampleGPGSignInfo(), SenderInfo{}, GPGResult{Signature: []byte("sig"), Status: []byte("status")})
+	id, err := mgr.RecordAutoApprovedGPGSign(sampleGPGSignInfo().RequestInfo(SenderInfo{}), GPGResult{Signature: []byte("sig"), Status: []byte("status")})
 	if err != nil {
 		t.Fatalf("RecordAutoApprovedGPGSign returned unexpected error: %v", err)
 	}

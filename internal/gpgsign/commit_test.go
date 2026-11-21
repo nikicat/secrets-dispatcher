@@ -13,7 +13,10 @@ func TestParseCommitObject(t *testing.T) {
 				"\n" +
 				"feat: add files\n",
 		)
-		author, committer, message, parentHash := ParseCommitObject(data)
+		author, committer, message, parentHash, err := ParseCommitObject(data)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		if author != "Alice Example <alice@example.com> 1771936651 +0200" {
 			t.Errorf("author = %q, want %q", author, "Alice Example <alice@example.com> 1771936651 +0200")
@@ -38,7 +41,10 @@ func TestParseCommitObject(t *testing.T) {
 				"\n" +
 				"fix: correct logic\n",
 		)
-		_, _, _, parentHash := ParseCommitObject(data)
+		_, _, _, parentHash, err := ParseCommitObject(data)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		if parentHash != "abc123def456" {
 			t.Errorf("parentHash = %q, want %q", parentHash, "abc123def456")
@@ -55,7 +61,10 @@ func TestParseCommitObject(t *testing.T) {
 				"\n" +
 				"Merge branch 'feature'\n",
 		)
-		_, _, _, parentHash := ParseCommitObject(data)
+		_, _, _, parentHash, err := ParseCommitObject(data)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		if parentHash != "aaa111bbb222" {
 			t.Errorf("parentHash = %q, want %q (first parent)", parentHash, "aaa111bbb222")
@@ -69,7 +78,10 @@ func TestParseCommitObject(t *testing.T) {
 				"committer Alice Example <alice@example.com> 1771936651 +0200\n" +
 				"\n",
 		)
-		_, _, message, _ := ParseCommitObject(data)
+		_, _, message, _, err := ParseCommitObject(data)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		if message != "" {
 			t.Errorf("message = %q, want empty string", message)
@@ -87,7 +99,10 @@ func TestParseCommitObject(t *testing.T) {
 				"This is a longer description.\n" +
 				"Spanning multiple lines.\n",
 		)
-		_, _, message, _ := ParseCommitObject(data)
+		_, _, message, _, err := ParseCommitObject(data)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		want := "feat: big feature\n\nThis is a longer description.\nSpanning multiple lines."
 		if message != want {
@@ -103,7 +118,10 @@ func TestParseCommitObject(t *testing.T) {
 				"\n" +
 				"chore: update deps\n",
 		)
-		_, _, message, _ := ParseCommitObject(data)
+		_, _, message, _, err := ParseCommitObject(data)
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		if message != "chore: update deps" {
 			t.Errorf("message = %q, want %q", message, "chore: update deps")

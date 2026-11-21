@@ -42,19 +42,20 @@ func (s *Server) ServeRemote(name config.RemoteName) (*RemoteServer, error) {
 // Answers the remote's gpg-sign request with its resolution. A dropped
 // connection cancels the request.
 func (rs *RemoteServer) handleSign(w http.ResponseWriter, r *http.Request) {
-	var req gpgsign.RemoteSignRequest
-	if !decodePost(w, r, &req) || !requireSignedBytes(w, req.GPGSignInfo) {
+	var body gpgsign.SignRequest
+	if !decodePost(w, r, &body) || !requireSignedBytes(w, body.GPGSignInfo) {
 		return
 	}
-	client := rs.name.Client()
-	senderInfo := approval.SenderInfo{Client: client}
-	bindDisplayToSignedPayload(req.GPGSignInfo, senderInfo)
+	request, ok := boundSignRequest(w, body.GPGSignInfo, approval.SenderInfo{Client: rs.name.Client()})
+	if !ok {
+		return
+	}
 
-	resolved, resolution, err := rs.manager.AwaitGPGSign(r.Context(), client, req.GPGSignInfo, senderInfo)
+	resolved, resolution, err := rs.manager.AwaitGPGSign(r.Context(), request)
 	if err != nil {
 		writeError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	slog.Info("remote gpg sign request resolved", "request_id", resolved.ID, "remote", rs.name, "repo", req.GPGSignInfo.RepoName, "resolution", resolution)
+	slog.Info("remote gpg sign request resolved", "request_id", resolved.ID, "remote", rs.name, "repo", request.GPGSignInfo.RepoName, "resolution", resolution)
 	writeJSON(w, gpgsign.SignOutcome{Result: resolution, GPGResult: resolved.GPGOutput()})
 }

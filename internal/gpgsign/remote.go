@@ -15,9 +15,17 @@ const remoteSocketEnv = "SECRETS_DISPATCHER_REMOTE_SOCKET"
 // The route of a remote sign request.
 const RemoteSignPath = "/remote/v1/gpg-sign"
 
-// RemoteSignRequest is the body POSTed to RemoteSignPath.
-type RemoteSignRequest struct {
+// The body of a gpg-sign request, posted to RemoteSignPath and to the local
+// API's /api/v1/gpg-sign/request. Both routes take the same body, because the
+// thin client changes only the socket it uses (ADR 0011).
+type SignRequest struct {
 	GPGSignInfo *approval.GPGSignInfo `json:"gpg_sign_info"`
+}
+
+// The answer of the local API's /api/v1/gpg-sign/request, which names the
+// filed request. RemoteSignPath answers with a SignOutcome instead.
+type SignResponse struct {
+	RequestID string `json:"request_id"`
 }
 
 // Submits info through the remote socket and blocks until the request is
@@ -25,7 +33,7 @@ type RemoteSignRequest struct {
 // the daemon. Errors when the socket approves the request without gpg's output.
 func SignRemote(ctx context.Context, socketPath unixsock.Path, info *approval.GPGSignInfo) (SignOutcome, error) {
 	var res SignOutcome
-	if err := postJSON(ctx, UnixSocketClient(socketPath), RemoteSignPath, nil, RemoteSignRequest{GPGSignInfo: info}, &res); err != nil {
+	if err := postJSON(ctx, UnixSocketClient(socketPath), RemoteSignPath, nil, SignRequest{GPGSignInfo: info}, &res); err != nil {
 		return res, fmt.Errorf("remote socket %s: %w", socketPath, err)
 	}
 	if err := res.check(); err != nil {

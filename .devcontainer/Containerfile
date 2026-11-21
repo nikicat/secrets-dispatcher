@@ -41,5 +41,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends qemu-system-arm qemu-efi-aarch64 qemu-utils cloud-image-utils \
  && rm -rf /var/lib/apt/lists/*
 
+# make demo: gstreamer records the VM's VNC framebuffer (rfbsrc in -plugins-bad,
+# vp8 and webmmux in -plugins-good), and ffmpeg and webp transcode the recordings
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg webp gstreamer1.0-tools \
+      gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+ && rm -rf /var/lib/apt/lists/*
+
 # the user VS Code connects as (devcontainer.json's remoteUser)
 RUN useradd -m -u 1000 -U vscode

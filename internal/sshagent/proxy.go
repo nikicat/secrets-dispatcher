@@ -86,14 +86,8 @@ func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agen
 		"destination", attrs["destination"],
 		"invoker", p.senderInfo.InvokerName)
 
-	if _, err := p.approval.RequireApproval(
-		context.TODO(),
-		items,
-		"",
-		approval.RequestTypeSSHSign,
-		nil,
-		p.senderInfo,
-	); err != nil {
+	info := approval.RequestInfo{Items: items, Type: approval.RequestTypeSSHSign, SenderInfo: p.senderInfo}
+	if _, err := p.approval.RequireApproval(context.TODO(), info); err != nil {
 		p.logger.Info("sign request denied", "fingerprint", fingerprint, "error", err)
 		return nil, fmt.Errorf("sign request denied: %w", err)
 	}

@@ -23,6 +23,16 @@ pinentry, which shows the key, not the commit.
 - The daemon shows the request, waits for a decision or a `trusted_signers`
   match, then **runs gpg itself** (`--status-fd=2 -bsau <key>`) and returns the
   signature and status lines, which the thin client writes back to git.
+- Only a request that comes through the thin client can match `trusted_signers`
+  and skip the prompt. The daemon recognizes the thin client by the executable
+  of the process on the other end of the socket, which must be the dispatcher's
+  own. The repository name and the staged files describe the working tree, not
+  the bytes being signed, so the daemon cannot check them. Only the thin client
+  computes them from the real repository. Any other process that speaks the
+  socket protocol could forge them, even with a trusted signer among its
+  ancestors, so its request always gets a prompt. The prompt shows the author,
+  committer and message that the daemon reads from the bytes it signs, not the
+  ones the client reported.
 - Calls that are not signing (verification, `--list-keys`, …) pass straight
   through to the real gpg.
 - `commit.gpgsign true` is recommended, so a plain `git commit` is gated too.

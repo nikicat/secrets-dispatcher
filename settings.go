@@ -88,8 +88,8 @@ type serveFlags struct {
 	Notifications *bool           `negatable:"" help:"Desktop notifications for approval requests (default: ${default_notifications})."`
 }
 
-// Returns the settings that serve runs with, before WithDefaults.
-func (f serveFlags) settings() (*config.Config, error) {
+// Returns the config file merged with the flags the user gave, before Resolve.
+func (f serveFlags) merged() (*config.Config, error) {
 	cfg, err := f.load()
 	if err != nil {
 		return nil, err

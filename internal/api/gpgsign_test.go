@@ -170,7 +170,7 @@ func TestHandleGPGSignRequest_KeyIDVisibleInPendingList(t *testing.T) {
 	if pr.GPGSignInfo.KeyID != "ABCD1234" {
 		t.Errorf("expected key_id ABCD1234, got %q", pr.GPGSignInfo.KeyID)
 	}
-	if pr.Type != string(approval.RequestTypeGPGSign) {
+	if pr.Type != approval.RequestTypeGPGSign {
 		t.Errorf("expected type %q, got %q", approval.RequestTypeGPGSign, pr.Type)
 	}
 }
@@ -380,12 +380,12 @@ func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
 	mustAddRule(t, mgr, &approval.Request{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender})
 
 	// Same exe → matches.
-	assert.NotNil(t, mgr.CheckAutoApproveRules(exeSender, nil, approval.RequestTypeGPGSign),
+	assert.NotNil(t, mgr.CheckAutoApproveRules(approval.RequestInfo{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender}),
 		"rule should match a caller with the same invoker exe")
 
 	// Same spoofable comm but a different real exe → must NOT match.
 	spoofed := localSender("git", "/tmp/malware") // attacker set comm to "git"
-	assert.Nil(t, mgr.CheckAutoApproveRules(spoofed, nil, approval.RequestTypeGPGSign),
+	assert.Nil(t, mgr.CheckAutoApproveRules(approval.RequestInfo{Type: approval.RequestTypeGPGSign, SenderInfo: spoofed}),
 		"rule must not match a caller that only spoofed the comm")
 }
 

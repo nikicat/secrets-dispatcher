@@ -76,7 +76,7 @@ type pendingRequest struct {
 func startRequest(ctx context.Context, mgr *approval.Manager, items ...approval.ItemInfo) <-chan error {
 	done := make(chan error, 1)
 	go func() {
-		_, err := mgr.RequireApproval(ctx, items, "/session/1", approval.RequestTypeGetSecret, nil, approval.SenderInfo{Client: "test-client"})
+		_, err := mgr.RequireApproval(ctx, approval.RequestInfo{Items: items, Session: "/session/1", Type: approval.RequestTypeGetSecret, SenderInfo: approval.SenderInfo{Client: "test-client"}})
 		done <- err
 	}()
 	return done

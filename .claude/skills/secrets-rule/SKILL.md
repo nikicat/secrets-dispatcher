@@ -105,7 +105,7 @@ Only run the restart if the user confirms.
 
 Valid actions: `approve`, `deny`, `ignore` (ignore only valid for `write` request type)
 Valid request_types: `get_secret`, `search`, `delete`, `write`, `unlock`
-Matchers use `path.Match` glob syntax (NOT regex). All non-empty matchers are AND-ed.
+Matchers use `path.Match` glob syntax (NOT regex). All matchers that are set are AND-ed. An empty pattern fails to load; omit the key to match anything.
 
 ```yaml
 serve:

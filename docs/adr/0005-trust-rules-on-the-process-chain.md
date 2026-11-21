@@ -18,12 +18,18 @@ argv are set by the process itself.
   (YAML, so they can be versioned) and take effect on restart. Patterns are
   globs (`path.Match`), and all non-empty matchers are AND-ed. Actions are
   `approve`, `deny`, and `ignore` (writes only).
+- One decision covers a whole batch of items. A `deny` or `ignore` rule fires
+  when any item of the batch is in its scope, and an `approve` rule only when
+  every item is. So both directions fail closed: a deny on a sensitive item
+  still fires when that item is requested beside harmless ones, and an approve
+  for low-value items cannot let other secrets through with them.
 - **`exe`**, the kernel-resolved `/proc/PID/exe`, is the identifier for
   security-relevant rules. **`unit`**, resolved with systemd's `GetUnitByPID`,
   is authoritative for managed services. **`name`** (`comm`, 15 characters) and
   **`args`** are self-reported and advisory only.
 - GPG signing has its own allow-list, `trusted_signers`, keyed on executable
-  path.
+  path. `exe_path` names the app that starts the commit, such as an editor,
+  which sits above git, so it matches anywhere in the requester's chain.
 
 ## Consequences
 

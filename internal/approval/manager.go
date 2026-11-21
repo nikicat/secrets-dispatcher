@@ -5,12 +5,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/google/uuid"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
@@ -82,14 +81,41 @@ const (
 	RequestTypeUnlock    RequestType = "unlock"
 )
 
+// What a caller knows about one secret access request before the manager
+// decides on it.
+type RequestInfo struct {
+	Items   []ItemInfo
+	Session dbus.ObjectPath
+	Type    RequestType
+	// Set for search requests only.
+	SearchAttributes map[string]string
+	SenderInfo       SenderInfo
+}
+
+// Returns a new Request for info, created now and expiring after ttl.
+func (info RequestInfo) newRequest(ttl time.Duration) *Request {
+	now := time.Now()
+	return &Request{
+		ID:               uuid.New().String(),
+		Client:           info.SenderInfo.Client,
+		Items:            info.Items,
+		Session:          info.Session,
+		CreatedAt:        now,
+		ExpiresAt:        now.Add(ttl),
+		Type:             info.Type,
+		SearchAttributes: info.SearchAttributes,
+		SenderInfo:       info.SenderInfo,
+	}
+}
+
 // Request represents a secret access request awaiting approval.
 type Request struct {
-	ID        string     `json:"id"`
-	Client    ClientName `json:"client"`
-	Items     []ItemInfo `json:"items"`
-	Session   string     `json:"session"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt time.Time  `json:"expires_at"`
+	ID        string          `json:"id"`
+	Client    ClientName      `json:"client"`
+	Items     []ItemInfo      `json:"items"`
+	Session   dbus.ObjectPath `json:"session"`
+	CreatedAt time.Time       `json:"created_at"`
+	ExpiresAt time.Time       `json:"expires_at"`
 
 	// Type indicates whether this is a get_secret or search request.
 	Type RequestType `json:"type"`
@@ -169,20 +195,8 @@ type HistoryEntry struct {
 	ResolvedAt time.Time  `json:"resolved_at"`
 }
 
-// TrustedSigner defines a process auto-approved for GPG signing.
-// All three fields must match. Empty optional fields match anything.
-type TrustedSigner struct {
-	ExePath    procutil.Path `json:"exe_path"`              // Required: absolute path to the executable
-	RepoPath   string        `json:"repo_path,omitempty"`   // Optional: repo basename; empty matches any repo
-	FilePrefix string        `json:"file_prefix,omitempty"` // Optional: all changed files must have this prefix; empty matches any
-}
-
-// AutoApproveRule defines a temporary rule that auto-approves matching requests.
-//
-// InvokerExe is the non-spoofable identity the rule matches on: the invoking
-// process's /proc/PID/exe path. InvokerName holds the caller's comm and is
-// retained for display/logging only — it is attacker-controllable
-// (prctl(PR_SET_NAME)) and must never be the basis for a match.
+// A temporary rule that auto-approves requests like one the user approved
+// (ADR 0004). InvokerName is for display only.
 type AutoApproveRule struct {
 	ID          string            `json:"id"`
 	InvokerName string            `json:"invoker_name"`
@@ -215,7 +229,7 @@ type Manager struct {
 	autoApproveMu       sync.Mutex
 	autoApproveRules    []AutoApproveRule
 	autoApproveDuration time.Duration
-	trustedSigners      []TrustedSigner // exe+repo combos auto-approved for gpg_sign
+	trustedSigners      []TrustedSigner
 	ignoreChromeDummy   bool
 	trustRules          []TrustRule // persistent config-defined trust rules
 }
@@ -232,8 +246,7 @@ type ManagerConfig struct {
 	ApprovalWindow time.Duration
 	// AutoApproveDuration controls how long an auto-approve rule lasts after creation.
 	AutoApproveDuration time.Duration
-	// TrustedSigners is a list of executable paths auto-approved for gpg_sign requests.
-	TrustedSigners []TrustedSigner
+	TrustedSigners      []TrustedSigner
 	// IgnoreChromeDummy silently ignores Chrome's dummy secret writes.
 	IgnoreChromeDummy bool
 	// TrustRules are persistent config-defined rules for auto-approve/ignore.
@@ -252,7 +265,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		autoApproveDuration: cfg.AutoApproveDuration,
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
-		trustRules:          withDefaultActions(cfg.TrustRules),
+		trustRules:          cfg.TrustRules,
 	}
 }
 
@@ -374,88 +387,51 @@ func (m *Manager) AddHistoryEntry(entry HistoryEntry) {
 	}
 }
 
-// RequireApproval creates a pending request and blocks until approved, denied, or timeout.
-// Returns (autoApproved, nil) if approved — autoApproved is true when the request was
-// resolved without showing a notification (cache hit, auto-approve rule, trust rule, or
-// disabled manager). Returns (false, err) on denial, timeout, or cancellation.
-func (m *Manager) RequireApproval(ctx context.Context, items []ItemInfo,
-	session string, reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) (bool, error) {
+// Blocks until the user decides, unless the approval cache or a rule decides
+// first (ADR 0004). prompted is true when the user approved at a prompt.
+// Errors with ErrDenied, ErrTimeout, ErrDeniedByRule or ErrIgnored.
+func (m *Manager) RequireApproval(ctx context.Context, info RequestInfo) (prompted bool, err error) {
 	if m.disabled {
-		return true, nil
+		return false, nil
 	}
 
 	// Check approval cache: if all items were recently approved for this sender, skip.
 	// Delete and write requests always require explicit approval — never use cached approvals.
-	if reqType != RequestTypeDelete && reqType != RequestTypeWrite && m.approvalWindow > 0 && len(items) > 0 {
-		if m.checkApprovalCache(senderInfo, items) {
-			return true, nil
+	if info.Type != RequestTypeDelete && info.Type != RequestTypeWrite && m.approvalWindow > 0 && len(info.Items) > 0 {
+		if m.checkApprovalCache(info.SenderInfo, info.Items) {
+			return false, nil
 		}
 	}
 
 	// Check auto-approve rules (for timed-out client retries).
-	if rule := m.checkAutoApproveRules(senderInfo, items, reqType); rule != nil {
+	if rule := m.checkAutoApproveRules(info); rule != nil {
 		slog.Info("auto-approve rule matched",
 			"rule_id", rule.ID,
 			"invoker", rule.InvokerName,
 			"type", rule.RequestType)
-		now := time.Now()
-		req := &Request{
-			ID:               uuid.New().String(),
-			Client:           senderInfo.Client,
-			Items:            items,
-			Session:          session,
-			CreatedAt:        now,
-			ExpiresAt:        now,
-			Type:             reqType,
-			SearchAttributes: searchAttrs,
-			SenderInfo:       senderInfo,
-		}
-		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
-		return true, nil
+		m.record(EventRequestAutoApproved, info)
+		return false, nil
 	}
 
 	// Check persistent trust rules from config.
-	if rule := m.CheckTrustRules(senderInfo, items, reqType, searchAttrs); rule != nil {
+	if rule := m.CheckTrustRules(info); rule != nil {
 		slog.Info("trust rule matched",
 			"rule_name", rule.Name,
 			"action", rule.Action)
-		now := time.Now()
-		req := &Request{
-			ID:               uuid.New().String(),
-			Client:           senderInfo.Client,
-			Items:            items,
-			Session:          session,
-			CreatedAt:        now,
-			ExpiresAt:        now,
-			Type:             reqType,
-			SearchAttributes: searchAttrs,
-			SenderInfo:       senderInfo,
-		}
 		switch rule.Action {
 		case RuleIgnore:
-			m.notify(Event{Type: EventRequestIgnored, Request: req})
-			return true, ErrIgnored
+			m.record(EventRequestIgnored, info)
+			return false, ErrIgnored
 		case RuleDeny:
-			m.notify(Event{Type: EventRequestDenied, Request: req})
-			return true, ErrDeniedByRule
+			m.record(EventRequestDenied, info)
+			return false, ErrDeniedByRule
 		}
-		m.notify(Event{Type: EventRequestAutoApproved, Request: req})
-		return true, nil
+		m.record(EventRequestAutoApproved, info)
+		return false, nil
 	}
 
-	now := time.Now()
-	req := &Request{
-		ID:               uuid.New().String(),
-		Client:           senderInfo.Client,
-		Items:            items,
-		Session:          session,
-		CreatedAt:        now,
-		ExpiresAt:        now.Add(m.timeout),
-		Type:             reqType,
-		SearchAttributes: searchAttrs,
-		SenderInfo:       senderInfo,
-		done:             make(chan struct{}),
-	}
+	req := info.newRequest(m.timeout)
+	req.done = make(chan struct{})
 
 	m.mu.Lock()
 	m.pending[req.ID] = req
@@ -478,7 +454,7 @@ func (m *Manager) RequireApproval(ctx context.Context, items []ItemInfo,
 	select {
 	case <-req.done:
 		if req.resolution.Approves() {
-			return false, nil
+			return true, nil
 		}
 		return false, ErrDenied
 	case <-timer.C:
@@ -774,17 +750,15 @@ func (m *Manager) AddAutoApproveRule(rule AutoApproveRule) string {
 	return rule.ID
 }
 
-// CheckAutoApproveRules exposes checkAutoApproveRules for callers outside the
-// approval package (e.g. the gpg_sign HTTP handler) that drive their own request
-// flow and need to consult ephemeral auto-approve rules before opening a
-// notification. Same matching semantics as RequireApproval's auto-approve check.
-func (m *Manager) CheckAutoApproveRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType) *AutoApproveRule {
-	return m.checkAutoApproveRules(senderInfo, items, reqType)
+// Returns the active auto-approve rule that matches the request, or nil. It is
+// for callers that run their own request flow, such as the gpg_sign handler.
+func (m *Manager) CheckAutoApproveRules(info RequestInfo) *AutoApproveRule {
+	return m.checkAutoApproveRules(info)
 }
 
-// checkAutoApproveRules checks if the request matches any active auto-approve rule.
-// Returns the matching rule or nil.
-func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType) *AutoApproveRule {
+// Returns the active auto-approve rule that matches the request, or nil, and
+// drops the expired rules.
+func (m *Manager) checkAutoApproveRules(info RequestInfo) *AutoApproveRule {
 	m.autoApproveMu.Lock()
 	defer m.autoApproveMu.Unlock()
 
@@ -804,15 +778,12 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 			continue // already found a match, just cleaning
 		}
 
-		// Match on the non-spoofable invoker exe path, never the caller's comm
-		// (InvokerName), which is attacker-controllable. Fail closed when the
-		// caller lacks a resolved exe.
-		callerExe, ok := senderInfo.invokerExe()
+		callerExe, ok := info.SenderInfo.invokerExe()
 		if !ok || rule.InvokerExe != callerExe {
 			continue
 		}
 		// Match request type
-		if rule.RequestType != reqType {
+		if rule.RequestType != info.Type {
 			continue
 		}
 		// Match collection + attributes for EVERY item in the batch. An
@@ -820,7 +791,7 @@ func (m *Manager) checkAutoApproveRules(senderInfo SenderInfo, items []ItemInfo,
 		// batch only when every item falls within the rule's scope; matching just
 		// items[0] would let a batch smuggle an out-of-scope secret past a rule
 		// scoped to a benign collection.
-		if autoApproveCoversAll(rule, items) {
+		if autoApproveCoversAll(rule, info.Items) {
 			matched := *rule
 			match = &matched
 		}
@@ -843,11 +814,7 @@ func autoApproveCoversAll(rule *AutoApproveRule, items []ItemInfo) bool {
 		if rule.Collection != "" && rule.Collection != extractCollection(it.Path) {
 			return false
 		}
-		attrs := it.Attributes
-		if attrs == nil {
-			attrs = map[string]string{}
-		}
-		if !attributesMatch(rule.Attributes, attrs) {
+		if !attributesContain(it.Attributes, rule.Attributes) {
 			return false
 		}
 	}
@@ -867,10 +834,11 @@ func attributesEqual(a, b map[string]string) bool {
 	return true
 }
 
-// attributesMatch returns true if all entries in ruleAttrs are present in reqAttrs.
-func attributesMatch(ruleAttrs, reqAttrs map[string]string) bool {
-	for k, v := range ruleAttrs {
-		if ok, _ := path.Match(v, reqAttrs[k]); !ok {
+// Checks whether have holds every key of want with the same value. A missing
+// key reads as the empty string.
+func attributesContain(have, want map[string]string) bool {
+	for k, v := range want {
+		if have[k] != v {
 			return false
 		}
 	}
@@ -921,63 +889,20 @@ func (m *Manager) RemoveAutoApproveRule(id string) error {
 	return nil
 }
 
-// CheckTrustedSigner reports whether a GPG sign request should be silently
-// auto-signed under a trusted_signers entry.
-//
-// Matching is intentionally any-ancestor: a trusted_signers exe_path names the app
-// that INITIATED the commit (e.g. an editor or deploy script), which sits above git
-// in the chain — not git itself, which is the universal direct invoker. So the
-// trusted exe may appear anywhere in the sender's process chain.
-//
-// The silent path is gated on senderInfo.PeerTrusted: the request must have arrived
-// through our own gpg-sign thin client. That is the only case in which repoName and
-// changedFiles are trustworthy — our helper computed them from the real repository.
-// A process speaking the socket protocol directly can put any exe in its ancestry
-// and forge repoName/changedFiles (neither is verifiable against the signed commit
-// object), so it must never take the silent path; it falls through to interactive
-// approval instead (which, per the WYSIWYS binding, shows the real committed bytes).
-func (m *Manager) CheckTrustedSigner(senderInfo SenderInfo, repoName string, changedFiles []string) bool {
-	if len(m.trustedSigners) == 0 {
-		return false
-	}
+// Checks whether a trusted_signers entry lets a git signing request skip the
+// prompt. A request that did not come through the thin client never skips it,
+// since its repoName and changedFiles may be forged (ADR 0008).
+func (m *Manager) CheckTrustedSigner(senderInfo SenderInfo, repoName RepoName, changedFiles []string) bool {
 	if !senderInfo.PeerTrusted {
 		return false
 	}
-
-	for _, proc := range senderInfo.ProcessChain {
-		if proc.Exe == nil {
-			continue
-		}
-		for _, ts := range m.trustedSigners {
-			if *proc.Exe != ts.ExePath {
-				continue
-			}
-			if ts.RepoPath != "" && repoName != ts.RepoPath {
-				continue
-			}
-			if ts.FilePrefix != "" && !allFilesMatch(changedFiles, ts.FilePrefix) {
-				continue
-			}
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(m.trustedSigners, func(ts TrustedSigner) bool {
+		return ts.matches(senderInfo.ProcessChain, repoName, changedFiles)
+	})
 }
 
-// allFilesMatch returns true if every file starts with prefix.
-func allFilesMatch(files []string, prefix string) bool {
-	for _, f := range files {
-		if !strings.HasPrefix(f, prefix) {
-			return false
-		}
-	}
-	return true
-}
-
-// Returns the /proc/PID/exe path of the invoker, the chain entry at s.PID.
-// Unlike the comm in InvokerName, prctl(PR_SET_NAME) cannot forge it. Reports
-// false when it is unknown, and callers then fail closed rather than fall back
-// to the comm.
+// Returns the /proc/PID/exe path of the invoker. Rules match on it instead of
+// InvokerName (ADR 0005). Reports false when the path is unknown.
 func (s SenderInfo) invokerExe() (procutil.Path, bool) {
 	for _, p := range s.ProcessChain {
 		if p.PID == s.PID && p.Exe != nil {
@@ -987,211 +912,16 @@ func (s SenderInfo) invokerExe() (procutil.Path, bool) {
 	return "", false
 }
 
-// withDefaultActions returns rules with an empty Action read as RuleApprove,
-// the default a config file gets when it names no action.
-func withDefaultActions(rules []TrustRule) []TrustRule {
-	out := slices.Clone(rules)
-	for i := range out {
-		if out[i].Action == "" {
-			out[i].Action = RuleApprove
-		}
-	}
-	return out
-}
-
-// CheckTrustRules checks if the request matches any configured trust rule.
-// Returns the first matching rule, or nil if no rules match.
-func (m *Manager) CheckTrustRules(senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) *TrustRule {
+// Returns the first configured trust rule that matches the request, or nil.
+func (m *Manager) CheckTrustRules(info RequestInfo) *TrustRule {
 	for i := range m.trustRules {
 		rule := &m.trustRules[i]
-		if !matchTrustRule(rule, senderInfo, items, reqType, searchAttrs) {
+		if !rule.matches(info) {
 			continue
 		}
 		return rule
 	}
 	return nil
-}
-
-// matchTrustRule returns true if the request matches a single trust rule.
-func matchTrustRule(rule *TrustRule, senderInfo SenderInfo, items []ItemInfo, reqType RequestType, searchAttrs map[string]string) bool {
-	// Check request_types filter
-	if len(rule.RequestTypes) > 0 {
-		found := slices.Contains(rule.RequestTypes, reqType)
-		if !found {
-			return false
-		}
-	}
-
-	if ok, _ := path.Match(rule.clientGlob(), string(senderInfo.Client)); !ok {
-		return false
-	}
-
-	// Check process matcher
-	if rule.Process != nil {
-		if !matchProcess(rule.Process, senderInfo) {
-			return false
-		}
-	}
-
-	// Check secret matcher. deny/ignore rules are restrictive (fire if ANY item
-	// is in scope); approve rules are permissive (fire only if EVERY item is).
-	if rule.Secret != nil {
-		if !matchSecret(rule.Secret, items, rule.Action.Restrictive()) {
-			return false
-		}
-	}
-
-	// Check search_attributes
-	if len(rule.SearchAttributes) > 0 {
-		if !attributesMatch(rule.SearchAttributes, searchAttrs) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// Reports whether every non-empty field of pm matches the sender's process. An
-// empty matcher matches any sender that has a local process.
-func matchProcess(pm *ProcessMatcher, senderInfo SenderInfo) bool {
-	// Fail closed when nothing here describes the sender's process, even for
-	// an empty matcher or a unit glob that matches "".
-	if !senderInfo.hasLocalProcess() {
-		return false
-	}
-
-	if pm.Exe != "" {
-		matched := false
-		for _, proc := range senderInfo.ProcessChain {
-			if proc.Exe == nil {
-				continue
-			}
-			if ok, _ := path.Match(pm.Exe, string(*proc.Exe)); ok {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if pm.Name != "" {
-		matched := false
-		for _, proc := range senderInfo.ProcessChain {
-			if ok, _ := path.Match(pm.Name, proc.Name); ok {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if pm.Args != "" {
-		// Matched against each individual argument of each process in the
-		// chain. Like Name, cmdline is self-reported (a process can rewrite
-		// its argv after exec) — advisory only, never rely on it for deny.
-		matched := false
-		for _, proc := range senderInfo.ProcessChain {
-			for _, arg := range proc.Args {
-				if ok, _ := path.Match(pm.Args, arg); ok {
-					matched = true
-					break
-				}
-			}
-			if matched {
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if pm.CWD != "" {
-		matched := false
-		for _, proc := range senderInfo.ProcessChain {
-			if proc.CWD == nil {
-				continue
-			}
-			if ok, _ := path.Match(pm.CWD, string(*proc.CWD)); ok {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
-	}
-
-	if pm.Unit != "" {
-		// Match against the real systemd unit (authoritative), never the spoofable
-		// InvokerName/comm.
-		if ok, _ := path.Match(pm.Unit, string(senderInfo.SystemdUnit)); !ok {
-			return false
-		}
-	}
-
-	return true
-}
-
-// matchSecret checks whether a batch of items matches the secret matcher.
-//
-// A single approval decision covers the whole batch, so every item must be
-// considered — never just items[0]. The quantifier depends on the rule's
-// polarity so that both directions fail closed:
-//
-//   - restrictive rules (deny/ignore) match if ANY item is in scope, so a deny
-//     scoped to a sensitive collection still fires when a batch smuggles that
-//     item alongside benign ones.
-//   - permissive rules (approve) match only if EVERY item is in scope, so an
-//     approve scoped to a low-value collection cannot silently authorize a batch
-//     that also pulls out-of-scope secrets.
-//
-// A matcher with no constraints matches any batch (including the empty batch);
-// a constrained matcher never matches an empty batch, since no item is in scope.
-func matchSecret(sm *SecretMatcher, items []ItemInfo, restrictive bool) bool {
-	if sm.Collection == "" && sm.Label == "" && len(sm.Attributes) == 0 {
-		return true
-	}
-	if restrictive {
-		return slices.ContainsFunc(items, func(it ItemInfo) bool { return matchSecretItem(sm, it) })
-	}
-	if len(items) == 0 {
-		return false
-	}
-	for _, it := range items {
-		if !matchSecretItem(sm, it) {
-			return false
-		}
-	}
-	return true
-}
-
-// matchSecretItem checks whether a single item matches the secret matcher.
-func matchSecretItem(sm *SecretMatcher, item ItemInfo) bool {
-	if sm.Collection != "" {
-		if ok, _ := path.Match(sm.Collection, extractCollection(item.Path)); !ok {
-			return false
-		}
-	}
-	if sm.Label != "" {
-		if ok, _ := path.Match(sm.Label, item.Label); !ok {
-			return false
-		}
-	}
-	if len(sm.Attributes) > 0 {
-		attrs := item.Attributes
-		if attrs == nil {
-			attrs = map[string]string{}
-		}
-		if !attributesMatch(sm.Attributes, attrs) {
-			return false
-		}
-	}
-	return true
 }
 
 // ListTrustRules returns the configured trust rules.
@@ -1204,11 +934,11 @@ const chromeDummySchema = "_chrome_dummy_schema_for_unlocking"
 
 // ShouldIgnore returns true when the request is a Chrome dummy secret write
 // that should be silently dropped.
-func (m *Manager) ShouldIgnore(items []ItemInfo, reqType RequestType) bool {
-	if !m.ignoreChromeDummy || reqType != RequestTypeWrite {
+func (m *Manager) ShouldIgnore(info RequestInfo) bool {
+	if !m.ignoreChromeDummy || info.Type != RequestTypeWrite {
 		return false
 	}
-	for _, item := range items {
+	for _, item := range info.Items {
 		if item.Attributes["xdg:schema"] == chromeDummySchema {
 			return true
 		}
@@ -1216,57 +946,26 @@ func (m *Manager) ShouldIgnore(items []ItemInfo, reqType RequestType) bool {
 	return false
 }
 
-// RecordPassthrough creates a history entry for a request that bypasses approval entirely.
-// Used for methods like SearchItems and Unlock that are proxied directly to the upstream.
-func (m *Manager) RecordPassthrough(items []ItemInfo, session string,
-	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
-	now := time.Now()
-	req := &Request{
-		ID:               uuid.New().String(),
-		Client:           senderInfo.Client,
-		Items:            items,
-		Session:          session,
-		CreatedAt:        now,
-		ExpiresAt:        now,
-		Type:             reqType,
-		SearchAttributes: searchAttrs,
-		SenderInfo:       senderInfo,
-	}
-	m.notify(Event{Type: EventRequestAutoApproved, Request: req})
+// Records a request that went upstream without approval, such as SearchItems
+// or Unlock, as auto-approved.
+func (m *Manager) RecordPassthrough(info RequestInfo) {
+	m.record(EventRequestAutoApproved, info)
 }
 
-// RecordIgnored creates a history entry for an ignored request without blocking.
-func (m *Manager) RecordIgnored(items []ItemInfo, session string, senderInfo SenderInfo) {
-	now := time.Now()
-	req := &Request{
-		ID:         uuid.New().String(),
-		Client:     senderInfo.Client,
-		Items:      items,
-		Session:    session,
-		CreatedAt:  now,
-		ExpiresAt:  now,
-		Type:       RequestTypeWrite,
-		SenderInfo: senderInfo,
-	}
-	m.notify(Event{Type: EventRequestIgnored, Request: req})
+// Records a request that was dropped without asking the user.
+func (m *Manager) RecordIgnored(info RequestInfo) {
+	m.record(EventRequestIgnored, info)
 }
 
-// RecordDenied creates a history entry for a request denied by a trust rule.
-func (m *Manager) RecordDenied(items []ItemInfo, session string,
-	reqType RequestType, searchAttrs map[string]string, senderInfo SenderInfo) {
-	now := time.Now()
-	req := &Request{
-		ID:               uuid.New().String(),
-		Client:           senderInfo.Client,
-		Items:            items,
-		Session:          session,
-		CreatedAt:        now,
-		ExpiresAt:        now,
-		Type:             reqType,
-		SearchAttributes: searchAttrs,
-		SenderInfo:       senderInfo,
-	}
-	m.notify(Event{Type: EventRequestDenied, Request: req})
+// Records a request that a trust rule denied.
+func (m *Manager) RecordDenied(info RequestInfo) {
+	m.record(EventRequestDenied, info)
+}
+
+// Notifies subscribers of a request that was settled without waiting for the
+// user.
+func (m *Manager) record(t EventType, info RequestInfo) {
+	m.notify(Event{Type: t, Request: info.newRequest(0)})
 }
 
 // cacheApproval records approved (sender, item) pairs in the cache.

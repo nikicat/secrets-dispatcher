@@ -304,15 +304,16 @@ func (c configShowCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	var shown any = cfg
 	if c.Defaults {
-		if cfg, err = cfg.WithDefaults(); err != nil {
+		if shown, err = cfg.WithDefaults(); err != nil {
 			return err
 		}
 	}
 
 	fmt.Fprintf(os.Stderr, "# %s\n", source.File)
 
-	out, err := yaml.Marshal(cfg)
+	out, err := yaml.Marshal(shown)
 	if err != nil {
 		return err
 	}
@@ -525,68 +526,35 @@ type serveCmd struct {
 }
 
 func (c serveCmd) Run(ctx context.Context) error {
-	settings, err := c.settings()
+	cfg, err := c.merged()
 	if err != nil {
 		return err
 	}
-	cfg, err := settings.Resolve()
+	settings, err := cfg.Resolve()
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	slog.SetDefault(slog.New(newLogHandler(cfg.Serve.LogLevel, cfg.Serve.LogFormat)))
+	slog.SetDefault(slog.New(newLogHandler(settings.Serve.LogLevel, settings.Serve.LogFormat)))
 
-	// Create approval manager
-	var trustedSigners []approval.TrustedSigner
-	for _, ts := range cfg.Serve.TrustedSigners {
-		trustedSigners = append(trustedSigners, approval.TrustedSigner{
-			ExePath:    ts.ExePath,
-			RepoPath:   ts.RepoPath,
-			FilePrefix: ts.FilePrefix,
-		})
-	}
-	var trustRules []approval.TrustRule
-	for _, r := range cfg.Serve.Rules {
-		tr := approval.TrustRule{
-			Name:             r.Name,
-			Action:           r.Action,
-			RequestTypes:     r.RequestTypes,
-			Client:           r.Client,
-			SearchAttributes: r.SearchAttributes,
-		}
-		if r.Process != nil {
-			tr.Process = &approval.ProcessMatcher{
-				Exe:  r.Process.Exe,
-				Name: r.Process.Name,
-				Args: r.Process.Args,
-				CWD:  r.Process.CWD,
-				Unit: r.Process.Unit,
-			}
-		}
-		if r.Secret != nil {
-			tr.Secret = &approval.SecretMatcher{
-				Collection: r.Secret.Collection,
-				Label:      r.Secret.Label,
-				Attributes: r.Secret.Attributes,
-			}
-		}
-		trustRules = append(trustRules, tr)
-	}
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:             time.Duration(cfg.Serve.Timeout),
-		HistoryMax:          cfg.Serve.HistoryLimit,
-		ApprovalWindow:      time.Duration(cfg.Serve.ApprovalWindow),
-		AutoApproveDuration: time.Duration(cfg.Serve.AutoApproveDuration),
-		TrustedSigners:      trustedSigners,
-		IgnoreChromeDummy:   *cfg.Serve.IgnoreChromeDummySecret,
-		TrustRules:          trustRules,
+		Timeout:             time.Duration(settings.Serve.Timeout),
+		HistoryMax:          settings.Serve.HistoryLimit,
+		ApprovalWindow:      time.Duration(settings.Serve.ApprovalWindow),
+		AutoApproveDuration: time.Duration(settings.Serve.AutoApproveDuration),
+		TrustedSigners:      settings.Serve.TrustedSigners,
+		IgnoreChromeDummy:   settings.Serve.IgnoreChromeDummySecret,
+		TrustRules:          settings.Serve.Rules,
 	})
 
 	// Set up desktop notifications
 	var desktopNotifier *notification.DBusNotifier
 	var notifHandler *notification.Handler
-	slowUpstream := proxy.SlowUpstream{Threshold: time.Duration(*cfg.Serve.UpstreamSlowThreshold)}
-	if *cfg.Serve.Notifications {
+	slowUpstream := proxy.SlowUpstream{
+		Threshold: time.Duration(settings.Serve.UpstreamSlowThreshold),
+		Always:    settings.Serve.UpstreamSlowAlways,
+	}
+	if settings.Serve.Notifications {
 		notifier, err := notification.NewDBusNotifier()
 		if err != nil {
 			slog.Warn("failed to create desktop notifier, notifications disabled", "error", err)
@@ -597,13 +565,13 @@ func (c serveCmd) Run(ctx context.Context) error {
 		}
 	}
 	resolver := api.NewResolver(approvalMgr, slowUpstream)
-	notificationDelay := time.Duration(cfg.Serve.NotificationDelay)
+	notificationDelay := time.Duration(settings.Serve.NotificationDelay)
 	if desktopNotifier != nil {
-		notifHandler = notification.NewHandler(desktopNotifier, resolver, cfg.Listen, *cfg.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
+		notifHandler = notification.NewHandler(desktopNotifier, resolver, settings.Listen, settings.Serve.ShowPIDs, approvalMgr.AutoApproveDuration(), notificationDelay)
 		approvalMgr.Subscribe(notifHandler)
 	}
 
-	stateDir, err := cfg.StateDir.OrDefault()
+	stateDir, err := settings.StateDir.OrDefault()
 	if err != nil {
 		return err
 	}
@@ -625,22 +593,22 @@ func (c serveCmd) Run(ctx context.Context) error {
 	}
 
 	chainEnd := procutil.ChainToInit
-	if *cfg.Serve.TrimProcessChain {
+	if settings.Serve.TrimProcessChain {
 		chainEnd = procutil.ChainToSessionStarter
 	}
 	chains, err := sender.NewChainReader(chainEnd)
 	if err != nil {
 		return err
 	}
-	factory := proxy.NewFactory(cfg.Serve.Upstream.Bus.Connect, approvalMgr, slowUpstream, chains)
-	down, err := newDownstreams(cfg.Serve.Downstream, factory)
+	factory := proxy.NewFactory(settings.Serve.Upstream.Bus.Connect, approvalMgr, slowUpstream, chains)
+	down, err := newDownstreams(settings.Serve.Downstream, factory)
 	if err != nil {
 		return err
 	}
 	runners := down.Runners()
 
 	// Set up SSH agent proxy if configured
-	if ssh := cfg.SSH; ssh != nil {
+	if ssh := settings.SSH; ssh != nil {
 		if ssh.Upstream == "" {
 			slog.Error("SSH agent proxy enabled but no upstream socket (set ssh.upstream in config or SSH_AUTH_SOCK)")
 		} else {
@@ -652,7 +620,7 @@ func (c serveCmd) Run(ctx context.Context) error {
 
 	// Create API server
 	apiServer, err := api.NewServer(api.ServerConfig{
-		Addr:              cfg.Listen,
+		Addr:              settings.Listen,
 		Resolver:          resolver,
 		Auth:              auth,
 		Chains:            chains,
@@ -697,15 +665,15 @@ func (c serveCmd) Run(ctx context.Context) error {
 		return nil
 	}
 
-	if err := serveRemotes(apiServer, cfg.Serve.Remotes); err != nil {
+	if err := serveRemotes(apiServer, settings.Serve.Remotes); err != nil {
 		return fmt.Errorf("open remote socket: %w", err)
 	}
 
 	down.Subscribe(apiServer.WSHandler())
 
 	slog.Info("starting proxy topology",
-		"upstream", cfg.Serve.Upstream.Bus.Type(),
-		"downstreams", len(cfg.Serve.Downstream))
+		"upstream", settings.Serve.Upstream.Bus.Type(),
+		"downstreams", len(settings.Serve.Downstream))
 
 	var wg sync.WaitGroup
 	for i, run := range runners {

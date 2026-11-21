@@ -95,11 +95,22 @@ serve:
 Rules match on the client the request came through (`client`), process
 attributes (`exe`, `name`, `args`, `cwd`, systemd `unit`) and secret attributes
 (`collection`, `label`, custom `attributes`). All patterns are globs
-(`path.Match`, **not** regex), and all non-empty matchers are AND-ed.
+(`path.Match`, **not** regex), and all matchers that are set are AND-ed. An
+empty pattern (`unit: ''`) fails to load: in an `approve` rule it would
+otherwise read as unset and silently widen the rule, so omit the key to match
+anything.
 Process matching checks the **full process chain**, not just the immediate D-Bus
 caller — `args` is matched against each individual cmdline argument of each
 process in the chain, which is how you identify interpreter-run scripts (whose
 `exe` is the interpreter, `/usr/bin/bash`, with the script path only in argv).
+
+### Trusted signers
+
+A `trusted_signers` entry approves git signing requests without a prompt.
+`exe_path` names the app that starts the commit, `file_prefix` is a prefix that
+every staged file must have, and `repo_path` takes the name of the repository's
+top-level directory, not a path. The key keeps the name `repo_path` so existing
+config files keep working.
 
 ### Match on what can't be spoofed
 
@@ -150,5 +161,5 @@ downstream named after one fails to load.
 | `process.cwd` | glob; working directory of any process in the chain |
 | `process.unit` | glob; systemd unit name |
 | `secret.collection` / `secret.label` | glob (for `get_secret` / `delete` / `write`) |
-| `secret.attributes` | subset match; values are globs |
+| `secret.attributes` | subset match; values are globs. A missing attribute counts as empty |
 | `search_attributes` | glob map, for `search` requests |

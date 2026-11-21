@@ -180,3 +180,34 @@ func TestWithSlowNotify_PrefilledSenderSkipsResolve(t *testing.T) {
 		t.Errorf("expected pre-filled PID 999, got %d", notifier.lastCtx.SenderInfo.PID)
 	}
 }
+
+// A prompted request's slow call is reported only when Always is set. An
+// unprompted request's slow call is always reported.
+func TestWithSlowNotify_Always(t *testing.T) {
+	tests := []struct {
+		name      string
+		always    bool
+		prompted  bool
+		wantCalls int
+	}{
+		{"default, unprompted", false, false, 1},
+		{"default, prompted", false, true, 0},
+		{"always, unprompted", true, false, 1},
+		{"always, prompted", true, true, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			notifier := &mockNotifier{}
+			slow := SlowUpstream{Notifier: notifier, Threshold: 20 * time.Millisecond, Always: tc.always}
+			WithSlowNotify(slow, UpstreamCallContext{Prompted: tc.prompted}, func() *dbus.Call {
+				time.Sleep(80 * time.Millisecond)
+				return &dbus.Call{}
+			})
+			notifier.mu.Lock()
+			defer notifier.mu.Unlock()
+			if notifier.notifyCalls != tc.wantCalls {
+				t.Errorf("notify calls = %d, want %d", notifier.notifyCalls, tc.wantCalls)
+			}
+		})
+	}
+}

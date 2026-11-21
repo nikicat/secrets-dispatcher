@@ -103,7 +103,8 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 
 	// Require approval before deleting
 	items := []approval.ItemInfo{itemInfo}
-	if _, err := i.approval.RequireApproval(ctx, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+	prompted, err := i.approval.RequireApproval(ctx, approval.RequestInfo{Items: items, Type: approval.RequestTypeDelete, SenderInfo: senderInfo})
+	if err != nil {
 		i.logger.LogMethod(ctx, "Item.Delete", map[string]any{"item": string(path)}, "denied", err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -113,6 +114,7 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 		RequestType: approval.RequestTypeDelete,
 		Items:       items,
 		SenderInfo:  senderInfo,
+		Prompted:    prompted,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".Delete", 0) })
 	if call.Err != nil {
 		return "/", dbustypes.ErrFailed(call.Err)
@@ -154,7 +156,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 
 	// Require approval before accessing secret
 	items := []approval.ItemInfo{itemInfo}
-	_, err := i.approval.RequireApproval(ctx, items, string(session), approval.RequestTypeGetSecret, nil, senderInfo)
+	prompted, err := i.approval.RequireApproval(ctx, approval.RequestInfo{Items: items, Session: session, Type: approval.RequestTypeGetSecret, SenderInfo: senderInfo})
 	if err != nil {
 		i.logger.LogItemGetSecret(ctx, string(path), "denied", err)
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
@@ -172,6 +174,7 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 		RequestType: approval.RequestTypeGetSecret,
 		Items:       items,
 		SenderInfo:  senderInfo,
+		Prompted:    prompted,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".GetSecret", 0, localSession) })
 	if call.Err != nil {
 		i.logger.LogItemGetSecret(context.Background(), string(path), "error", call.Err)
@@ -219,7 +222,8 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 
 	// Require approval before writing secret
 	items := []approval.ItemInfo{itemInfo}
-	if _, err := i.approval.RequireApproval(ctx, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+	prompted, err := i.approval.RequireApproval(ctx, approval.RequestInfo{Items: items, Session: secret.Session, Type: approval.RequestTypeWrite, SenderInfo: senderInfo})
+	if err != nil {
 		if errors.Is(err, approval.ErrIgnored) {
 			i.logger.LogMethod(ctx, "Item.SetSecret", map[string]any{
 				"item": string(path), "ignored": true,
@@ -246,6 +250,7 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 		RequestType: approval.RequestTypeWrite,
 		Items:       items,
 		SenderInfo:  senderInfo,
+		Prompted:    prompted,
 	}, func() *dbus.Call { return obj.Call(dbustypes.ItemInterface+".SetSecret", 0, localSecret) })
 	if call.Err != nil {
 		return dbustypes.ErrFailed(call.Err)

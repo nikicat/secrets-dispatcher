@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,6 +197,66 @@ serve:
 	assert.ErrorContains(t, err, `path must be absolute: "bin/nvim"`)
 }
 
+func TestResolveTrustedSignerWithoutExePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+serve:
+  trusted_signers:
+    - repo_path: dotfiles
+`), 0o644))
+
+	cfg, err := File{path}.Load()
+	require.NoError(t, err)
+	_, err = cfg.Resolve()
+	assert.ErrorContains(t, err, "trusted_signers[0]: exe_path is required")
+}
+
+// A malformed glob fails the load, wherever in a rule it is.
+func TestLoadRejectsInvalidGlob(t *testing.T) {
+	for _, field := range []string{
+		"client: '['",
+		"process: {args: '['}",
+		"process: {cwd: '['}",
+		"secret: {attributes: {service: '['}}",
+		"search_attributes: {service: '['}",
+	} {
+		t.Run(field, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(file, []byte("serve:\n  rules:\n    - "+field+"\n"), 0o644))
+
+			_, err := File{file}.Load()
+			assert.ErrorIs(t, err, path.ErrBadPattern)
+		})
+	}
+}
+
+func TestLoadRejectsEmptyGlob(t *testing.T) {
+	for _, field := range []string{
+		"client: ''",
+		"process: {unit: ''}",
+		"secret: {label: ''}",
+		"secret: {attributes: {service: ''}}",
+		"search_attributes: {service: ''}",
+	} {
+		t.Run(field, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte("serve:\n  rules:\n    - "+field+"\n"), 0o644))
+
+			_, err := File{path}.Load()
+			assert.ErrorContains(t, err, "empty glob; omit the key")
+		})
+	}
+}
+
+func TestLoadReadsNullScalarGlobAsOmitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("serve:\n  rules:\n    - process: {unit: , exe: null}\n"), 0o644))
+
+	cfg, err := File{path}.Load()
+	require.NoError(t, err)
+	assert.Equal(t, approval.ProcessMatcher{}, *cfg.Serve.Rules[0].Process)
+}
+
 func TestLoadRejectsUnknownEnumValues(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml, wantErr string
@@ -273,6 +334,8 @@ serve:
     - name: no-action
       process:
         exe: /usr/bin/git
+    - name: empty-action
+      action: ""
 `), 0o644)
 	cfg, err := File{path}.Load()
 	if err != nil {
@@ -283,11 +346,13 @@ serve:
 	if err != nil {
 		t.Fatalf("WithDefaults: %v", err)
 	}
-	if got := out.Serve.Rules[0].Action; got != approval.RuleApprove {
-		t.Fatalf("Action = %q, want %q", got, approval.RuleApprove)
-	}
-	if cfg.Serve.Rules[0].Action != "" {
-		t.Fatalf("WithDefaults changed the loaded config's rules in place")
+	for i, r := range out.Serve.Rules {
+		if r.Action != approval.RuleApprove {
+			t.Fatalf("rules[%d].Action = %q, want %q", i, r.Action, approval.RuleApprove)
+		}
+		if cfg.Serve.Rules[i].Action != "" {
+			t.Fatalf("WithDefaults changed the loaded config's rules[%d] in place", i)
+		}
 	}
 }
 
@@ -510,50 +575,21 @@ func TestResolveValidates(t *testing.T) {
 			cfg: Config{Serve: ServeConfig{
 				Upstream:   UpstreamConfig{Bus: SessionBus{}},
 				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Rules: []TrustRule{{
+				Rules: []approval.TrustRule{{
 					Name:    "deny-epiphany",
 					Action:  "deny",
-					Process: &ProcessMatcher{Name: "epiphany-search"},
+					Process: &approval.ProcessMatcher{Name: approval.MustGlob("epiphany-search")},
 				}},
 			}},
 		},
 		{
-			name: "valid args rule",
+			name: "ignore rule without request_types",
 			cfg: Config{Serve: ServeConfig{
 				Upstream:   UpstreamConfig{Bus: SessionBus{}},
 				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Rules: []TrustRule{{
-					Name:    "logcli",
-					Action:  "approve",
-					Process: &ProcessMatcher{Exe: "/usr/bin/bash", Args: "/home/me/.local/bin/logcli"},
-				}},
+				Rules:      []approval.TrustRule{{Name: "drop", Action: approval.RuleIgnore}},
 			}},
-		},
-		{
-			name: "invalid args glob",
-			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Rules: []TrustRule{{
-					Name:    "bad-args",
-					Action:  "approve",
-					Process: &ProcessMatcher{Args: "["},
-				}},
-			}},
-			wantErr: "invalid glob in process.args",
-		},
-		{
-			name: "invalid cwd glob",
-			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Rules: []TrustRule{{
-					Name:    "bad-cwd",
-					Action:  "approve",
-					Process: &ProcessMatcher{CWD: "["},
-				}},
-			}},
-			wantErr: "invalid glob in process.cwd",
+			wantErr: `rules[0]: action "ignore" requires non-empty request_types`,
 		},
 	}
 
@@ -580,4 +616,92 @@ func TestSocketClient(t *testing.T) {
 	client, err := Socket{Path: "/run/vm.sock"}.Client()
 	require.NoError(t, err)
 	assert.Equal(t, approval.ClientName("vm"), client)
+}
+
+// Pins the YAML that `config show --defaults` prints, and that it reads back
+// as the same settings.
+func TestSettingsYAML(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+	tests := []struct {
+		name, file, want string
+	}{
+		{"defaults", "{}", `state_dir: ""
+listen: 127.0.0.1:8484
+serve:
+    upstream:
+        type: session_bus
+    downstream:
+        - type: sockets
+          path: /run/user/1000/secrets-dispatcher/sockets
+    log_level: info
+    log_format: text
+    timeout: 5m0s
+    history_limit: 100
+    notifications: true
+    show_pids: false
+    trim_process_chain: true
+    approval_window: 5s
+    auto_approve_duration: 2m0s
+    notification_delay: 500ms
+    ignore_chrome_dummy_secret: true
+    upstream_slow_threshold: 1.5s
+    upstream_slow_always: false
+`},
+		{"set against the defaults", `
+serve:
+  notifications: false
+  show_pids: true
+  trim_process_chain: false
+  ignore_chrome_dummy_secret: false
+  upstream_slow_threshold: 0s
+  upstream_slow_always: true
+  remotes:
+    - name: box
+ssh: {}
+`, `state_dir: ""
+listen: 127.0.0.1:8484
+serve:
+    upstream:
+        type: session_bus
+    downstream:
+        - type: sockets
+          path: /run/user/1000/secrets-dispatcher/sockets
+    log_level: info
+    log_format: text
+    timeout: 5m0s
+    history_limit: 100
+    notifications: false
+    show_pids: true
+    trim_process_chain: false
+    approval_window: 5s
+    auto_approve_duration: 2m0s
+    notification_delay: 500ms
+    ignore_chrome_dummy_secret: false
+    upstream_slow_threshold: 0s
+    upstream_slow_always: true
+    remotes:
+        - name: box
+ssh:
+    upstream: /tmp/agent.sock
+    listen: /run/user/1000/secrets-dispatcher/ssh-agent.sock
+`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg Config
+			require.NoError(t, yaml.Unmarshal([]byte(tc.file), &cfg))
+			settings, err := cfg.WithDefaults()
+			require.NoError(t, err)
+			out, err := yaml.Marshal(settings)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(out))
+
+			var reread Config
+			require.NoError(t, yaml.Unmarshal(out, &reread))
+			again, err := reread.WithDefaults()
+			require.NoError(t, err)
+			assert.Equal(t, settings, again)
+		})
+	}
 }

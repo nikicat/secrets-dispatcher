@@ -730,7 +730,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		if req.GPGSignInfo != nil {
-			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(req.GPGSignInfo.RepoName), esc(commitSubject(req.GPGSignInfo.CommitMsg)))
+			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(string(req.GPGSignInfo.RepoName)), esc(commitSubject(req.GPGSignInfo.CommitMsg)))
 			writeChain(req.SenderInfo.ProcessChain)
 		}
 	case approval.RequestTypeSSHSign:

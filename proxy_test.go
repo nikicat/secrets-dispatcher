@@ -46,32 +46,84 @@ func (e *testEnv) remoteConn() *dbus.Conn {
 	return conn
 }
 
+// Connects p to the remote bus as its front and the local bus as its backend.
+func (e *testEnv) connectProxy(p *proxy.Proxy) error {
+	backendConn, err := dbus.Connect(e.localAddr)
+	if err != nil {
+		return fmt.Errorf("connect to backend dbus: %w", err)
+	}
+
+	frontConn, err := dbus.Connect(e.remoteAddr)
+	if err != nil {
+		backendConn.Close()
+		return fmt.Errorf("connect to front socket: %w", err)
+	}
+
+	return p.ConnectWith(frontConn, backendConn)
+}
+
+// Registers a mock backend on the local bus, puts a proxy deciding through
+// mgr between the two buses, and returns the mock and a client connection on
+// the remote bus. All three are closed when the test ends.
+func (e *testEnv) startProxy(mgr *approval.Manager) (mock *testutil.MockSecretService, client *dbus.Conn) {
+	e.t.Helper()
+
+	localConn := e.localConn()
+	e.t.Cleanup(func() { localConn.Close() })
+
+	mock = testutil.NewMockSecretService()
+	if err := mock.Register(localConn); err != nil {
+		e.t.Fatalf("register mock service: %v", err)
+	}
+
+	p := proxy.New("test-client", mgr, proxy.Config{})
+	if err := e.connectProxy(p); err != nil {
+		e.t.Fatalf("connect proxy: %v", err)
+	}
+	e.t.Cleanup(func() { p.Close() })
+
+	client = e.remoteConn()
+	e.t.Cleanup(func() { client.Close() })
+	return mock, client
+}
+
+// Opens a plain (unencrypted) session through serviceObj and returns its path.
+func openPlainSession(t *testing.T, serviceObj dbus.BusObject) dbus.ObjectPath {
+	t.Helper()
+
+	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	if call.Err != nil {
+		t.Fatalf("OpenSession: %v", call.Err)
+	}
+
+	var output dbus.Variant
+	var sessionPath dbus.ObjectPath
+	if err := call.Store(&output, &sessionPath); err != nil {
+		t.Fatalf("store result: %v", err)
+	}
+	return sessionPath
+}
+
+// Waits for a request to appear in mgr's pending list and returns its ID.
+func waitPendingID(t *testing.T, mgr *approval.Manager) string {
+	t.Helper()
+	for range 50 {
+		if reqs := mgr.List(); len(reqs) > 0 {
+			return reqs[0].ID
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("approval request did not appear")
+	return ""
+}
+
 func TestProxyBasicOperations(t *testing.T) {
 	env := newTestEnv(t)
 
-	// Connect to local D-Bus and register mock service
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
+	mock, remoteConn := env.startProxy(approval.NewDisabledManager())
 
 	// Add a test item
 	mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
-
-	// Start the proxy
-	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	// Connect to remote D-Bus as a client
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
 
 	// Test: Get Collections property
 	t.Run("GetCollections", func(t *testing.T) {
@@ -131,21 +183,11 @@ func TestProxyBasicOperations(t *testing.T) {
 	t.Run("OpenSessionAndGetSecrets", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 
-		// Open session
-		call := obj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-		if call.Err != nil {
-			t.Fatalf("OpenSession: %v", call.Err)
-		}
-
-		var output dbus.Variant
-		var sessionPath dbus.ObjectPath
-		if err := call.Store(&output, &sessionPath); err != nil {
-			t.Fatalf("store result: %v", err)
-		}
+		sessionPath := openPlainSession(t, obj)
 		t.Logf("Session: %s", sessionPath)
 
 		// Search for items
-		call = obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"test-attr": "test-value"})
+		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"test-attr": "test-value"})
 		if call.Err != nil {
 			t.Fatalf("SearchItems: %v", call.Err)
 		}
@@ -202,44 +244,18 @@ func TestProxyBasicOperations(t *testing.T) {
 func TestProxyItemOperations(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
+	mock, remoteConn := env.startProxy(approval.NewDisabledManager())
 
 	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test-app"}, []byte("secret-value"))
 
-	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
-
 	// Test: Item.GetSecret
 	t.Run("ItemGetSecret", func(t *testing.T) {
-		// First open a session
 		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-		if call.Err != nil {
-			t.Fatalf("OpenSession: %v", call.Err)
-		}
-
-		var output dbus.Variant
-		var sessionPath dbus.ObjectPath
-		if err := call.Store(&output, &sessionPath); err != nil {
-			t.Fatalf("store result: %v", err)
-		}
+		sessionPath := openPlainSession(t, serviceObj)
 
 		// Get secret from item
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call = itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		call := itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
 		if call.Err != nil {
 			t.Fatalf("Item.GetSecret: %v", call.Err)
 		}
@@ -278,38 +294,12 @@ func TestProxyItemOperations(t *testing.T) {
 func TestProxyCollectionOperations(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	_, remoteConn := env.startProxy(approval.NewDisabledManager())
 
 	// Test: Collection.CreateItem
 	t.Run("CollectionCreateItem", func(t *testing.T) {
-		// First open a session
 		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-		if call.Err != nil {
-			t.Fatalf("OpenSession: %v", call.Err)
-		}
-
-		var output dbus.Variant
-		var sessionPath dbus.ObjectPath
-		if err := call.Store(&output, &sessionPath); err != nil {
-			t.Fatalf("store result: %v", err)
-		}
+		sessionPath := openPlainSession(t, serviceObj)
 
 		// Create item
 		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
@@ -324,7 +314,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 			ContentType: "text/plain",
 		}
 
-		call = collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
 		if call.Err != nil {
 			t.Fatalf("CreateItem: %v", call.Err)
 		}
@@ -381,42 +371,16 @@ func TestProxyCollectionOperations(t *testing.T) {
 func TestProxyAliasPathOperations(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
+	mock, remoteConn := env.startProxy(approval.NewDisabledManager())
 
 	mock.AddItem("Existing Secret", map[string]string{"app": "test"}, []byte("existing-value"))
-
-	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
 
 	aliasPath := dbus.ObjectPath("/org/freedesktop/secrets/aliases/default")
 
 	// Test: CreateItem via alias path (this is what secret-tool store does)
 	t.Run("CreateItemViaAlias", func(t *testing.T) {
-		// Open session first
 		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-		if call.Err != nil {
-			t.Fatalf("OpenSession: %v", call.Err)
-		}
-
-		var output dbus.Variant
-		var sessionPath dbus.ObjectPath
-		if err := call.Store(&output, &sessionPath); err != nil {
-			t.Fatalf("store result: %v", err)
-		}
+		sessionPath := openPlainSession(t, serviceObj)
 
 		// Create item via alias path
 		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
@@ -431,7 +395,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 			ContentType: "text/plain",
 		}
 
-		call = collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
 		if call.Err != nil {
 			t.Fatalf("CreateItem via alias: %v", call.Err)
 		}
@@ -488,61 +452,19 @@ func TestProxyAliasPathOperations(t *testing.T) {
 	})
 }
 
-// Connects p to the remote bus as its front and the local bus as its backend.
-func connectProxyWithConns(p *proxy.Proxy, localAddr, remoteAddr string) error {
-	backendConn, err := dbus.Connect(localAddr)
-	if err != nil {
-		return fmt.Errorf("connect to backend dbus: %w", err)
-	}
-
-	frontConn, err := dbus.Connect(remoteAddr)
-	if err != nil {
-		backendConn.Close()
-		return fmt.Errorf("connect to front socket: %w", err)
-	}
-
-	return p.ConnectWith(frontConn, backendConn)
-}
-
 func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 	env := newTestEnv(t)
-
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	// Add a test item and capture its path directly (avoids needing SearchItems which now requires approval)
-	itemPath := mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
 	// Create an approval manager that requires approval (not auto-approve)
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	mock, clientConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
+	// Add a test item and capture its path directly (avoids needing SearchItems which now requires approval)
+	itemPath := mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
 
-	// Connect a client to the remote D-Bus
-	clientConn := env.remoteConn()
-
-	// Open a session first
 	serviceObj := clientConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-	if call.Err != nil {
-		t.Fatalf("OpenSession: %v", call.Err)
-	}
-
-	var output dbus.Variant
-	var sessionPath dbus.ObjectPath
-	if err := call.Store(&output, &sessionPath); err != nil {
-		t.Fatalf("store result: %v", err)
-	}
+	sessionPath := openPlainSession(t, serviceObj)
 
 	// Use the item path directly (avoids SearchItems which now requires approval)
 	unlocked := []dbus.ObjectPath{itemPath}
@@ -554,20 +476,7 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 		secretsReturned <- call.Err
 	}()
 
-	// Wait for the pending request to appear
-	var pendingCount int
-	for range 50 {
-		pendingCount = approvalMgr.PendingCount()
-		if pendingCount > 0 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if pendingCount == 0 {
-		t.Fatal("pending request did not appear")
-	}
-	t.Logf("Pending request appeared (count=%d)", pendingCount)
+	waitPendingID(t, approvalMgr)
 
 	// Now disconnect the client
 	clientConn.Close()
@@ -602,27 +511,11 @@ func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
 func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	itemPath := mock.AddItem("Delete Me", map[string]string{"app": "test"}, []byte("secret"))
-
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	mock, remoteConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	itemPath := mock.AddItem("Delete Me", map[string]string{"app": "test"}, []byte("secret"))
 
 	// Start Item.Delete in a goroutine — it should block waiting for approval
 	deleteErr := make(chan error, 1)
@@ -632,20 +525,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 		deleteErr <- call.Err
 	}()
 
-	// Wait for pending request
-	var reqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("approval request did not appear for Item.Delete")
-	}
+	reqID := waitPendingID(t, approvalMgr)
 
 	// Verify request type
 	req := approvalMgr.GetPending(reqID)
@@ -673,27 +553,11 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 func TestProxyItemDeleteDenied(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	itemPath := mock.AddItem("Don't Delete Me", map[string]string{"app": "test"}, []byte("secret"))
-
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	mock, remoteConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	itemPath := mock.AddItem("Don't Delete Me", map[string]string{"app": "test"}, []byte("secret"))
 
 	deleteErr := make(chan error, 1)
 	go func() {
@@ -702,20 +566,7 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 		deleteErr <- call.Err
 	}()
 
-	// Wait for pending request
-	var reqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("approval request did not appear")
-	}
+	reqID := waitPendingID(t, approvalMgr)
 
 	// Deny the request
 	if err := approvalMgr.Deny(reqID); err != nil {
@@ -738,25 +589,9 @@ func TestProxyItemDeleteDenied(t *testing.T) {
 func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	_, remoteConn := env.startProxy(approvalMgr)
 
 	collPath := dbus.ObjectPath("/org/freedesktop/secrets/collection/default")
 
@@ -768,20 +603,7 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 		deleteErr <- call.Err
 	}()
 
-	// Wait for pending request
-	var reqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("approval request did not appear for Collection.Delete")
-	}
+	reqID := waitPendingID(t, approvalMgr)
 
 	// Verify request type and that it captured the collection label
 	req := approvalMgr.GetPending(reqID)
@@ -816,40 +638,16 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	itemPath := mock.AddItem("Cached Secret", map[string]string{"app": "test"}, []byte("secret"))
-
 	// Use approval window so GetSecret gets cached
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100, ApprovalWindow: time.Minute})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	mock, remoteConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	itemPath := mock.AddItem("Cached Secret", map[string]string{"app": "test"}, []byte("secret"))
 
 	// First: open session and GetSecret (approve it to populate cache)
 	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-	if call.Err != nil {
-		t.Fatalf("OpenSession: %v", call.Err)
-	}
-	var output dbus.Variant
-	var sessionPath dbus.ObjectPath
-	if err := call.Store(&output, &sessionPath); err != nil {
-		t.Fatalf("store result: %v", err)
-	}
+	sessionPath := openPlainSession(t, serviceObj)
 
 	// GetSecret blocks on approval
 	getSecretDone := make(chan error, 1)
@@ -860,18 +658,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	}()
 
 	// Approve GetSecret
-	var reqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("GetSecret approval request did not appear")
-	}
+	reqID := waitPendingID(t, approvalMgr)
 	approvalMgr.Approve(reqID)
 	<-getSecretDone
 
@@ -884,19 +671,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	}()
 
 	// Should see a new pending request
-	var deleteReqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			deleteReqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if deleteReqID == "" {
-		t.Fatal("Delete should require explicit approval even when GetSecret was cached")
-	}
+	deleteReqID := waitPendingID(t, approvalMgr)
 
 	req := approvalMgr.GetPending(deleteReqID)
 	if req.Type != approval.RequestTypeDelete {
@@ -918,39 +693,14 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 func TestProxySetSecretRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
+	mock, remoteConn := env.startProxy(approvalMgr)
 
 	itemPath := mock.AddItem("My Secret", map[string]string{"app": "test"}, []byte("old-value"))
 
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
-
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
-
-	// Open session
 	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-	if call.Err != nil {
-		t.Fatalf("OpenSession: %v", call.Err)
-	}
-	var output dbus.Variant
-	var sessionPath dbus.ObjectPath
-	if err := call.Store(&output, &sessionPath); err != nil {
-		t.Fatalf("store result: %v", err)
-	}
+	sessionPath := openPlainSession(t, serviceObj)
 
 	// Start SetSecret in a goroutine — it should block
 	setErr := make(chan error, 1)
@@ -965,19 +715,7 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 		setErr <- call.Err
 	}()
 
-	// Wait for pending request
-	var reqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("approval request did not appear for SetSecret")
-	}
+	reqID := waitPendingID(t, approvalMgr)
 
 	req := approvalMgr.GetPending(reqID)
 	if req.Type != approval.RequestTypeWrite {
@@ -999,37 +737,12 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
 	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	_, remoteConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
-
-	// Open session
 	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-	if call.Err != nil {
-		t.Fatalf("OpenSession: %v", call.Err)
-	}
-	var output dbus.Variant
-	var sessionPath dbus.ObjectPath
-	if err := call.Store(&output, &sessionPath); err != nil {
-		t.Fatalf("store result: %v", err)
-	}
+	sessionPath := openPlainSession(t, serviceObj)
 
 	// Start CreateItem in a goroutine — it should block
 	createErr := make(chan error, 1)
@@ -1048,19 +761,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 		createErr <- call.Err
 	}()
 
-	// Wait for pending request
-	var reqID string
-	for range 50 {
-		reqs := approvalMgr.List()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("approval request did not appear for CreateItem")
-	}
+	reqID := waitPendingID(t, approvalMgr)
 
 	req := approvalMgr.GetPending(reqID)
 	if req.Type != approval.RequestTypeWrite {
@@ -1087,43 +788,18 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	initialItemCount := mock.ItemCount()
-
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
 		Timeout:           30 * time.Second,
 		HistoryMax:        100,
 		IgnoreChromeDummy: true,
 	})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	mock, remoteConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
+	initialItemCount := mock.ItemCount()
 
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
-
-	// Open session
 	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-	if call.Err != nil {
-		t.Fatalf("OpenSession: %v", call.Err)
-	}
-	var output dbus.Variant
-	var sessionPath dbus.ObjectPath
-	if err := call.Store(&output, &sessionPath); err != nil {
-		t.Fatalf("store result: %v", err)
-	}
+	sessionPath := openPlainSession(t, serviceObj)
 
 	// CreateItem with Chrome's dummy schema — should return immediately without blocking
 	collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
@@ -1140,7 +816,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 		ContentType: "text/plain",
 	}
 
-	call = collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+	call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
 	if call.Err != nil {
 		t.Fatalf("CreateItem returned error: %v", call.Err)
 	}
@@ -1179,23 +855,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
-
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	_, remoteConn := env.startProxy(approval.NewDisabledManager())
 
 	obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	call := obj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "dh-ietf2048-sha512-aes256-cbc-pkcs7", dbus.MakeVariant(""))
@@ -1246,23 +906,9 @@ func openDHSession(t *testing.T, serviceObj dbus.BusObject) (*dhcrypto.Session, 
 func TestProxyDHSession(t *testing.T) {
 	env := newTestEnv(t)
 
-	localConn := env.localConn()
-	defer localConn.Close()
+	mock, remoteConn := env.startProxy(approval.NewDisabledManager())
 
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
 	itemPath := mock.AddItem("DH Secret", map[string]string{"app": "dh-app"}, []byte("dh-secret-value"))
-
-	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
 
 	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 
@@ -1372,15 +1018,7 @@ func TestProxyDHSession(t *testing.T) {
 
 		// Read it back over a *plain* session: the backend must hold plaintext,
 		// proving the proxy decrypted the DH-encrypted write before forwarding.
-		call = serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
-		if call.Err != nil {
-			t.Fatalf("OpenSession(plain): %v", call.Err)
-		}
-		var plainOut dbus.Variant
-		var plainSession dbus.ObjectPath
-		if err := call.Store(&plainOut, &plainSession); err != nil {
-			t.Fatalf("store plain session: %v", err)
-		}
+		plainSession := openPlainSession(t, serviceObj)
 
 		itemObj := remoteConn.Object(dbustypes.BusName, newItem)
 		call = itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, plainSession)
@@ -1414,7 +1052,7 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 
 	p := proxy.New("test-client", approval.NewDisabledManager(), proxy.Config{})
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
+	if err := env.connectProxy(p); err != nil {
 		t.Fatalf("connect proxy: %v", err)
 	}
 	defer p.Close()
@@ -1445,17 +1083,9 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 }
 
 func TestSearchItemsDenyRule(t *testing.T) {
+	const epiphanySchema = "org.epiphany.FormPassword"
+
 	env := newTestEnv(t)
-
-	localConn := env.localConn()
-	defer localConn.Close()
-
-	mock := testutil.NewMockSecretService()
-	if err := mock.Register(localConn); err != nil {
-		t.Fatalf("register mock service: %v", err)
-	}
-
-	mock.AddItem("Form Password", map[string]string{"xdg:schema": "org.epiphany.FormPassword"}, []byte("secret"))
 
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
 		Timeout:    30 * time.Second,
@@ -1464,24 +1094,18 @@ func TestSearchItemsDenyRule(t *testing.T) {
 			Name:             "deny-epiphany-search",
 			Action:           "deny",
 			RequestTypes:     []approval.RequestType{"search"},
-			SearchAttributes: map[string]string{"xdg:schema": "org.epiphany.FormPassword"},
+			SearchAttributes: map[string]approval.Glob{"xdg:schema": approval.MustGlob(epiphanySchema)},
 		}},
 	})
 
-	p := proxy.New("test-client", approvalMgr, proxy.Config{})
+	mock, remoteConn := env.startProxy(approvalMgr)
 
-	if err := connectProxyWithConns(p, env.localAddr, env.remoteAddr); err != nil {
-		t.Fatalf("connect proxy: %v", err)
-	}
-	defer p.Close()
-
-	remoteConn := env.remoteConn()
-	defer remoteConn.Close()
+	mock.AddItem("Form Password", map[string]string{"xdg:schema": epiphanySchema}, []byte("secret"))
 
 	// Service.SearchItems with denied attributes should fail
 	t.Run("ServiceSearchDenied", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"xdg:schema": "org.epiphany.FormPassword"})
+		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"xdg:schema": epiphanySchema})
 		if call.Err == nil {
 			t.Fatal("expected access denied error, got nil")
 		}
@@ -1502,7 +1126,7 @@ func TestSearchItemsDenyRule(t *testing.T) {
 	// Collection.SearchItems with denied attributes should also fail
 	t.Run("CollectionSearchDenied", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
-		call := obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"xdg:schema": "org.epiphany.FormPassword"})
+		call := obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"xdg:schema": epiphanySchema})
 		if call.Err == nil {
 			t.Fatal("expected access denied error, got nil")
 		}

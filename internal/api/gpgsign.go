@@ -11,6 +11,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
 // GPGRunner finds and executes the real gpg binary.
@@ -77,13 +78,6 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	senderInfo := resolvePeerInfo(r.Context(), h.chains)
 
-	// WYSIWYS: bind the human-visible metadata to the exact bytes that will be
-	// fed to gpg, discarding the client's own kind/author/committer/message/
-	// parent/tag/pushee fields. Without this, a caller could present benign
-	// metadata in the approval prompt (and desktop notification, and web UI)
-	// while signing attacker-chosen bytes — a consent spoof / signing oracle.
-	// Every downstream path reads these fields off GPGSignInfo, so binding once
-	// here covers them all.
 	bindDisplayToSignedPayload(req.GPGSignInfo, senderInfo)
 
 	commitSubject := req.GPGSignInfo.CommitMsg
@@ -100,7 +94,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 
 	// Ephemeral auto-approve rule (created by "approve and auto-approve" on a
 	// prior notification). Same effect as trusted signer for the rule's TTL.
-	if rule := h.resolver.Manager.CheckAutoApproveRules(senderInfo, nil, approval.RequestTypeGPGSign); rule != nil {
+	if rule := h.resolver.Manager.CheckAutoApproveRules(approval.RequestInfo{Type: approval.RequestTypeGPGSign, SenderInfo: senderInfo}); rule != nil {
 		h.signAndRecordAutoApproved(w, &req, senderInfo, commitSubject,
 			fmt.Sprintf("auto-approve rule %s", rule.ID))
 		return
@@ -136,19 +130,9 @@ func requireSignedBytes(w http.ResponseWriter, info *approval.GPGSignInfo) bool 
 	return false
 }
 
-// bindDisplayToSignedPayload re-derives the human-visible metadata (kind,
-// author/tagger/pusher, committer, message, parent, tag name, target, pushee)
-// from the raw CommitObject bytes that will actually be fed to gpg, overwriting
-// whatever the client supplied. This enforces WYSIWYS: the approval prompt can
-// only ever show metadata computed from the exact bytes being signed. A
-// legitimate thin client derives these same fields with the same parser
-// (internal/gpgsign.Run), so for honest callers this is a no-op; a mismatch
-// means the caller tried to display metadata that does not match the signed
-// payload, which we log and then override.
-//
-// RepoName and ChangedFiles are NOT derivable from the signed bytes (they
-// describe the working tree, not the payload) and are deliberately left
-// untouched here; see CheckTrustedSigner for their (necessarily weaker) treatment.
+// Overwrites info's display fields with the ones parsed from info.CommitObject,
+// and logs when the client sent others (ADR 0008). RepoName and ChangedFiles
+// describe the working tree, not the signed bytes, so they stay as sent.
 func bindDisplayToSignedPayload(info *approval.GPGSignInfo, senderInfo approval.SenderInfo) {
 	p := gpgsign.ParseSignedPayload([]byte(info.CommitObject))
 	if p.Signer != info.Author || p.Committer != info.Committer ||
@@ -174,7 +158,7 @@ func bindDisplayToSignedPayload(info *approval.GPGSignInfo, senderInfo approval.
 // both want the same outcome — sign without showing a notification — and differ
 // only in the log line.
 func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, req *GPGSignRequest, senderInfo approval.SenderInfo, commitSubject, reason string) {
-	res, err := h.resolver.signGPG(req.GPGSignInfo, senderInfo)
+	res, err := h.resolver.signGPG(req.GPGSignInfo, proxy.UpstreamCallContext{SenderInfo: senderInfo})
 	if err != nil {
 		writeError(w, fmt.Sprintf("gpg exec failed: %v", err), http.StatusInternalServerError)
 		return

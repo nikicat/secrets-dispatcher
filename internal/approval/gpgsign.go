@@ -23,7 +23,7 @@ const RequestTypeGPGSign RequestType = "gpg_sign"
 // below let the approval UI label them correctly. Committer and ParentHash are
 // commit-only; TagName/Target are tag-only; Pushee is push-only.
 type GPGSignInfo struct {
-	RepoName     string   `json:"repo_name"`
+	RepoName     RepoName `json:"repo_name"`
 	Kind         string   `json:"kind,omitempty"`
 	CommitMsg    string   `json:"commit_msg"`
 	Author       string   `json:"author"`

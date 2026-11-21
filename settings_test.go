@@ -54,7 +54,7 @@ serve:
   notifications: false
 `)
 	c, _ := parse(t, "serve", "--config", path, "--listen", "127.0.0.1:2222", "--notifications")
-	cfg, err := c.Serve.settings()
+	cfg, err := c.Serve.merged()
 	require.NoError(t, err)
 
 	assert.Equal(t, config.ListenAddr("127.0.0.1:2222"), cfg.Listen, "a flag wins over the file")
@@ -68,7 +68,7 @@ serve:
 func TestServeFlagsWithoutConfigFile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	c, _ := parse(t, "serve", "--log-format", "json", "--timeout", "90s", "--no-notifications")
-	cfg, err := c.Serve.settings()
+	cfg, err := c.Serve.merged()
 	require.NoError(t, err)
 
 	assert.Equal(t, config.LogJSON, cfg.Serve.LogFormat)

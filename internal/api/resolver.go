@@ -92,10 +92,10 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 	return r.Manager.ApproveAndAutoApprove(id)
 }
 
-// Signs info's commit object with the real gpg, notifying the user when gpg is
-// slow. Errors when gpg cannot be found or started. The result then carries
-// GPGNotFound or GPGNotStarted.
-func (r *Resolver) signGPG(info *approval.GPGSignInfo, senderInfo approval.SenderInfo) (approval.GPGResult, error) {
+// Signs info's commit object with the real gpg. A slow gpg is reported as
+// proxy.WithSlowNotify decides for call. Errors when gpg cannot be found or
+// started, and the result then carries GPGNotFound or GPGNotStarted.
+func (r *Resolver) signGPG(info *approval.GPGSignInfo, call proxy.UpstreamCallContext) (approval.GPGResult, error) {
 	gpgPath, err := r.GPGRunner.FindGPG()
 	if err != nil {
 		return approval.GPGResult{ExitCode: approval.GPGNotFound}, fmt.Errorf("find gpg: %w", err)
@@ -105,11 +105,9 @@ func (r *Resolver) signGPG(info *approval.GPGSignInfo, senderInfo approval.Sende
 		res approval.GPGResult
 		err error
 	}
-	out := proxy.WithSlowNotify(r.SlowUpstream, proxy.UpstreamCallContext{
-		RequestType: approval.RequestTypeGPGSign,
-		Items:       gpgSignItems(info),
-		SenderInfo:  senderInfo,
-	}, func() run {
+	call.RequestType = approval.RequestTypeGPGSign
+	call.Items = gpgSignItems(info)
+	out := proxy.WithSlowNotify(r.SlowUpstream, call, func() run {
 		res, err := r.GPGRunner.RunGPG(gpgPath, info.KeyID, []byte(info.CommitObject))
 		return run{res, err}
 	})
@@ -121,7 +119,7 @@ func gpgSignItems(info *approval.GPGSignInfo) []approval.ItemInfo {
 	if info == nil {
 		return nil
 	}
-	label := info.RepoName
+	label := string(info.RepoName)
 	if info.CommitMsg != "" {
 		subject := info.CommitMsg
 		if i := len(subject); i > 60 {
@@ -139,7 +137,7 @@ func gpgSignItems(info *approval.GPGSignInfo) []approval.ItemInfo {
 // with what gpg produced, failure included. Returns that result. Errors as
 // Manager.ApproveGPGSign does.
 func (r *Resolver) approveGPGSign(id string, req *approval.Request) (approval.GPGResult, error) {
-	res, err := r.signGPG(req.GPGSignInfo, req.SenderInfo)
+	res, err := r.signGPG(req.GPGSignInfo, proxy.UpstreamCallContext{SenderInfo: req.SenderInfo, Prompted: true})
 	if err != nil || !res.Succeeded() {
 		slog.Error("gpg signing failed", "error", err, "exit_code", res.ExitCode)
 	}

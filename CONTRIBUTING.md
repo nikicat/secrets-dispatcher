@@ -68,7 +68,7 @@ come from there).
 
 ```
 .
-├── main.go                 # CLI entrypoint (stdlib flag switch)
+├── main.go                 # CLI entrypoint (kong parser)
 ├── internal/
 │   ├── api/                # HTTP API + embedded frontend + WebSocket
 │   ├── approval/           # Approval engine + trust rules

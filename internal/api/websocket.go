@@ -401,7 +401,7 @@ func convertRequest(req *approval.Request) PendingRequest {
 		Session:          req.Session,
 		CreatedAt:        req.CreatedAt,
 		ExpiresAt:        req.ExpiresAt,
-		Type:             string(req.Type),
+		Type:             req.Type,
 		SearchAttributes: req.SearchAttributes,
 		SenderInfo:       req.SenderInfo.Info,
 		GPGSignInfo:      req.GPGSignInfo,

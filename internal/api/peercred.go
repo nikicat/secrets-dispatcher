@@ -56,9 +56,7 @@ func resolvePeerInfo(ctx context.Context, chains sender.ChainReader) approval.Se
 		UID:          new(peer.UID),
 		InvokerName:  invokerName,
 		ProcessChain: chain,
-		// A peer that runs our own binary is our gpg-sign thin client, so the
-		// repo and changed-file fields it reported were computed by our trusted
-		// code (Manager.CheckTrustedSigner).
+		// A peer that runs our own binary is the gpg-sign thin client (ADR 0008).
 		PeerTrusted: peerExeKnown && chains.IsSelf(peerExe),
 	}
 }

@@ -122,10 +122,11 @@ func listenAddr(path config.File) (config.ListenAddr, error) {
 	if err != nil {
 		return "", err
 	}
-	if cfg, err = cfg.WithDefaults(); err != nil {
+	settings, err := cfg.WithDefaults()
+	if err != nil {
 		return "", err
 	}
-	return cfg.Listen, nil
+	return settings.Listen, nil
 }
 
 // Blocks until ctx is done. Prints a warning each time the dispatcher loses

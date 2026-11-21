@@ -5,13 +5,13 @@ tags: [unsmell]
 # Doc comments open with their declaration's name
 
 ## Goal
-Docs opening with their declaration's name (validate, namedGlob, globs, setFlags).
+Docs opening with their declaration's name (setFlags).
 
-Where: internal/config/config.go:70, internal/config/config.go:226, internal/config/config.go:252, internal/config/config.go:256.
+Where: internal/config/config.go:70, internal/config/config.go:252, internal/config/config.go:256.
 
-The docs of the two functions whose signatures the changeset changed open with their own names ("CheckTrustRules checks if…", "matchTrustRule returns true if…"), as do 53 more docs in manager.go and types.go; no linter here requires the Go form. Doc lines unchanged.
+44 docs in internal/approval/manager.go open with their own names (notify, addHistory, Approve, Deny, …); no linter here requires the Go form. Doc lines unchanged.
 
-Where: internal/approval/manager.go:929, internal/approval/manager.go:942.
+Where: internal/approval/manager.go:296, internal/approval/manager.go:485, internal/approval/manager.go:532.
 
 70 declaration docs in the six files open with the declaration's own name (Go's 'Name verbs…' form), against the user's style rule; no revive/stylecheck config requires it. None is on a changed comment line.
 
@@ -33,5 +33,4 @@ Where: internal/companion/check.go:15, internal/gpgsign/run.go.
 
 ## Next
 - Drop the name and start at the verb or noun phrase.
-- Drop the names: 'Returns the first trust rule that matches the request, or nil.' on CheckTrustRules; 'Checks whether the request matches rule.' on matchTrustRule; the rest of the file in one pass.
 - Each doc drops the name and starts at the verb or noun phrase; tautologies such as 'NewService creates a new Service handler.' are deleted.

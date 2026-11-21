@@ -129,7 +129,7 @@ func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (
 	}
 
 	// File the request with the daemon (SIGN-05).
-	req, err := client.startSignRequest(ctx, info.RepoName, info)
+	req, err := client.startSignRequest(ctx, string(info.RepoName), info)
 	if err != nil {
 		return SignOutcome{}, err
 	}
@@ -192,13 +192,13 @@ func daemonStateDir() (config.StateDir, error) {
 
 // resolveRepoName runs git rev-parse --show-toplevel and returns the base name.
 // Returns "unknown" on error.
-func (c thinClient) resolveRepoName() string {
+func (c thinClient) resolveRepoName() approval.RepoName {
 	out, err := runGitCommand("rev-parse", "--show-toplevel")
 	if err != nil {
 		c.debugf("resolveRepoName error: %v", err)
 		return "unknown"
 	}
-	return filepath.Base(strings.TrimSpace(out))
+	return approval.RepoName(filepath.Base(strings.TrimSpace(out)))
 }
 
 // collectChangedFiles runs git diff --cached --name-only and returns the file list.

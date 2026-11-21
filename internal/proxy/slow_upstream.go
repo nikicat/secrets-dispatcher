@@ -16,6 +16,8 @@ type UpstreamCallContext struct {
 	Items         []approval.ItemInfo
 	SenderInfo    approval.SenderInfo
 	ResolveSender func() approval.SenderInfo // nil if unavailable
+	// True if the user approved the request at a prompt.
+	Prompted bool
 }
 
 // UpstreamNotifier shows informational notifications about slow upstream calls.
@@ -35,13 +37,21 @@ type propResult struct {
 type SlowUpstream struct {
 	Notifier  UpstreamNotifier
 	Threshold time.Duration
+	// True if the calls of prompted requests are reported too.
+	Always bool
+}
+
+// Reports whether a call made for ctx gets a notification once it outlasts
+// Threshold.
+func (s SlowUpstream) reports(ctx UpstreamCallContext) bool {
+	return s.Notifier != nil && s.Threshold > 0 && (s.Always || !ctx.Prompted)
 }
 
 // Returns fn's result. Shows a notification through slow.Notifier while fn runs
-// past slow.Threshold, and calls ctx.ResolveSender only when that notification
-// fires and ctx.SenderInfo is empty.
+// past slow.Threshold, for a call that SlowUpstream.reports accepts, and calls
+// ctx.ResolveSender only when that notification fires and ctx.SenderInfo is empty.
 func WithSlowNotify[T any](slow SlowUpstream, ctx UpstreamCallContext, fn func() T) T {
-	if slow.Notifier == nil || slow.Threshold <= 0 {
+	if !slow.reports(ctx) {
 		return fn()
 	}
 

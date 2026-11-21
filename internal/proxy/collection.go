@@ -108,7 +108,8 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 
 	// Require approval before deleting
 	items := []approval.ItemInfo{collectionInfo}
-	if _, err := c.approval.RequireApproval(ctx, items, "", approval.RequestTypeDelete, nil, senderInfo); err != nil {
+	prompted, err := c.approval.RequireApproval(ctx, approval.RequestInfo{Items: items, Type: approval.RequestTypeDelete, SenderInfo: senderInfo})
+	if err != nil {
 		c.logger.LogMethod(ctx, "Collection.Delete", map[string]any{"collection": string(path)}, "denied", err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
@@ -118,6 +119,7 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 		RequestType: approval.RequestTypeDelete,
 		Items:       items,
 		SenderInfo:  senderInfo,
+		Prompted:    prompted,
 	}, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".Delete", 0) })
 	if call.Err != nil {
 		return "/", dbustypes.ErrFailed(call.Err)
@@ -182,13 +184,14 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	sender := senderOf(msg)
 	senderInfo := c.resolver.Resolve(sender)
 
+	info := approval.RequestInfo{Items: infos, Type: approval.RequestTypeSearch, SearchAttributes: attributes, SenderInfo: senderInfo}
 	// Check if request should be denied by a trust rule
-	if rule := c.approval.CheckTrustRules(senderInfo, infos, approval.RequestTypeSearch, attributes); rule != nil && rule.Action == approval.RuleDeny {
-		c.approval.RecordDenied(infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+	if rule := c.approval.CheckTrustRules(info); rule != nil && rule.Action == approval.RuleDeny {
+		c.approval.RecordDenied(info)
 		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
 	}
 
-	c.approval.RecordPassthrough(infos, "", approval.RequestTypeSearch, attributes, senderInfo)
+	c.approval.RecordPassthrough(info)
 	call := c.upstreamWithContext(UpstreamCallContext{
 		RequestType:   approval.RequestTypeSearch,
 		Items:         infos,
@@ -233,8 +236,9 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 
 	// Short-circuit Chrome dummy secret writes
 	items := []approval.ItemInfo{itemInfo}
-	if c.approval.ShouldIgnore(items, approval.RequestTypeWrite) {
-		c.approval.RecordIgnored(items, string(secret.Session), senderInfo)
+	info := approval.RequestInfo{Items: items, Session: secret.Session, Type: approval.RequestTypeWrite, SenderInfo: senderInfo}
+	if c.approval.ShouldIgnore(info) {
+		c.approval.RecordIgnored(info)
 		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
 			"collection": string(path), "ignored": true,
 		}, "ignored", nil)
@@ -242,7 +246,8 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 	}
 
 	// Require approval before creating item
-	if _, err := c.approval.RequireApproval(ctx, items, string(secret.Session), approval.RequestTypeWrite, nil, senderInfo); err != nil {
+	prompted, err := c.approval.RequireApproval(ctx, info)
+	if err != nil {
 		if errors.Is(err, approval.ErrIgnored) {
 			c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
 				"collection": string(path), "ignored": true,
@@ -269,6 +274,7 @@ func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]d
 		RequestType: approval.RequestTypeWrite,
 		Items:       items,
 		SenderInfo:  senderInfo,
+		Prompted:    prompted,
 	}, func() *dbus.Call {
 		return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace)
 	})

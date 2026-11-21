@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/stretchr/testify/assert"
 	"sync"
 	"testing"
 	"time"
@@ -68,8 +69,11 @@ func TestApproveAndAutoApprove_LeavesRequestWithoutExePending(t *testing.T) {
 	var wg sync.WaitGroup
 	var approvalErr error
 	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), nil, "session",
-			RequestTypeGetSecret, nil, SenderInfo{InvokerName: "gh"})
+		_, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{
+			Session:    "session",
+			Type:       RequestTypeGetSecret,
+			SenderInfo: SenderInfo{InvokerName: "gh"},
+		})
 	})
 
 	id := waitPendingID(t, mgr)
@@ -111,14 +115,14 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 	mustAddRule(t, mgr, req)
 
 	// Retry with same invoker, type, collection, attributes → should match
-	rule := mgr.checkAutoApproveRules(
-		testSender("gh", "/usr/bin/gh"),
-		[]ItemInfo{{
+	rule := mgr.checkAutoApproveRules(RequestInfo{
+		Items: []ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i99",
 			Attributes: map[string]string{"service": "gh:github.com", "extra": "val"},
 		}},
-		RequestTypeWrite,
-	)
+		Type:       RequestTypeWrite,
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
+	})
 	if rule == nil {
 		t.Fatal("expected auto-approve rule to match retry request")
 	}
@@ -140,21 +144,21 @@ func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
 
 	// Malware sets comm to "node" but runs /tmp/malware.
 	spoofed := testSender("node", "/tmp/malware")
-	rule := mgr.checkAutoApproveRules(
-		spoofed,
-		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
-		RequestTypeGetSecret,
-	)
+	rule := mgr.checkAutoApproveRules(RequestInfo{
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
+		Type:       RequestTypeGetSecret,
+		SenderInfo: spoofed,
+	})
 	if rule != nil {
 		t.Fatal("comm-spoofed caller with a different exe must not match the auto-approve rule")
 	}
 
 	// The genuine binary still matches.
-	rule = mgr.checkAutoApproveRules(
-		testSender("node", "/usr/bin/node"),
-		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
-		RequestTypeGetSecret,
-	)
+	rule = mgr.checkAutoApproveRules(RequestInfo{
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/github-token"}},
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("node", "/usr/bin/node"),
+	})
 	if rule == nil {
 		t.Fatal("the genuine invoker exe should still match")
 	}
@@ -171,11 +175,11 @@ func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
 	}
 	mustAddRule(t, mgr, req)
 
-	rule := mgr.checkAutoApproveRules(
-		testSender("seahorse", "/usr/bin/seahorse"),
-		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		RequestTypeGetSecret,
-	)
+	rule := mgr.checkAutoApproveRules(RequestInfo{
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("seahorse", "/usr/bin/seahorse"),
+	})
 	if rule != nil {
 		t.Fatal("expected no match for different invoker")
 	}
@@ -194,11 +198,11 @@ func TestAutoApproveRule_Expiry(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 
-	rule := mgr.checkAutoApproveRules(
-		testSender("gh", "/usr/bin/gh"),
-		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		RequestTypeGetSecret,
-	)
+	rule := mgr.checkAutoApproveRules(RequestInfo{
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
+	})
 	if rule != nil {
 		t.Fatal("expected expired rule not to match")
 	}
@@ -222,14 +226,12 @@ func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
 	mustAddRule(t, mgr, req)
 
 	// RequireApproval should return nil immediately (auto-approved)
-	_, err := mgr.RequireApproval(
-		context.Background(),
-		[]ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i99", Attributes: map[string]string{"service": "gh:github.com"}}},
-		"session",
-		RequestTypeGetSecret,
-		nil,
-		testSender("gh", "/usr/bin/gh"),
-	)
+	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
+		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i99", Attributes: map[string]string{"service": "gh:github.com"}}},
+		Session:    "session",
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
+	})
 	if err != nil {
 		t.Fatalf("expected auto-approved, got: %v", err)
 	}
@@ -276,30 +278,55 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 	mustAddRule(t, mgr, req)
 
 	// Request with superset attributes → should match
-	rule := mgr.checkAutoApproveRules(
-		testSender("gh", "/usr/bin/gh"),
-		[]ItemInfo{{
+	rule := mgr.checkAutoApproveRules(RequestInfo{
+		Items: []ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i2",
 			Attributes: map[string]string{"service": "gh:github.com", "user": "nb"},
 		}},
-		RequestTypeGetSecret,
-	)
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
+	})
 	if rule == nil {
 		t.Fatal("expected subset attribute match")
 	}
 
 	// Request with different attribute value → should NOT match
-	rule = mgr.checkAutoApproveRules(
-		testSender("gh", "/usr/bin/gh"),
-		[]ItemInfo{{
+	rule = mgr.checkAutoApproveRules(RequestInfo{
+		Items: []ItemInfo{{
 			Path:       "/org/freedesktop/secrets/collection/default/i2",
 			Attributes: map[string]string{"service": "other:example.com"},
 		}},
-		RequestTypeGetSecret,
-	)
+		Type:       RequestTypeGetSecret,
+		SenderInfo: testSender("gh", "/usr/bin/gh"),
+	})
 	if rule != nil {
 		t.Fatal("expected no match for different attribute value")
 	}
+}
+
+func TestAutoApproveRule_AttributeValuesAreLiteral(t *testing.T) {
+	const path = "/org/freedesktop/secrets/collection/default/i1"
+	covers := func(made, asked string) bool {
+		mgr := newRuleManager()
+		mustAddRule(t, mgr, &Request{
+			ID:         "req-1",
+			Type:       RequestTypeGetSecret,
+			Items:      []ItemInfo{{Path: path, Attributes: map[string]string{"service": made}}},
+			SenderInfo: testSender("gh", "/usr/bin/gh"),
+		})
+		return mgr.checkAutoApproveRules(RequestInfo{
+			Items:      []ItemInfo{{Path: path, Attributes: map[string]string{"service": asked}}},
+			Type:       RequestTypeGetSecret,
+			SenderInfo: testSender("gh", "/usr/bin/gh"),
+		}) != nil
+	}
+
+	assert.False(t, covers("*", "other"), "a rule made from the value * covers another value")
+	assert.False(t, covers("a*", "abc"), "a rule made from the value a* covers another value")
+	assert.False(t, covers("[ab]", "a"), "a rule made from the value [ab] covers another value")
+	assert.True(t, covers("*", "*"), "a rule made from the value * does not cover itself")
+	assert.True(t, covers(`a\b`, `a\b`), "a rule made from a value with a backslash does not cover itself")
+	assert.True(t, covers("[a", "[a"), "a rule made from a malformed class does not cover itself")
 }
 
 func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
@@ -425,7 +452,7 @@ func TestAutoApproveRule_RefreshHandsObserversACopy(t *testing.T) {
 	})
 	wg.Go(func() {
 		for range 200 {
-			mgr.checkAutoApproveRules(testSender("gh", "/usr/bin/gh"), nil, RequestTypeGetSecret)
+			mgr.checkAutoApproveRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: testSender("gh", "/usr/bin/gh")})
 		}
 	})
 	wg.Wait()

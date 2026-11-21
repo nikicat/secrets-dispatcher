@@ -3,6 +3,8 @@ package api
 import (
 	"time"
 
+	"github.com/godbus/dbus/v5"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
@@ -32,10 +34,10 @@ type PendingRequest struct {
 	ID               string                `json:"id"`
 	Client           approval.ClientName   `json:"client"`
 	Items            []ItemInfo            `json:"items"`
-	Session          string                `json:"session"`
+	Session          dbus.ObjectPath       `json:"session"`
 	CreatedAt        time.Time             `json:"created_at"`
 	ExpiresAt        time.Time             `json:"expires_at"`
-	Type             string                `json:"type"`
+	Type             approval.RequestType  `json:"type"`
 	SearchAttributes map[string]string     `json:"search_attributes,omitempty"`
 	SenderInfo       sender.Info           `json:"sender_info"`
 	GPGSignInfo      *approval.GPGSignInfo `json:"gpg_sign_info,omitempty"`

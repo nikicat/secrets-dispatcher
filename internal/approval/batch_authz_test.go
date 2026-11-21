@@ -35,7 +35,7 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	assert.Nil(t, mgr.checkAutoApproveRules(sender, batch, RequestTypeGetSecret),
+	assert.Nil(t, mgr.checkAutoApproveRules(RequestInfo{Items: batch, Type: RequestTypeGetSecret, SenderInfo: sender}),
 		"auto-approve scoped to 'public' must not cover a batch that also reads 'login'")
 
 	// A batch fully inside the approved collection is still covered.
@@ -43,7 +43,7 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 		itemInCollection("public", "x"),
 		itemInCollection("public", "y"),
 	}
-	assert.NotNil(t, mgr.checkAutoApproveRules(sender, inScope, RequestTypeGetSecret),
+	assert.NotNil(t, mgr.checkAutoApproveRules(RequestInfo{Items: inScope, Type: RequestTypeGetSecret, SenderInfo: sender}),
 		"auto-approve scoped to 'public' should still cover an all-'public' batch")
 }
 
@@ -55,14 +55,14 @@ func TestBatchGetSecrets_DenyRuleFiresOnAnyItem(t *testing.T) {
 	mgr.trustRules = []TrustRule{{
 		Name:   "deny-login",
 		Action: "deny",
-		Secret: &SecretMatcher{Collection: "login"},
+		Secret: &SecretMatcher{Collection: MustGlob("login")},
 	}}
 
 	batch := []ItemInfo{
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	rule := mgr.CheckTrustRules(SenderInfo{Client: ClientLocal}, batch, RequestTypeGetSecret, nil)
+	rule := mgr.CheckTrustRules(RequestInfo{Items: batch, Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Client: ClientLocal}})
 	require.NotNil(t, rule, "deny rule scoped to 'login' must fire on a batch containing a 'login' item")
 	assert.Equal(t, "deny-login", rule.Name)
 }
@@ -76,21 +76,21 @@ func TestBatchGetSecrets_ApproveRuleRequiresEveryItem(t *testing.T) {
 	mgr.trustRules = []TrustRule{{
 		Name:   "approve-public",
 		Action: "approve",
-		Secret: &SecretMatcher{Collection: "public"},
+		Secret: &SecretMatcher{Collection: MustGlob("public")},
 	}}
 
 	mixed := []ItemInfo{
 		itemInCollection("public", "x"),
 		itemInCollection("login", "github-token"),
 	}
-	assert.Nil(t, mgr.CheckTrustRules(SenderInfo{Client: ClientLocal}, mixed, RequestTypeGetSecret, nil),
+	assert.Nil(t, mgr.CheckTrustRules(RequestInfo{Items: mixed, Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Client: ClientLocal}}),
 		"approve rule scoped to 'public' must not cover a batch that also reads 'login'")
 
 	allPublic := []ItemInfo{
 		itemInCollection("public", "x"),
 		itemInCollection("public", "y"),
 	}
-	rule := mgr.CheckTrustRules(SenderInfo{Client: ClientLocal}, allPublic, RequestTypeGetSecret, nil)
+	rule := mgr.CheckTrustRules(RequestInfo{Items: allPublic, Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Client: ClientLocal}})
 	require.NotNil(t, rule, "approve rule scoped to 'public' should cover an all-'public' batch")
 	assert.Equal(t, "approve-public", rule.Name)
 }

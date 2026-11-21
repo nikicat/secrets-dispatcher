@@ -89,7 +89,10 @@ the program's defaults. A setting's zero value means unset in both layers. A
 flag left at its zero value does not override the file, and
 `Config.WithDefaults` fills every setting that neither layer sets. Because a
 zero flag already means unset, the flags merge over the file with `cmp.Or`, and
-no kong resolver is needed.
+no kong resolver is needed. A setting whose zero value is a choice, such as
+`notifications: false`, is a pointer in `Config`, where nil means unset.
+`Config.WithDefaults` returns `Settings`, where every setting is a plain value,
+so the code that runs a command never checks for an unset one.
 
 The command line is parsed with [kong](https://github.com/alecthomas/kong). The
 settings keep their own types, such as `config.LogLevel`, `config.Path` and

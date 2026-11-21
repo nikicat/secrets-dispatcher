@@ -361,7 +361,7 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 			Session:          entry.Request.Session,
 			CreatedAt:        entry.Request.CreatedAt,
 			ExpiresAt:        entry.Request.ExpiresAt,
-			Type:             approval.RequestType(entry.Request.Type),
+			Type:             entry.Request.Type,
 			SearchAttributes: entry.Request.SearchAttributes,
 			SenderInfo:       approval.SenderInfo{Info: entry.Request.SenderInfo},
 		},

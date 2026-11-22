@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"log/slog"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -27,14 +26,14 @@ func NewResolver(manager *approval.Manager, slowUpstream proxy.SlowUpstream) *Re
 
 // Approve resolves a pending request. For GPG signing requests, it runs the
 // real gpg binary to produce the signature before approving.
-func (r *Resolver) Approve(id string) error {
+func (r *Resolver) Approve(id approval.RequestID) error {
 	req := r.Manager.GetPending(id)
 	if req == nil {
 		return approval.ErrNotFound
 	}
 
-	if req.Type == approval.RequestTypeGPGSign && req.GPGSignInfo != nil {
-		_, err := r.approveGPGSign(id, req)
+	if sign, ok := req.GPGSign(); ok {
+		_, err := r.approveGPGSign(req, sign)
 		return err
 	}
 
@@ -42,15 +41,14 @@ func (r *Resolver) Approve(id string) error {
 }
 
 // Deny denies a pending request by ID.
-func (r *Resolver) Deny(id string) error {
+func (r *Resolver) Deny(id approval.RequestID) error {
 	return r.Manager.Deny(id)
 }
 
-// Adds an auto-approve rule made from the cancelled request requestID, as
-// Manager.AddAutoApproveRule does. Errors with approval.ErrNotFound when no
-// cancelled request has that ID, and as approval.Request.AutoApproveRule does
-// otherwise.
-func (r *Resolver) AutoApprove(requestID string) error {
+// Adds an auto-approve rule made from the cancelled request with the given ID.
+// Errors with approval.ErrNotFound when no cancelled request has that ID, and
+// as approval.Request.AutoApproveRule does otherwise.
+func (r *Resolver) AutoApprove(requestID approval.RequestID) error {
 	entry := r.Manager.GetHistoryEntry(requestID)
 	if entry == nil {
 		return approval.ErrNotFound
@@ -69,18 +67,18 @@ func (r *Resolver) AutoApprove(requestID string) error {
 // Approves the pending request id and adds an auto-approve rule, as
 // Manager.ApproveAndAutoApprove does, with the same errors. A gpg_sign request
 // is approved with gpg's result, and a failed signature earns no rule.
-func (r *Resolver) ApproveAndAutoApprove(id string) error {
+func (r *Resolver) ApproveAndAutoApprove(id approval.RequestID) error {
 	req := r.Manager.GetPending(id)
 	if req == nil {
 		return approval.ErrNotFound
 	}
 
-	if req.Type == approval.RequestTypeGPGSign && req.GPGSignInfo != nil {
+	if sign, ok := req.GPGSign(); ok {
 		rule, err := req.AutoApproveRule()
 		if err != nil {
 			return err
 		}
-		res, err := r.approveGPGSign(id, req)
+		res, err := r.approveGPGSign(req, sign)
 		if err != nil || !res.Succeeded() {
 			return err
 		}
@@ -91,34 +89,28 @@ func (r *Resolver) ApproveAndAutoApprove(id string) error {
 	return r.Manager.ApproveAndAutoApprove(id)
 }
 
-// Signs the commit object of the gpg_sign request with the real gpg, reporting a slow gpg
-// as proxy.WithSlowNotify decides for call(request). Errors when gpg cannot be found
-// or started, and the result then carries GPGNotFound or GPGNotStarted.
-func (r *Resolver) signGPG(request approval.RequestInfo, call func(approval.RequestInfo) proxy.UpstreamCallContext) (approval.GPGResult, error) {
-	gpgPath, err := r.GPGRunner.FindGPG()
-	if err != nil {
-		return approval.GPGResult{ExitCode: approval.GPGNotFound}, fmt.Errorf("find gpg: %w", err)
-	}
+// Signs the given object with the real gpg, and reports a slow gpg as
+// proxy.WithSlowNotify does for the given call. Errors as GPGRunner.Sign does.
+func (r *Resolver) signGPG(sign *approval.GPGSignInfo, call proxy.UpstreamCallContext) (approval.GPGResult, error) {
 	// WithSlowNotify carries one value, so the result and its error travel together.
 	type run struct {
 		res approval.GPGResult
 		err error
 	}
-	sign := request.GPGSignInfo
-	out := proxy.WithSlowNotify(r.SlowUpstream, call(request), func() run {
-		res, err := r.GPGRunner.RunGPG(gpgPath, sign.KeyID, []byte(sign.CommitObject))
+	out := proxy.WithSlowNotify(r.SlowUpstream, call, func() run {
+		res, err := r.GPGRunner.Sign(sign.KeyID, sign.SignedObject)
 		return run{res, err}
 	})
 	return out.res, out.err
 }
 
-// Signs the pending gpg_sign request req with the real gpg and approves it
+// Signs the given pending gpg_sign request with the real gpg, and approves it
 // with what gpg produced, failure included. Returns that result. Errors as
 // Manager.ApproveGPGSign does.
-func (r *Resolver) approveGPGSign(id string, req *approval.Request) (approval.GPGResult, error) {
-	res, err := r.signGPG(req.GPGSignInfo.RequestInfo(req.SenderInfo), proxy.PromptedCall)
+func (r *Resolver) approveGPGSign(req *approval.Request, sign *approval.GPGSignInfo) (approval.GPGResult, error) {
+	res, err := r.signGPG(sign, proxy.PromptedCall(req.RequestInfo))
 	if err != nil || !res.Succeeded() {
 		slog.Error("gpg signing failed", "error", err, "exit_code", res.ExitCode)
 	}
-	return res, r.Manager.ApproveGPGSign(id, res)
+	return res, r.Manager.ApproveGPGSign(req.ID, res)
 }

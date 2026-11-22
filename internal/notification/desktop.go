@@ -15,29 +15,37 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/delaygroup"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 const (
-	notifyDest      = "org.freedesktop.Notifications"
-	notifyPath      = "/org/freedesktop/Notifications"
-	notifyInterface = "org.freedesktop.Notifications"
+	notifyDest                          = "org.freedesktop.Notifications"
+	notifyPath                          = "/org/freedesktop/Notifications"
+	notifyInterface dbustypes.Interface = "org.freedesktop.Notifications"
 )
+
+// The capacity of a notifier's signal, action and closed channels.
+const signalBuffer = 16
+
+// The ID a notification server assigns to a notification it shows.
+type NotificationID uint32
 
 // Notifier defines the interface for sending desktop notifications.
 type Notifier interface {
 	// Notify sends a notification and returns its ID.
-	Notify(summary, body, icon string, buttons []Button) (uint32, error)
+	Notify(summary, body, icon string, buttons []Button) (NotificationID, error)
 	// Close closes a notification by ID.
-	Close(id uint32) error
+	Close(id NotificationID) error
 }
 
 // Approver resolves approval requests.
 type Approver interface {
-	Approve(id string) error
-	Deny(id string) error
-	AutoApprove(requestID string) error
-	ApproveAndAutoApprove(id string) error
+	Approve(id approval.RequestID) error
+	Deny(id approval.RequestID) error
+	AutoApprove(requestID approval.RequestID) error
+	ApproveAndAutoApprove(id approval.RequestID) error
 }
 
 // An action's identifier on a notification. The notification server sends it
@@ -62,7 +70,7 @@ type Button struct {
 
 // Action represents a user interaction with a notification button.
 type Action struct {
-	NotificationID uint32
+	NotificationID NotificationID
 	ActionKey      actionKey
 }
 
@@ -70,7 +78,7 @@ type Action struct {
 // The server directs these at the sending connection only, so this is the
 // one place they can be observed (third-party monitors never see them).
 type Closed struct {
-	NotificationID uint32
+	NotificationID NotificationID
 	Reason         uint32 // 1=expired, 2=dismissed by user, 3=CloseNotification, 4=undefined
 }
 
@@ -89,9 +97,9 @@ type DBusNotifier struct {
 // starts listening for ActionInvoked and NotificationClosed signals.
 func NewDBusNotifier() (*DBusNotifier, error) {
 	n := &DBusNotifier{
-		signals: make(chan *dbus.Signal, 16),
-		actions: make(chan Action, 16),
-		closed:  make(chan Closed, 16),
+		signals: make(chan *dbus.Signal, signalBuffer),
+		actions: make(chan Action, signalBuffer),
+		closed:  make(chan Closed, signalBuffer),
 		done:    make(chan struct{}),
 	}
 
@@ -113,14 +121,14 @@ func (n *DBusNotifier) connect() error {
 	}
 
 	if err := conn.AddMatchSignal(
-		dbus.WithMatchInterface(notifyInterface),
+		dbus.WithMatchInterface(string(notifyInterface)),
 		dbus.WithMatchMember("ActionInvoked"),
 	); err != nil {
 		conn.Close()
 		return fmt.Errorf("subscribe to ActionInvoked: %w", err)
 	}
 	if err := conn.AddMatchSignal(
-		dbus.WithMatchInterface(notifyInterface),
+		dbus.WithMatchInterface(string(notifyInterface)),
 		dbus.WithMatchMember("NotificationClosed"),
 	); err != nil {
 		conn.Close()
@@ -140,7 +148,7 @@ func (n *DBusNotifier) reconnect() error {
 	if n.conn != nil {
 		n.conn.Close()
 	}
-	n.signals = make(chan *dbus.Signal, 16)
+	n.signals = make(chan *dbus.Signal, signalBuffer)
 	if err := n.connect(); err != nil {
 		return fmt.Errorf("reconnect: %w", err)
 	}
@@ -196,20 +204,20 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 			// instead — a full buffer means a downstream consumer stalled, and
 			// keeping the loop alive is more important than any single event.
 			switch sig.Name {
-			case notifyInterface + ".ActionInvoked":
+			case notifyInterface.Member("ActionInvoked"):
 				id, ok1 := sig.Body[0].(uint32)
 				key, ok2 := sig.Body[1].(string)
 				if !ok1 || !ok2 {
 					continue
 				}
 				select {
-				case n.actions <- Action{NotificationID: id, ActionKey: actionKey(key)}:
+				case n.actions <- Action{NotificationID: NotificationID(id), ActionKey: actionKey(key)}:
 				case <-n.done:
 					return
 				default:
 					slog.Warn("dropped notification action: buffer full", "notification_id", id, "action", key)
 				}
-			case notifyInterface + ".NotificationClosed":
+			case notifyInterface.Member("NotificationClosed"):
 				id, ok1 := sig.Body[0].(uint32)
 				reason, ok2 := sig.Body[1].(uint32)
 				if !ok1 || !ok2 {
@@ -217,10 +225,10 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 				}
 				// Only the e2e notifprobe drains ClosedEvents(); the daemon never
 				// calls it, so in the daemon this send fills the buffer and (before
-				// the default) wedged the loop after 16 closes. Dropping when full
-				// is safe — nothing in the daemon acts on these events.
+				// the default) wedged the loop after signalBuffer closes. Dropping
+				// when full is safe — nothing in the daemon acts on these events.
 				select {
-				case n.closed <- Closed{NotificationID: id, Reason: reason}:
+				case n.closed <- Closed{NotificationID: NotificationID(id), Reason: reason}:
 				case <-n.done:
 					return
 				default:
@@ -240,7 +248,7 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 // urgency + no transient hint that keep the notification alive (GNOME 46
 // sources, docs/adr/0007-approval-surfaces.md). Approvals are closed
 // explicitly via Close when resolved.
-func (n *DBusNotifier) Notify(summary, body, icon string, buttons []Button) (uint32, error) {
+func (n *DBusNotifier) Notify(summary, body, icon string, buttons []Button) (NotificationID, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -254,7 +262,7 @@ func (n *DBusNotifier) Notify(summary, body, icon string, buttons []Button) (uin
 	return id, err
 }
 
-func (n *DBusNotifier) doNotifyFull(summary, body, icon string, buttons []Button, urgency byte, expireTimeout int32) (uint32, error) {
+func (n *DBusNotifier) doNotifyFull(summary, body, icon string, buttons []Button, urgency byte, expireTimeout int32) (NotificationID, error) {
 	// The freedesktop notification spec takes actions as a flat list of
 	// alternating key, label pairs.
 	actions := make([]string, 0, 2*len(buttons))
@@ -263,14 +271,14 @@ func (n *DBusNotifier) doNotifyFull(summary, body, icon string, buttons []Button
 	}
 	obj := n.conn.Object(notifyDest, notifyPath)
 	call := obj.Call(
-		notifyInterface+".Notify",
+		notifyInterface.Member("Notify"),
 		0,
 		"secrets-dispatcher", // app_name
 		uint32(0),            // replaces_id (0 = new notification)
 		icon,                 // app_icon
-		summary,              // summary
-		body,                 // body
-		actions,              // actions
+		summary,
+		body,
+		actions,
 		map[string]dbus.Variant{
 			"urgency": dbus.MakeVariant(urgency),
 		},
@@ -284,12 +292,12 @@ func (n *DBusNotifier) doNotifyFull(summary, body, icon string, buttons []Button
 	if err := call.Store(&id); err != nil {
 		return 0, fmt.Errorf("store notify result: %w", err)
 	}
-	return id, nil
+	return NotificationID(id), nil
 }
 
 // NotifyPersistent sends a critical notification that never auto-expires.
 // Dismiss it with Close (CloseNotification).
-func (n *DBusNotifier) NotifyPersistent(summary, body, icon string) (uint32, error) {
+func (n *DBusNotifier) NotifyPersistent(summary, body, icon string) (NotificationID, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -305,7 +313,7 @@ func (n *DBusNotifier) NotifyPersistent(summary, body, icon string) (uint32, err
 
 // Close closes a notification by ID.
 // If the D-Bus connection is dead, it reconnects and retries once.
-func (n *DBusNotifier) Close(id uint32) error {
+func (n *DBusNotifier) Close(id NotificationID) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
@@ -319,60 +327,13 @@ func (n *DBusNotifier) Close(id uint32) error {
 	return err
 }
 
-func (n *DBusNotifier) doClose(id uint32) error {
+func (n *DBusNotifier) doClose(id NotificationID) error {
 	obj := n.conn.Object(notifyDest, notifyPath)
-	call := obj.Call(notifyInterface+".CloseNotification", 0, id)
+	call := obj.Call(notifyInterface.Member("CloseNotification"), 0, uint32(id))
 	if call.Err != nil {
 		return fmt.Errorf("close notification: %w", call.Err)
 	}
 	return nil
-}
-
-// delayGroup schedules callbacks by key with a grace period.
-// If Cancel is called before the timer fires, the callback is suppressed.
-type delayGroup struct {
-	mu     sync.Mutex
-	timers map[string]*time.Timer
-}
-
-func newDelayGroup() *delayGroup {
-	return &delayGroup{timers: make(map[string]*time.Timer)}
-}
-
-// Schedule registers a callback to fire after delay. If a timer already exists
-// for the key it is replaced. The callback is only invoked if the timer is
-// still pending (not cancelled) when it fires.
-func (g *delayGroup) Schedule(key string, delay time.Duration, fn func()) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if old, ok := g.timers[key]; ok {
-		old.Stop()
-	}
-	g.timers[key] = time.AfterFunc(delay, func() {
-		g.mu.Lock()
-		_, stillPending := g.timers[key]
-		if stillPending {
-			delete(g.timers, key)
-		}
-		g.mu.Unlock()
-		if stillPending {
-			fn()
-		}
-	})
-}
-
-// Cancel stops a pending timer and returns true if one was pending.
-func (g *delayGroup) Cancel(key string) bool {
-	g.mu.Lock()
-	timer, ok := g.timers[key]
-	if ok {
-		delete(g.timers, key)
-	}
-	g.mu.Unlock()
-	if ok {
-		timer.Stop()
-	}
-	return ok
 }
 
 // Handler receives approval events and shows desktop notifications.
@@ -388,14 +349,16 @@ type Handler struct {
 	openURL           func(string) error
 
 	mu            sync.Mutex
-	notifications map[string]uint32 // request ID -> notification ID
-	requests      map[uint32]string // notification ID -> request ID (reverse)
-	pending       *delayGroup       // notifications waiting for the grace period
+	notifications map[approval.RequestID]NotificationID
+	requests      map[NotificationID]approval.RequestID
+	pending       *delaygroup.Group[approval.RequestID] // notifications waiting for the grace period
 
 	// cancelledRequests stores recently cancelled requests for auto-approve lookup.
 	// Keys are request IDs, values expire after 5 minutes.
-	cancelledRequests map[string]cancelledEntry
+	cancelledRequests map[approval.RequestID]cancelledEntry
 }
+
+var _ approval.Observer = (*Handler)(nil)
 
 type cancelledEntry struct {
 	request   *approval.Request
@@ -413,11 +376,8 @@ func OpenURL(url string) error {
 	return nil
 }
 
-// NewHandler creates a notification handler.
-// autoApproveDuration controls the label shown on the "Approve Nm" button and
-// the body text of the post-timeout auto-approve notification.
-// notificationDelay is the grace period before showing a desktop notification;
-// requests cancelled within this window produce no notification at all.
+// Returns a handler that shows a request's notification only once the given
+// notification delay has passed, so a request that ends sooner shows none.
 func NewHandler(notifier Notifier, approver Approver, listenAddr config.ListenAddr, showPIDs bool, autoApproveDuration, notificationDelay time.Duration) *Handler {
 	return &Handler{
 		notifier:          notifier,
@@ -427,10 +387,10 @@ func NewHandler(notifier Notifier, approver Approver, listenAddr config.ListenAd
 		autoApproveLabel:  formatDurationShort(autoApproveDuration),
 		notificationDelay: notificationDelay,
 		openURL:           OpenURL,
-		notifications:     make(map[string]uint32),
-		requests:          make(map[uint32]string),
-		pending:           newDelayGroup(),
-		cancelledRequests: make(map[string]cancelledEntry),
+		notifications:     make(map[approval.RequestID]NotificationID),
+		requests:          make(map[NotificationID]approval.RequestID),
+		pending:           delaygroup.New[approval.RequestID](),
+		cancelledRequests: make(map[approval.RequestID]cancelledEntry),
 	}
 }
 
@@ -454,11 +414,9 @@ func (h *Handler) handleAction(action Action) {
 	h.mu.Lock()
 	reqID, ok := h.requests[action.NotificationID]
 	if ok {
-		// Remove maps now so the handleResolved callback (fired synchronously
-		// within Approve/Deny) won't call Close — clicking the action button
-		// already dismisses the notification. This also prevents the daemon's
-		// duplicate ActionInvoked signal (triggered by our Close call) from
-		// reaching the approver.
+		// The click already dismissed the notification, so forget it before
+		// resolving: a Close from handleResolved would make the server send a
+		// duplicate ActionInvoked.
 		delete(h.requests, action.NotificationID)
 		delete(h.notifications, reqID)
 	}
@@ -502,18 +460,29 @@ func (h *Handler) handleAction(action Action) {
 	slog.Info("resolved request from notification", "action", action.ActionKey, "request_id", reqID)
 }
 
-// OnEvent implements approval.Observer.
-func (h *Handler) OnEvent(event approval.Event) {
-	switch event.Type {
-	case approval.EventRequestCreated:
-		h.handleCreated(event.Request)
-	case approval.EventRequestCancelled:
-		h.handleCancelled(event.Request)
-	case approval.EventRequestApproved, approval.EventRequestDenied,
-		approval.EventRequestExpired, approval.EventRequestAutoApproved:
-		h.handleResolved(event.Request.ID)
+func (h *Handler) RequestCreated(p approval.Pending) {
+	if h.notificationDelay <= 0 {
+		h.sendNotification(p.Request)
+		return
 	}
+	h.pending.Schedule(p.Request.ID, h.notificationDelay, func() {
+		h.sendNotification(p.Request)
+	})
 }
+
+func (h *Handler) RequestEnded(entry approval.HistoryEntry) {
+	if entry.Resolution == approval.ResolutionCancelled {
+		h.handleCancelled(entry.Request)
+		return
+	}
+	h.handleResolved(entry.Request.ID)
+}
+
+// Rules show only in the web UI.
+func (h *Handler) RuleAdded(approval.AutoApproveRule) {}
+
+// Rules show only in the web UI.
+func (h *Handler) RuleRemoved(approval.AutoApproveRule) {}
 
 // notificationMeta returns the summary title and icon for a request based on its type.
 func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string) {
@@ -555,16 +524,6 @@ func (h *Handler) approvalButtons(req *approval.Request) []Button {
 		buttons = append(buttons, Button{actionApproveAndAutoApprove, "Approve " + h.autoApproveLabel})
 	}
 	return append(buttons, Button{actionDeny, "Deny"})
-}
-
-func (h *Handler) handleCreated(req *approval.Request) {
-	if h.notificationDelay <= 0 {
-		h.sendNotification(req)
-		return
-	}
-	h.pending.Schedule(req.ID, h.notificationDelay, func() {
-		h.sendNotification(req)
-	})
 }
 
 func (h *Handler) sendNotification(req *approval.Request) {
@@ -648,7 +607,7 @@ func (h *Handler) handleCancelled(req *approval.Request) {
 	slog.Debug("sent auto-approve notification", "request_id", req.ID, "notification_id", newID)
 }
 
-func (h *Handler) handleResolved(requestID string) {
+func (h *Handler) handleResolved(requestID approval.RequestID) {
 	if h.pending.Cancel(requestID) {
 		return
 	}
@@ -673,11 +632,8 @@ func (h *Handler) handleResolved(requestID string) {
 	slog.Debug("closed desktop notification", "request_id", requestID, "notification_id", notifID)
 }
 
-// markupEscaper escapes the only characters that are special in the
-// org.freedesktop.Notifications markup body: & < >. Quotes are deliberately
-// left alone — body text never appears inside an attribute value, and
-// html.EscapeString's &#39;/&#34; showed up literally on servers (dunst, mako,
-// GNOME Shell) that don't decode numeric character references.
+// Escapes &, < and >, the characters special in a notification body, and
+// leaves quotes alone (ADR 0007).
 var markupEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
 func escapeMarkup(s string) string {
@@ -728,14 +684,16 @@ func (h *Handler) formatBody(req *approval.Request) string {
 
 	writeChain := func(chain []procutil.Process) {
 		if len(chain) > 0 {
-			b.WriteString("\n" + formatProcessChain(chain, h.showPIDs))
+			b.WriteByte('\n')
+			b.WriteString(formatProcessChain(chain, h.showPIDs))
 		}
 	}
 
+	search, _ := req.Search()
 	// escapedSearchAttrs renders "k=v, k=v" with keys and values escaped.
 	escapedSearchAttrs := func() string {
-		attrs := make([]string, 0, len(req.SearchAttributes))
-		for k, v := range req.SearchAttributes {
+		attrs := make([]string, 0, len(search.Attributes))
+		for k, v := range search.Attributes {
 			attrs = append(attrs, fmt.Sprintf("%s=%s", esc(k), esc(v)))
 		}
 		return strings.Join(attrs, ", ")
@@ -743,31 +701,29 @@ func (h *Handler) formatBody(req *approval.Request) string {
 
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
-		if req.GPGSignInfo != nil {
-			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(string(req.GPGSignInfo.RepoName)), esc(commitSubject(req.GPGSignInfo.CommitMsg)))
+		if sign, ok := req.GPGSign(); ok {
+			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(string(sign.RepoName)), esc(commitSubject(sign.Signed.Message)))
 			writeChain(req.SenderInfo.ProcessChain)
 		}
 	case approval.RequestTypeSSHSign:
-		// Show key label and destination
 		if len(req.Items) > 0 {
-			fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].Label))
-			if dest, ok := req.Items[0].Attributes["destination"]; ok && dest != "" {
+			fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].DisplayLabel()))
+			if dest := req.Items[0].SSHDestination(); dest != "" {
 				fmt.Fprintf(&b, " → %s", esc(dest))
 			}
 		}
 		writeChain(req.SenderInfo.ProcessChain)
 	default:
 		if len(req.SenderInfo.ProcessChain) > 0 {
-			// New format: item label, then process chain (parent → child order)
 			switch req.Type {
 			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
 				if len(req.Items) == 1 {
-					fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].Label))
+					fmt.Fprintf(&b, "<b>%s</b>", esc(req.Items[0].DisplayLabel()))
 				} else {
 					fmt.Fprintf(&b, "<b>%d items</b>", len(req.Items))
 				}
 			case approval.RequestTypeSearch:
-				if len(req.SearchAttributes) > 0 {
+				if len(search.Attributes) > 0 {
 					fmt.Fprintf(&b, "<b>%s</b>", escapedSearchAttrs())
 				} else {
 					b.WriteString("<b>all</b>")
@@ -780,12 +736,12 @@ func (h *Handler) formatBody(req *approval.Request) string {
 			switch req.Type {
 			case approval.RequestTypeGetSecret, approval.RequestTypeDelete, approval.RequestTypeWrite:
 				if len(req.Items) == 1 {
-					fmt.Fprintf(&b, "<i>%s</i>", esc(req.Items[0].Label))
+					fmt.Fprintf(&b, "<i>%s</i>", esc(req.Items[0].DisplayLabel()))
 				} else {
 					fmt.Fprintf(&b, "<i>%d items</i>", len(req.Items))
 				}
 			case approval.RequestTypeSearch:
-				if len(req.SearchAttributes) > 0 {
+				if len(search.Attributes) > 0 {
 					fmt.Fprintf(&b, "<i>%s</i>", escapedSearchAttrs())
 				} else {
 					b.WriteString("<i>all</i>")

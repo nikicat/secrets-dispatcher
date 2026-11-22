@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net"
 	"net/http"
 
@@ -25,8 +24,7 @@ const wsReadLimit = 1 << 20
 // DaemonClient communicates with the secrets-dispatcher daemon over a Unix socket.
 type DaemonClient struct {
 	socketPath unixsock.Path
-	token      config.AuthToken
-	httpClient *http.Client
+	api        socketClient
 }
 
 // Placeholder host of URLs sent over a unix socket. The dialer ignores it.
@@ -34,6 +32,9 @@ const socketHost = "localhost"
 
 // Builds the http URL of path on a server reached through UnixSocketClient.
 func SocketURL(path string) string { return "http://" + socketHost + path }
+
+// Builds the WebSocket URL of path on a server reached through UnixSocketClient.
+func socketWSURL(path string) string { return "ws://" + socketHost + path }
 
 // Builds an HTTP client that sends every request to the unix socket at socketPath.
 func UnixSocketClient(socketPath unixsock.Path) *http.Client {
@@ -44,47 +45,90 @@ func UnixSocketClient(socketPath unixsock.Path) *http.Client {
 	}}
 }
 
-// POSTs in as JSON, with header added, and decodes a 200 answer into out.
-func postJSON(ctx context.Context, client *http.Client, path string, header http.Header, in, out any) error {
-	data, err := json.Marshal(in)
+// An HTTP client of a daemon socket.
+type socketClient struct {
+	http       *http.Client
+	credential socketCredential
+}
+
+// Proves who sends the requests to a daemon socket. The local API takes the
+// master token (ADR 0006).
+type socketCredential interface {
+	Authorize(h http.Header)
+}
+
+// Sets no header, because the socket that a remote's request arrives on is the
+// remote's identity (ADR 0011).
+type remoteSocketIdentity struct{}
+
+func (remoteSocketIdentity) Authorize(http.Header) {}
+
+// Sends the given request with the client's credential. Errors when the server
+// is unreachable or answers a status other than 200.
+func (c socketClient) do(req *http.Request) (*http.Response, error) {
+	c.credential.Authorize(req.Header)
+	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("daemon unreachable: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL(path), bytes.NewReader(data))
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// POSTs an empty request to the given path. Errors as socketClient.do does.
+func (c socketClient) postEmpty(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL(path), nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	maps.Copy(req.Header, header)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
-		return fmt.Errorf("daemon unreachable: %w", err)
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// POSTs the given sign request as JSON to the given path and decodes the
+// answer. Errors as socketClient.do does, and when the answer does not decode.
+func postSign[Answer SignResponse | SignOutcome](ctx context.Context, c socketClient, path string, sign SignRequest) (Answer, error) {
+	var answer Answer
+	data, err := json.Marshal(sign)
+	if err != nil {
+		return answer, fmt.Errorf("marshal request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL(path), bytes.NewReader(data))
+	if err != nil {
+		return answer, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return answer, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("daemon returned status %d", resp.StatusCode)
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+		return answer, fmt.Errorf("decode response: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-	return nil
+	return answer, nil
 }
 
 // Returns a client of the daemon API at socketPath.
 func NewDaemonClient(socketPath unixsock.Path, token config.AuthToken) *DaemonClient {
 	return &DaemonClient{
 		socketPath: socketPath,
-		token:      token,
-		httpClient: UnixSocketClient(socketPath),
+		api:        socketClient{http: UnixSocketClient(socketPath), credential: token},
 	}
 }
 
 // Opens the daemon's event WebSocket. The caller closes it.
 func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, error) {
 	header := http.Header{}
-	c.token.Authorize(header)
-	conn, _, err := websocket.Dial(ctx, "ws://"+socketHost+"/api/v1/ws", &websocket.DialOptions{
-		HTTPClient: c.httpClient,
+	c.api.credential.Authorize(header)
+	conn, _, err := websocket.Dial(ctx, socketWSURL("/api/v1/ws"), &websocket.DialOptions{
+		HTTPClient: c.api.http,
 		HTTPHeader: header,
 	})
 	if err != nil {
@@ -96,11 +140,9 @@ func (c *DaemonClient) DialWebSocket(ctx context.Context) (*websocket.Conn, erro
 
 // Files info as a gpg-sign request with the daemon, and returns the request's
 // ID without waiting for its resolution, unlike SignRemote.
-func (c *DaemonClient) PostSigningRequest(ctx context.Context, info *approval.GPGSignInfo) (string, error) {
-	var result SignResponse
-	header := http.Header{}
-	c.token.Authorize(header)
-	if err := postJSON(ctx, c.httpClient, "/api/v1/gpg-sign/request", header, SignRequest{GPGSignInfo: info}, &result); err != nil {
+func (c *DaemonClient) PostSigningRequest(ctx context.Context, info *approval.GPGSignInfo) (approval.RequestID, error) {
+	result, err := postSign[SignResponse](ctx, c.api, "/api/v1/gpg-sign/request", SignRequest{GPGSignInfo: info})
+	if err != nil {
 		return "", err
 	}
 	if result.RequestID == "" {
@@ -111,21 +153,9 @@ func (c *DaemonClient) PostSigningRequest(ctx context.Context, info *approval.GP
 
 // Cancels the pending request with requestID. Errors when the daemon is
 // unreachable or does not cancel it.
-func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, SocketURL("/api/v1/pending/"+requestID+"/cancel"), nil)
-	if err != nil {
-		return fmt.Errorf("create cancel request: %w", err)
-	}
-	c.token.Authorize(req.Header)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
+func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID approval.RequestID) error {
+	if err := c.api.postEmpty(ctx, "/api/v1/pending/"+string(requestID)+"/cancel"); err != nil {
 		return fmt.Errorf("cancel signing request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("daemon returned status %d for cancel", resp.StatusCode)
 	}
 	return nil
 }
@@ -135,7 +165,7 @@ func (c *DaemonClient) CancelSigningRequest(ctx context.Context, requestID strin
 type pendingSignRequest struct {
 	client *DaemonClient
 	conn   *websocket.Conn
-	id     string
+	id     approval.RequestID
 }
 
 // Files info as a gpg-sign request and returns it while it is pending. The
@@ -169,20 +199,18 @@ func (r *pendingSignRequest) Cancel(ctx context.Context) error {
 // Closes the event WebSocket.
 func (r *pendingSignRequest) Close() { r.conn.CloseNow() }
 
-// The fields of a daemon WebSocket message that the thin client reads. They
-// mirror part of api.WSMessage. The wsmsg package doc says why the client
-// cannot import api.
 type wsMsg struct {
-	Type wsmsg.Type `json:"type"`
-	ID   string     `json:"id,omitempty"`
+	wsmsg.Header
+	// A removed auto-approve rule's message carries the rule's id here, which
+	// matches no request.
+	ID approval.RequestID `json:"id,omitempty"`
 	SignOutcome
 }
 
-// Reads WebSocket messages from conn until the request with requestID is
-// resolved, expires or is cancelled, and returns how it ended. Errors when
-// conn fails, which includes ctx ending, and when a message for the request
-// does not decode.
-func WaitForResolution(ctx context.Context, conn *websocket.Conn, requestID string) (SignOutcome, error) {
+// Returns how the request with the given ID ended, once the daemon reports it
+// resolved, expired or cancelled. Errors when the request's message does not
+// decode, or approves it without gpg's output.
+func WaitForResolution(ctx context.Context, conn *websocket.Conn, requestID approval.RequestID) (SignOutcome, error) {
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {
@@ -209,6 +237,5 @@ func WaitForResolution(ctx context.Context, conn *websocket.Conn, requestID stri
 		case wsmsg.RequestCancelled:
 			return SignOutcome{Result: approval.ResolutionCancelled}, nil
 		}
-		// Other message types (snapshot, request_created, etc.) — keep reading.
 	}
 }

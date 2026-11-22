@@ -9,6 +9,9 @@ gnome-keyring and keeping it, while gnome-keyring keeps serving the actual
 secrets privately. gnome-keyring is started three ways: systemd user units,
 D-Bus activation, and `pam_gnome_keyring` at login, plus XDG autostart. Users
 will only try this near their real keyring if it is fully reversible.
+gnome-keyring shows its unlock dialog by calling
+`org.gnome.keyring.SystemPrompter` on its own session bus, a name that
+gnome-shell owns on a real GNOME desktop.
 
 ## Decision
 
@@ -27,6 +30,16 @@ will only try this near their real keyring if it is fully reversible.
   `service uninstall` and the `try` trial restore the previous state exactly.
   The dispatcher recognises its own files by their content, backs up a user
   file it displaces beside it, and records nothing elsewhere.
+- **The private backend's unlock prompt reaches gnome-shell.** The dispatcher
+  claims `org.gnome.keyring.SystemPrompter` on the backend bus as soon as it
+  connects, without waiting for gnome-shell's prompter. Otherwise the backend
+  bus D-Bus-activates the `gcr-prompter` fallback the moment gnome-keyring asks
+  to unlock, and inside the graphical session that fallback draws its own GTK
+  dialog. Each prompt is forwarded to gnome-shell's prompter, found by name when
+  the prompt opens, so a relogin or a gnome-shell restart needs nothing
+  re-armed. The prompt's exchange, which carries the DH-encrypted password, is
+  forwarded verbatim between gnome-keyring and gnome-shell, so the dispatcher
+  never sees the plaintext.
 - **The provider is detected, not configured:** the current name owner's exe
   picks the topology, and `--backend gnome-keyring` is a keyword, not a path.
 

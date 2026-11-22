@@ -73,4 +73,15 @@ Done when each item below is fixed as its "Fix" says.
   Fix: One message type {summary, body, icon, buttons}, the same type b2-2
   would give the buttons.
 
+- `internal/notification/desktop.go` (processSignals) (unparsed input).
+  processSignals reads the D-Bus signal bodies by position with type
+  assertions (`sig.Body[0].(uint32)`, `sig.Body[1].(string)` for
+  ActionInvoked, and the uint32 reason for NotificationClosed), and only then
+  converts them to NotificationID and actionKey. The typed values are applied
+  after the edge, not at it.
+  Fix: `dbus.Store(sig.Body, &a.NotificationID, &a.ActionKey)` into an
+  Action, and likewise into a Closed (with the closeReason type above). A
+  failed Store skips the signal, and the `len(sig.Body) != 2` check goes.
+  (2026-11-21 23:24 unsmell run, rc2-c-12)
+
 Found by the 2026-11-19 unsmell run (b2-9, b2-10, b2-11, b2-12, b2-13, b2-14, b2-24, b2-26, b2-27).

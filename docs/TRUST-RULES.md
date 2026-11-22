@@ -109,8 +109,10 @@ process in the chain, which is how you identify interpreter-run scripts (whose
 A `trusted_signers` entry approves git signing requests without a prompt.
 `exe_path` names the app that starts the commit, `file_prefix` is a prefix that
 every staged file must have, and `repo_path` takes the name of the repository's
-top-level directory, not a path. The key keeps the name `repo_path` so existing
-config files keep working.
+top-level directory, not a path. An entry with a `file_prefix` matches only
+commits, so annotated tags and push certificates still get a prompt. When git
+cannot list the staged files or find the top-level directory, the signing
+fails ([ADR 0008](adr/0008-gpg-signing-through-gpg-program.md)). The key keeps the name `repo_path` so existing config files keep working.
 
 ### Match on what can't be spoofed
 
@@ -162,4 +164,4 @@ downstream named after one fails to load.
 | `process.unit` | glob; systemd unit name |
 | `secret.collection` / `secret.label` | glob (for `get_secret` / `delete` / `write`) |
 | `secret.attributes` | subset match; values are globs. A missing attribute counts as empty |
-| `search_attributes` | glob map, for `search` requests |
+| `search_attributes` | glob map, for `search` requests; a rule that sets it matches no other request type |

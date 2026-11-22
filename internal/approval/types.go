@@ -56,9 +56,11 @@ type TrustRule struct {
 	// Matched against the client the request came through. The session bus
 	// is ClientLocal, and ClientFromSocket names a forwarded bus. When omitted, a
 	// deny rule matches every client and any other rule only the session bus.
-	Client           Glob            `yaml:"client,omitempty" json:"client,omitzero"`
-	Process          *ProcessMatcher `yaml:"process,omitempty" json:"process,omitempty"`
-	Secret           *SecretMatcher  `yaml:"secret,omitempty" json:"secret,omitempty"`
+	Client  Glob            `yaml:"client,omitempty" json:"client,omitzero"`
+	Process *ProcessMatcher `yaml:"process,omitempty" json:"process,omitempty"`
+	Secret  *SecretMatcher  `yaml:"secret,omitempty" json:"secret,omitempty"`
+	// Matched against the attributes that a search request searches for. A
+	// rule that sets it matches no other type of request.
 	SearchAttributes map[string]Glob `yaml:"search_attributes,omitempty" json:"search_attributes,omitempty"`
 }
 
@@ -93,8 +95,11 @@ func (r *TrustRule) matches(info RequestInfo) bool {
 	if r.Secret != nil && !r.Secret.matches(info.Items, r.Action) {
 		return false
 	}
-	if len(r.SearchAttributes) > 0 && !attributesMatch(r.SearchAttributes, info.SearchAttributes) {
-		return false
+	if len(r.SearchAttributes) > 0 {
+		search, ok := info.Search()
+		if !ok || !attributesMatch(r.SearchAttributes, search.Attributes) {
+			return false
+		}
 	}
 	return true
 }
@@ -173,8 +178,9 @@ type TrustedSigner struct {
 	// The key stays repo_path, so existing config files still load
 	// (TRUST-RULES.md, "Trusted signers").
 	RepoName RepoName `yaml:"repo_path,omitempty" json:"repo_path,omitempty"`
-	// A prefix that every staged file must have. The paths are relative to the
-	// repository's top level (ADR 0008).
+	// A prefix that every staged file must have, relative to the repository's
+	// top level. A signer with one matches only commits, so a tag or a push
+	// certificate gets a prompt (ADR 0008).
 	FilePrefix string `yaml:"file_prefix,omitempty" json:"file_prefix,omitempty"`
 }
 
@@ -186,16 +192,21 @@ func (s TrustedSigner) Validate() error {
 	return nil
 }
 
-func (s TrustedSigner) matches(chain []procutil.Process, repoName RepoName, changedFiles []string) bool {
+func (s TrustedSigner) matches(chain []procutil.Process, repoName RepoName, details ObjectDetails) bool {
 	if !slices.ContainsFunc(chain, func(p procutil.Process) bool {
-		return p.Exe != nil && *p.Exe == s.ExePath
+		exe, ok := p.ExePath()
+		return ok && exe == s.ExePath
 	}) {
 		return false
 	}
 	if s.RepoName != "" && repoName != s.RepoName {
 		return false
 	}
-	return !slices.ContainsFunc(changedFiles, func(f string) bool {
+	if s.FilePrefix == "" {
+		return true
+	}
+	files, ok := details.changedFiles()
+	return ok && !slices.ContainsFunc(files, func(f string) bool {
 		return !strings.HasPrefix(f, s.FilePrefix)
 	})
 }
@@ -269,7 +280,8 @@ func (pm *ProcessMatcher) matches(senderInfo SenderInfo) bool {
 
 	chain := senderInfo.ProcessChain
 	if !pm.Exe.IsZero() && !slices.ContainsFunc(chain, func(p procutil.Process) bool {
-		return p.Exe != nil && pm.Exe.Matches(string(*p.Exe))
+		exe, ok := p.ExePath()
+		return ok && pm.Exe.Matches(string(exe))
 	}) {
 		return false
 	}
@@ -284,7 +296,8 @@ func (pm *ProcessMatcher) matches(senderInfo SenderInfo) bool {
 		return false
 	}
 	if !pm.CWD.IsZero() && !slices.ContainsFunc(chain, func(p procutil.Process) bool {
-		return p.CWD != nil && pm.CWD.Matches(string(*p.CWD))
+		cwd, ok := p.CWDPath()
+		return ok && pm.CWD.Matches(string(cwd))
 	}) {
 		return false
 	}
@@ -321,7 +334,7 @@ func (sm *SecretMatcher) matches(items []ItemInfo, action RuleAction) bool {
 }
 
 func (sm *SecretMatcher) matchesItem(item ItemInfo) bool {
-	if !sm.Collection.IsZero() && !sm.Collection.Matches(item.Collection()) {
+	if ref, ok := item.Collection(); !sm.Collection.IsZero() && (!ok || !sm.Collection.Matches(ref.Name)) {
 		return false
 	}
 	if !sm.Label.IsZero() && !sm.Label.Matches(item.Label) {
@@ -343,7 +356,7 @@ func attributesMatch(ruleAttrs map[string]Glob, reqAttrs map[string]string) bool
 type SenderInfo struct {
 	sender.Info
 	// The client the request came through.
-	Client ClientName `json:"-"`
+	Client ClientName
 	// True if the request came through the gpg-sign thin client (ADR 0008).
-	PeerTrusted bool `json:"peer_trusted,omitempty"`
+	PeerTrusted bool
 }

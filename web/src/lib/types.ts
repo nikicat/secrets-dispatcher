@@ -27,12 +27,11 @@ export interface GPGSignInfo {
   // and signed-push certificates through the same signer. author holds the
   // author/tagger/pusher and commit_msg holds the commit message / tag message
   // / pushed ref-updates; the kind-specific fields below carry the rest.
-  kind?: "commit" | "tag" | "push" | "unknown";
+  kind: "commit" | "tag" | "push";
   commit_msg: string;
   author: string;
   committer: string;
   key_id: string;
-  fingerprint?: string;
   changed_files: string[];
   parent_hash?: string;
   tag_name?: string; // tag only
@@ -40,13 +39,14 @@ export interface GPGSignInfo {
   pushee?: string; // push only: destination URL
 }
 
-export interface PendingRequest {
+// A request as a History entry carries it. PendingRequest adds what only a
+// pending request has.
+export interface RequestRecord {
   id: string;
   client: string;
   items: ItemInfo[];
   session: string;
   created_at: string;
-  expires_at: string;
   type:
     | "get_secret"
     | "search"
@@ -61,6 +61,10 @@ export interface PendingRequest {
   // True if the Go approval.Request.AutoApprovable accepts the request. False
   // otherwise.
   auto_approvable: boolean;
+}
+
+export interface PendingRequest extends RequestRecord {
+  expires_at: string;
 }
 
 export interface ClientInfo {
@@ -92,7 +96,7 @@ export type Resolution =
   "approved" | "denied" | "expired" | "cancelled" | "auto_approved" | "ignored";
 
 export interface HistoryEntry {
-  request: PendingRequest;
+  request: RequestRecord;
   resolution: Resolution;
   resolved_at: string;
 }

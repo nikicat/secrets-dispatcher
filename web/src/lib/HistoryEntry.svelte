@@ -1,7 +1,7 @@
 <script lang="ts">
   import type {
     HistoryEntry as HistoryEntryType,
-    PendingRequest,
+    RequestRecord,
     AutoApproveRule,
   } from "./types";
   import ProcessChain from "./ProcessChain.svelte";
@@ -77,7 +77,7 @@
     return repoPrefix + entry.request.client;
   }
 
-  function historyItemsSummary(request: PendingRequest): string {
+  function historyItemsSummary(request: RequestRecord): string {
     if (request.type === "gpg_sign" && request.gpg_sign_info) {
       return request.gpg_sign_info.commit_msg.split("\n")[0];
     }
@@ -98,7 +98,7 @@
     return "";
   }
 
-  function historyEntryProps(req: PendingRequest): {
+  function historyEntryProps(req: RequestRecord): {
     process?: string;
     collection?: string;
     attributes?: Record<string, string>;

@@ -18,27 +18,23 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
-// Serves the gpg-sign subcommand, which git runs as
-// `secrets-dispatcher gpg-sign --status-fd=2 -bsau <keyID>` with the object to sign on stdin.
-// SIGINT and SIGTERM cancel the request on the daemon.
+// Serves the gpg-sign subcommand that git runs as gpg.program (ADR 0008). SIGINT
+// and SIGTERM cancel a signing request on the daemon.
 func Run(args []string, stdin io.Reader) ExitStatus {
 	c := thinClient{debug: os.Getenv("SECRETS_DISPATCHER_DEBUG") == "1"}
 
-	gpg := parseGPGArgs(args)
-	// Git also calls gpg.program to verify signatures, list keys and print the
-	// version. Only signing goes through the daemon, so every other call goes to
-	// the real gpg unchanged. Git then reads gpg's own status lines and exit
-	// status, and a good signature still verifies.
-	if !gpg.sign {
-		c.debugf("non-signing invocation, delegating to real gpg: %v", args)
-		return passThroughToGPG(args, stdin)
-	}
-
-	c.debugf("keyID=%s args=%v", gpg.keyID, args)
-	info, err := c.collectSignInfo(gpg.keyID, stdin)
+	c.debugf("args=%v", args)
+	call, err := parseGPGArgs(args)
 	if err != nil {
-		errorf("%v", err)
-		return exitSystemError
+		return systemError(err)
+	}
+	return call.run(c, stdin)
+}
+
+func (s signCall) run(c thinClient, stdin io.Reader) ExitStatus {
+	info, err := collectSignInfo(s.keyID, stdin)
+	if err != nil {
+		return systemError(err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -64,6 +60,12 @@ func errorf(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, stderrPrefix+format+"\n", a...)
 }
 
+// Writes the given error to stderr and returns exitSystemError.
+func systemError(err error) ExitStatus {
+	errorf("%v", err)
+	return exitSystemError
+}
+
 // Writes a debug line to stderr when debugging is on.
 func (c thinClient) debugf(format string, a ...any) {
 	if c.debug {
@@ -71,36 +73,18 @@ func (c thinClient) debugf(format string, a ...any) {
 	}
 }
 
-// Reads the object to sign from stdin and returns it with its git context for
-// the approval prompt.
-func (c thinClient) collectSignInfo(keyID string, stdin io.Reader) (*approval.GPGSignInfo, error) {
-	// Read commit object from stdin (SIGN-02).
-	commitBytes, err := io.ReadAll(stdin)
+// Reads the object to sign from stdin and returns it with its git context. Errors
+// when git cannot name the repository, and as approval.NewGPGSignInfo does (ADR 0008).
+func collectSignInfo(keyID approval.GPGKeyID, stdin io.Reader) (*approval.GPGSignInfo, error) {
+	object, err := io.ReadAll(stdin)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read stdin: %w", err)
 	}
-
-	payload, err := ParseSignedPayload(commitBytes)
+	repo, err := gitRepoName()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("find the repository: %w", err)
 	}
-
-	// Collect git context (SIGN-03, SIGN-04). Changed files describe a
-	// commit's staged tree — they are meaningless for tag/push signing and
-	// could mislead both the prompt and trusted-signer matching, so gather them
-	// for commits only.
-	var changedFiles []string
-	if payload.Kind == approval.GPGSignCommit {
-		changedFiles = c.collectChangedFiles()
-	}
-	info := &approval.GPGSignInfo{
-		RepoName:     c.resolveRepoName(),
-		KeyID:        keyID,
-		ChangedFiles: changedFiles,
-		CommitObject: string(commitBytes),
-	}
-	payload.BindDisplay(info)
-	return info, nil
+	return approval.NewGPGSignInfo(object, repo, keyID, gitStagedFiles{})
 }
 
 // Signs info through the remote socket that remoteSocketEnv names, or through
@@ -121,7 +105,6 @@ func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (
 		return SignOutcome{}, err
 	}
 
-	// File the request with the daemon (SIGN-05).
 	req, err := client.startSignRequest(ctx, info)
 	if err != nil {
 		return SignOutcome{}, err
@@ -129,7 +112,6 @@ func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (
 	defer req.Close()
 	c.debugf("request_id=%s", req.id)
 
-	// Block until resolution (SIGN-08, ERR-01).
 	outcome, err := req.Wait(ctx)
 	if err != nil && ctx.Err() != nil {
 		c.debugf("interrupted, cancelling request %s", req.id)
@@ -144,7 +126,6 @@ func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (
 // Returns a client of the local daemon's API socket. Errors when the auth
 // token or the socket cannot be found.
 func (c thinClient) locateLocalDaemon() (*DaemonClient, error) {
-	// Load auth token (ERR-01 if missing).
 	stateDir, err := daemonStateDir()
 	if err != nil {
 		return nil, fmt.Errorf("cannot find the daemon's auth token: %w", err)
@@ -167,10 +148,8 @@ func (c thinClient) locateLocalDaemon() (*DaemonClient, error) {
 	return NewDaemonClient(socketPath, token), nil
 }
 
-// Returns the state directory that holds the daemon's API auth token. It is the
-// state_dir that the default config file sets, or the default state directory
-// when the file sets none. git runs gpg-sign without our flags, so a daemon
-// started with another state directory or config file is not found.
+// Returns the state directory that holds the daemon's API auth token, as the
+// default config file sets it (ADR 0008).
 func daemonStateDir() (config.StateDir, error) {
 	source, err := config.DefaultSource()
 	if err != nil {
@@ -183,24 +162,24 @@ func daemonStateDir() (config.StateDir, error) {
 	return cfg.StateDir.OrDefault()
 }
 
-// resolveRepoName runs git rev-parse --show-toplevel and returns the base name.
-// Returns "unknown" on error.
-func (c thinClient) resolveRepoName() approval.RepoName {
+// Returns the name of the work tree's top-level directory. Errors as
+// runGitCommand does, for example outside a work tree.
+func gitRepoName() (approval.RepoName, error) {
 	out, err := runGitCommand("rev-parse", "--show-toplevel")
 	if err != nil {
-		c.debugf("resolveRepoName error: %v", err)
-		return "unknown"
+		return "", err
 	}
-	return approval.RepoName(filepath.Base(strings.TrimSpace(out)))
+	return approval.RepoName(filepath.Base(strings.TrimSpace(out))), nil
 }
 
-// collectChangedFiles runs git diff --cached --name-only and returns the file list.
-// Returns nil on error.
-func (c thinClient) collectChangedFiles() []string {
+// The files staged in the work tree, as git lists them.
+type gitStagedFiles struct{}
+
+// Errors as runGitCommand does.
+func (gitStagedFiles) List() ([]string, error) {
 	out, err := runGitCommand("diff", "--cached", "--name-only")
 	if err != nil {
-		c.debugf("collectChangedFiles error: %v", err)
-		return nil
+		return nil, err
 	}
 	var files []string
 	for f := range strings.SplitSeq(out, "\n") {
@@ -208,7 +187,7 @@ func (c thinClient) collectChangedFiles() []string {
 			files = append(files, f)
 		}
 	}
-	return files
+	return files, nil
 }
 
 // Returns the standard output of git run with the given arguments, untrimmed.

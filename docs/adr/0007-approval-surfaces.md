@@ -39,4 +39,7 @@ is not shipped.
   notification body that a client controls (item labels and attributes,
   repository and commit text, process names) is escaped. An approval
   notification carries the Approve button, and unescaped markup could show
-  forged, reassuring text next to it.
+  forged, reassuring text next to it. Only `&`, `<` and `>` are escaped. Body
+  text never appears inside an attribute value, so quotes need no escaping, and
+  `html.EscapeString` writes them as numeric references (`&#39;`, `&#34;`) that
+  dunst, mako and GNOME Shell show literally.

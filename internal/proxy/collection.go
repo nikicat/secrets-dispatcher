@@ -3,200 +3,81 @@ package proxy
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
-	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // CollectionHandler handles Collection interface calls for collection objects.
 // It is exported as a subtree handler for /org/freedesktop/secrets/collection/*.
 type CollectionHandler struct {
-	localConn    *dbus.Conn
-	sessions     *SessionManager
-	logger       *logging.Logger
-	approval     *approval.Manager
-	tracker      *clientTracker
-	resolver     *SenderInfoResolver
-	slowUpstream SlowUpstream
+	properties
 }
 
-// NewCollectionHandler creates a new CollectionHandler.
-func NewCollectionHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger, approvalMgr *approval.Manager, tracker *clientTracker, resolver *SenderInfoResolver, slowUpstream SlowUpstream) *CollectionHandler {
-	return &CollectionHandler{
-		localConn:    localConn,
-		sessions:     sessions,
-		logger:       logger,
-		approval:     approvalMgr,
-		tracker:      tracker,
-		resolver:     resolver,
-		slowUpstream: slowUpstream,
-	}
+// Collections, by their name or by an alias.
+type collectionObjects struct{}
+
+// Checks whether the given path names a collection.
+func (collectionObjects) serves(path dbus.ObjectPath) bool {
+	_, ok := dbustypes.ParseCollectionPath(path)
+	return ok
 }
 
-// upstream returns the backend object at path on the upstream Secret Service bus.
-func (c *CollectionHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
-	return c.localConn.Object(dbustypes.BusName, path)
-}
-
-// Returns a lazy resolver of sender's SenderInfo, for SenderCall.
-func (c *CollectionHandler) senderResolver(sender sender.UniqueName) func() approval.SenderInfo {
-	return func() approval.SenderInfo { return c.resolver.Resolve(sender) }
-}
-
-// upstreamWithContext wraps a D-Bus Call through the slow-upstream notifier,
-// passing caller and item context to the notification.
-func (c *CollectionHandler) upstreamWithContext(ctx UpstreamCallContext, fn func() *dbus.Call) *dbus.Call {
-	return WithSlowNotify(c.slowUpstream, ctx, fn)
-}
-
-// upstreamGetProperty wraps a GetProperty call through the slow-upstream notifier,
-// passing caller context to the notification so the user knows what triggered any
-// pinentry or keyring unlock prompt.
-func (c *CollectionHandler) upstreamGetProperty(obj dbus.BusObject, prop string, ctx UpstreamCallContext) (dbus.Variant, error) {
-	r := WithSlowNotify(c.slowUpstream, ctx, func() propResult {
-		v, err := obj.GetProperty(prop)
-		return propResult{v, err}
-	})
-	return r.v, r.err
-}
-
-// isCollectionPath checks if the path is a collection (not an item).
-// Collection paths: /org/freedesktop/secrets/collection/xxx
-// Alias paths: /org/freedesktop/secrets/aliases/xxx
-// Item paths: /org/freedesktop/secrets/collection/xxx/yyy
-func isCollectionPath(path dbus.ObjectPath) bool {
-	p := string(path)
-	for _, prefix := range []string{
-		"/org/freedesktop/secrets/collection/",
-		"/org/freedesktop/secrets/aliases/",
-	} {
-		if strings.HasPrefix(p, prefix) {
-			remainder := p[len(prefix):]
-			// Collection/alias has no additional slashes, items do
-			return remainder != "" && !strings.Contains(remainder, "/")
-		}
-	}
-	return false
+func (o collectionObjects) object(msg dbus.Message, _ dbustypes.Interface) (dbus.ObjectPath, *dbus.Error) {
+	return calledPathIn(o, msg)
 }
 
 // Delete deletes the collection.
 // Signature: Delete() -> (prompt ObjectPath)
 func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
-	path := pathOf(msg)
-	if !isCollectionPath(path) {
-		return "/", dbustypes.ErrObjectNotFound(string(path))
+	path, dbusErr := c.object(msg, dbustypes.CollectionInterface)
+	if dbusErr != nil {
+		return "/", dbusErr
 	}
 
-	// Fetch collection label for the approval prompt
-	sender := senderOf(msg)
-	senderCtx := SenderCall(c.senderResolver(sender))
-	collectionInfo := c.getCollectionInfo(path, senderCtx)
-
-	// Get a context that will be cancelled if the client disconnects
-	ctx, release := c.tracker.contextForSender(context.Background(), sender)
+	caller, release := c.startApprovalCaller(msg)
 	defer release()
 
-	// Resolve sender information
-	senderInfo := c.resolver.Resolve(sender)
-
-	// Require approval before deleting
-	info := approval.RequestInfo{Items: []approval.ItemInfo{collectionInfo}, Type: approval.RequestTypeDelete, SenderInfo: senderInfo}
-	upstreamCall, err := requireApproval(ctx, c.approval, info)
+	info := approval.RequestInfo{Items: []approval.ItemInfo{caller.collectionInfo(path)}, Type: approval.RequestTypeDelete}
+	upstreamCall, err := caller.requireApproval(info)
 	if err != nil {
-		c.logger.LogMethod(ctx, "Collection.Delete", map[string]any{"collection": string(path)}, "denied", err)
+		c.logger.LogCollectionDelete(caller.ctx, path, logging.ResultDenied, err)
 		return "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	obj := c.upstream(path)
-	call := c.upstreamWithContext(upstreamCall, func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".Delete", 0) })
-	if call.Err != nil {
-		return "/", dbustypes.ErrFailed(call.Err)
-	}
-
+	call := c.callUpstream(upstreamCall, path, dbustypes.CollectionInterface.Member("Delete"))
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
 		return "/", dbustypes.ErrFailed(err)
 	}
 
-	c.logger.LogMethod(context.Background(), "Collection.Delete", map[string]any{
-		"collection": string(path),
-	}, "ok", nil)
+	c.logger.LogCollectionDelete(context.Background(), path, logging.ResultOK, nil)
 
 	return prompt, nil
-}
-
-// getCollectionInfo fetches label for a collection from D-Bus.
-func (c *CollectionHandler) getCollectionInfo(path dbus.ObjectPath, ctx UpstreamCallContext) approval.ItemInfo {
-	info := approval.ItemInfo{Path: string(path)}
-
-	obj := c.upstream(path)
-
-	// Get Label property
-	if v, err := c.upstreamGetProperty(obj, dbustypes.CollectionInterface+".Label", ctx); err == nil {
-		if label, ok := v.Value().(string); ok {
-			info.Label = label
-		}
-	}
-
-	return info
-}
-
-// extractItemInfo extracts label and attributes from CreateItem properties.
-func extractItemInfo(collectionPath string, properties map[string]dbus.Variant) approval.ItemInfo {
-	info := approval.ItemInfo{Path: collectionPath}
-
-	if v, ok := properties[dbustypes.ItemInterface+".Label"]; ok {
-		if label, ok := v.Value().(string); ok {
-			info.Label = label
-		}
-	}
-	if v, ok := properties[dbustypes.ItemInterface+".Attributes"]; ok {
-		if attrs, ok := v.Value().(map[string]string); ok {
-			info.Attributes = attrs
-		}
-	}
-
-	return info
 }
 
 // SearchItems searches for items in this collection matching the given attributes.
 // Signature: SearchItems(attributes Dict<String,String>) -> (results Array<ObjectPath>)
 func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
-	path := pathOf(msg)
-	if !isCollectionPath(path) {
-		return nil, dbustypes.ErrObjectNotFound(string(path))
+	path, dbusErr := c.object(msg, dbustypes.CollectionInterface)
+	if dbusErr != nil {
+		return nil, dbusErr
 	}
 
-	obj := c.upstream(path)
-	senderInfo := c.resolver.Resolve(senderOf(msg))
-
-	info := approval.RequestInfo{Items: searchAttributesToItemInfo(attributes), Type: approval.RequestTypeSearch, SearchAttributes: attributes, SenderInfo: senderInfo}
-	// Check if request should be denied by a trust rule
-	if rule := c.approval.CheckTrustRules(info); rule != nil && rule.Action == approval.RuleDeny {
-		c.approval.RecordDenied(info)
-		return nil, dbustypes.ErrAccessDenied("denied by trust rule: " + rule.Name)
+	upstreamCall, err := c.caller(msg).passthrough(searchRequest(attributes))
+	if err != nil {
+		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	c.approval.RecordPassthrough(info)
-	call := c.upstreamWithContext(RequestCall(info), func() *dbus.Call { return obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, attributes) })
-	if call.Err != nil {
-		return nil, dbustypes.ErrFailed(call.Err)
-	}
-
+	call := c.callUpstream(upstreamCall, path, dbustypes.CollectionInterface.Member("SearchItems"), attributes)
 	var results []dbus.ObjectPath
 	if err := call.Store(&results); err != nil {
 		return nil, dbustypes.ErrFailed(err)
 	}
 
-	c.logger.LogMethod(context.Background(), "Collection.SearchItems", map[string]any{
-		"collection": string(path),
-		"attributes": attributes,
-		"count":      len(results),
-	}, "ok", nil)
+	c.logger.LogCollectionSearchItems(context.Background(), path, attributes, len(results), logging.ResultOK, nil)
 
 	return results, nil
 }
@@ -204,137 +85,45 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 // CreateItem creates a new item in the collection.
 // Signature: CreateItem(properties Dict<String,Variant>, secret Secret, replace Boolean) -> (item ObjectPath, prompt ObjectPath)
 func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]dbus.Variant, secret dbustypes.Secret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	path := pathOf(msg)
-	if !isCollectionPath(path) {
-		return "/", "/", dbustypes.ErrObjectNotFound(string(path))
+	path, dbusErr := c.object(msg, dbustypes.CollectionInterface)
+	if dbusErr != nil {
+		return "/", "/", dbusErr
 	}
 
-	// Extract item info from properties for the approval prompt
-	itemInfo := extractItemInfo(string(path), properties)
+	itemInfo := itemInfoFromProperties(string(path), properties)
 
-	// Get a context that will be cancelled if the client disconnects
-	sender := senderOf(msg)
-	ctx, release := c.tracker.contextForSender(context.Background(), sender)
+	caller, release := c.startApprovalCaller(msg)
 	defer release()
 
-	// Resolve sender information
-	senderInfo := c.resolver.Resolve(sender)
-
-	// Short-circuit Chrome dummy secret writes
-	info := approval.RequestInfo{Items: []approval.ItemInfo{itemInfo}, Session: secret.Session, Type: approval.RequestTypeWrite, SenderInfo: senderInfo}
-	if c.approval.ShouldIgnore(info) {
-		c.approval.RecordIgnored(info)
-		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
-			"collection": string(path), "ignored": true,
-		}, "ignored", nil)
+	info := approval.RequestInfo{Items: []approval.ItemInfo{itemInfo}, Session: secret.Session, Type: approval.RequestTypeWrite}
+	upstreamCall, err := caller.requireApproval(info)
+	if errors.Is(err, approval.ErrIgnored) {
+		c.logger.LogCreateItem(caller.ctx, path, logging.ResultIgnored, nil)
 		return "/", "/", nil
 	}
-
-	// Require approval before creating item
-	upstreamCall, err := requireApproval(ctx, c.approval, info)
 	if err != nil {
-		if errors.Is(err, approval.ErrIgnored) {
-			c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{
-				"collection": string(path), "ignored": true,
-			}, "ignored", nil)
-			return "/", "/", nil
-		}
-		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "denied", err)
+		c.logger.LogCreateItem(caller.ctx, path, logging.ResultDenied, err)
 		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	// Map the remote session to the upstream session, decrypting the value for
 	// DH sessions before forwarding it to the (plain) upstream service.
-	localSecret, ok, err := c.sessions.ForUpstream(secret)
-	if !ok {
-		return "/", "/", dbustypes.ErrSessionNotFound(string(secret.Session))
-	}
+	localSecret, err := c.sessions.ForUpstream(secret)
 	if err != nil {
-		c.logger.LogMethod(ctx, "Collection.CreateItem", map[string]any{"collection": string(path)}, "error", err)
-		return "/", "/", dbustypes.ErrFailed(err)
+		c.logger.LogCreateItem(caller.ctx, path, logging.ResultError, err)
+		return "/", "/", sessionSecretError(secret.Session, err)
 	}
 
-	obj := c.upstream(path)
-	call := c.upstreamWithContext(upstreamCall, func() *dbus.Call {
-		return obj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, localSecret, replace)
-	})
-	if call.Err != nil {
-		return "/", "/", dbustypes.ErrFailed(call.Err)
-	}
-
+	call := c.callUpstream(upstreamCall, path, dbustypes.CollectionInterface.Member("CreateItem"), properties, localSecret, replace)
 	var item, prompt dbus.ObjectPath
 	if err := call.Store(&item, &prompt); err != nil {
 		return "/", "/", dbustypes.ErrFailed(err)
 	}
 
 	// Cache the new item path so immediate read-back (e.g., gh verification) is auto-approved.
-	c.approval.CacheItemForSender(senderInfo, string(item))
+	c.approval.CacheItemForSender(caller.sender, string(item))
 
-	c.logger.LogMethod(context.Background(), "Collection.CreateItem", map[string]any{
-		"collection": string(path),
-		"item":       string(item),
-	}, "ok", nil)
+	c.logger.LogItemCreated(context.Background(), path, item)
 
 	return item, prompt, nil
-}
-
-// Get implements org.freedesktop.DBus.Properties.Get for collections.
-func (c *CollectionHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
-	path := pathOf(msg)
-	if !isCollectionPath(path) {
-		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
-	}
-
-	obj := c.upstream(path)
-	sender := senderOf(msg)
-	r := WithSlowNotify(c.slowUpstream, SenderCall(c.senderResolver(sender)), func() propResult {
-		v, err := obj.GetProperty(iface + "." + property)
-		return propResult{v, err}
-	})
-	if r.err != nil {
-		return dbus.Variant{}, dbustypes.ErrFailed(r.err)
-	}
-
-	return r.v, nil
-}
-
-// GetAll implements org.freedesktop.DBus.Properties.GetAll for collections.
-func (c *CollectionHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
-	path := pathOf(msg)
-	if !isCollectionPath(path) {
-		return nil, dbustypes.ErrObjectNotFound(string(path))
-	}
-
-	obj := c.upstream(path)
-	sender := senderOf(msg)
-	call := c.upstreamWithContext(SenderCall(c.senderResolver(sender)), func() *dbus.Call { return obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface) })
-	if call.Err != nil {
-		return nil, dbustypes.ErrFailed(call.Err)
-	}
-
-	var props map[string]dbus.Variant
-	if err := call.Store(&props); err != nil {
-		return nil, dbustypes.ErrFailed(err)
-	}
-
-	return props, nil
-}
-
-// Set implements org.freedesktop.DBus.Properties.Set for collections.
-func (c *CollectionHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
-	path := pathOf(msg)
-	if !isCollectionPath(path) {
-		return dbustypes.ErrObjectNotFound(string(path))
-	}
-
-	obj := c.upstream(path)
-	sender := senderOf(msg)
-	call := c.upstreamWithContext(SenderCall(c.senderResolver(sender)), func() *dbus.Call {
-		return obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
-	})
-	if call.Err != nil {
-		return dbustypes.ErrFailed(call.Err)
-	}
-
-	return nil
 }

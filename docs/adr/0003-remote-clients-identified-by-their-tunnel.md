@@ -32,3 +32,7 @@ would make the transport MITM-resistant independently of SSH, is deferred
   client trusts everything that can reach that tunnel.
 - When the laptop is offline, remote requests fail with a Secret Service
   error. Nothing is queued.
+- A caller's PID and UID are asked for with `GetConnectionUnixProcessID` and
+  `GetConnectionUnixUser`, not `GetConnectionCredentials`: dbus-broker v34+
+  adds a `ProcessFD` to the credentials, which cannot be forwarded over an SSH
+  tunnelled socket.

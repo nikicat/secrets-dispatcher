@@ -137,20 +137,20 @@ func helpVars() kong.Vars {
 }
 
 type commandLine struct {
-	Serve     serveCmd     `cmd:"" help:"Start the proxy server and API."`
-	Login     loginCmd     `cmd:"" help:"Generate a login URL for the web UI."`
-	List      listCmd      `cmd:"" help:"List pending approval requests."`
-	Show      showCmd      `cmd:"" help:"Show details of a request (pending or resolved)."`
-	Approve   approveCmd   `cmd:"" help:"Approve a pending request."`
-	Deny      denyCmd      `cmd:"" help:"Deny a pending request."`
-	History   historyCmd   `cmd:"" help:"Show resolved requests."`
-	Config    configCmd    `cmd:"" help:"Show or manage configuration."`
-	Try       tryCmd       `cmd:"" help:"Reversible trial: take over the Secret Service, Ctrl-C restores everything."`
-	Service   serviceCmd   `cmd:"" help:"Manage the systemd user service."`
-	GPGSign   gpgSignCmd   `cmd:"" name:"gpg-sign" help:"GPG signing proxy, which git runs as gpg.program."`
-	Provision provisionCmd `cmd:"" help:"Provision companion user and deployment artifacts (requires root)."`
-	Daemon    daemonCmd    `cmd:"" help:"Run companion daemon (registers on system D-Bus)."`
-	Version   versionCmd   `cmd:"" help:"Print the version and exit."`
+	Serve     serveCmd               `cmd:"" help:"Start the proxy server and API."`
+	Login     loginCmd               `cmd:"" help:"Generate a login URL for the web UI."`
+	List      listCmd                `cmd:"" help:"List pending approval requests."`
+	Show      showCmd                `cmd:"" help:"Show details of a request (pending or resolved)."`
+	Approve   decideCmd[cli.Approve] `cmd:"" help:"Approve a pending request."`
+	Deny      decideCmd[cli.Deny]    `cmd:"" help:"Deny a pending request."`
+	History   historyCmd             `cmd:"" help:"Show resolved requests."`
+	Config    configCmd              `cmd:"" help:"Show or manage configuration."`
+	Try       tryCmd                 `cmd:"" help:"Reversible trial: take over the Secret Service, Ctrl-C restores everything."`
+	Service   serviceCmd             `cmd:"" help:"Manage the systemd user service."`
+	GPGSign   gpgSignCmd             `cmd:"" name:"gpg-sign" help:"GPG signing proxy, which git runs as gpg.program."`
+	Provision provisionCmd           `cmd:"" help:"Provision companion user and deployment artifacts (requires root)."`
+	Daemon    daemonCmd              `cmd:"" help:"Run companion daemon (registers on system D-Bus)."`
+	Version   versionCmd             `cmd:"" help:"Print the version and exit."`
 }
 
 type loginCmd struct {
@@ -199,7 +199,7 @@ func (f clientFlags) formatter() *cli.Formatter { return cli.NewFormatter(os.Std
 
 // The positional argument of a command that acts on one request.
 type requestArg struct {
-	ID string `arg:"" name:"request-id" help:"The request's ID."`
+	ID cli.IDPrefix `arg:"" name:"request-id" help:"The request's ID, or its start."`
 }
 
 type listCmd struct{ clientFlags }
@@ -209,12 +209,11 @@ func (c listCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	requests, err := client.List()
+	requests, err := client.Pending()
 	if err != nil {
 		return err
 	}
-	c.formatter().FormatRequests(requests)
-	return nil
+	return c.formatter().FormatPending(requests)
 }
 
 type showCmd struct {
@@ -227,46 +226,31 @@ func (c showCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	result, err := client.Show(c.ID)
+	result, err := client.Find(c.ID)
 	if err != nil {
 		return err
 	}
-	c.formatter().FormatShowResult(result)
-	return nil
+	return c.formatter().FormatEntry(result)
 }
 
-type approveCmd struct {
+// A command that approves or denies a pending request, as its decision type
+// says.
+type decideCmd[D cli.Decision] struct {
 	clientFlags
 	requestArg
 }
 
-func (c approveCmd) Run() error {
+func (c decideCmd[D]) Run() error {
 	client, err := c.client()
 	if err != nil {
 		return err
 	}
-	if err := client.Approve(c.ID); err != nil {
-		return err
-	}
-	c.formatter().FormatAction("approved", c.ID)
-	return nil
-}
-
-type denyCmd struct {
-	clientFlags
-	requestArg
-}
-
-func (c denyCmd) Run() error {
-	client, err := c.client()
+	var d D
+	id, err := client.Resolve(c.ID, d)
 	if err != nil {
 		return err
 	}
-	if err := client.Deny(c.ID); err != nil {
-		return err
-	}
-	c.formatter().FormatAction("denied", c.ID)
-	return nil
+	return c.formatter().FormatDecision(d, id)
 }
 
 type historyCmd struct{ clientFlags }
@@ -280,8 +264,7 @@ func (c historyCmd) Run() error {
 	if err != nil {
 		return err
 	}
-	c.formatter().FormatHistory(entries)
-	return nil
+	return c.formatter().FormatHistory(entries)
 }
 
 type configCmd struct {

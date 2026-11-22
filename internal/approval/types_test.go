@@ -94,3 +94,41 @@ func TestValidateRejectsNullAttributeGlob(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte("search_attributes:\n  service:\n"), &r))
 	assert.ErrorIs(t, r.Validate(), errEmptyGlob)
 }
+
+func TestRequestInfo_PayloadFollowsType(t *testing.T) {
+	sign := &GPGSignInfo{RepoName: "repo"}
+	attrs := map[string]string{"service": "gh"}
+
+	got, ok := RequestInfo{Type: RequestTypeGPGSign, Payload: sign}.GPGSign()
+	assert.True(t, ok)
+	assert.Same(t, sign, got)
+	_, ok = RequestInfo{Type: RequestTypeGetSecret, Payload: sign}.GPGSign()
+	assert.False(t, ok)
+	_, ok = RequestInfo{Type: RequestTypeGPGSign, Payload: (*GPGSignInfo)(nil)}.GPGSign()
+	assert.False(t, ok)
+
+	search, ok := RequestInfo{Type: RequestTypeSearch, Payload: SearchPayload{attrs}}.Search()
+	assert.True(t, ok)
+	assert.Equal(t, attrs, search.Attributes)
+	_, ok = RequestInfo{Type: RequestTypeGPGSign, Payload: SearchPayload{attrs}}.Search()
+	assert.False(t, ok)
+}
+
+func TestTrustRuleSearchAttributesMatchOnlySearch(t *testing.T) {
+	r := TrustRule{Action: RuleApprove, SearchAttributes: map[string]Glob{"service": MustGlob("*")}}
+	local := SenderInfo{Client: ClientLocal}
+
+	assert.True(t, r.matches(RequestInfo{Type: RequestTypeSearch, Payload: SearchPayload{map[string]string{"service": "gh"}}, SenderInfo: local}))
+	assert.True(t, r.matches(RequestInfo{Type: RequestTypeSearch, Payload: SearchPayload{}, SenderInfo: local}), "a missing attribute reads as empty")
+	for _, rt := range []RequestType{RequestTypeGetSecret, RequestTypeDelete, RequestTypeWrite, RequestTypeUnlock} {
+		assert.False(t, r.matches(RequestInfo{Type: rt, SenderInfo: local}), rt)
+	}
+}
+
+// A collection glob matches only items that lie in a collection, so a "*"
+// does not reach an ssh_sign key.
+func TestSecretMatcherCollectionNeedsCollection(t *testing.T) {
+	sm := &SecretMatcher{Collection: MustGlob("*")}
+	assert.True(t, sm.matchesItem(ItemInfo{Path: "/org/freedesktop/secrets/collection/login/1"}))
+	assert.False(t, sm.matchesItem(SSHSignItem("SHA256:abc", "me@host", nil)))
+}

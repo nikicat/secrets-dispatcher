@@ -18,6 +18,11 @@ to the real backend, which it reaches on a private bus. Sessions are the only
 objects it remaps; collection, item and prompt paths pass through 1:1, and
 `Secret.Prompt` objects are forwarded so unlock prompts still reach the user.
 
+The dispatcher terminates each client's session encryption itself (`plain` or a
+DH key agreement) and always opens a `plain` session with the backend. The
+backend is local IPC that the dispatcher already trusts, so encrypting that leg
+adds no security.
+
 ## Consequences
 
 - Clients need no changes, and any spec-conforming backend works behind it.
@@ -27,5 +32,5 @@ objects it remaps; collection, item and prompt paths pass through 1:1, and
   held by its dead connection. There the dispatcher waits in the queue, and the
   bus gives it the name when that connection goes. On the session bus it fails
   instead, since a live provider holds the name there.
-- Secret values stay encrypted end to end with the Secret Service DH session;
-  the dispatcher decides on metadata (caller, item attributes), not values.
+- Secret values travel encrypted between a DH client and the dispatcher; the
+  dispatcher decides on metadata (caller, item attributes), not values.

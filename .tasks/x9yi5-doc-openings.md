@@ -31,6 +31,18 @@ names; Provision's doc lists its steps (2026-11-20 run, r1c-14).
 
 Where: internal/companion/check.go:15, internal/gpgsign/run.go.
 
+Ten docs in internal/cli open with their own names: Client, NewClient,
+ItemInfo, PendingResponse, HistoryResponse, ErrorResponse and History in
+client.go, and Formatter, NewFormatter and FormatHistory in format.go. Eight
+in internal/daemon (Config and its BusAddress and Version fields, Run,
+Dispatcher, NewDispatcher, Ping and GetVersion) and persistentNotifier in
+internal/notification/slow_upstream.go do the same (2026-11-21 23:24 run,
+b4-24, rc2-c-13).
+
+Where: internal/cli/client.go:19, internal/cli/format.go:16,
+internal/daemon/daemon.go:13, internal/daemon/dispatcher.go:19,
+internal/notification/slow_upstream.go:12.
+
 ## Next
 - Drop the name and start at the verb or noun phrase.
 - Each doc drops the name and starts at the verb or noun phrase; tautologies such as 'NewService creates a new Service handler.' are deleted.

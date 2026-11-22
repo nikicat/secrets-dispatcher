@@ -17,26 +17,18 @@ import (
 // D-Bus (where the real Secret Service lives), registering as
 // org.freedesktop.secrets on the front bus and proxying requests to the backend.
 type Proxy struct {
-	clientName   approval.ClientName
-	local        *sender.ChainReader
-	slowUpstream SlowUpstream
+	clientName approval.ClientName
+	local      *sender.ChainReader
+	base       handlerBase
+	conn       *connection
+}
 
-	frontConn   *dbus.Conn // clients connect here (session bus or remote socket)
-	backendConn *dbus.Conn // real Secret Service lives here (session bus or private bus)
-
-	sessions *SessionManager
-	logger   *logging.Logger
-	approval *approval.Manager
-	tracker  *clientTracker
-	resolver *SenderInfoResolver
-
-	service           *Service
-	collection        *CollectionHandler
-	item              *ItemHandler
-	prompt            *PromptHandler
-	subtreeProperties *SubtreePropertiesHandler
-	signals           *signalForwarder
-	prompter          *prompterBridge
+// What a connected proxy serves, and the buses it serves it on.
+type connection struct {
+	frontConn *dbus.Conn // clients connect here (session bus or remote socket)
+	h         *handler
+	signals   *signalForwarder
+	prompter  *prompterBridge
 }
 
 // Config holds configuration for the proxy.
@@ -51,12 +43,14 @@ type Config struct {
 // requests through approvalMgr.
 func New(clientName approval.ClientName, approvalMgr *approval.Manager, cfg Config) *Proxy {
 	return &Proxy{
-		clientName:   clientName,
-		local:        cfg.Local,
-		sessions:     NewSessionManager(),
-		logger:       logging.New(clientName),
-		approval:     approvalMgr,
-		slowUpstream: cfg.SlowUpstream,
+		clientName: clientName,
+		local:      cfg.Local,
+		base: handlerBase{
+			sessions:     NewSessionManager(),
+			logger:       logging.New(clientName),
+			approval:     approvalMgr,
+			slowUpstream: cfg.SlowUpstream,
+		},
 	}
 }
 
@@ -134,53 +128,94 @@ func (p *Proxy) Dial(front, backend Connector) error {
 
 // Serves the Secret Service from backendConn to clients on frontConn.
 // On a forwarded bus it may return while the bus name is still queued (ADR 0001).
-// When it errors, it closes the proxy and both connections.
-func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) (err error) {
-	defer func() {
-		if err != nil {
-			p.Close()
-		}
-	}()
-	p.frontConn = frontConn
-	p.backendConn = backendConn
-
-	p.tracker, err = newClientTracker(p.frontConn)
+// When it errors, it closes both connections.
+func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
+	c, err := p.connect(frontConn, backendConn)
 	if err != nil {
-		return fmt.Errorf("create client tracker: %w", err)
+		frontConn.Close()
+		backendConn.Close()
+		return err
 	}
+	err = c.export()
+	if err == nil {
+		err = p.claimBusName(frontConn)
+	}
+	if err != nil {
+		c.close()
+		return err
+	}
+	p.conn = c
+	return nil
+}
 
-	p.resolver = newSenderInfoResolver(p.frontConn, p.clientName, p.local)
+// Returns the connection between the given buses, with its background work
+// started. Errors when any part cannot start, and leaves nothing running.
+func (p *Proxy) connect(frontConn, backendConn *dbus.Conn) (*connection, error) {
+	tracker, err := newClientTracker(frontConn)
+	if err != nil {
+		return nil, fmt.Errorf("create client tracker: %w", err)
+	}
+	signals, err := newSignalForwarder(backendConn, frontConn, p.base.logger)
+	if err != nil {
+		tracker.close()
+		return nil, fmt.Errorf("start signal forwarder: %w", err)
+	}
+	prompter := newPrompterBridge(frontConn, backendConn, p.base.logger)
+	// The bridge carries prompts to gnome-shell on the session bus (ADR 0009). A
+	// forwarded bus's backend may be the session bus itself.
+	if p.servesSessionBus() {
+		if err := prompter.claim(); err != nil {
+			signals.close()
+			tracker.close()
+			return nil, fmt.Errorf("start prompter bridge: %w", err)
+		}
+	}
+	return &connection{
+		frontConn: frontConn,
+		h: &handler{
+			handlerBase: p.base,
+			backendConn: backendConn,
+			tracker:     tracker,
+			resolver:    newSenderInfoResolver(frontConn, p.clientName, p.local),
+		},
+		signals:  signals,
+		prompter: prompter,
+	}, nil
+}
 
-	p.service = NewService(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.slowUpstream)
-	p.collection = NewCollectionHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.slowUpstream)
-	p.item = NewItemHandler(p.backendConn, p.sessions, p.logger, p.approval, p.tracker, p.resolver, p.slowUpstream)
-	p.prompt = NewPromptHandler(p.backendConn, p.logger)
-	p.subtreeProperties = NewSubtreePropertiesHandler(p.backendConn, p.sessions, p.logger)
+// Exports the Secret Service on the front bus.
+func (c *connection) export() error {
+	h := c.h
+	service := &Service{properties{h, serviceObject{}}}
+	collection := &CollectionHandler{properties{h, collectionObjects{}}}
+	item := &ItemHandler{properties{h, itemObjects{}}}
+	prompt := NewPromptHandler(h.backendConn, h.logger)
+	subtreeProperties := NewSubtreePropertiesHandler(h.backendConn, h.sessions, h.logger)
 
-	if err := p.frontConn.Export(p.service, dbustypes.ServicePath, dbustypes.ServiceInterface); err != nil {
+	if err := c.frontConn.Export(service, dbustypes.ServicePath, string(dbustypes.ServiceInterface)); err != nil {
 		return fmt.Errorf("export Service interface: %w", err)
 	}
 
-	if err := p.frontConn.Export(p.service, dbustypes.ServicePath, "org.freedesktop.DBus.Properties"); err != nil {
+	if err := c.frontConn.Export(service, dbustypes.ServicePath, string(dbustypes.PropertiesInterface)); err != nil {
 		return fmt.Errorf("export Properties interface for Service: %w", err)
 	}
 
-	if err := p.frontConn.Export(introspectable{p.service.Introspect}, dbustypes.ServicePath, "org.freedesktop.DBus.Introspectable"); err != nil {
+	if err := c.frontConn.Export(introspectable{service.Introspect}, dbustypes.ServicePath, string(dbustypes.IntrospectableInterface)); err != nil {
 		return fmt.Errorf("export Introspectable interface: %w", err)
 	}
 
 	// libsecret (secret-tool) calls methods on alias paths such as
 	// /org/freedesktop/secrets/aliases/default directly.
-	for _, prefix := range []string{"/org/freedesktop/secrets/collection", "/org/freedesktop/secrets/aliases"} {
-		if err := p.frontConn.ExportSubtree(p.collection, dbus.ObjectPath(prefix), dbustypes.CollectionInterface); err != nil {
+	for _, prefix := range []dbus.ObjectPath{dbustypes.CollectionsPath, dbustypes.AliasesPath} {
+		if err := c.frontConn.ExportSubtree(collection, prefix, string(dbustypes.CollectionInterface)); err != nil {
 			return fmt.Errorf("export Collection subtree at %s: %w", prefix, err)
 		}
 
-		if err := p.frontConn.ExportSubtree(p.subtreeProperties, dbus.ObjectPath(prefix), "org.freedesktop.DBus.Properties"); err != nil {
+		if err := c.frontConn.ExportSubtree(subtreeProperties, prefix, string(dbustypes.PropertiesInterface)); err != nil {
 			return fmt.Errorf("export Properties subtree at %s: %w", prefix, err)
 		}
 
-		if err := p.frontConn.ExportSubtree(p.item, dbus.ObjectPath(prefix), dbustypes.ItemInterface); err != nil {
+		if err := c.frontConn.ExportSubtree(item, prefix, string(dbustypes.ItemInterface)); err != nil {
 			return fmt.Errorf("export Item subtree at %s: %w", prefix, err)
 		}
 	}
@@ -188,22 +223,8 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) (err error) {
 	// Unlock, Lock, CreateCollection, CreateItem and Delete return prompt paths.
 	// Without this export a client cannot act on them, and a locked collection
 	// is a dead end.
-	if err := p.frontConn.ExportSubtree(p.prompt, "/org/freedesktop/secrets/prompt", dbustypes.PromptInterface); err != nil {
+	if err := c.frontConn.ExportSubtree(prompt, "/org/freedesktop/secrets/prompt", string(dbustypes.PromptInterface)); err != nil {
 		return fmt.Errorf("export Prompt subtree: %w", err)
-	}
-
-	if err := p.claimBusName(); err != nil {
-		return err
-	}
-
-	p.signals, err = newSignalForwarder(p.backendConn, p.frontConn, p.logger)
-	if err != nil {
-		return fmt.Errorf("start signal forwarder: %w", err)
-	}
-
-	p.prompter, err = newPrompterBridge(p.frontConn, p.backendConn, p.logger)
-	if err != nil {
-		return fmt.Errorf("start prompter bridge: %w", err)
 	}
 
 	return nil
@@ -211,8 +232,8 @@ func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) (err error) {
 
 // Claims org.freedesktop.secrets on the front bus, or queues for it on a forwarded bus (ADR 0001).
 // Errors with errBusNameTaken when another connection holds it on the session bus.
-func (p *Proxy) claimBusName() error {
-	reply, err := p.frontConn.RequestName(dbustypes.BusName, dbus.NameFlagReplaceExisting)
+func (p *Proxy) claimBusName(frontConn *dbus.Conn) error {
+	reply, err := frontConn.RequestName(dbustypes.BusName, dbus.NameFlagReplaceExisting)
 	if err != nil {
 		return fmt.Errorf("request bus name: %w", err)
 	}
@@ -220,8 +241,8 @@ func (p *Proxy) claimBusName() error {
 	case dbus.RequestNameReplyPrimaryOwner, dbus.RequestNameReplyAlreadyOwner:
 		return nil
 	case dbus.RequestNameReplyInQueue:
-		if p.local == nil {
-			p.logger.Warn("bus name taken, queued until its owner leaves", "name", dbustypes.BusName)
+		if !p.servesSessionBus() {
+			p.base.logger.Warn("bus name taken, queued until its owner leaves", "name", dbustypes.BusName)
 			return nil
 		}
 	}
@@ -230,13 +251,16 @@ func (p *Proxy) claimBusName() error {
 
 var errBusNameTaken = errors.New("failed to become primary owner")
 
+// Checks whether the proxy serves the session bus rather than a forwarded bus.
+func (p *Proxy) servesSessionBus() bool { return p.local != nil }
+
 // Run blocks until the context is cancelled or the front connection is closed.
 func (p *Proxy) Run(ctx context.Context) error {
-	if p.frontConn == nil {
+	if p.conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	frontCtx := p.frontConn.Context()
+	frontCtx := p.conn.frontConn.Context()
 	if frontCtx == nil {
 		// Fallback if context is not available
 		<-ctx.Done()
@@ -254,32 +278,20 @@ func (p *Proxy) Run(ctx context.Context) error {
 
 // Close shuts down the proxy and closes all connections.
 func (p *Proxy) Close() error {
-	p.logger.Info("shutting down")
-
-	if p.prompter != nil {
-		p.prompter.close()
+	p.base.logger.Info("shutting down")
+	if p.conn != nil {
+		p.conn.close()
+		p.conn = nil
 	}
-
-	if p.signals != nil {
-		p.signals.close()
-	}
-
-	if p.tracker != nil {
-		p.tracker.close()
-	}
-
-	if p.sessions != nil && p.backendConn != nil {
-		p.sessions.CloseAll(p.backendConn)
-	}
-
-	if p.frontConn != nil {
-		p.frontConn.Close()
-	}
-	if p.backendConn != nil {
-		p.backendConn.Close()
-	}
-
 	return nil
+}
+
+// Stops what the connection serves and closes both connections.
+func (c *connection) close() {
+	c.prompter.close()
+	c.signals.close()
+	c.h.close()
+	c.frontConn.Close()
 }
 
 // introspectable implements org.freedesktop.DBus.Introspectable.

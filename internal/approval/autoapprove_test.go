@@ -47,7 +47,7 @@ func newRuleManager() *Manager {
 	return NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 }
 
-func waitPendingID(t *testing.T, mgr *Manager) string {
+func waitPendingID(t *testing.T, mgr *Manager) RequestID {
 	t.Helper()
 	for range 100 {
 		if reqs := mgr.List(); len(reqs) > 0 {
@@ -410,11 +410,11 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 func TestAutoApproveRule_DifferentAttributeKeysNotDeduped(t *testing.T) {
 	mgr := newRuleManager()
 
-	writeRequest := func(id string, attrs map[string]string) *Request {
+	writeRequest := func(id RequestID, attrs map[string]string) *Request {
 		return &Request{
 			ID:         id,
 			Type:       RequestTypeWrite,
-			Items:      []ItemInfo{{Path: itemPath("default", id), Attributes: attrs}},
+			Items:      []ItemInfo{{Path: itemPath("default", string(id)), Attributes: attrs}},
 			SenderInfo: testSender("gh", "/usr/bin/gh"),
 		}
 	}
@@ -437,21 +437,10 @@ func TestAutoApproveRule_DifferentAttributeKeysNotDeduped(t *testing.T) {
 	}
 }
 
-// Reads every rule it is told about, as the WebSocket broadcaster does when it
-// marshals one.
-type ruleReader struct{}
-
-func (ruleReader) OnEvent(e Event) {
-	if e.Rule != nil {
-		_ = *e.Rule
-	}
-}
-
-// A refreshed rule reaches observers as a copy, because CheckAutoApproveRules
-// rewrites the rule list in place while they read it. Run with -race.
-func TestAutoApproveRule_RefreshHandsObserversACopy(t *testing.T) {
+// AddAutoApproveRule refreshing a rule and CheckAutoApproveRules share the
+// rule list without a race. Run with -race.
+func TestAutoApproveRule_RefreshRacesCheck(t *testing.T) {
 	mgr := newRuleManager()
-	mgr.Subscribe(ruleReader{})
 	req := &Request{
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,

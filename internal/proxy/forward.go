@@ -5,7 +5,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
-	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // memberOf returns the method/member name of an incoming message.
@@ -28,17 +27,9 @@ func interfaceOf(msg dbus.Message) string {
 	return ""
 }
 
-// callForwarder relays a received method call to a peer connection verbatim:
-// it re-issues the same interface.member with the same body on dst (addressed
-// to dstName at the message's own object path) and returns the reply.
-//
-// It is the shared engine for every interface the dispatcher proxies 1:1
-// between the front (session) and backend buses — the Secret Service Prompt
-// interface (front→backend) and the gnome-keyring prompter bridge in both
-// directions — so they all forward through one code path instead of a
-// hand-written relay per method. Forwarding the body verbatim also keeps the
-// dispatcher a transparent pipe: the prompter exchange (which carries the
-// DH-encrypted keyring password) passes through untouched and unread.
+// Relays a method call to the same path, interface and member on another
+// connection, with its body unread, so a prompter exchange passes through
+// sealed (ADR 0009).
 type callForwarder struct {
 	dst     *dbus.Conn
 	dstName string
@@ -64,23 +55,4 @@ func (f callForwarder) forward(msg dbus.Message) ([]any, *dbus.Error) {
 func (f callForwarder) forwardVoid(msg dbus.Message) *dbus.Error {
 	_, err := f.forward(msg)
 	return err
-}
-
-// nameHasOwner reports whether name currently has an owner on conn. An
-// activatable-but-not-running name reports false — which is what lets the
-// prompter bridge claim org.gnome.keyring.SystemPrompter on the backend bus
-// before the display-less gcr-prompter fallback would be activated.
-func nameHasOwner(conn *dbus.Conn, name string) bool {
-	var has bool
-	if err := conn.BusObject().Call("org.freedesktop.DBus.NameHasOwner", 0, name).Store(&has); err != nil {
-		return false
-	}
-	return has
-}
-
-// Errors when name has no owner on conn.
-func nameOwner(conn *dbus.Conn, name string) (sender.UniqueName, error) {
-	var owner string
-	err := conn.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, name).Store(&owner)
-	return sender.UniqueName(owner), err
 }

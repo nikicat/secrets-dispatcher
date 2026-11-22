@@ -72,7 +72,7 @@ func newPromptTestEnv(t *testing.T) *promptTestEnv {
 func (e *promptTestEnv) subscribeCompleted(t *testing.T) chan *dbus.Signal {
 	t.Helper()
 	require.NoError(t, e.client.AddMatchSignal(
-		dbus.WithMatchInterface(dbustypes.PromptInterface),
+		dbus.WithMatchInterface(string(dbustypes.PromptInterface)),
 		dbus.WithMatchMember("Completed"),
 	))
 	ch := make(chan *dbus.Signal, 8)
@@ -87,7 +87,7 @@ func (e *promptTestEnv) unlockViaPrompt(t *testing.T) dbus.ObjectPath {
 	var unlocked []dbus.ObjectPath
 	var promptPath dbus.ObjectPath
 	err := e.client.Object(dbustypes.BusName, dbustypes.ServicePath).
-		Call(dbustypes.ServiceInterface+".Unlock", 0, []dbus.ObjectPath{testCollectionPath}).
+		Call(dbustypes.ServiceInterface.Member("Unlock"), 0, []dbus.ObjectPath{testCollectionPath}).
 		Store(&unlocked, &promptPath)
 	require.NoError(t, err, "Unlock via proxy")
 	require.Empty(t, unlocked, "locked collection must not unlock without a prompt")
@@ -100,7 +100,7 @@ func waitCompleted(t *testing.T, ch chan *dbus.Signal, promptPath dbus.ObjectPat
 	for {
 		select {
 		case sig := <-ch:
-			if sig.Path != promptPath || sig.Name != dbustypes.PromptInterface+".Completed" {
+			if sig.Path != promptPath || sig.Name != dbustypes.PromptInterface.Member("Completed") {
 				continue
 			}
 			return sig
@@ -122,7 +122,7 @@ func TestPromptForwardingUnlockFlow(t *testing.T) {
 	promptPath := env.unlockViaPrompt(t)
 
 	err := env.client.Object(dbustypes.BusName, promptPath).
-		Call(dbustypes.PromptInterface+".Prompt", 0, "window-42").Err
+		Call(dbustypes.PromptInterface.Member("Prompt"), 0, "window-42").Err
 	require.NoError(t, err, "Prompt call must be forwarded to the backend")
 
 	sig := waitCompleted(t, completed, promptPath)
@@ -139,13 +139,13 @@ func TestPromptForwardingUnlockFlow(t *testing.T) {
 	var output dbus.Variant
 	var sessionPath dbus.ObjectPath
 	err = env.client.Object(dbustypes.BusName, dbustypes.ServicePath).
-		Call(dbustypes.ServiceInterface+".OpenSession", 0, dbustypes.AlgorithmPlain, dbus.MakeVariant("")).
+		Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, dbustypes.AlgorithmPlain, dbus.MakeVariant("")).
 		Store(&output, &sessionPath)
 	require.NoError(t, err, "OpenSession via proxy")
 
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	err = env.client.Object(dbustypes.BusName, dbustypes.ServicePath).
-		Call(dbustypes.ServiceInterface+".GetSecrets", 0, []dbus.ObjectPath{itemPath}, sessionPath).
+		Call(dbustypes.ServiceInterface.Member("GetSecrets"), 0, []dbus.ObjectPath{itemPath}, sessionPath).
 		Store(&secrets)
 	require.NoError(t, err, "GetSecrets after unlock")
 	require.Contains(t, secrets, itemPath)
@@ -162,7 +162,7 @@ func TestPromptDismiss(t *testing.T) {
 	promptPath := env.unlockViaPrompt(t)
 
 	err := env.client.Object(dbustypes.BusName, promptPath).
-		Call(dbustypes.PromptInterface+".Dismiss", 0).Err
+		Call(dbustypes.PromptInterface.Member("Dismiss"), 0).Err
 	require.NoError(t, err, "Dismiss call must be forwarded to the backend")
 
 	sig := waitCompleted(t, completed, promptPath)
@@ -178,9 +178,9 @@ func TestPromptOnNonPromptPath(t *testing.T) {
 	env := newPromptTestEnv(t)
 
 	err := env.client.Object(dbustypes.BusName, "/org/freedesktop/secrets/prompt").
-		Call(dbustypes.PromptInterface+".Prompt", 0, "").Err
+		Call(dbustypes.PromptInterface.Member("Prompt"), 0, "").Err
 	require.Error(t, err)
 	var dbusErr dbus.Error
 	require.ErrorAs(t, err, &dbusErr)
-	assert.Equal(t, dbustypes.ErrNoSuchObject, dbusErr.Name)
+	assert.Equal(t, string(dbustypes.NoSuchObject), dbusErr.Name)
 }

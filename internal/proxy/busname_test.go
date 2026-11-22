@@ -25,14 +25,14 @@ func TestProxyTakesBusNameWhenHolderLeaves(t *testing.T) {
 	observer, err := dbus.Connect(frontAddr)
 	require.NoError(t, err)
 	t.Cleanup(func() { observer.Close() })
-	got, err := nameOwner(observer, dbustypes.BusName)
+	got, err := busDaemon{observer}.nameOwner(dbustypes.BusName)
 	require.NoError(t, err)
 	require.Equal(t, uniqueName(holder), got)
 
 	holder.Close()
 	require.Eventually(t, func() bool {
-		got, err := nameOwner(observer, dbustypes.BusName)
-		return err == nil && got == uniqueName(p.frontConn)
+		got, err := busDaemon{observer}.nameOwner(dbustypes.BusName)
+		return err == nil && got == uniqueName(p.conn.frontConn)
 	}, 5*time.Second, 50*time.Millisecond)
 }
 

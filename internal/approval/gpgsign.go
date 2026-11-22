@@ -1,9 +1,11 @@
 package approval
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const RequestTypeGPGSign RequestType = "gpg_sign"
@@ -14,36 +16,178 @@ const RequestTypeGPGSign RequestType = "gpg_sign"
 type GPGSignKind string
 
 const (
-	GPGSignCommit  GPGSignKind = "commit"
-	GPGSignTag     GPGSignKind = "tag"
-	GPGSignPush    GPGSignKind = "push"
-	GPGSignUnknown GPGSignKind = "unknown"
+	GPGSignCommit GPGSignKind = "commit"
+	GPGSignTag    GPGSignKind = "tag"
+	GPGSignPush   GPGSignKind = "push"
 )
 
-// RepoName and ChangedFiles describe the working tree, not the signed object
-// (ADR 0008).
-type GPGSignInfo struct {
-	RepoName RepoName    `json:"repo_name"`
-	Kind     GPGSignKind `json:"kind,omitempty"`
+// The key that git names for gpg's -u option.
+type GPGKeyID string
+
+// The hex hash that names a git object.
+type ObjectHash string
+
+type TagName string
+
+// A git remote as a pushee header spells it, such as git@host:repo.git.
+type RemoteURL string
+
+// What a signed object's bytes say about it, and a commit's staged files.
+type SignedPayload struct {
 	// A commit's or a tag's message, or the ref updates of a push certificate.
-	CommitMsg string `json:"commit_msg"`
+	Message string
 	// A commit's author, a tag's tagger, or a push certificate's pusher.
-	Author string `json:"author"`
-	// Commit only.
-	Committer    string   `json:"committer"`
-	KeyID        string   `json:"key_id"`
-	Fingerprint  string   `json:"fingerprint,omitempty"`
-	ChangedFiles []string `json:"changed_files"`
-	// The first parent. Commit only.
-	ParentHash string `json:"parent_hash,omitempty"`
-	// Tag only.
-	TagName string `json:"tag_name,omitempty"`
-	// The hash of the object that the tag points at. Tag only.
-	Target string `json:"target,omitempty"`
-	// The URL that a push certificate pushes to. Push only.
-	Pushee string `json:"pushee,omitempty"`
-	// The bytes that gpg signs, as UTF-8 text.
-	CommitObject string `json:"commit_object,omitempty"`
+	Signer string
+	// The fields of the object's kind.
+	Details ObjectDetails
+}
+
+// The fields that only one kind of signed object has.
+type ObjectDetails interface {
+	Kind() GPGSignKind
+	toWire(*gpgSignInfoWire)
+	// Returns the staged files and true for a commit, and false for every
+	// other kind.
+	changedFiles() ([]string, bool)
+	withChangedFiles(files []string) ObjectDetails
+}
+
+type CommitDetails struct {
+	Committer string
+	// The first parent. A merge commit has more.
+	ParentHash ObjectHash
+	// The files staged in the working tree, relative to its top level. The
+	// signed bytes do not hold them (ADR 0008).
+	ChangedFiles []string
+}
+
+type TagDetails struct {
+	Name TagName
+	// The object that the tag points at.
+	Target ObjectHash
+}
+
+type PushDetails struct {
+	// The URL that the push certificate pushes to.
+	Pushee RemoteURL
+}
+
+func (CommitDetails) Kind() GPGSignKind { return GPGSignCommit }
+func (TagDetails) Kind() GPGSignKind    { return GPGSignTag }
+func (PushDetails) Kind() GPGSignKind   { return GPGSignPush }
+
+func (d CommitDetails) toWire(w *gpgSignInfoWire) {
+	w.Committer, w.ParentHash, w.ChangedFiles = d.Committer, d.ParentHash, d.ChangedFiles
+}
+func (d TagDetails) toWire(w *gpgSignInfoWire)  { w.TagName, w.Target = d.Name, d.Target }
+func (d PushDetails) toWire(w *gpgSignInfoWire) { w.Pushee = d.Pushee }
+
+func (d CommitDetails) changedFiles() ([]string, bool) { return d.ChangedFiles, true }
+func (TagDetails) changedFiles() ([]string, bool)      { return nil, false }
+func (PushDetails) changedFiles() ([]string, bool)     { return nil, false }
+
+func (d CommitDetails) withChangedFiles(files []string) ObjectDetails {
+	d.ChangedFiles = files
+	return d
+}
+func (d TagDetails) withChangedFiles([]string) ObjectDetails  { return d }
+func (d PushDetails) withChangedFiles([]string) ObjectDetails { return d }
+
+// Lists the files staged in the working tree, as CommitDetails.ChangedFiles
+// holds them.
+type StagedFiles interface {
+	List() ([]string, error)
+}
+
+// Staged files that are already listed.
+type ListedFiles []string
+
+func (f ListedFiles) List() ([]string, error) { return f, nil }
+
+// A gpg_sign request's object and its context. RepoName describes the working
+// tree, not the signed object (ADR 0008).
+type GPGSignInfo struct {
+	RepoName     RepoName
+	KeyID        GPGKeyID
+	SignedObject SignedObject
+	// What SignedObject says.
+	Signed SignedPayload
+}
+
+// Returns the sign info of the given object, with the display fields read from
+// its bytes. Only a commit gets the given staged files. Errors as
+// SignedObject.Parse does, and when a commit's staged files cannot be listed.
+func NewGPGSignInfo(object SignedObject, repo RepoName, key GPGKeyID, staged StagedFiles) (*GPGSignInfo, error) {
+	signed, err := object.Parse()
+	if err != nil {
+		return nil, err
+	}
+	if _, commit := signed.Details.changedFiles(); commit {
+		files, err := staged.List()
+		if err != nil {
+			return nil, fmt.Errorf("list the staged files: %w", err)
+		}
+		signed.Details = signed.Details.withChangedFiles(files)
+	}
+	return &GPGSignInfo{RepoName: repo, KeyID: key, SignedObject: object, Signed: signed}, nil
+}
+
+// The JSON form of GPGSignInfo. Its display keys keep their commit names for
+// every kind.
+type gpgSignInfoWire struct {
+	RepoName     RepoName    `json:"repo_name"`
+	Kind         GPGSignKind `json:"kind"`
+	CommitMsg    string      `json:"commit_msg"`
+	Author       string      `json:"author"`
+	Committer    string      `json:"committer"`
+	KeyID        GPGKeyID    `json:"key_id"`
+	ChangedFiles []string    `json:"changed_files"`
+	ParentHash   ObjectHash  `json:"parent_hash,omitempty"`
+	TagName      TagName     `json:"tag_name,omitempty"`
+	Target       ObjectHash  `json:"target,omitempty"`
+	Pushee       RemoteURL   `json:"pushee,omitempty"`
+	CommitObject string      `json:"commit_object,omitempty"`
+}
+
+// Errors when SignedObject is not valid UTF-8, since commit_object is a JSON
+// string and cannot carry such bytes unchanged. Errors also when Signed has no
+// Details.
+func (i GPGSignInfo) MarshalJSON() ([]byte, error) {
+	if i.Signed.Details == nil {
+		return nil, errors.New("gpg sign info: the signed object's kind is not set")
+	}
+	if !utf8.Valid(i.SignedObject) {
+		return nil, errors.New("gpg sign info: the object to sign is not valid UTF-8, and the daemon API carries it as a JSON string")
+	}
+	w := gpgSignInfoWire{
+		RepoName:     i.RepoName,
+		Kind:         i.Signed.Details.Kind(),
+		CommitMsg:    i.Signed.Message,
+		Author:       i.Signed.Signer,
+		KeyID:        i.KeyID,
+		CommitObject: string(i.SignedObject),
+	}
+	i.Signed.Details.toWire(&w)
+	return json.Marshal(w)
+}
+
+// Reads the display fields from commit_object, not from the client's copies, so
+// the prompt shows what the daemon signs (ADR 0008). Errors when commit_object
+// is missing, or as NewGPGSignInfo does.
+func (i *GPGSignInfo) UnmarshalJSON(data []byte) error {
+	var w gpgSignInfoWire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	if w.CommitObject == "" {
+		return errors.New("gpg sign info: commit_object is required")
+	}
+	info, err := NewGPGSignInfo(SignedObject(w.CommitObject), w.RepoName, w.KeyID, ListedFiles(w.ChangedFiles))
+	if err != nil {
+		return fmt.Errorf("gpg sign info: %w", err)
+	}
+	*i = *info
+	return nil
 }
 
 // What real gpg produced for one approved gpg_sign request.
@@ -79,32 +223,14 @@ func (e HistoryEntry) GPGOutput() *GPGResult {
 	return &e.Request.GPGResult
 }
 
-// Errors for a sign request with no bytes to sign.
-var (
-	ErrNoGPGSignInfo  = errors.New("gpg sign info is required")
-	ErrNoCommitObject = errors.New("gpg sign info has no commit object")
-)
-
-// Errors with ErrNoGPGSignInfo when the info is nil, and with ErrNoCommitObject
-// when it has no CommitObject.
-func (i *GPGSignInfo) RequireSignedBytes() error {
-	if i == nil {
-		return ErrNoGPGSignInfo
-	}
-	if i.CommitObject == "" {
-		return ErrNoCommitObject
-	}
-	return nil
-}
-
 // Returns the gpg_sign request that the given sender makes to sign this object.
 // The request's one item is labelled with the repository name and the first
 // line of the object's message.
-func (info *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
-	label := string(info.RepoName)
-	if info.CommitMsg != "" {
-		subject := info.CommitMsg
-		if i := len(subject); i > 60 {
+func (i *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
+	label := string(i.RepoName)
+	if i.Signed.Message != "" {
+		subject := i.Signed.Message
+		if len(subject) > 60 {
 			subject = subject[:60]
 		}
 		if nl := strings.IndexByte(subject, '\n'); nl >= 0 {
@@ -113,43 +239,18 @@ func (info *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
 		label += ": " + subject
 	}
 	return RequestInfo{
-		Type:        RequestTypeGPGSign,
-		Items:       []ItemInfo{{Label: label}},
-		SenderInfo:  sender,
-		GPGSignInfo: info,
+		Type:       RequestTypeGPGSign,
+		Items:      []ItemInfo{{Label: label}},
+		SenderInfo: sender,
+		Payload:    i,
 	}
 }
 
 // Records the gpg_sign request as approved without a prompt, and stores the
-// given gpg result on it. Returns the request's ID. Errors as
-// GPGSignInfo.RequireSignedBytes does.
-func (m *Manager) RecordAutoApprovedGPGSign(info RequestInfo, res GPGResult) (string, error) {
-	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
-		return "", err
-	}
-
+// given gpg result on it. Returns the request's ID.
+func (m *Manager) RecordAutoApprovedGPGSign(info RequestInfo, res GPGResult) RequestID {
 	req := info.newRecord()
 	req.GPGResult = res
-	m.notify(endEvent(ResolutionAutoApproved, req))
-	return req.ID, nil
-}
-
-// Creates a pending gpg_sign request that expires after the manager's timeout
-// (ADR 0004), and returns its ID without waiting, unlike AwaitGPGSign. Errors
-// as GPGSignInfo.RequireSignedBytes does.
-func (m *Manager) CreateGPGSignRequest(info RequestInfo) (string, error) {
-	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
-		return "", err
-	}
-	return m.addPending(info).req.ID, nil
-}
-
-// Creates a gpg_sign request, waits until it is resolved, and returns the
-// entry that History records for it (ADR 0011). Ending the context cancels
-// the request. Errors as GPGSignInfo.RequireSignedBytes does.
-func (m *Manager) AwaitGPGSign(ctx context.Context, info RequestInfo) (HistoryEntry, error) {
-	if err := info.GPGSignInfo.RequireSignedBytes(); err != nil {
-		return HistoryEntry{}, err
-	}
-	return m.await(ctx, info), nil
+	m.publishEnd(req.historyEntry(ResolutionAutoApproved))
+	return req.ID
 }

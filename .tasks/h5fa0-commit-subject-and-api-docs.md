@@ -7,30 +7,29 @@ tags: [refactor, api, web]
 ## Goal
 Done when each item below is fixed as its "Fix" says.
 
-- `internal/approval/gpgsign.go:104-122`, `internal/api/gpgsign.go:70-73`,
-  `internal/api/gpgsign.go:135` (misplaced rule).
-  approval.GPGSignInfo.RequestInfo derives a commit's subject from CommitMsg
-  (first line, cut at 60 bytes) for the item label, and
-  notification/desktop.go:645 commitSubject derives the first line again.
-  HandleGPGSignRequest derives it a third time as commitSubject and passes it
-  to signAndRecordAutoApproved beside the request, whose commitSubject
-  parameter is a further copy. The cut at byte 60 can split a multi-byte
-  UTF-8 rune, and the label goes to a desktop notification over D-Bus, which
-  requires valid UTF-8 strings. `if i := len(subject); i > 60` binds a
-  variable it never uses.
-  Fix: approval.GPGSignInfo.Subject() returns the first line of CommitMsg.
-  Shortening for display cuts at a rune boundary. RequestInfo and
-  notification call it. It replaces the handler's commitSubject, and
-  signAndRecordAutoApproved loses its commitSubject parameter.
-- `internal/approval/gpgsign.go:104-122`,
-  `internal/notification/desktop.go:645-650`,
-  `web/src/lib/RequestCard.svelte:55-57` (repeated derivation). A commit's
-  subject (first line of the message) is derived in approval
-  (GPGSignInfo.RequestInfo), notification (commitSubject) and web
-  (RequestCard's commitSubject). b3-8 reports the two Go copies; the TS copy
-  is a third. All unchanged.
-  Fix: As b3-8 (approval.GPGSignInfo.Subject()); the plan entry also names the
-  TS copy, which the API could make redundant by sending the subject.
+- `internal/approval/gpgsign.go` (GPGSignInfo.RequestInfo),
+  `internal/api/gpgsign.go` signLogAttrs (misplaced rule).
+  approval.GPGSignInfo.RequestInfo derives a commit's subject from the message
+  (first line, cut at 60 bytes) for the item label, notification/desktop.go
+  commitSubject derives the first line again, and api's signLogAttrs derives
+  it a third time for the gpg-sign log lines. The cut at byte 60 can split a
+  multi-byte UTF-8 rune, and the label goes to a desktop notification over
+  D-Bus, which requires valid UTF-8 strings.
+  Fix: approval.GPGSignInfo.Subject() returns the first line of the signed
+  message. Shortening for display cuts at a rune boundary. RequestInfo,
+  notification and signLogAttrs call it.
+- `internal/approval/gpgsign.go` (GPGSignInfo.RequestInfo),
+  `internal/notification/desktop.go` (commitSubject),
+  `internal/cli/format.go` (commitSubject and commitBody),
+  `web/src/lib/RequestCard.svelte` (commitSubject),
+  `web/src/lib/HistoryEntry.svelte` (historyItemsSummary) (repeated
+  derivation). A commit's subject (first line of the message) is derived in
+  approval, notification, cli and twice in web. b3-8 reports the Go copies in
+  approval and notification. cli cannot import approval, and the TS copies
+  cannot call Go.
+  Fix: As b3-8 (approval.GPGSignInfo.Subject()) for the Go copies in the
+  daemon. The API then sends the subject (and the body, for cli's
+  writeSignMessage), so that the cli and web copies go too.
 - `internal/api/websocket.go:468-476` (pass-through). OnClientConnected and
   OnClientDisconnected (proxy.ClientObserver) each only call
   BroadcastClientConnected and BroadcastClientDisconnected. The Broadcast
@@ -56,4 +55,5 @@ Done when each item below is fixed as its "Fix" says.
   Fix: give the caller a different exe, or drop the test for the manager-level
   TestGPGSignEphemeralRuleMatchesOnInvokerExe.
 
-Found by the 2026-11-19 unsmell run (b3-8, x-9, b3-9, b3-11, b3-19).
+Found by the 2026-11-19 unsmell run (b3-8, x-9, b3-9, b3-11, b3-19), and the
+2026-11-21 23:24 run (b4-20, x-16).

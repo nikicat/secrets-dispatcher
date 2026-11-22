@@ -11,23 +11,19 @@ import (
 
 // persistentNotifier sends persistent notifications and can dismiss them.
 type persistentNotifier interface {
-	NotifyPersistent(summary, body, icon string) (uint32, error)
-	Close(id uint32) error
+	NotifyPersistent(summary, body, icon string) (NotificationID, error)
+	Close(id NotificationID) error
 }
 
-// SlowUpstreamNotifier shows informational desktop notifications when an
-// upstream Secret Service call (e.g. GPG decrypt via pinentry) takes longer
-// than expected. This gives the user context about what triggered the pinentry.
+// Shows proxy.UpstreamNotifier's notifications on the desktop.
 type SlowUpstreamNotifier struct {
 	notifier persistentNotifier
 }
 
-// NewSlowUpstreamNotifier creates a SlowUpstreamNotifier backed by the given DBusNotifier.
 func NewSlowUpstreamNotifier(notifier *DBusNotifier) *SlowUpstreamNotifier {
 	return &SlowUpstreamNotifier{notifier: notifier}
 }
 
-// newSlowUpstreamNotifier creates a SlowUpstreamNotifier from any persistentNotifier (for testing).
 func newSlowUpstreamNotifier(notifier persistentNotifier) *SlowUpstreamNotifier {
 	return &SlowUpstreamNotifier{notifier: notifier}
 }
@@ -49,7 +45,6 @@ func (s *SlowUpstreamNotifier) NotifySlowUpstream(req approval.RequestInfo) func
 	}
 }
 
-// slowUpstreamSummary returns the notification summary based on request type.
 func slowUpstreamSummary(reqType approval.RequestType) string {
 	switch reqType {
 	case approval.RequestTypeGPGSign:
@@ -65,19 +60,12 @@ func slowUpstreamSummary(reqType approval.RequestType) string {
 	}
 }
 
-func itemDisplayLabel(item approval.ItemInfo) string {
-	if item.Label != "" {
-		return item.Label
-	}
-	return item.Path
-}
-
-// Returns the escaped labels of items, with their count when there are several.
-// An item with no label shows its path.
+// Returns the escaped display labels of the given items, with their count when
+// there are several.
 func itemsLine(items []approval.ItemInfo) string {
 	labels := make([]string, len(items))
 	for i, item := range items {
-		labels[i] = escapeMarkup(itemDisplayLabel(item))
+		labels[i] = escapeMarkup(item.DisplayLabel())
 	}
 	line := strings.Join(labels, ", ")
 	if len(items) > 1 {
@@ -86,9 +74,9 @@ func itemsLine(items []approval.ItemInfo) string {
 	return line
 }
 
-// Returns the markup body of a slow upstream notification for req. It names
-// req's items and its sender's process chain, with every value escaped
-// (ADR 0007).
+// Returns the markup body of a slow upstream notification for the given
+// request. It names the request's items and its sender's process chain, with
+// every value escaped (ADR 0007).
 func formatSlowUpstreamBody(req approval.RequestInfo) string {
 	lines := []string{
 		itemsLine(req.Items),

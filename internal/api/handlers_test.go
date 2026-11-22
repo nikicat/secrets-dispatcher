@@ -56,7 +56,11 @@ func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) str
 }
 
 func signableGPGSignInfo() *approval.GPGSignInfo {
-	return &approval.GPGSignInfo{KeyID: "ABCD", CommitObject: "tree 0\n"}
+	info, err := approval.NewGPGSignInfo(approval.SignedObject("tree 0\n"), "", "ABCD", approval.ListedFiles(nil))
+	if err != nil {
+		panic(err)
+	}
+	return info
 }
 
 func localSender(comm string, exe procutil.Path) approval.SenderInfo {
@@ -70,7 +74,7 @@ func localSender(comm string, exe procutil.Path) approval.SenderInfo {
 
 // A get_secret request that a test started and that its manager holds pending.
 type pendingRequest struct {
-	ID string
+	ID approval.RequestID
 	// Done receives RequireApproval's error once the request is resolved.
 	Done <-chan error
 }
@@ -92,7 +96,7 @@ func startRequest(ctx context.Context, mgr *approval.Manager, items ...approval.
 func startPending(t *testing.T, mgr *approval.Manager, items ...approval.ItemInfo) pendingRequest {
 	t.Helper()
 	done := startRequest(t.Context(), mgr, items...)
-	var id string
+	var id approval.RequestID
 	require.Eventually(t, func() bool {
 		if reqs := mgr.List(); len(reqs) > 0 {
 			id = reqs[0].ID
@@ -213,7 +217,7 @@ func TestHandleApprove_Success(t *testing.T) {
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+pending.ID+"/approve", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+string(pending.ID)+"/approve", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleApprove(rr, req)
@@ -283,7 +287,7 @@ func TestHandleDeny_Success(t *testing.T) {
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+pending.ID+"/deny", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+string(pending.ID)+"/deny", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleDeny(rr, req)
@@ -318,7 +322,7 @@ func TestHandleCancel_Success(t *testing.T) {
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+pending.ID+"/cancel", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/"+string(pending.ID)+"/cancel", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleCancel(rr, req)
@@ -434,7 +438,7 @@ func TestExtractRequestID(t *testing.T) {
 		path     string
 		prefix   string
 		suffix   string
-		expected string
+		expected approval.RequestID
 	}{
 		{"/api/v1/pending/abc123/approve", "/api/v1/pending/", "/approve", "abc123"},
 		{"/api/v1/pending/abc123/deny", "/api/v1/pending/", "/deny", "abc123"},

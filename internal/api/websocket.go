@@ -29,13 +29,40 @@ const (
 	maxMessageSize = 512
 )
 
-// WSMessage represents a message sent over the WebSocket.
+// A message the daemon's WebSocket sends. It encodes as one flat JSON object,
+// "type" and then the fields of its payload. The type is the payload's, so a
+// message holds only the fields of its own type.
 type WSMessage struct {
-	Type    wsmsg.Type `json:"type"`
-	Version string     `json:"version,omitempty"`
+	payload wsPayload
+}
 
-	// Snapshot fields. They have no omitempty, so the arrays are always present
-	// in the JSON.
+// The fields of one type of WebSocket message.
+type wsPayload interface {
+	wsType() wsmsg.Type
+}
+
+func (m WSMessage) Type() wsmsg.Type { return m.payload.wsType() }
+
+func (m WSMessage) MarshalJSON() ([]byte, error) {
+	header, err := json.Marshal(wsmsg.Header{Type: m.Type()})
+	if err != nil {
+		return nil, err
+	}
+	fields, err := json.Marshal(m.payload)
+	if err != nil {
+		return nil, err
+	}
+	if len(fields) == len("{}") {
+		return header, nil
+	}
+	out := append(header[:len(header)-1], ',')
+	return append(out, fields[1:]...), nil
+}
+
+// The state a WebSocket peer starts from. The lists have no omitempty, so they
+// are always present in the JSON.
+type snapshotMsg struct {
+	Version                    string                     `json:"version,omitempty"`
 	Requests                   []PendingRequest           `json:"requests"`
 	Clients                    []proxy.ClientInfo         `json:"clients"`
 	History                    []HistoryEntry             `json:"history"`
@@ -44,23 +71,55 @@ type WSMessage struct {
 	TrustRules                 []approval.TrustRule       `json:"trust_rules"`
 	AutoApproveDurationSeconds int                        `json:"auto_approve_duration_seconds,omitempty"`
 	NotificationDelayMS        int                        `json:"notification_delay_ms,omitempty"`
-
-	// For request_created
-	Request *PendingRequest `json:"request,omitempty"`
-
-	// For request_resolved
-	ID string `json:"id,omitempty"`
-	gpgsign.SignOutcome
-
-	// For client_connected/client_disconnected
-	Client *proxy.ClientInfo `json:"client,omitempty"`
-
-	// For history_entry
-	HistoryEntry *HistoryEntry `json:"history_entry,omitempty"`
-
-	// For auto_approve_rule_added / auto_approve_rule_removed
-	AutoApproveRule *approval.AutoApproveRule `json:"auto_approve_rule,omitempty"`
 }
+
+type requestCreatedMsg struct {
+	Request PendingRequest `json:"request"`
+}
+
+type requestResolvedMsg struct {
+	ID approval.RequestID `json:"id"`
+	gpgsign.SignOutcome
+}
+
+type requestExpiredMsg struct {
+	ID approval.RequestID `json:"id"`
+}
+
+type requestCancelledMsg struct {
+	ID approval.RequestID `json:"id"`
+}
+
+type historyEntryMsg struct {
+	HistoryEntry HistoryEntry `json:"history_entry"`
+}
+
+type autoApproveRuleAddedMsg struct {
+	AutoApproveRule approval.AutoApproveRule `json:"auto_approve_rule"`
+}
+
+type autoApproveRuleRemovedMsg struct {
+	ID string `json:"id"`
+}
+
+type clientConnectedMsg struct {
+	Client proxy.ClientInfo `json:"client"`
+}
+
+type clientDisconnectedMsg struct {
+	Client proxy.ClientInfo `json:"client"`
+}
+
+func (snapshotMsg) wsType() wsmsg.Type               { return wsmsg.Snapshot }
+func (requestCreatedMsg) wsType() wsmsg.Type         { return wsmsg.RequestCreated }
+func (requestResolvedMsg) wsType() wsmsg.Type        { return wsmsg.RequestResolved }
+func (requestExpiredMsg) wsType() wsmsg.Type         { return wsmsg.RequestExpired }
+func (requestCancelledMsg) wsType() wsmsg.Type       { return wsmsg.RequestCancelled }
+func (historyEntryMsg) wsType() wsmsg.Type           { return wsmsg.HistoryEntry }
+func (autoApproveRuleAddedMsg) wsType() wsmsg.Type   { return wsmsg.AutoApproveRuleAdded }
+func (autoApproveRuleRemovedMsg) wsType() wsmsg.Type { return wsmsg.AutoApproveRuleRemoved }
+func (clientConnectedMsg) wsType() wsmsg.Type        { return wsmsg.ClientConnected }
+func (clientDisconnectedMsg) wsType() wsmsg.Type     { return wsmsg.ClientDisconnected }
 
 // WSHandler handles WebSocket connections for real-time updates.
 type WSHandler struct {
@@ -93,20 +152,18 @@ type wsConnection struct {
 	cancel  context.CancelFunc
 }
 
+var _ approval.Observer = (*wsConnection)(nil)
+
 // HandleWS handles WebSocket upgrade requests.
 func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
-	// Validate session cookie or Bearer token before accepting upgrade.
 	if !h.auth.ValidateRequest(r) {
 		writeError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Accepts any Origin, since the auth check above decides who may connect.
-		// The SameSite=Strict session cookie (ADR 0006) keeps out cross-site pages,
-		// but a page on another local port is same-site and can still connect.
-		OriginPatterns: []string{"*"},
-	})
+	// websocket.Accept's default Origin check keeps out pages on other
+	// localhost ports (ADR 0006).
+	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		slog.Error("WebSocket accept failed", "error", err)
 		return
@@ -124,104 +181,88 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 		cancel:  cancel,
 	}
 
-	// Register connection
 	h.connsMu.Lock()
 	h.conns[wsc] = struct{}{}
 	h.connsMu.Unlock()
 
-	// Subscribe to manager events
 	h.manager.Subscribe(wsc)
 
-	// Send initial snapshot
 	if err := wsc.sendSnapshot(); err != nil {
 		slog.Error("Failed to send snapshot", "error", err)
 		wsc.close()
 		return
 	}
 
-	// Start reader and writer goroutines
 	go wsc.writePump()
 	go wsc.readPump()
 }
 
 // Returns the request_resolved message for a settled request.
 func resolvedMessage(entry approval.HistoryEntry) WSMessage {
-	return WSMessage{
-		Type:        wsmsg.RequestResolved,
-		ID:          entry.Request.ID,
-		SignOutcome: gpgsign.OutcomeOf(entry),
-	}
+	return WSMessage{requestResolvedMsg{ID: entry.Request.ID, SignOutcome: gpgsign.OutcomeOf(entry)}}
 }
 
-// OnEvent implements approval.Observer.
-func (wsc *wsConnection) OnEvent(event approval.Event) {
+// Returns the messages that tell the WebSocket peer a request ended, in
+// sending order. The last one carries the request's History entry.
+func endedMessages(entry approval.HistoryEntry) []WSMessage {
 	var msgs []WSMessage
-
-	switch event.Type {
-	case approval.EventRequestCreated:
-		req := convertRequest(event.Request)
-		msgs = append(msgs, WSMessage{
-			Type:    wsmsg.RequestCreated,
-			Request: &req,
-		})
-	case approval.EventRequestApproved, approval.EventRequestDenied:
-		msgs = append(msgs, resolvedMessage(*event.History))
-	case approval.EventRequestExpired:
-		msgs = append(msgs, WSMessage{
-			Type: wsmsg.RequestExpired,
-			ID:   event.Request.ID,
-		})
-	case approval.EventRequestCancelled:
-		msgs = append(msgs, WSMessage{
-			Type: wsmsg.RequestCancelled,
-			ID:   event.Request.ID,
-		})
-	case approval.EventRequestAutoApproved:
-		// GPG sign auto-approvals carry signature data that the thin client needs.
-		if msg := resolvedMessage(*event.History); msg.GPGResult != nil {
-			msgs = append(msgs, msg)
+	switch entry.Resolution {
+	case approval.ResolutionApproved, approval.ResolutionDenied:
+		msgs = append(msgs, resolvedMessage(entry))
+	case approval.ResolutionExpired:
+		msgs = append(msgs, WSMessage{requestExpiredMsg{ID: entry.Request.ID}})
+	case approval.ResolutionCancelled:
+		msgs = append(msgs, WSMessage{requestCancelledMsg{ID: entry.Request.ID}})
+	case approval.ResolutionAutoApproved:
+		// A gpg_sign auto-approval carries the signature that the thin client
+		// waits for.
+		if entry.GPGOutput() != nil {
+			msgs = append(msgs, resolvedMessage(entry))
 		}
-	case approval.EventRequestIgnored:
-		// An ignored request sends only the history entry below.
-	case approval.EventAutoApproveRuleAdded:
-		msgs = append(msgs, WSMessage{
-			Type:            wsmsg.AutoApproveRuleAdded,
-			AutoApproveRule: event.Rule,
-		})
-	case approval.EventAutoApproveRuleRemoved:
-		msgs = append(msgs, WSMessage{
-			Type: wsmsg.AutoApproveRuleRemoved,
-			ID:   event.Rule.ID,
-		})
-	default:
-		return
 	}
-	if event.History != nil {
-		entry := convertHistoryEntry(*event.History)
-		msgs = append(msgs, WSMessage{
-			Type:         wsmsg.HistoryEntry,
-			HistoryEntry: &entry,
-		})
-	}
+	return append(msgs, WSMessage{historyEntryMsg{convertHistoryEntry(entry)}})
+}
 
+func (wsc *wsConnection) RequestCreated(p approval.Pending) {
+	wsc.sendAll(WSMessage{requestCreatedMsg{convertPending(p)}})
+}
+
+func (wsc *wsConnection) RequestEnded(entry approval.HistoryEntry) {
+	wsc.sendAll(endedMessages(entry)...)
+}
+
+func (wsc *wsConnection) RuleAdded(rule approval.AutoApproveRule) {
+	wsc.sendAll(WSMessage{autoApproveRuleAddedMsg{rule}})
+}
+
+func (wsc *wsConnection) RuleRemoved(rule approval.AutoApproveRule) {
+	wsc.sendAll(WSMessage{autoApproveRuleRemovedMsg{ID: rule.ID}})
+}
+
+// Queues the messages in order, as wsConnection.queue does.
+func (wsc *wsConnection) sendAll(msgs ...WSMessage) {
 	for _, msg := range msgs {
 		data, err := json.Marshal(msg)
 		if err != nil {
 			slog.Error("Failed to marshal WebSocket message", "error", err)
 			continue
 		}
-
-		// Drops the message when the client is too slow to take it.
-		select {
-		case wsc.send <- data:
-			slog.Debug("ws send", "type", msg.Type, "id", msg.ID)
-		default:
-			slog.Warn("WebSocket send buffer full, dropping message", "type", msg.Type, "id", msg.ID)
-		}
+		wsc.queue(data, msg.Type())
 	}
 }
 
-// sendSnapshot sends the current state to the client.
+// Queues an encoded message of the given type, or drops it with a warning when
+// the peer is too slow to take it.
+func (wsc *wsConnection) queue(data []byte, typ wsmsg.Type) {
+	select {
+	case wsc.send <- data:
+		slog.Debug("ws send", "type", typ)
+	default:
+		slog.Warn("WebSocket send buffer full, dropping message", "type", typ)
+	}
+}
+
+// Sends the current state to the WebSocket peer.
 func (wsc *wsConnection) sendSnapshot() error {
 	h := wsc.handler
 
@@ -231,26 +272,22 @@ func (wsc *wsConnection) sendSnapshot() error {
 
 	history := historyEntries(h.manager)
 
-	// Get auto-approve rules
 	autoApproveRules := h.manager.ListAutoApproveRules()
 	if autoApproveRules == nil {
 		autoApproveRules = []approval.AutoApproveRule{}
 	}
 
-	// Get trusted signers
 	trustedSigners := h.manager.ListTrustedSigners()
 	if trustedSigners == nil {
 		trustedSigners = []approval.TrustedSigner{}
 	}
 
-	// Get trust rules
 	trustRules := h.manager.ListTrustRules()
 	if trustRules == nil {
 		trustRules = []approval.TrustRule{}
 	}
 
-	msg := WSMessage{
-		Type:                       wsmsg.Snapshot,
+	msg := WSMessage{snapshotMsg{
 		Version:                    BuildVersion,
 		Requests:                   requests,
 		Clients:                    clients,
@@ -260,14 +297,15 @@ func (wsc *wsConnection) sendSnapshot() error {
 		TrustRules:                 trustRules,
 		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
 		NotificationDelayMS:        int(h.notificationDelay.Milliseconds()),
-	}
+	}}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return err
 	}
 
-	// Send directly (not through channel) for initial snapshot
+	// Written before writePump starts, so it bypasses the send channel and
+	// always arrives first.
 	ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
 	defer cancel()
 	slog.Debug("ws send snapshot", "requests", len(requests), "clients", len(clients), "history", len(history))
@@ -289,7 +327,6 @@ func (wsc *wsConnection) writePump() {
 
 		case message, ok := <-wsc.send:
 			if !ok {
-				// Channel closed
 				return
 			}
 			ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
@@ -303,7 +340,6 @@ func (wsc *wsConnection) writePump() {
 			}
 
 		case <-ticker.C:
-			// Send ping
 			ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
 			err := wsc.conn.Ping(ctx)
 			cancel()
@@ -317,18 +353,15 @@ func (wsc *wsConnection) writePump() {
 	}
 }
 
-// Reads only to notice that the client closed the connection. The client sends
-// no messages.
+// Reads only to notice that the WebSocket peer closed the connection. The peer
+// sends no messages.
 func (wsc *wsConnection) readPump() {
 	defer wsc.close()
 
 	for {
-		_, _, err := wsc.conn.Read(wsc.ctx)
-		if err != nil {
-			// Connection closed
+		if _, _, err := wsc.conn.Read(wsc.ctx); err != nil {
 			return
 		}
-		// Ignore any messages from client
 	}
 }
 
@@ -336,20 +369,17 @@ func (wsc *wsConnection) readPump() {
 func (wsc *wsConnection) close() {
 	wsc.cancel()
 
-	// Unsubscribe from manager
 	wsc.handler.manager.Unsubscribe(wsc)
 
-	// Unregister connection
 	wsc.handler.connsMu.Lock()
 	delete(wsc.handler.conns, wsc)
 	wsc.handler.connsMu.Unlock()
 
-	// Close the WebSocket
 	wsc.conn.Close(websocket.StatusNormalClosure, "")
 }
 
-// convertRequest converts an approval.Request to an API PendingRequest.
-func convertRequest(req *approval.Request) PendingRequest {
+// Returns the request as the API sends it.
+func convertRequest(req *approval.Request) RequestRecord {
 	items := make([]ItemInfo, len(req.Items))
 	for i, item := range req.Items {
 		items[i] = ItemInfo{
@@ -358,27 +388,33 @@ func convertRequest(req *approval.Request) PendingRequest {
 			Attributes: item.Attributes,
 		}
 	}
-	return PendingRequest{
+	sign, _ := req.GPGSign()
+	search, _ := req.Search()
+	return RequestRecord{
 		ID:               req.ID,
 		Client:           req.SenderInfo.Client,
 		Items:            items,
 		Session:          req.Session,
 		CreatedAt:        req.CreatedAt,
-		ExpiresAt:        req.ExpiresAt,
 		Type:             req.Type,
-		SearchAttributes: req.SearchAttributes,
+		SearchAttributes: search.Attributes,
 		SenderInfo:       req.SenderInfo.Info,
-		GPGSignInfo:      req.GPGSignInfo,
+		GPGSignInfo:      sign,
 		AutoApprovable:   req.AutoApprovable(),
 	}
+}
+
+// Returns the pending request as the API sends it.
+func convertPending(p approval.Pending) PendingRequest {
+	return PendingRequest{RequestRecord: convertRequest(p.Request), ExpiresAt: p.ExpiresAt}
 }
 
 // The slice is never nil, so it encodes as [] in JSON.
 func pendingRequests(m *approval.Manager) []PendingRequest {
 	pending := m.List()
 	requests := make([]PendingRequest, len(pending))
-	for i, req := range pending {
-		requests[i] = convertRequest(req)
+	for i, p := range pending {
+		requests[i] = convertPending(p)
 	}
 	return requests
 }
@@ -393,15 +429,14 @@ func historyEntries(m *approval.Manager) []HistoryEntry {
 	return entries
 }
 
-// isConnClosedErr returns true if the error indicates a connection that was
-// already closed or broken (broken pipe, connection reset, context cancelled).
-// These are expected during normal WebSocket teardown and not worth logging.
+// Checks whether err is expected teardown of the connection, which is not
+// worth logging.
 func isConnClosedErr(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	if _, ok := errors.AsType[*net.OpError](err); ok {
-		// Covers "write: broken pipe" and "write: connection reset by peer"
+		// The WebSocket peer broke the pipe or reset the connection.
 		return true
 	}
 	return false
@@ -409,18 +444,12 @@ func isConnClosedErr(err error) bool {
 
 // BroadcastClientConnected sends a client_connected message to all connections.
 func (h *WSHandler) BroadcastClientConnected(client proxy.ClientInfo) {
-	h.broadcast(WSMessage{
-		Type:   wsmsg.ClientConnected,
-		Client: &client,
-	})
+	h.broadcast(WSMessage{clientConnectedMsg{client}})
 }
 
 // BroadcastClientDisconnected sends a client_disconnected message to all connections.
 func (h *WSHandler) BroadcastClientDisconnected(client proxy.ClientInfo) {
-	h.broadcast(WSMessage{
-		Type:   wsmsg.ClientDisconnected,
-		Client: &client,
-	})
+	h.broadcast(WSMessage{clientDisconnectedMsg{client}})
 }
 
 // OnClientConnected implements proxy.ClientObserver.
@@ -433,7 +462,7 @@ func (h *WSHandler) OnClientDisconnected(client proxy.ClientInfo) {
 	h.BroadcastClientDisconnected(client)
 }
 
-// broadcast sends a message to all connected clients.
+// Queues the given message on every connection, as wsConnection.queue does.
 func (h *WSHandler) broadcast(msg WSMessage) {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -445,10 +474,6 @@ func (h *WSHandler) broadcast(msg WSMessage) {
 	defer h.connsMu.RUnlock()
 
 	for wsc := range h.conns {
-		select {
-		case wsc.send <- data:
-		default:
-			// Drop if buffer full
-		}
+		wsc.queue(data, msg.Type())
 	}
 }

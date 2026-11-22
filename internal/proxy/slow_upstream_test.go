@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"sync"
 	"testing"
 	"time"
 
@@ -13,22 +12,15 @@ import (
 
 // mockNotifier records calls to NotifySlowUpstream.
 type mockNotifier struct {
-	mu           sync.Mutex
 	notifyCalls  int
 	dismissCalls int
 	lastRequest  approval.RequestInfo
 }
 
 func (m *mockNotifier) NotifySlowUpstream(req approval.RequestInfo) func() {
-	m.mu.Lock()
 	m.notifyCalls++
 	m.lastRequest = req
-	m.mu.Unlock()
-	return func() {
-		m.mu.Lock()
-		m.dismissCalls++
-		m.mu.Unlock()
-	}
+	return func() { m.dismissCalls++ }
 }
 
 func TestWithSlowNotify_FastCall(t *testing.T) {
@@ -64,8 +56,6 @@ func TestWithSlowNotify_SlowCall(t *testing.T) {
 		t.Fatal("expected non-nil call")
 	}
 
-	notifier.mu.Lock()
-	defer notifier.mu.Unlock()
 	if notifier.notifyCalls != 1 {
 		t.Errorf("expected 1 notify call for slow call, got %d", notifier.notifyCalls)
 	}
@@ -136,8 +126,6 @@ func TestWithSlowNotify_LazyResolution(t *testing.T) {
 		t.Fatal("sender should be resolved on slow path")
 	}
 
-	notifier.mu.Lock()
-	defer notifier.mu.Unlock()
 	if notifier.lastRequest.SenderInfo.PID != 5678 {
 		t.Errorf("expected resolved PID 5678, got %d", notifier.lastRequest.SenderInfo.PID)
 	}
@@ -146,8 +134,6 @@ func TestWithSlowNotify_LazyResolution(t *testing.T) {
 	}
 }
 
-// A prompted request's slow call is reported only when Always is set. An
-// unprompted request's slow call is always reported.
 func TestWithSlowNotify_Always(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -168,8 +154,6 @@ func TestWithSlowNotify_Always(t *testing.T) {
 				time.Sleep(80 * time.Millisecond)
 				return &dbus.Call{}
 			})
-			notifier.mu.Lock()
-			defer notifier.mu.Unlock()
 			if notifier.notifyCalls != tc.wantCalls {
 				t.Errorf("notify calls = %d, want %d", notifier.notifyCalls, tc.wantCalls)
 			}

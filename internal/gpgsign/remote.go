@@ -25,16 +25,17 @@ type SignRequest struct {
 // The answer of the local API's /api/v1/gpg-sign/request, which names the
 // filed request. RemoteSignPath answers with a SignOutcome instead.
 type SignResponse struct {
-	RequestID string `json:"request_id"`
+	RequestID approval.RequestID `json:"request_id"`
 }
 
 // Submits info through the remote socket and blocks until the request is
 // resolved. Cancelling ctx drops the connection, which cancels the request on
 // the daemon. Errors when the socket approves the request without gpg's output.
 func SignRemote(ctx context.Context, socketPath unixsock.Path, info *approval.GPGSignInfo) (SignOutcome, error) {
-	var res SignOutcome
-	if err := postJSON(ctx, UnixSocketClient(socketPath), RemoteSignPath, nil, SignRequest{GPGSignInfo: info}, &res); err != nil {
-		return res, fmt.Errorf("remote socket %s: %w", socketPath, err)
+	remote := socketClient{http: UnixSocketClient(socketPath), credential: remoteSocketIdentity{}}
+	res, err := postSign[SignOutcome](ctx, remote, RemoteSignPath, SignRequest{GPGSignInfo: info})
+	if err != nil {
+		return SignOutcome{}, fmt.Errorf("remote socket %s: %w", socketPath, err)
 	}
 	if err := res.check(); err != nil {
 		return SignOutcome{}, fmt.Errorf("remote socket %s: %w", socketPath, err)

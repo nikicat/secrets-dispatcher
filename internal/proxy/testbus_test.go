@@ -14,13 +14,25 @@ func uniqueName(conn *dbus.Conn) sender.UniqueName {
 	return sender.UniqueName(conn.Names()[0])
 }
 
+// Returns a proxy that serves a forwarded bus.
 func startTestProxy(t *testing.T, frontAddr, backendAddr string) *Proxy {
+	t.Helper()
+	return startTestProxyWith(t, frontAddr, backendAddr, Config{})
+}
+
+// Returns a proxy that serves the session bus.
+func startSessionBusTestProxy(t *testing.T, frontAddr, backendAddr string) *Proxy {
+	t.Helper()
+	return startTestProxyWith(t, frontAddr, backendAddr, Config{Local: &sender.ChainReader{}})
+}
+
+func startTestProxyWith(t *testing.T, frontAddr, backendAddr string, cfg Config) *Proxy {
 	t.Helper()
 	backendConn, err := dbus.Connect(backendAddr)
 	require.NoError(t, err, "connect proxy to backend bus")
 	frontConn, err := dbus.Connect(frontAddr)
 	require.NoError(t, err, "connect proxy to front bus")
-	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), Config{})
+	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), cfg)
 	require.NoError(t, p.ConnectWith(frontConn, backendConn), "connect proxy")
 	t.Cleanup(func() { p.Close() })
 	return p

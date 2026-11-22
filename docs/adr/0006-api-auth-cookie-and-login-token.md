@@ -24,6 +24,10 @@ client, and the web UI in a browser, which cannot read files.
   redeemable once. A process that reads it can then only race the browser's
   page load to redeem it. Sessions are independent random IDs, never the
   master token, so a leaked session cookie does not leak it.
+- **WebSocket Origin.** The WebSocket upgrade refuses an Origin whose host
+  differs from the request's Host, because the SameSite=Strict cookie also
+  reaches pages served on other localhost ports. Requests without an Origin,
+  from the CLI and the thin client, pass.
 
 ## Consequences
 

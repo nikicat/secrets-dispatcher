@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
@@ -130,13 +130,7 @@ func TestManager_StopProxy_WaitsForName(t *testing.T) {
 	socketPath := tempDir.Socket("vm")
 
 	// A proxy whose downstream stays open runs until it is stopped.
-	front, _ := net.Pipe()
-	frontConn, err := dbus.NewConn(front)
-	if err != nil {
-		t.Fatalf("NewConn failed: %v", err)
-	}
-	p := New("vm", approvalMgr, Config{})
-	p.frontConn = frontConn
+	p := startTestProxy(t, testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t))
 	claim, err := mgr.factory.Claim("vm")
 	if err != nil {
 		t.Fatalf("Claim failed: %v", err)

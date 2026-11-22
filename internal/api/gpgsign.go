@@ -14,31 +14,30 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 )
 
-// GPGRunner finds and executes the real gpg binary.
 type GPGRunner interface {
-	FindGPG() (string, error)
-	RunGPG(gpgPath, keyID string, commitObject []byte) (approval.GPGResult, error)
+	// Returns what gpg produced when it signed the object with the given key. A gpg that runs
+	// and fails is no error. Errors when gpg cannot be found or started, and the result's
+	// ExitCode is then approval.GPGNotFound or approval.GPGNotStarted.
+	Sign(keyID approval.GPGKeyID, obj approval.SignedObject) (approval.GPGResult, error)
 }
 
-// defaultGPGRunner implements GPGRunner using the real gpg binary from PATH.
+// Runs the first gpg in PATH that is not this binary.
 type defaultGPGRunner struct{}
 
-// FindGPG delegates to gpgsign.FindRealGPG to locate the real gpg binary,
-// skipping self (prevents the thin client calling itself when installed as gpg.program).
-func (d *defaultGPGRunner) FindGPG() (string, error) {
-	return gpgsign.FindRealGPG()
-}
-
-// RunGPG invokes the real gpg binary with --status-fd=2 -bsau <keyID>,
-// feeding commitObject to stdin. Signature bytes come from stdout; status
-// lines from stderr (separate buffers — mixing them corrupts the signature).
-func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) (approval.GPGResult, error) {
-	cmd := exec.Command(gpgPath, "--status-fd=2", "-bsau", keyID)
-	cmd.Stdin = bytes.NewReader(commitObject)
+// Runs gpg with the flags that ADR 0008 records.
+func (d *defaultGPGRunner) Sign(keyID approval.GPGKeyID, obj approval.SignedObject) (approval.GPGResult, error) {
+	gpgPath, err := gpgsign.FindRealGPG()
+	if err != nil {
+		return approval.GPGResult{ExitCode: approval.GPGNotFound}, fmt.Errorf("find gpg: %w", err)
+	}
+	cmd := exec.Command(gpgPath, "--status-fd=2", "-bsau", string(keyID))
+	cmd.Stdin = bytes.NewReader(obj)
+	// The signature and the status lines go to separate buffers, since status
+	// lines mixed into stdout would corrupt the signature.
 	var sigBuf, statusBuf bytes.Buffer
 	cmd.Stdout = &sigBuf
 	cmd.Stderr = &statusBuf
-	err := cmd.Run()
+	err = cmd.Run()
 	var exitCode approval.GPGExitCode
 	if err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
@@ -54,112 +53,70 @@ func (d *defaultGPGRunner) RunGPG(gpgPath, keyID string, commitObject []byte) (a
 	return res, nil
 }
 
-// HandleGPGSignRequest handles POST /api/v1/gpg-sign/request.
-// It creates a non-blocking gpg_sign approval request and returns the request ID.
-// The result (signature or denial) is delivered via the WebSocket request_resolved event.
+// Signs the request at once when its signer is trusted or an auto-approve rule
+// matches it, and otherwise leaves it pending. Responds with its ID. Errors as
+// decodeSignRequest does, and with 500 when gpg cannot run.
 func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) {
-	var body gpgsign.SignRequest
-	if !decodePost(w, r, &body) || !requireSignedBytes(w, body.GPGSignInfo) {
-		return
-	}
-	request, ok := boundSignRequest(w, body.GPGSignInfo, resolvePeerInfo(r.Context(), h.chains))
+	sign, ok := decodeSignRequest(w, r)
 	if !ok {
 		return
 	}
+	request := sign.RequestInfo(resolvePeerInfo(r.Context(), h.chains))
 
-	commitSubject := request.GPGSignInfo.CommitMsg
-	if i := strings.IndexByte(commitSubject, '\n'); i >= 0 {
-		commitSubject = commitSubject[:i]
-	}
-
-	// Trusted signer: run gpg and record the result directly, bypassing the
-	// pending request flow so no desktop notification appears.
 	if h.resolver.Manager.CheckTrustedSigner(request) {
-		h.signAndRecordAutoApproved(w, request, commitSubject, "trusted signer")
+		h.signAndRecordAutoApproved(w, sign, request, "trusted signer")
 		return
 	}
-
-	// Ephemeral auto-approve rule (created by "approve and auto-approve" on a
-	// prior notification). Same effect as trusted signer for the rule's TTL.
 	if rule := h.resolver.Manager.CheckAutoApproveRules(request); rule != nil {
-		h.signAndRecordAutoApproved(w, request, commitSubject,
-			fmt.Sprintf("auto-approve rule %s", rule.ID))
+		h.signAndRecordAutoApproved(w, sign, request, fmt.Sprintf("auto-approve rule %s", rule.ID))
 		return
 	}
 
-	id, err := h.resolver.Manager.CreateGPGSignRequest(request)
-	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("gpg sign request created",
-		"request_id", id,
-		"repo", request.GPGSignInfo.RepoName,
-		"process", request.SenderInfo.InvokerName,
-		"pid", request.SenderInfo.PID,
-		"commit", commitSubject,
-	)
-
+	id := h.resolver.Manager.Create(request)
+	slog.Info("gpg sign request created", "request_id", id, signLogAttrs(sign, request.SenderInfo))
 	writeJSON(w, gpgsign.SignResponse{RequestID: id})
 }
 
-// Writes a 400 and returns false when info has no bytes to sign.
-func requireSignedBytes(w http.ResponseWriter, info *approval.GPGSignInfo) bool {
-	switch err := info.RequireSignedBytes(); {
-	case err == nil:
-		return true
-	case errors.Is(err, approval.ErrNoGPGSignInfo):
+// Decodes a gpg-sign request body. Errors as decodePost does, and with 400
+// when the body has no gpg_sign_info.
+func decodeSignRequest(w http.ResponseWriter, r *http.Request) (*approval.GPGSignInfo, bool) {
+	var body gpgsign.SignRequest
+	if !decodePost(w, r, &body) {
+		return nil, false
+	}
+	if body.GPGSignInfo == nil {
 		writeError(w, "gpg_sign_info is required", http.StatusBadRequest)
-	case errors.Is(err, approval.ErrNoCommitObject):
-		writeError(w, "gpg_sign_info.commit_object is required", http.StatusBadRequest)
+		return nil, false
 	}
-	return false
+	return body.GPGSignInfo, true
 }
 
-// Rewrites info's display fields from its signed bytes as BindDisplay does, logs
-// a warning when they changed, and returns sender's request for info. Writes a
-// 400 and returns false when CommitObject cannot be parsed.
-func boundSignRequest(w http.ResponseWriter, info *approval.GPGSignInfo, sender approval.SenderInfo) (approval.RequestInfo, bool) {
-	payload, err := gpgsign.ParseSignedPayload([]byte(info.CommitObject))
-	if err != nil {
-		writeError(w, err.Error(), http.StatusBadRequest)
-		return approval.RequestInfo{}, false
-	}
-	if payload.BindDisplay(info) {
-		slog.Warn("gpg sign: client-supplied metadata does not match signed bytes; overriding with parsed values",
-			"client", sender.Client,
-			"pid", sender.PID,
-			"process", sender.InvokerName,
-		)
-	}
-	return info.RequestInfo(sender), true
+// Returns the log attributes that name a gpg_sign request's repo, invoker and
+// commit subject, as a group that log handlers inline.
+func signLogAttrs(sign *approval.GPGSignInfo, sender approval.SenderInfo) slog.Attr {
+	subject, _, _ := strings.Cut(sign.Signed.Message, "\n")
+	return slog.GroupAttrs("",
+		slog.String("repo", string(sign.RepoName)),
+		slog.String("process", sender.InvokerName),
+		slog.Uint64("pid", uint64(sender.PID)),
+		slog.String("commit", subject),
+	)
 }
 
-// Signs request without a prompt, records it as auto-approved, and writes its
-// ID to w. Writes a 500 instead when gpg cannot run or the record fails.
-func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, request approval.RequestInfo, commitSubject, reason string) {
-	res, err := h.resolver.signGPG(request, proxy.RequestCall)
+// Signs the given request without a prompt, records it as auto-approved with
+// what gpg produced, failure included, and responds with its ID. Responds with
+// 500 instead when gpg cannot run.
+func (h *Handlers) signAndRecordAutoApproved(w http.ResponseWriter, sign *approval.GPGSignInfo, request approval.RequestInfo, reason string) {
+	res, err := h.resolver.signGPG(sign, proxy.RequestCall(request))
 	if err != nil {
 		writeError(w, fmt.Sprintf("gpg exec failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 	if !res.Succeeded() {
-		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.ExitCode)
+		slog.Error("auto-approved gpg failed", "reason", reason, "exit_code", res.ExitCode, signLogAttrs(sign, request.SenderInfo))
 	}
 
-	id, err := h.resolver.Manager.RecordAutoApprovedGPGSign(request, res)
-	if err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	slog.Info("gpg sign auto-approved",
-		"request_id", id,
-		"reason", reason,
-		"repo", request.GPGSignInfo.RepoName,
-		"process", request.SenderInfo.InvokerName,
-		"pid", request.SenderInfo.PID,
-		"commit", commitSubject,
-	)
+	id := h.resolver.Manager.RecordAutoApprovedGPGSign(request, res)
+	slog.Info("gpg sign auto-approved", "request_id", id, "reason", reason, signLogAttrs(sign, request.SenderInfo))
 	writeJSON(w, gpgsign.SignResponse{RequestID: id})
 }

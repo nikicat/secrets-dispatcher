@@ -181,7 +181,7 @@ func (h *Handlers) HandleAutoApproveList(w http.ResponseWriter, r *http.Request)
 // HandleAutoApproveCreate handles POST /api/v1/auto-approve.
 func (h *Handlers) HandleAutoApproveCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		RequestID string `json:"request_id"`
+		RequestID approval.RequestID `json:"request_id"`
 	}
 	if !decodePost(w, r, &req) {
 		return
@@ -249,7 +249,7 @@ func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
 }
 
 // extractRequestID extracts the request ID from a path like /api/v1/pending/{id}/action.
-func extractRequestID(path, prefix, suffix string) string {
+func extractRequestID(path, prefix, suffix string) approval.RequestID {
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
 		return ""
 	}
@@ -258,7 +258,7 @@ func extractRequestID(path, prefix, suffix string) string {
 	if id == "" || strings.Contains(id, "/") {
 		return ""
 	}
-	return id
+	return approval.RequestID(id)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -291,7 +291,7 @@ func decodePost(w http.ResponseWriter, r *http.Request, body any) bool {
 		return false
 	}
 	if err := json.NewDecoder(r.Body).Decode(body); err != nil {
-		writeError(w, "invalid request body", http.StatusBadRequest)
+		writeError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return false
 	}
 	return true
@@ -355,14 +355,13 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 
 	approvalEntry := approval.HistoryEntry{
 		Request: &approval.Request{
-			ID:               entry.Request.ID,
-			Items:            items,
-			Session:          entry.Request.Session,
-			CreatedAt:        entry.Request.CreatedAt,
-			ExpiresAt:        entry.Request.ExpiresAt,
-			Type:             entry.Request.Type,
-			SearchAttributes: entry.Request.SearchAttributes,
-			SenderInfo:       approval.SenderInfo{Info: entry.Request.SenderInfo, Client: entry.Request.Client},
+			ID:         entry.Request.ID,
+			Items:      items,
+			Session:    entry.Request.Session,
+			CreatedAt:  entry.Request.CreatedAt,
+			Type:       entry.Request.Type,
+			Payload:    entry.Request.payload(),
+			SenderInfo: approval.SenderInfo{Info: entry.Request.SenderInfo, Client: entry.Request.Client},
 		},
 		Resolution: entry.Resolution,
 		ResolvedAt: entry.ResolvedAt,

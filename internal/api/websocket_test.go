@@ -83,16 +83,26 @@ func (f *wsFixture) dial() *websocket.Conn {
 	return conn
 }
 
-// Reads the next message on conn and fails the test unless it decodes as a
-// WSMessage of type want.
-func (f *wsFixture) read(conn *websocket.Conn, want wsmsg.Type) WSMessage {
+// Reads the next message on conn and fails the test unless its type is want.
+// Returns the message's JSON.
+func (f *wsFixture) read(conn *websocket.Conn, want wsmsg.Type) []byte {
 	f.t.Helper()
 	_, data, err := conn.Read(f.ctx)
 	require.NoError(f.t, err, "read message")
-	var msg WSMessage
-	require.NoError(f.t, json.Unmarshal(data, &msg), "decode message")
+	var msg wsmsg.Header
+	require.NoError(f.t, json.Unmarshal(data, &msg), "decode message type")
 	require.Equal(f.t, want, msg.Type)
-	return msg
+	return data
+}
+
+// Reads the next message on conn and fails the test unless it has payload type
+// P. Returns the payload.
+func readMsg[P wsPayload](f *wsFixture, conn *websocket.Conn) P {
+	f.t.Helper()
+	var p P
+	data := f.read(conn, p.wsType())
+	require.NoError(f.t, json.Unmarshal(data, &p), "decode message")
+	return p
 }
 
 func TestWSHandler_Unauthorized(t *testing.T) {
@@ -100,6 +110,39 @@ func TestWSHandler_Unauthorized(t *testing.T) {
 
 	_, _, err := websocket.Dial(f.ctx, f.url, nil)
 	assert.Error(t, err, "expected connection to fail without auth")
+}
+
+// Checks that a WebSocket from another origin is refused (ADR 0006).
+func TestWSHandler_Origin(t *testing.T) {
+	tests := []struct {
+		name   string
+		origin func(host string) string
+		ok     bool
+	}{
+		{"same origin", func(host string) string { return "http://" + host }, true},
+		{"other port", func(string) string { return "http://127.0.0.1:1" }, false},
+		{"other host", func(string) string { return "https://evil.example" }, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newWSFixture(t, newTestManager())
+			origin := tt.origin(strings.TrimPrefix(f.url, "ws://"))
+			conn, resp, err := websocket.Dial(f.ctx, f.url, &websocket.DialOptions{
+				HTTPHeader: http.Header{
+					"Cookie": []string{mintSession(t, f.auth)},
+					"Origin": []string{origin},
+				},
+			})
+			if !tt.ok {
+				require.Error(t, err)
+				assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+				return
+			}
+			require.NoError(t, err)
+			defer conn.Close(websocket.StatusNormalClosure, "")
+			f.read(conn, wsmsg.Snapshot)
+		})
+	}
 }
 
 func TestWSHandler_Snapshot(t *testing.T) {
@@ -111,7 +154,7 @@ func TestWSHandler_Snapshot(t *testing.T) {
 	}
 	f := newWSFixtureWith(t, newTestManager(), provider)
 
-	msg := f.read(f.dial(), wsmsg.Snapshot)
+	msg := readMsg[snapshotMsg](f, f.dial())
 
 	if len(msg.Clients) != 2 {
 		t.Errorf("expected 2 clients, got %d", len(msg.Clients))
@@ -134,9 +177,8 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 	defer reqCancel()
 	done := startRequest(reqCtx, f.mgr, approval.ItemInfo{Path: "/test/item"})
 
-	msg := f.read(conn, wsmsg.RequestCreated)
+	msg := readMsg[requestCreatedMsg](f, conn)
 
-	require.NotNil(t, msg.Request, "expected request in message")
 	if msg.Request.Client != "test-client" {
 		t.Errorf("expected client 'test-client', got '%s'", msg.Request.Client)
 	}
@@ -151,11 +193,10 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 
 	done := startRequest(t.Context(), f.mgr, approval.ItemInfo{Path: "/test/item"})
 
-	created := f.read(conn, wsmsg.RequestCreated)
-	require.NotNil(t, created.Request, "expected request in message")
+	created := readMsg[requestCreatedMsg](f, conn)
 	f.mgr.Approve(created.Request.ID)
 
-	msg := f.read(conn, wsmsg.RequestResolved)
+	msg := readMsg[requestResolvedMsg](f, conn)
 
 	if msg.ID != created.Request.ID {
 		t.Errorf("expected ID '%s', got '%s'", created.Request.ID, msg.ID)
@@ -174,14 +215,12 @@ func TestWSHandler_HistoryEntryIsTheStoredEntry(t *testing.T) {
 
 	done := startRequest(t.Context(), f.mgr, approval.ItemInfo{Path: "/test/item"})
 
-	created := f.read(conn, wsmsg.RequestCreated)
-	require.NotNil(t, created.Request, "expected request in message")
+	created := readMsg[requestCreatedMsg](f, conn)
 	f.mgr.Approve(created.Request.ID)
 	f.read(conn, wsmsg.RequestResolved)
-	msg := f.read(conn, wsmsg.HistoryEntry)
+	msg := readMsg[historyEntryMsg](f, conn)
 	<-done
 
-	require.NotNil(t, msg.HistoryEntry, "expected history entry in message")
 	history := f.mgr.History()
 	require.Len(t, history, 1)
 	want, err := json.Marshal(convertHistoryEntry(history[0]))
@@ -228,9 +267,8 @@ func TestWSHandler_BroadcastClient(t *testing.T) {
 	client := proxy.ClientInfo{Name: "new-client", SocketPath: "/new/socket"}
 	f.handler.BroadcastClientConnected(client)
 
-	msg := f.read(conn, wsmsg.ClientConnected)
+	msg := readMsg[clientConnectedMsg](f, conn)
 
-	require.NotNil(t, msg.Client, "expected client in message")
 	if msg.Client.Name != "new-client" {
 		t.Errorf("expected client name 'new-client', got '%s'", msg.Client.Name)
 	}
@@ -276,7 +314,7 @@ func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
 	// Add a rule before connecting
 	mustAddRule(t, f.mgr, ghSecretRequest())
 
-	msg := f.read(f.dial(), wsmsg.Snapshot)
+	msg := readMsg[snapshotMsg](f, f.dial())
 
 	if len(msg.AutoApproveRules) != 1 {
 		t.Fatalf("expected 1 auto-approve rule in snapshot, got %d", len(msg.AutoApproveRules))
@@ -298,11 +336,8 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 	req.Items[0].Attributes = map[string]string{"service": "gh:github.com"}
 	mustAddRule(t, f.mgr, req)
 
-	msg := f.read(conn, wsmsg.AutoApproveRuleAdded)
+	msg := readMsg[autoApproveRuleAddedMsg](f, conn)
 
-	if msg.AutoApproveRule == nil {
-		t.Fatal("expected auto_approve_rule in message")
-	}
 	if msg.AutoApproveRule.InvokerName != "gh" {
 		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRule.InvokerName)
 	}
@@ -329,7 +364,7 @@ func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
 		t.Fatalf("failed to remove rule: %v", err)
 	}
 
-	msg := f.read(conn, wsmsg.AutoApproveRuleRemoved)
+	msg := readMsg[autoApproveRuleRemovedMsg](f, conn)
 
 	if msg.ID != ruleID {
 		t.Errorf("expected rule ID '%s', got '%s'", ruleID, msg.ID)
@@ -355,12 +390,10 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 }
 
 // Checks that the gpgsign thin client reads how the server resolved a gpg_sign
-// request: approved, denied or cancelled. The client loops past a message
-// whose type it does not recognize, so a drift between the two sides shows up
-// as a read that runs out of time.
+// request: approved, denied or cancelled.
 func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
 	tests := []struct {
-		resolve func(mgr *approval.Manager, id string) error
+		resolve func(mgr *approval.Manager, id approval.RequestID) error
 		want    approval.Resolution
 	}{
 		{(*approval.Manager).Approve, approval.ResolutionApproved},
@@ -373,8 +406,7 @@ func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
 			conn := f.dial()
 			f.read(conn, wsmsg.Snapshot)
 
-			id, err := f.mgr.CreateGPGSignRequest(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
-			require.NoError(t, err, "create gpg_sign request")
+			id := f.mgr.Create(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
 			require.NoError(t, tt.resolve(f.mgr, id), "resolve request")
 
 			outcome, err := gpgsign.WaitForResolution(f.ctx, conn, id)

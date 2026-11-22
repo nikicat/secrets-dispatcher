@@ -12,10 +12,12 @@ hand, trains the user to click approve without reading.
 ## Decision
 
 - **Every access is a separate request.** Approving one secret authorizes only
-  that request.
+  that request, apart from the short cache below.
 - **A recent approval answers the same sender again.** For `approval_window`
   (default 5s), approving an item, or creating it, also approves later requests
-  from the same sender for that item. Deletes and writes always prompt. A bulk
+  from the same sender for that item. Applications such as browsers and git
+  credential helpers read the same secret several times in a burst, and without
+  the cache each read would prompt again. Deletes and writes always prompt. A bulk
   `GetSecrets(items[])` is one request with one prompt, and the cache answers it
   only when every item is cached.
 - **Unanswered requests expire** after `timeout` (default 5m) and fail.

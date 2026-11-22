@@ -69,16 +69,24 @@ const testToken config.AuthToken = "test-token"
 
 // newTestClient creates a DaemonClient that redirects requests to the given httptest server.
 func newTestClient(srv *httptest.Server) *DaemonClient {
-	return &DaemonClient{
-		token: testToken,
-		httpClient: &http.Client{
-			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-				req.URL.Scheme = "http"
-				req.URL.Host = strings.TrimPrefix(srv.URL, "http://")
-				return http.DefaultTransport.RoundTrip(req)
-			}),
-		},
+	client := NewDaemonClient("", testToken)
+	client.api.http = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			req.URL.Scheme = "http"
+			req.URL.Host = strings.TrimPrefix(srv.URL, "http://")
+			return http.DefaultTransport.RoundTrip(req)
+		}),
 	}
+	return client
+}
+
+// Returns the sign info of a commit in my-repo.
+func testSignInfo(t *testing.T) *approval.GPGSignInfo {
+	t.Helper()
+	object := approval.SignedObject("tree 0\nauthor Alice <alice@example.com>\n\nfeat: add tests\n")
+	info, err := approval.NewGPGSignInfo(object, "my-repo", "ABCD1234", approval.ListedFiles(nil))
+	require.NoError(t, err)
+	return info
 }
 
 func TestPostSigningRequest_Success(t *testing.T) {
@@ -100,12 +108,7 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	reqID, err := client.PostSigningRequest(context.Background(), &approval.GPGSignInfo{
-		RepoName:  "my-repo",
-		CommitMsg: "feat: add tests",
-		Author:    "Alice <alice@example.com>",
-		KeyID:     "ABCD1234",
-	})
+	reqID, err := client.PostSigningRequest(context.Background(), testSignInfo(t))
 	if err != nil {
 		t.Fatalf("PostSigningRequest failed: %v", err)
 	}
@@ -127,8 +130,8 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	if client, ok := rawBody["client"]; ok {
 		t.Errorf("body.client = %s, want none: the daemon names the client by its socket", client)
 	}
-	if gotBody.GPGSignInfo.CommitMsg != "feat: add tests" {
-		t.Errorf("body.gpg_sign_info.commit_msg = %q, want %q", gotBody.GPGSignInfo.CommitMsg, "feat: add tests")
+	if got := gotBody.GPGSignInfo.Signed.Message; got != "feat: add tests" {
+		t.Errorf("body.gpg_sign_info.commit_msg = %q, want %q", got, "feat: add tests")
 	}
 }
 
@@ -139,7 +142,7 @@ func TestPostSigningRequest_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	_, err := client.PostSigningRequest(context.Background(), &approval.GPGSignInfo{})
+	_, err := client.PostSigningRequest(context.Background(), testSignInfo(t))
 	if err == nil {
 		t.Fatal("expected error for 500 response, got nil")
 	}
@@ -155,7 +158,7 @@ func TestPostSigningRequest_EmptyRequestID(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	_, err := client.PostSigningRequest(context.Background(), &approval.GPGSignInfo{})
+	_, err := client.PostSigningRequest(context.Background(), testSignInfo(t))
 	if err == nil {
 		t.Fatal("expected error for empty request_id, got nil")
 	}
@@ -303,6 +306,6 @@ func TestSignRemote_ApprovedWithoutOutput(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 
-	_, err = SignRemote(context.Background(), socket, &approval.GPGSignInfo{})
+	_, err = SignRemote(context.Background(), socket, testSignInfo(t))
 	assert.ErrorContains(t, err, "without gpg output")
 }

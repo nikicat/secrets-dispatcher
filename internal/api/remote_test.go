@@ -52,10 +52,13 @@ func newRemoteHarnessExpiring(t *testing.T, timeout time.Duration) *remoteHarnes
 }
 
 // Runs the thin client's remote call in the background.
-func (rh *remoteHarness) signAsync(ctx context.Context) <-chan remoteSignOutcome {
+func (rh *remoteHarness) signAsync(t *testing.T, ctx context.Context) <-chan remoteSignOutcome {
+	t.Helper()
+	info, err := approval.NewGPGSignInfo(approval.SignedObject(remoteCommit), "repo", "ABCD", approval.ListedFiles(nil))
+	require.NoError(t, err)
 	out := make(chan remoteSignOutcome, 1)
 	go func() {
-		res, err := gpgsign.SignRemote(ctx, rh.remote.SocketPath, &approval.GPGSignInfo{RepoName: "repo", KeyID: "ABCD", CommitObject: remoteCommit})
+		res, err := gpgsign.SignRemote(ctx, rh.remote.SocketPath, info)
 		out <- remoteSignOutcome{res: res, err: err}
 	}()
 	return out
@@ -63,19 +66,19 @@ func (rh *remoteHarness) signAsync(ctx context.Context) <-chan remoteSignOutcome
 
 func (rh *remoteHarness) waitPending(t *testing.T) *approval.Request {
 	t.Helper()
-	var pending []*approval.Request
+	var pending []approval.Pending
 	require.Eventually(t, func() bool { pending = rh.mgr.List(); return len(pending) == 1 }, 2*time.Second, 10*time.Millisecond)
-	return pending[0]
+	return pending[0].Request
 }
 
 func TestRemoteSign_ApprovedReturnsSignature(t *testing.T) {
 	rh := newRemoteHarness(t)
-	result := rh.signAsync(context.Background())
+	result := rh.signAsync(t, context.Background())
 
 	req := rh.waitPending(t)
 	assert.Equal(t, approval.ClientName("remote:nb-home"), req.SenderInfo.Client)
 	assert.Empty(t, req.SenderInfo.ProcessChain, "a remote request has no local process chain")
-	assert.Equal(t, "fix: remote", req.GPGSignInfo.CommitMsg, "display stays bound to the signed bytes")
+	assert.Equal(t, "fix: remote", requireGPGSign(t, req).Signed.Message, "display stays bound to the signed bytes")
 	require.NoError(t, rh.h.resolver.Approve(req.ID))
 
 	out := <-result
@@ -90,17 +93,17 @@ func TestRemoteSign_ClientReadsEveryResolution(t *testing.T) {
 	cases := []struct {
 		want    approval.Resolution
 		timeout time.Duration
-		resolve func(rh *remoteHarness, id string) error
+		resolve func(rh *remoteHarness, id approval.RequestID) error
 	}{
-		{approval.ResolutionApproved, remoteTimeout, func(rh *remoteHarness, id string) error { return rh.h.resolver.Approve(id) }},
-		{approval.ResolutionDenied, remoteTimeout, func(rh *remoteHarness, id string) error { return rh.h.resolver.Deny(id) }},
-		{approval.ResolutionCancelled, remoteTimeout, func(rh *remoteHarness, id string) error { return rh.mgr.Cancel(id) }},
-		{approval.ResolutionExpired, 500 * time.Millisecond, func(*remoteHarness, string) error { return nil }},
+		{approval.ResolutionApproved, remoteTimeout, func(rh *remoteHarness, id approval.RequestID) error { return rh.h.resolver.Approve(id) }},
+		{approval.ResolutionDenied, remoteTimeout, func(rh *remoteHarness, id approval.RequestID) error { return rh.h.resolver.Deny(id) }},
+		{approval.ResolutionCancelled, remoteTimeout, func(rh *remoteHarness, id approval.RequestID) error { return rh.mgr.Cancel(id) }},
+		{approval.ResolutionExpired, 500 * time.Millisecond, func(*remoteHarness, approval.RequestID) error { return nil }},
 	}
 	for _, c := range cases {
 		t.Run(string(c.want), func(t *testing.T) {
 			rh := newRemoteHarnessExpiring(t, c.timeout)
-			result := rh.signAsync(context.Background())
+			result := rh.signAsync(t, context.Background())
 			require.NoError(t, c.resolve(rh, rh.waitPending(t).ID))
 			out := <-result
 			require.NoError(t, out.err)
@@ -113,7 +116,7 @@ func TestRemoteSign_ClientReadsEveryResolution(t *testing.T) {
 func TestRemoteSign_DroppedConnectionCancelsRequest(t *testing.T) {
 	rh := newRemoteHarness(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	result := rh.signAsync(ctx)
+	result := rh.signAsync(t, ctx)
 
 	rh.waitPending(t)
 	cancel()
@@ -124,7 +127,7 @@ func TestRemoteSign_DroppedConnectionCancelsRequest(t *testing.T) {
 
 func TestRemoteSign_ShutdownKeepsItsDeadline(t *testing.T) {
 	rh := newRemoteHarness(t)
-	result := rh.signAsync(context.Background())
+	result := rh.signAsync(t, context.Background())
 	req := rh.waitPending(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

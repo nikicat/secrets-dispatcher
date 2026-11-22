@@ -103,7 +103,7 @@ func TestServer_Integration(t *testing.T) {
 		}
 
 		// Approve via API
-		req, _ = http.NewRequest(http.MethodPost, baseURL+"/api/v1/pending/"+started.ID+"/approve", nil)
+		req, _ = http.NewRequest(http.MethodPost, baseURL+"/api/v1/pending/"+string(started.ID)+"/approve", nil)
 		auth.Token().Authorize(req.Header)
 
 		resp, err = client.Do(req)

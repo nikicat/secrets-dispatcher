@@ -1,20 +1,13 @@
 package proxy
 
 import (
-	"strings"
-
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
 
-// signalForwarder subscribes to signals from the Secret Service on the backend
-// connection and re-emits them on the frontend connection. This enables clients
-// like Seahorse to see live updates when secrets are created/deleted.
-//
-// Note: Seahorse has a bug where adding an item switches the view to the first
-// collection alphabetically. This is caused by Seahorse's own focus-place action,
-// not by forwarded signals. See https://gitlab.gnome.org/GNOME/seahorse/-/issues/430
+// Re-emits the backend Secret Service's signals on the front bus, so clients
+// see items and collections change live.
 type signalForwarder struct {
 	backendConn *dbus.Conn
 	frontConn   *dbus.Conn
@@ -50,9 +43,9 @@ func (f *signalForwarder) run() {
 			if !ok {
 				return
 			}
-			// Skip D-Bus daemon signals (NameAcquired, NameOwnerChanged, etc.)
-			if !strings.HasPrefix(sig.Name, "org.freedesktop.Secret.") &&
-				!strings.HasPrefix(sig.Name, "org.freedesktop.DBus.Properties.") {
+			// The bus daemon sends NameAcquired and NameLost to every connection
+			// without a match rule.
+			if sig.Sender == dbustypes.BusDaemonName {
 				continue
 			}
 			if err := f.frontConn.Emit(sig.Path, sig.Name, sig.Body...); err != nil {

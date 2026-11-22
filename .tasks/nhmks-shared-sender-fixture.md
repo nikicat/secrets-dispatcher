@@ -42,4 +42,15 @@ Done when each item below is fixed as its "Fix" says.
   a sender without one, used by the changed sites; gpgsign_test.go's exeSender
   joins it if the edit is cheap, else it is planned.
 
+- `internal/gpgsign/daemon_test.go` testSignInfo,
+  `internal/notification/desktop_test.go` commitSignInfo,
+  `internal/approval/manager_test.go` signRequestOf,
+  `internal/api/remote_test.go` and `internal/api/handlers_test.go` (the
+  approval.NewGPGSignInfo calls) (repeated derivation). Each writes a commit
+  object, calls approval.NewGPGSignInfo with a key and ListedFiles, and
+  requires no error.
+  Fix: One exported commit sign-info fixture in the same non-test file of
+  approval as the sender fixture above, used by all five. (2026-11-21 23:24
+  unsmell run, rc3-c-13)
+
 Found by the 2026-11-19 unsmell run (b3-7, x-5).

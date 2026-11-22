@@ -3,13 +3,17 @@
 // and serves stub methods. Phase 5 replaces the stubs with real business logic.
 package daemon
 
-import "github.com/godbus/dbus/v5"
+import (
+	"github.com/godbus/dbus/v5"
+
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+)
 
 // D-Bus interface constants for the companion daemon.
 const (
-	BusName    = "net.mowaka.SecretsDispatcher1"
-	ObjectPath = dbus.ObjectPath("/net/mowaka/SecretsDispatcher1")
-	Interface  = "net.mowaka.SecretsDispatcher1"
+	BusName                        = "net.mowaka.SecretsDispatcher1"
+	ObjectPath                     = dbus.ObjectPath("/net/mowaka/SecretsDispatcher1")
+	Interface  dbustypes.Interface = "net.mowaka.SecretsDispatcher1"
 )
 
 // Dispatcher is the D-Bus object exported under ObjectPath/Interface.

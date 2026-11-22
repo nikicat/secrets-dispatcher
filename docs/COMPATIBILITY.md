@@ -41,6 +41,13 @@ App → secrets-dispatcher → gopass-secret-service → GoPass → GPG
        (access control)     (Secret Service API)    (store)  (encryption)
 ```
 
+## Known issues
+
+- Seahorse switches its view to the alphabetically first collection when an
+  item is added. Seahorse's own focus-place action does this, not the signals
+  the dispatcher forwards
+  ([seahorse#430](https://gitlab.gnome.org/GNOME/seahorse/-/issues/430)).
+
 ## Feature status
 
 | Feature | Status |
@@ -53,4 +60,4 @@ App → secrets-dispatcher → gopass-secret-service → GoPass → GPG
 | Process chain detection | Working — full ancestry with exe, CWD, systemd unit |
 | Trust rules engine | Working — process + secret matching with globs |
 | Client pairing (remote) | Planned |
-| DH encryption for secrets in transit | Planned |
+| DH session encryption | Working — DH or `plain` sessions with clients, a `plain` session with the backend ([ADR 0001](adr/0001-proxy-the-secret-service.md)) |

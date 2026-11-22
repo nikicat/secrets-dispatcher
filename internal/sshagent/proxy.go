@@ -62,31 +62,15 @@ func (p *proxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.S
 func (p *proxyAgent) signWithApproval(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
 	fingerprint := ssh.FingerprintSHA256(key)
 	comment := p.findKeyComment(key)
-	label := comment
-	if label == "" {
-		label = fingerprint
-	}
-
-	attrs := map[string]string{
-		"fingerprint": fingerprint,
-	}
-	if p.destination != nil {
-		attrs["destination"] = *p.destination
-	}
-
-	items := []approval.ItemInfo{{
-		Path:       fingerprint,
-		Label:      label,
-		Attributes: attrs,
-	}}
+	item := approval.SSHSignItem(fingerprint, comment, p.destination)
 
 	p.logger.Info("sign request received",
 		"fingerprint", fingerprint,
 		"comment", comment,
-		"destination", attrs["destination"],
+		"destination", item.SSHDestination(),
 		"invoker", p.senderInfo.InvokerName)
 
-	info := approval.RequestInfo{Items: items, Type: approval.RequestTypeSSHSign, SenderInfo: p.senderInfo}
+	info := approval.RequestInfo{Items: []approval.ItemInfo{item}, Type: approval.RequestTypeSSHSign, SenderInfo: p.senderInfo}
 	if _, err := p.approval.RequireApproval(context.TODO(), info); err != nil {
 		p.logger.Info("sign request denied", "fingerprint", fingerprint, "error", err)
 		return nil, fmt.Errorf("sign request denied: %w", err)

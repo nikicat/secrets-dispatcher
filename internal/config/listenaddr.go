@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
 // The host:port on which serve's HTTP API and web UI listen, such as
@@ -42,8 +44,8 @@ func (a ListenAddr) LoginURL(token string) string {
 }
 
 // Returns the web UI link that shows only the pending request with the given id.
-func (a ListenAddr) RequestURL(id string) string {
-	return a.webUIURL(url.Values{"request": {id}})
+func (a ListenAddr) RequestURL(id approval.RequestID) string {
+	return a.webUIURL(url.Values{"request": {string(id)}})
 }
 
 func (a ListenAddr) webUIURL(query url.Values) string {

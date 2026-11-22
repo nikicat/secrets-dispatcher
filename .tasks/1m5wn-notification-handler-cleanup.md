@@ -20,10 +20,8 @@ Done when each item below is fixed as its "Fix" says.
   store-and-sweep block
 - `internal/notification/desktop.go:376-382` (parameter bloat). NewHandler
   takes six parameters, among them a bool (showPIDs) and two adjacent
-  durations (autoApproveDuration, notificationDelay) that transpose silently;
-  its doc reads the parameters back.
-  Fix: a HandlerConfig struct for listenAddr, showPIDs and the two durations; the
-  doc goes
+  durations (autoApproveDuration, notificationDelay) that transpose silently.
+  Fix: a HandlerConfig struct for listenAddr, showPIDs and the two durations
 - `internal/notification/desktop.go:702-744` (duplication). formatBody nests
   switch-in-if-in-switch, and the item label / item count / search attributes
   switch is written twice (:705-718 and :730-743), differing only in the <b>
@@ -49,3 +47,12 @@ Done when each item below is fixed as its "Fix" says.
   Fix: formatBody calls escapeMarkup and the esc alias goes
 
 Found by the 2026-11-19 unsmell run (b2-8, b2-16, b2-17, b2-18, b2-19, b2-20).
+
+- `internal/notification/desktop.go` (handleAction) (long comment). The
+  3-line comment explains an invariant that the code could hold itself: the
+  request is forgotten before Approve or Deny, so the synchronous
+  handleResolved callback does not Close the notification, and the duplicate
+  ActionInvoked signal does not reach the approver.
+  Fix: with the bimap above, a named `forgetNotification(id) (requestID,
+  bool)` call states the step, and the comment keeps one sentence on the
+  duplicate ActionInvoked signal. (2026-11-21 unsmell run, b7-10)

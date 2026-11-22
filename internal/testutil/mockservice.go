@@ -41,38 +41,41 @@ func NewMockSecretService() *MockSecretService {
 	}
 }
 
+// The path of the one collection that the mock serves, which its default alias
+// names too.
+const DefaultCollectionPath dbus.ObjectPath = dbustypes.CollectionsPath + "/default"
+
+// The path of the mock's default alias.
+const DefaultAliasPath dbus.ObjectPath = dbustypes.AliasesPath + "/default"
+
 // Register exports the mock service on the given connection.
 func (m *MockSecretService) Register(conn *dbus.Conn) error {
 	m.conn = conn
 
 	// Export Service interface
-	if err := conn.Export(m, dbustypes.ServicePath, dbustypes.ServiceInterface); err != nil {
+	if err := conn.Export(m, dbustypes.ServicePath, string(dbustypes.ServiceInterface)); err != nil {
 		return fmt.Errorf("export Service: %w", err)
 	}
 
 	// Export Properties interface
-	if err := conn.Export(m, dbustypes.ServicePath, "org.freedesktop.DBus.Properties"); err != nil {
+	if err := conn.Export(m, dbustypes.ServicePath, string(dbustypes.PropertiesInterface)); err != nil {
 		return fmt.Errorf("export Properties: %w", err)
 	}
 
 	// Export Introspectable
-	if err := conn.Export(introspectable{m.Introspect}, dbustypes.ServicePath, "org.freedesktop.DBus.Introspectable"); err != nil {
+	if err := conn.Export(introspectable{m.Introspect}, dbustypes.ServicePath, string(dbustypes.IntrospectableInterface)); err != nil {
 		return fmt.Errorf("export Introspectable: %w", err)
 	}
 
-	// Export collection at both /collection/default and /aliases/default paths.
-	// gopass-secret-service serves both; gnome-keyring serves only /collection
-	// paths and answers UnknownMethod on /aliases (libsecret falls back to
-	// CreateCollection in that case).
-	for _, collPath := range []dbus.ObjectPath{
-		"/org/freedesktop/secrets/collection/default",
-		"/org/freedesktop/secrets/aliases/default",
-	} {
+	// Serve the default collection at its alias path too, as gopass-secret-service
+	// does. gnome-keyring answers UnknownMethod there, and libsecret then calls
+	// CreateCollection.
+	for _, collPath := range []dbus.ObjectPath{DefaultCollectionPath, DefaultAliasPath} {
 		coll := &mockCollection{service: m, path: collPath}
-		if err := conn.Export(coll, collPath, dbustypes.CollectionInterface); err != nil {
+		if err := conn.Export(coll, collPath, string(dbustypes.CollectionInterface)); err != nil {
 			return fmt.Errorf("export Collection at %s: %w", collPath, err)
 		}
-		if err := conn.Export(coll, collPath, "org.freedesktop.DBus.Properties"); err != nil {
+		if err := conn.Export(coll, collPath, string(dbustypes.PropertiesInterface)); err != nil {
 			return fmt.Errorf("export Collection Properties at %s: %w", collPath, err)
 		}
 	}
@@ -176,7 +179,7 @@ func (m *MockSecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, 
 // ReadAlias returns the collection for an alias.
 func (m *MockSecretService) ReadAlias(name string) (dbus.ObjectPath, *dbus.Error) {
 	if name == "default" {
-		return "/org/freedesktop/secrets/collection/default", nil
+		return DefaultCollectionPath, nil
 	}
 	return "/", nil
 }
@@ -188,22 +191,22 @@ func (m *MockSecretService) SetAlias(name string, collection dbus.ObjectPath) *d
 
 // CreateCollection creates a collection (mock returns default).
 func (m *MockSecretService) CreateCollection(properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	return "/org/freedesktop/secrets/collection/default", "/", nil
+	return DefaultCollectionPath, "/", nil
 }
 
 // Get implements Properties.Get.
 func (m *MockSecretService) Get(iface, property string) (dbus.Variant, *dbus.Error) {
-	if iface == dbustypes.ServiceInterface && property == "Collections" {
-		return dbus.MakeVariant([]dbus.ObjectPath{"/org/freedesktop/secrets/collection/default"}), nil
+	if dbustypes.Interface(iface) == dbustypes.ServiceInterface && property == "Collections" {
+		return dbus.MakeVariant([]dbus.ObjectPath{DefaultCollectionPath}), nil
 	}
 	return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownProperty"}
 }
 
 // GetAll implements Properties.GetAll.
 func (m *MockSecretService) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
-	if iface == dbustypes.ServiceInterface {
+	if dbustypes.Interface(iface) == dbustypes.ServiceInterface {
 		return map[string]dbus.Variant{
-			"Collections": dbus.MakeVariant([]dbus.ObjectPath{"/org/freedesktop/secrets/collection/default"}),
+			"Collections": dbus.MakeVariant([]dbus.ObjectPath{DefaultCollectionPath}),
 		}, nil
 	}
 	return nil, nil
@@ -268,7 +271,7 @@ func (m *MockSecretService) Introspect() string {
 // AddItem adds a secret item to the mock store (for test setup).
 func (m *MockSecretService) AddItem(label string, attributes map[string]string, secret []byte) dbus.ObjectPath {
 	id := m.itemCtr.Add(1)
-	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/collection/default/%d", id))
+	path := dbus.ObjectPath(fmt.Sprintf("%s/%d", DefaultCollectionPath, id))
 
 	item := &MockItem{
 		Path:        path,
@@ -284,8 +287,8 @@ func (m *MockSecretService) AddItem(label string, attributes map[string]string, 
 
 	// Export item interface
 	itemHandler := &mockItem{service: m, path: path}
-	m.conn.Export(itemHandler, path, dbustypes.ItemInterface)
-	m.conn.Export(itemHandler, path, "org.freedesktop.DBus.Properties")
+	m.conn.Export(itemHandler, path, string(dbustypes.ItemInterface))
+	m.conn.Export(itemHandler, path, string(dbustypes.PropertiesInterface))
 
 	return path
 }
@@ -325,7 +328,7 @@ func (m *MockSecretService) newPrompt(objects []dbus.ObjectPath) dbus.ObjectPath
 	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/prompt/p%d", id))
 
 	prompt := &mockPrompt{service: m, path: path, objects: objects}
-	m.conn.Export(prompt, path, dbustypes.PromptInterface)
+	m.conn.Export(prompt, path, string(dbustypes.PromptInterface))
 
 	return path
 }
@@ -353,7 +356,7 @@ func (p *mockPrompt) Dismiss() *dbus.Error {
 }
 
 func (p *mockPrompt) completed(dismissed bool, result dbus.Variant) *dbus.Error {
-	if err := p.service.conn.Emit(p.path, dbustypes.PromptInterface+".Completed", dismissed, result); err != nil {
+	if err := p.service.conn.Emit(p.path, dbustypes.PromptInterface.Member("Completed"), dismissed, result); err != nil {
 		return dbustypes.ErrFailed(err)
 	}
 	return nil

@@ -121,12 +121,12 @@ const gpgSignRequest: WSRequestCreatedMessage = {
     },
     gpg_sign_info: {
       repo_name: "my-project",
+      kind: "commit",
       commit_msg:
         "feat: add OAuth2 login flow\n\nImplement authorization code grant with PKCE.\nAdd refresh token rotation and session management.",
       author: "Alice Developer <alice@example.com> 1741500000 +0100",
       committer: "Alice Developer <alice@example.com> 1741500000 +0100",
       key_id: "A1B2C3D4",
-      fingerprint: "8F3A 2B1C 4D5E 6F7A 8B9C  0D1E 2F3A 4B5C A1B2 C3D4",
       changed_files: [
         "internal/auth/oauth2.go",
         "internal/auth/oauth2_test.go",

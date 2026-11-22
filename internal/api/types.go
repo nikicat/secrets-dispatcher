@@ -29,14 +29,14 @@ type ItemInfo struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
-// PendingRequest represents a pending approval request in API responses.
-type PendingRequest struct {
-	ID               string                `json:"id"`
+// A request as the API sends it in a History entry. PendingRequest adds what
+// only a pending request has.
+type RequestRecord struct {
+	ID               approval.RequestID    `json:"id"`
 	Client           approval.ClientName   `json:"client"`
 	Items            []ItemInfo            `json:"items"`
 	Session          dbus.ObjectPath       `json:"session"`
 	CreatedAt        time.Time             `json:"created_at"`
-	ExpiresAt        time.Time             `json:"expires_at"`
 	Type             approval.RequestType  `json:"type"`
 	SearchAttributes map[string]string     `json:"search_attributes,omitempty"`
 	SenderInfo       sender.Info           `json:"sender_info"`
@@ -44,6 +44,23 @@ type PendingRequest struct {
 	// True if approval.Request.AutoApprovable accepts the request. False
 	// otherwise.
 	AutoApprovable bool `json:"auto_approvable"`
+}
+
+// Returns the approval payload for the record's type, or nil for a type that
+// carries none.
+func (r RequestRecord) payload() approval.Payload {
+	switch r.Type {
+	case approval.RequestTypeGPGSign:
+		return r.GPGSignInfo
+	case approval.RequestTypeSearch:
+		return approval.SearchPayload{Attributes: r.SearchAttributes}
+	}
+	return nil
+}
+
+type PendingRequest struct {
+	RequestRecord
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // ActionResponse is returned by approve/deny endpoints.
@@ -73,7 +90,7 @@ type LogResponse struct {
 
 // HistoryEntry represents a resolved approval request in API responses.
 type HistoryEntry struct {
-	Request    PendingRequest      `json:"request"`
+	Request    RequestRecord       `json:"request"`
 	Resolution approval.Resolution `json:"resolution"`
 	ResolvedAt time.Time           `json:"resolved_at"`
 }

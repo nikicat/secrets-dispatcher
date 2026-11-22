@@ -16,7 +16,7 @@ type Logger struct {
 	client approval.ClientName
 }
 
-// Returns a logger whose records name client.
+// Returns a logger whose records name the given client.
 func New(client approval.ClientName) *Logger {
 	return &Logger{
 		Logger: slog.Default(),
@@ -24,16 +24,26 @@ func New(client approval.ClientName) *Logger {
 	}
 }
 
+// Outcome of one D-Bus call, as its audit record names it.
+type Result string
+
+const (
+	ResultOK     Result = "ok"
+	ResultDenied Result = "denied"
+	ResultError  Result = "error"
+	// The call was a write that an ignore rule dropped, and the client was told
+	// it succeeded.
+	ResultIgnored Result = "ignored"
+)
+
 // Logs a D-Bus method call with its result.
-func (l *Logger) LogMethod(ctx context.Context, method string, args map[string]any, result string, err error) {
+func (l *Logger) logMethod(ctx context.Context, method string, result Result, err error, args ...slog.Attr) {
 	attrs := []slog.Attr{
 		slog.String("client", string(l.client)),
 		slog.String("method", method),
-		slog.String("result", result),
+		slog.String("result", string(result)),
 	}
-	for k, v := range args {
-		attrs = append(attrs, slog.Any(k, v))
-	}
+	attrs = append(attrs, args...)
 	if err != nil {
 		attrs = append(attrs, slog.String("error", err.Error()))
 	}
@@ -42,39 +52,67 @@ func (l *Logger) LogMethod(ctx context.Context, method string, args map[string]a
 }
 
 // Logs a GetSecrets call with the requested items.
-func (l *Logger) LogGetSecrets(ctx context.Context, items []dbus.ObjectPath, result string, err error) {
-	l.LogMethod(ctx, "GetSecrets", map[string]any{"items": items}, result, err)
+func (l *Logger) LogGetSecrets(ctx context.Context, items []dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "GetSecrets", result, err, slog.Any("items", items))
 }
 
-func (l *Logger) LogOpenSession(ctx context.Context, algorithm string, sessionPath string, result string, err error) {
-	l.LogMethod(ctx, "OpenSession", map[string]any{
-		"algorithm": algorithm,
-		"session":   sessionPath,
-	}, result, err)
+func (l *Logger) LogOpenSession(ctx context.Context, algorithm string, sessionPath dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "OpenSession", result, err,
+		slog.String("algorithm", algorithm),
+		slog.String("session", string(sessionPath)))
 }
 
-func (l *Logger) LogSearchItems(ctx context.Context, attributes map[string]string, unlocked, locked int, result string, err error) {
-	l.LogMethod(ctx, "SearchItems", map[string]any{
-		"attributes":     attributes,
-		"unlocked_count": unlocked,
-		"locked_count":   locked,
-	}, result, err)
+func (l *Logger) LogSearchItems(ctx context.Context, attributes map[string]string, unlocked, locked int, result Result, err error) {
+	l.logMethod(ctx, "SearchItems", result, err,
+		slog.Any("attributes", attributes),
+		slog.Int("unlocked_count", unlocked),
+		slog.Int("locked_count", locked))
 }
 
-func (l *Logger) LogUnlock(ctx context.Context, objects []dbus.ObjectPath, unlocked int, result string, err error) {
-	l.LogMethod(ctx, "Unlock", map[string]any{
-		"objects":        objects,
-		"unlocked_count": unlocked,
-	}, result, err)
+func (l *Logger) LogUnlock(ctx context.Context, objects []dbus.ObjectPath, unlocked int, result Result, err error) {
+	l.logMethod(ctx, "Unlock", result, err,
+		slog.Any("objects", objects),
+		slog.Int("unlocked_count", unlocked))
 }
 
-func (l *Logger) LogReadAlias(ctx context.Context, alias string, collection string, result string, err error) {
-	l.LogMethod(ctx, "ReadAlias", map[string]any{
-		"alias":      alias,
-		"collection": collection,
-	}, result, err)
+func (l *Logger) LogReadAlias(ctx context.Context, alias string, collection dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "ReadAlias", result, err,
+		slog.String("alias", alias),
+		slog.String("collection", string(collection)))
 }
 
-func (l *Logger) LogItemGetSecret(ctx context.Context, itemPath string, result string, err error) {
-	l.LogMethod(ctx, "Item.GetSecret", map[string]any{"item": itemPath}, result, err)
+func (l *Logger) LogCollectionDelete(ctx context.Context, collection dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "Collection.Delete", result, err, slog.String("collection", string(collection)))
+}
+
+func (l *Logger) LogCollectionSearchItems(ctx context.Context, collection dbus.ObjectPath, attributes map[string]string, count int, result Result, err error) {
+	l.logMethod(ctx, "Collection.SearchItems", result, err,
+		slog.String("collection", string(collection)),
+		slog.Any("attributes", attributes),
+		slog.Int("count", count))
+}
+
+// Logs a CreateItem call on the given collection that created no item.
+// LogItemCreated logs the one that did.
+func (l *Logger) LogCreateItem(ctx context.Context, collection dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "Collection.CreateItem", result, err, slog.String("collection", string(collection)))
+}
+
+// Logs a CreateItem call on the given collection that created the given item.
+func (l *Logger) LogItemCreated(ctx context.Context, collection, item dbus.ObjectPath) {
+	l.logMethod(ctx, "Collection.CreateItem", ResultOK, nil,
+		slog.String("collection", string(collection)),
+		slog.String("item", string(item)))
+}
+
+func (l *Logger) LogItemDelete(ctx context.Context, item dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "Item.Delete", result, err, slog.String("item", string(item)))
+}
+
+func (l *Logger) LogItemGetSecret(ctx context.Context, item dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "Item.GetSecret", result, err, slog.String("item", string(item)))
+}
+
+func (l *Logger) LogItemSetSecret(ctx context.Context, item dbus.ObjectPath, result Result, err error) {
+	l.logMethod(ctx, "Item.SetSecret", result, err, slog.String("item", string(item)))
 }

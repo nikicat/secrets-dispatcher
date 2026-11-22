@@ -86,7 +86,7 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 	}()
 
 	// Wait for the pending request to appear
-	var pending []*approval.Request
+	var pending []approval.Pending
 	for range 50 {
 		time.Sleep(10 * time.Millisecond)
 		pending = mgr.List()
@@ -109,8 +109,8 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 	if req.Items[0].Label != "test-key@localhost" {
 		t.Errorf("expected label %q, got %q", "test-key@localhost", req.Items[0].Label)
 	}
-	if req.Items[0].Attributes["destination"] != "example.com" {
-		t.Errorf("expected destination %q, got %q", "example.com", req.Items[0].Attributes["destination"])
+	if got := req.Items[0].SSHDestination(); got != "example.com" {
+		t.Errorf("expected destination %q, got %q", "example.com", got)
 	}
 
 	// Approve
@@ -163,7 +163,7 @@ func TestProxyAgent_SignDenied(t *testing.T) {
 	}()
 
 	// Wait for the pending request
-	var pending []*approval.Request
+	var pending []approval.Pending
 	for range 50 {
 		time.Sleep(10 * time.Millisecond)
 		pending = mgr.List()

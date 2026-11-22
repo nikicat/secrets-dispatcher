@@ -5,272 +5,108 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
-	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestSlowUpstreamNotifier_SingleItem(t *testing.T) {
+func TestSlowUpstreamNotifier_NotifiesAndDismisses(t *testing.T) {
 	mock := &mockNotifier{}
 	n := newSlowUpstreamNotifier(mock)
 
-	req := approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}}
-	dismiss := n.NotifySlowUpstream(req)
+	dismiss := n.NotifySlowUpstream(approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}})
 
-	mock.mu.Lock()
-	if len(mock.notified) != 1 {
-		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
-	}
-	call := mock.notified[0]
-	if call.summary != "Waiting for keyring unlock" {
-		t.Errorf("unexpected summary: %q", call.summary)
-	}
-	if call.body != "my-secret" {
-		t.Errorf("unexpected body: %q", call.body)
-	}
-	if call.icon != "dialog-password" {
-		t.Errorf("unexpected icon: %q", call.icon)
-	}
-	if call.buttons != nil {
-		t.Errorf("expected nil buttons (informational), got %v", call.buttons)
-	}
-	notifID := mock.nextID
-	mock.mu.Unlock()
+	require.Equal(t, 1, mock.notifyCount())
+	assert.Equal(t, notifyCall{summary: "Waiting for keyring unlock", body: "my-secret", icon: "dialog-password"}, mock.lastNotify())
 
 	dismiss()
 
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.closed) != 1 || mock.closed[0] != notifID {
-		t.Errorf("expected Close(%d), got %v", notifID, mock.closed)
+	require.Equal(t, 1, mock.closeCount())
+	assert.Equal(t, mock.nextID, mock.lastClosed())
+}
+
+func TestSlowUpstreamSummary(t *testing.T) {
+	tests := []struct {
+		reqType approval.RequestType
+		want    string
+	}{
+		{approval.RequestTypeGPGSign, "Signing commit"},
+		{approval.RequestTypeSSHSign, "SSH key signing"},
+		{approval.RequestTypeSearch, "Searching keyring"},
+		{approval.RequestTypeUnlock, "Unlocking keyring"},
+		{approval.RequestTypeGetSecret, "Waiting for keyring unlock"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.reqType), func(t *testing.T) {
+			assert.Equal(t, tt.want, slowUpstreamSummary(tt.reqType))
+		})
 	}
 }
 
-func TestSlowUpstreamNotifier_MultipleItems(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Items: []approval.ItemInfo{
-		{Label: "secret-a"},
-		{Label: "secret-b"},
-		{Label: "secret-c"},
-	}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.notified) != 1 {
-		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
+func TestFormatSlowUpstreamBody(t *testing.T) {
+	chain := func(names ...string) approval.SenderInfo {
+		procs := make([]procutil.Process, len(names))
+		for i, name := range names {
+			procs[i] = procutil.Process{Name: name, PID: procutil.PID(1000 + i)}
+		}
+		return approval.SenderInfo{ProcessChain: procs}
 	}
-	if mock.notified[0].body != "secret-a, secret-b, secret-c (3 items)" {
-		t.Errorf("unexpected body: %q", mock.notified[0].body)
-	}
-}
-
-func TestSlowUpstreamNotifier_EmptyItems(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	dismiss := n.NotifySlowUpstream(approval.RequestInfo{})
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.notified) != 1 {
-		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
-	}
-	if mock.notified[0].body != "" {
-		t.Errorf("expected empty body for nil items, got %q", mock.notified[0].body)
-	}
-}
-
-func TestSlowUpstreamNotifier_GPGSignSummary(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Type: approval.RequestTypeGPGSign, Items: []approval.ItemInfo{{Label: "my-repo: fix bug"}}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if mock.notified[0].summary != "Signing commit" {
-		t.Errorf("expected summary 'Signing commit', got %q", mock.notified[0].summary)
-	}
-}
-
-func TestSlowUpstreamNotifier_SSHSignSummary(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Type: approval.RequestTypeSSHSign, Items: []approval.ItemInfo{{Label: "ed25519-key"}}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if mock.notified[0].summary != "SSH key signing" {
-		t.Errorf("expected summary 'SSH key signing', got %q", mock.notified[0].summary)
-	}
-}
-
-func TestSlowUpstreamNotifier_SearchSummary(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Type: approval.RequestTypeSearch, Items: []approval.ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if mock.notified[0].summary != "Searching keyring" {
-		t.Errorf("expected summary 'Searching keyring', got %q", mock.notified[0].summary)
-	}
-}
-
-func TestSlowUpstreamNotifier_PathFallback(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	// Items with Path but no Label (e.g. upstream locked, label fetch failed)
-	req := approval.RequestInfo{Items: []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/Login"}}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.notified) != 1 {
-		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
-	}
-	if mock.notified[0].body != "/org/freedesktop/secrets/collection/Login" {
-		t.Errorf("expected Path fallback in body, got %q", mock.notified[0].body)
-	}
-}
-
-func TestSlowUpstreamNotifier_PathFallbackMultiple(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Items: []approval.ItemInfo{
-		{Label: "Login", Path: "/org/freedesktop/secrets/collection/Login"},
-		{Path: "/org/freedesktop/secrets/collection/Other"},
-	}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	expected := "Login, /org/freedesktop/secrets/collection/Other (2 items)"
-	if mock.notified[0].body != expected {
-		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
-	}
-}
-
-func TestSlowUpstreamNotifier_WithProcessChain(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-password"}}, SenderInfo: approval.SenderInfo{
-		Info: sender.Info{
-			PID: 1234,
-			ProcessChain: []procutil.Process{
-				{Name: "git", PID: 1234},
-				{Name: "zsh", PID: 1000},
-				{Name: "claude", PID: 500},
-			},
+	tests := []struct {
+		name string
+		req  approval.RequestInfo
+		want string
+	}{
+		{
+			name: "single item",
+			req:  approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}},
+			want: "my-secret",
 		},
-	}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if len(mock.notified) != 1 {
-		t.Fatalf("expected 1 notify call, got %d", len(mock.notified))
-	}
-	expected := "my-password\ngit \u2190 zsh \u2190 claude"
-	if mock.notified[0].body != expected {
-		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
-	}
-}
-
-func TestSlowUpstreamNotifier_GPGWithProcessChain(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Type: approval.RequestTypeGPGSign, Items: []approval.ItemInfo{{Label: "my-repo: fix bug"}}, SenderInfo: approval.SenderInfo{
-		Info: sender.Info{
-			PID: 2000,
-			ProcessChain: []procutil.Process{
-				{Name: "git", PID: 2000},
-				{Name: "zsh", PID: 1000},
-			},
+		{
+			name: "several items",
+			req:  approval.RequestInfo{Items: []approval.ItemInfo{{Label: "secret-a"}, {Label: "secret-b"}, {Label: "secret-c"}}},
+			want: "secret-a, secret-b, secret-c (3 items)",
 		},
-	}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	expected := "my-repo: fix bug\ngit \u2190 zsh"
-	if mock.notified[0].body != expected {
-		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
-	}
-}
-
-func TestSlowUpstreamNotifier_UnlockSummary(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{Type: approval.RequestTypeUnlock, Items: []approval.ItemInfo{{Label: "Login"}}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if mock.notified[0].summary != "Unlocking keyring" {
-		t.Errorf("expected summary 'Unlocking keyring', got %q", mock.notified[0].summary)
-	}
-}
-
-func TestSlowUpstreamNotifier_ProcessChainOnly(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	req := approval.RequestInfo{SenderInfo: approval.SenderInfo{
-		Info: sender.Info{
-			PID: 1234,
-			ProcessChain: []procutil.Process{
-				{Name: "secret-tool", PID: 1234},
-			},
+		{
+			name: "no items",
+			req:  approval.RequestInfo{},
+			want: "",
 		},
-	}}
-	dismiss := n.NotifySlowUpstream(req)
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	if mock.notified[0].body != "secret-tool" {
-		t.Errorf("unexpected body: %q", mock.notified[0].body)
-	}
-}
-
-func TestSlowUpstreamNotifier_EscapesMarkup(t *testing.T) {
-	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
-
-	dismiss := n.NotifySlowUpstream(approval.RequestInfo{
-		Items: []approval.ItemInfo{{Label: "<b>&"}},
-		SenderInfo: approval.SenderInfo{
-			Info: sender.Info{ProcessChain: []procutil.Process{{Name: "git<", PID: 1}, {Name: "zsh", PID: 2}}},
+		{
+			name: "path when the label is missing",
+			req:  approval.RequestInfo{Items: []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/Login"}}},
+			want: "/org/freedesktop/secrets/collection/Login",
 		},
-	})
-	defer dismiss()
-
-	mock.mu.Lock()
-	defer mock.mu.Unlock()
-	expected := "&lt;b&gt;&amp;\ngit&lt; ← zsh"
-	if mock.notified[0].body != expected {
-		t.Errorf("unexpected body:\ngot:  %q\nwant: %q", mock.notified[0].body, expected)
+		{
+			name: "path for the unlabelled item among several",
+			req: approval.RequestInfo{Items: []approval.ItemInfo{
+				{Label: "Login", Path: "/org/freedesktop/secrets/collection/Login"},
+				{Path: "/org/freedesktop/secrets/collection/Other"},
+			}},
+			want: "Login, /org/freedesktop/secrets/collection/Other (2 items)",
+		},
+		{
+			name: "item and process chain",
+			req:  approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-password"}}, SenderInfo: chain("git", "zsh", "claude")},
+			want: "my-password\ngit ← zsh ← claude",
+		},
+		{
+			name: "gpg sign item and process chain",
+			req:  approval.RequestInfo{Type: approval.RequestTypeGPGSign, Items: []approval.ItemInfo{{Label: "my-repo: fix bug"}}, SenderInfo: chain("git", "zsh")},
+			want: "my-repo: fix bug\ngit ← zsh",
+		},
+		{
+			name: "process chain only",
+			req:  approval.RequestInfo{SenderInfo: chain("secret-tool")},
+			want: "secret-tool",
+		},
+		{
+			name: "escaped markup",
+			req:  approval.RequestInfo{Items: []approval.ItemInfo{{Label: "<b>&"}}, SenderInfo: chain("git<", "zsh")},
+			want: "&lt;b&gt;&amp;\ngit&lt; ← zsh",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, formatSlowUpstreamBody(tt.req))
+		})
 	}
 }

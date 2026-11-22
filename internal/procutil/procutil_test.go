@@ -158,10 +158,10 @@ func TestChain_PopulatesAllFields(t *testing.T) {
 	if entry.Name == "" {
 		t.Error("expected non-empty Name")
 	}
-	if entry.Exe == nil {
+	if _, ok := entry.ExePath(); !ok {
 		t.Error("expected an Exe")
 	}
-	if entry.CWD == nil {
+	if _, ok := entry.CWDPath(); !ok {
 		t.Error("expected a CWD")
 	}
 	if len(entry.Args) == 0 {

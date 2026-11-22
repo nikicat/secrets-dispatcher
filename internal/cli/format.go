@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/godbus/dbus/v5"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
-	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 // Formatter outputs data in various formats.
@@ -23,71 +24,159 @@ func NewFormatter(w io.Writer, asJSON bool) *Formatter {
 	return &Formatter{w: w, asJSON: asJSON}
 }
 
-// FormatRequests outputs a list of pending requests as a table.
-func (f *Formatter) FormatRequests(requests []PendingRequest) error {
+// Writes the pending entries as JSON or as a table.
+func (f *Formatter) FormatPending(entries []PendingEntry) error {
 	if f.asJSON {
-		return json.NewEncoder(f.w).Encode(requests)
+		return json.NewEncoder(f.w).Encode(entries)
 	}
 
-	if len(requests) == 0 {
+	if len(entries) == 0 {
 		fmt.Fprintln(f.w, "No pending requests")
 		return nil
 	}
 
-	// Print header
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-25s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "COLLECTION", "SUMMARY", "EXPIRES")
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-25s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "---------------", "-------------------------", "-------")
-
-	for _, req := range requests {
-		id := truncate(req.ID, 8)
-		client := truncate(req.Client, 20)
-		pid := formatPID(req.SenderInfo.PID)
-		uid := formatUID(req.SenderInfo.UID)
-		reqType := truncate(req.Type, 12)
-		coll := truncate(extractCollection(req), 15)
-		if coll == "" {
-			coll = "-"
-		}
-		secret := truncate(requestSummary(req), 25)
-		remaining := formatRemaining(req.ExpiresAt)
-
-		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-25s  %s\n", id, client, pid, uid, reqType, coll, secret, remaining)
+	t := requestTable(
+		[]column[PendingEntry]{{title: "SUMMARY", width: 25, value: entrySummary[PendingEntry]}},
+		lastColumn[PendingEntry]{title: "EXPIRES", value: func(e PendingEntry) string { return formatRemaining(e.ExpiresAt) }},
+	)
+	t.writeHeader(f.w)
+	for _, entry := range entries {
+		t.writeRow(f.w, entry)
 	}
 	return nil
 }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-1] + "…"
+// A column of a text table.
+type column[R any] struct {
+	title string
+	width int
+	// True if the cells are aligned right. False otherwise.
+	right bool
+	value func(R) string
 }
 
-func requestSummary(req PendingRequest) string {
+// Returns the given text cut and padded to the column's width.
+func (c column[R]) fit(text string) string {
+	text = truncate(text, c.width)
+	if c.right {
+		return fmt.Sprintf("%*s", c.width, text)
+	}
+	return fmt.Sprintf("%-*s", c.width, text)
+}
+
+// The last column of a text table. Its cells are neither cut nor padded.
+type lastColumn[R any] struct {
+	title string
+	value func(R) string
+}
+
+// A text table of columns two spaces apart.
+type table[R any] struct {
+	columns []column[R]
+	last    lastColumn[R]
+}
+
+// Writes the column titles and a rule under each.
+func (t table[R]) writeHeader(w io.Writer) {
+	var titles, rules []string
+	for _, c := range t.columns {
+		titles = append(titles, c.fit(c.title))
+		rules = append(rules, strings.Repeat("-", c.width))
+	}
+	writeLine(w, append(titles, t.last.title))
+	writeLine(w, append(rules, strings.Repeat("-", len(t.last.title))))
+}
+
+// Writes the row's cells.
+func (t table[R]) writeRow(w io.Writer, row R) {
+	var cells []string
+	for _, c := range t.columns {
+		cells = append(cells, c.fit(cellText(c.value(row))))
+	}
+	writeLine(w, append(cells, cellText(t.last.value(row))))
+}
+
+func writeLine(w io.Writer, cells []string) {
+	fmt.Fprintln(w, strings.Join(cells, "  "))
+}
+
+// Returns the text of a table cell. A value that is not known shows as "-".
+func cellText(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
+// Returns the table of the request columns, then the given columns, then the
+// given last column.
+func requestTable[R Entry](columns []column[R], last lastColumn[R]) table[R] {
+	return table[R]{columns: append(requestColumns[R](), columns...), last: last}
+}
+
+// The columns that every request table starts with.
+func requestColumns[R Entry]() []column[R] {
+	return []column[R]{
+		{title: "ID", width: 8, value: func(e R) string { return string(e.Record().ID) }},
+		{title: "CLIENT", width: 20, value: func(e R) string { return string(e.Record().Client) }},
+		{title: "PID", width: 7, right: true, value: func(e R) string {
+			if pid := e.Record().SenderInfo.PID; pid != 0 {
+				return pid.String()
+			}
+			return ""
+		}},
+		{title: "UID", width: 5, right: true, value: func(e R) string {
+			if uid := e.Record().SenderInfo.UID; uid != nil {
+				return uid.String()
+			}
+			return ""
+		}},
+		{title: "TYPE", width: 12, value: func(e R) string { return string(e.Record().Type) }},
+		{title: "COLLECTION", width: 15, value: func(e R) string {
+			if ref, ok := requestCollection(e.Record()); ok {
+				return ref.Name
+			}
+			return ""
+		}},
+	}
+}
+
+func entrySummary[R Entry](e R) string { return requestSummary(e.Record()) }
+
+func truncate(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen-1]) + "…"
+}
+
+func requestSummary(req RequestRecord) string {
 	if req.GPGSignInfo != nil {
 		switch req.GPGSignInfo.Kind {
-		case "tag":
+		case approval.GPGSignTag:
 			if req.GPGSignInfo.TagName != "" {
-				return "tag " + req.GPGSignInfo.TagName
+				return "tag " + string(req.GPGSignInfo.TagName)
 			}
 			return "tag"
-		case "push":
+		case approval.GPGSignPush:
 			return "push"
+		case approval.GPGSignCommit:
+			n := len(req.GPGSignInfo.ChangedFiles)
+			if n == 1 {
+				return "1 file"
+			}
+			return fmt.Sprintf("%d files", n)
 		}
-		n := len(req.GPGSignInfo.ChangedFiles)
-		if n == 1 {
-			return "1 file"
-		}
-		return fmt.Sprintf("%d files", n)
 	}
 	if len(req.Items) == 0 {
 		if len(req.SearchAttributes) > 0 {
 			return formatAttrs(req.SearchAttributes)
 		}
-		return "-"
+		return ""
 	}
 	if len(req.Items) == 1 {
-		return req.Items[0].Label
+		return req.Items[0].DisplayLabel()
 	}
 	return fmt.Sprintf("%d items", len(req.Items))
 }
@@ -100,148 +189,144 @@ func formatRemaining(expiresAt time.Time) string {
 	return remaining.String()
 }
 
-func formatPID(pid procutil.PID) string {
-	if pid == 0 {
-		return "-"
-	}
-	return pid.String()
-}
-
-// Returns uid as a number, or "-" when it is unknown.
-func formatUID(uid *procutil.UID) string {
-	if uid == nil {
-		return "-"
-	}
-	return uid.String()
-}
-
-// FormatShowResult outputs a single request (pending or resolved).
-func (f *Formatter) FormatShowResult(result *ShowResult) error {
+// Writes the entry as JSON or as text.
+func (f *Formatter) FormatEntry(e Entry) error {
 	if f.asJSON {
-		return json.NewEncoder(f.w).Encode(result)
+		return json.NewEncoder(f.w).Encode(e)
 	}
-	f.formatRequest(&result.Request)
-	if result.Resolution != "" {
-		fmt.Fprintf(f.w, "Result:  %s\n", result.Resolution)
-		fmt.Fprintf(f.w, "Resolved: %s (%s)\n", result.ResolvedAt.Format(time.RFC3339), formatAgo(result.ResolvedAt))
-	}
-	return nil
+	_, err := fmt.Fprint(f.w, e)
+	return err
 }
 
-func (f *Formatter) formatRequest(req *PendingRequest) {
-	fmt.Fprintf(f.w, "ID:      %s\n", req.ID)
-	fmt.Fprintf(f.w, "Client:  %s\n", req.Client)
-	fmt.Fprintf(f.w, "Type:    %s\n", req.Type)
+func (e PendingEntry) String() string {
+	var b strings.Builder
+	writeRequest(&b, &e.Request)
+	writeExpiry(&b, e.ExpiresAt)
+	return b.String()
+}
 
-	if coll := extractCollection(*req); coll != "" {
-		fmt.Fprintf(f.w, "Coll:    %s\n", coll)
+func (e HistoryEntry) String() string {
+	var b strings.Builder
+	writeRequest(&b, &e.Request)
+	fmt.Fprintf(&b, "Result:  %s\n", e.Resolution)
+	fmt.Fprintf(&b, "Resolved: %s (%s)\n", e.ResolvedAt.Format(time.RFC3339), formatAgo(e.ResolvedAt))
+	return b.String()
+}
+
+func writeRequest(w io.Writer, req *RequestRecord) {
+	fmt.Fprintf(w, "ID:      %s\n", req.ID)
+	fmt.Fprintf(w, "Client:  %s\n", req.Client)
+	fmt.Fprintf(w, "Type:    %s\n", req.Type)
+
+	if ref, ok := requestCollection(*req); ok {
+		fmt.Fprintf(w, "Coll:    %s\n", ref.Name)
 	}
 
 	// Sender process info
 	if name := req.SenderInfo.DisplayName(); name != "" {
-		fmt.Fprintf(f.w, "Process: %s\n", name)
+		fmt.Fprintf(w, "Process: %s\n", name)
 	}
 	if req.SenderInfo.PID != 0 {
-		fmt.Fprintf(f.w, "PID:     %d\n", req.SenderInfo.PID)
+		fmt.Fprintf(w, "PID:     %d\n", req.SenderInfo.PID)
 	}
 	if s := req.SenderInfo.Sender; s != nil {
-		fmt.Fprintf(f.w, "Sender:  %s\n", *s)
+		fmt.Fprintf(w, "Sender:  %s\n", *s)
 	}
 	if len(req.SenderInfo.ProcessChain) > 0 {
-		fmt.Fprintln(f.w, "Chain:")
+		fmt.Fprintln(w, "Chain:")
 		for _, p := range req.SenderInfo.ProcessChain {
 			exe := p.Name
-			if p.Exe != nil {
-				exe = string(*p.Exe)
+			if path, ok := p.ExePath(); ok {
+				exe = string(path)
 			}
-			fmt.Fprintf(f.w, "  %s[%d]", exe, p.PID)
-			if p.CWD != nil {
-				fmt.Fprintf(f.w, " cwd=%s", *p.CWD)
+			fmt.Fprintf(w, "  %s[%d]", exe, p.PID)
+			if cwd, ok := p.CWDPath(); ok {
+				fmt.Fprintf(w, " cwd=%s", cwd)
 			}
-			fmt.Fprintln(f.w)
+			fmt.Fprintln(w)
 			if len(p.Args) > 1 {
-				fmt.Fprintf(f.w, "    args: %s\n", strings.Join(p.Args[1:], " "))
+				fmt.Fprintf(w, "    args: %s\n", strings.Join(p.Args[1:], " "))
 			}
 		}
 	}
 
 	if req.GPGSignInfo != nil {
 		info := req.GPGSignInfo
-		fmt.Fprintf(f.w, "Repo:    %s\n", info.RepoName)
-		// git signs commits, annotated tags, and push certificates through the
-		// same path; label each with its own fields so the human approving on
-		// the trusted VT sees exactly what kind of object they are signing.
+		fmt.Fprintf(w, "Repo:    %s\n", info.RepoName)
+		// The approver on the trusted VT sees which kind of object they sign,
+		// with that kind's own fields.
 		switch info.Kind {
-		case "tag":
-			fmt.Fprintln(f.w, "Signing: annotated tag")
+		case approval.GPGSignTag:
+			fmt.Fprintln(w, "Signing: annotated tag")
 			if info.TagName != "" {
-				fmt.Fprintf(f.w, "Tag:     %s\n", info.TagName)
+				fmt.Fprintf(w, "Tag:     %s\n", info.TagName)
 			}
-			fmt.Fprintf(f.w, "Tagger:  %s\n", info.Author)
-			fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
+			fmt.Fprintf(w, "Tagger:  %s\n", info.Author)
+			fmt.Fprintf(w, "Key:     %s\n", info.KeyID)
 			if info.Target != "" {
-				fmt.Fprintf(f.w, "Target:  %s\n", info.Target)
+				fmt.Fprintf(w, "Target:  %s\n", info.Target)
 			}
-			f.writeSignMessage(info.CommitMsg)
-		case "push":
-			fmt.Fprintln(f.w, "Signing: signed push")
-			fmt.Fprintf(f.w, "Pusher:  %s\n", info.Author)
+			writeSignMessage(w, info.CommitMsg)
+		case approval.GPGSignPush:
+			fmt.Fprintln(w, "Signing: signed push")
+			fmt.Fprintf(w, "Pusher:  %s\n", info.Author)
 			if info.Pushee != "" {
-				fmt.Fprintf(f.w, "Pushee:  %s\n", info.Pushee)
+				fmt.Fprintf(w, "Pushee:  %s\n", info.Pushee)
 			}
-			fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
-			fmt.Fprintln(f.w, "\nRef updates:")
+			fmt.Fprintf(w, "Key:     %s\n", info.KeyID)
+			fmt.Fprintln(w, "\nRef updates:")
 			for line := range strings.SplitSeq(info.CommitMsg, "\n") {
 				if line != "" {
-					fmt.Fprintf(f.w, "  %s\n", line)
+					fmt.Fprintf(w, "  %s\n", line)
 				}
 			}
-		default: // commit — and the safe generic fallback for an empty/unknown kind
-			fmt.Fprintf(f.w, "Author:  %s\n", info.Author)
-			fmt.Fprintf(f.w, "Key:     %s\n", info.KeyID)
-			f.writeSignMessage(info.CommitMsg)
-			fmt.Fprintln(f.w)
-			fmt.Fprintf(f.w, "Changed files (%d):\n", len(info.ChangedFiles))
+		case approval.GPGSignCommit:
+			fmt.Fprintf(w, "Author:  %s\n", info.Author)
+			fmt.Fprintf(w, "Key:     %s\n", info.KeyID)
+			writeSignMessage(w, info.CommitMsg)
+			fmt.Fprintln(w)
+			fmt.Fprintf(w, "Changed files (%d):\n", len(info.ChangedFiles))
 			for _, file := range info.ChangedFiles {
-				fmt.Fprintf(f.w, "  %s\n", file)
+				fmt.Fprintf(w, "  %s\n", file)
 			}
 			if info.Committer != "" && info.Committer != info.Author {
-				fmt.Fprintf(f.w, "\nCommitter: %s\n", info.Committer)
+				fmt.Fprintf(w, "\nCommitter: %s\n", info.Committer)
 			}
 			if info.ParentHash != "" {
-				fmt.Fprintf(f.w, "Parent:    %s\n", info.ParentHash)
+				fmt.Fprintf(w, "Parent:    %s\n", info.ParentHash)
 			}
 		}
 	} else {
 		if len(req.Items) == 1 {
-			fmt.Fprintf(f.w, "Secret:  %s\n", req.Items[0].Label)
-			fmt.Fprintf(f.w, "Path:    %s\n", req.Items[0].Path)
-			formatItemAttrs(f.w, req.Items[0].Attributes, "  ")
+			fmt.Fprintf(w, "Secret:  %s\n", req.Items[0].Label)
+			fmt.Fprintf(w, "Path:    %s\n", req.Items[0].Path)
+			formatItemAttrs(w, req.Items[0].Attributes, "  ")
 		} else if len(req.Items) > 1 {
-			fmt.Fprintf(f.w, "Secrets: %d items\n", len(req.Items))
+			fmt.Fprintf(w, "Secrets: %d items\n", len(req.Items))
 			for _, item := range req.Items {
-				fmt.Fprintf(f.w, "  - %s  %s\n", item.Label, item.Path)
-				formatItemAttrs(f.w, item.Attributes, "    ")
+				fmt.Fprintf(w, "  - %s  %s\n", item.Label, item.Path)
+				formatItemAttrs(w, item.Attributes, "    ")
 			}
 		}
 
 		if len(req.SearchAttributes) > 0 {
 			attrs := formatAttrs(req.SearchAttributes)
-			fmt.Fprintf(f.w, "Query:   %s\n", attrs)
+			fmt.Fprintf(w, "Query:   %s\n", attrs)
 		}
 	}
 
 	if req.Session != "" {
-		fmt.Fprintf(f.w, "Session: %s\n", req.Session)
+		fmt.Fprintf(w, "Session: %s\n", req.Session)
 	}
-	fmt.Fprintf(f.w, "Created: %s\n", req.CreatedAt.Format(time.RFC3339))
-	if !req.ExpiresAt.IsZero() {
-		remaining := time.Until(req.ExpiresAt).Round(time.Second)
-		if remaining > 0 {
-			fmt.Fprintf(f.w, "Expires: %s (%s remaining)\n", req.ExpiresAt.Format(time.RFC3339), remaining)
-		} else {
-			fmt.Fprintf(f.w, "Expires: %s (expired)\n", req.ExpiresAt.Format(time.RFC3339))
-		}
+	fmt.Fprintf(w, "Created: %s\n", req.CreatedAt.Format(time.RFC3339))
+}
+
+func writeExpiry(w io.Writer, expiresAt time.Time) {
+	remaining := time.Until(expiresAt).Round(time.Second)
+	if remaining > 0 {
+		fmt.Fprintf(w, "Expires: %s (%s remaining)\n", expiresAt.Format(time.RFC3339), remaining)
+	} else {
+		fmt.Fprintf(w, "Expires: %s (expired)\n", expiresAt.Format(time.RFC3339))
 	}
 }
 
@@ -261,13 +346,13 @@ func commitBody(msg string) string {
 	return strings.TrimRight(body, "\n")
 }
 
-// writeSignMessage prints a signed object's message as an indented subject line
-// followed by its body — shared by the commit and tag renderers.
-func (f *Formatter) writeSignMessage(msg string) {
-	fmt.Fprintf(f.w, "\n    %s\n", commitSubject(msg))
+// Writes a signed object's message as an indented subject line followed by its
+// body.
+func writeSignMessage(w io.Writer, msg string) {
+	fmt.Fprintf(w, "\n    %s\n", commitSubject(msg))
 	if body := commitBody(msg); body != "" {
 		for line := range strings.SplitSeq(body, "\n") {
-			fmt.Fprintf(f.w, "    %s\n", line)
+			fmt.Fprintf(w, "    %s\n", line)
 		}
 	}
 }
@@ -283,25 +368,16 @@ func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 		return nil
 	}
 
-	// Print header
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-10s  %-20s  %s\n", "ID", "CLIENT", "PID", "UID", "TYPE", "COLLECTION", "RESULT", "SUMMARY", "RESOLVED")
-	fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-10s  %-20s  %s\n", "--------", "--------------------", "-------", "-----", "------------", "---------------", "----------", "--------------------", "--------")
-
+	t := requestTable(
+		[]column[HistoryEntry]{
+			{title: "RESULT", width: 10, value: func(e HistoryEntry) string { return string(e.Resolution) }},
+			{title: "SUMMARY", width: 20, value: entrySummary[HistoryEntry]},
+		},
+		lastColumn[HistoryEntry]{title: "RESOLVED", value: func(e HistoryEntry) string { return formatAgo(e.ResolvedAt) }},
+	)
+	t.writeHeader(f.w)
 	for _, entry := range entries {
-		id := truncate(entry.Request.ID, 8)
-		client := truncate(entry.Request.Client, 20)
-		pid := formatPID(entry.Request.SenderInfo.PID)
-		uid := formatUID(entry.Request.SenderInfo.UID)
-		reqType := truncate(entry.Request.Type, 12)
-		coll := truncate(extractCollection(entry.Request), 15)
-		if coll == "" {
-			coll = "-"
-		}
-		resolution := truncate(entry.Resolution, 10)
-		secret := truncate(requestSummary(entry.Request), 20)
-		ago := formatAgo(entry.ResolvedAt)
-
-		fmt.Fprintf(f.w, "%-8s  %-20s  %7s  %5s  %-12s  %-15s  %-10s  %-20s  %s\n", id, client, pid, uid, reqType, coll, resolution, secret, ago)
+		t.writeRow(f.w, entry)
 	}
 	return nil
 }
@@ -314,23 +390,26 @@ func formatAgo(t time.Time) string {
 	return ago.String() + " ago"
 }
 
-// FormatAction outputs an action result.
-func (f *Formatter) FormatAction(action, id string) error {
+// Writes the resolution that the given decision gave the request with the
+// given ID.
+func (f *Formatter) FormatDecision(d Decision, id approval.RequestID) error {
 	if f.asJSON {
-		return json.NewEncoder(f.w).Encode(map[string]string{
-			"status": action,
-			"id":     id,
-		})
+		return json.NewEncoder(f.w).Encode(struct {
+			Status approval.Resolution `json:"status"`
+			ID     approval.RequestID  `json:"id"`
+		}{d.resolution(), id})
 	}
-	fmt.Fprintf(f.w, "Request %s: %s\n", id, action)
+	fmt.Fprintf(f.w, "Request %s: %s\n", id, d.resolution())
 	return nil
 }
 
-func extractCollection(req PendingRequest) string {
+// Returns the collection of the request's first item, or false when it names
+// none.
+func requestCollection(req RequestRecord) (dbustypes.CollectionRef, bool) {
 	if len(req.Items) == 0 {
-		return ""
+		return dbustypes.CollectionRef{}, false
 	}
-	return dbustypes.ExtractCollection(req.Items[0].Path)
+	return dbustypes.CollectionOf(dbus.ObjectPath(req.Items[0].Path))
 }
 
 func formatItemAttrs(w io.Writer, attrs map[string]string, indent string) {

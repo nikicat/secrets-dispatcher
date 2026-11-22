@@ -22,7 +22,8 @@ pinentry, which shows the key, not the commit.
   API socket with the master token ([ADR 0006](0006-api-auth-cookie-and-login-token.md)).
 - The daemon shows the request, waits for a decision or a `trusted_signers`
   match, then **runs gpg itself** (`--status-fd=2 -bsau <key>`) and returns the
-  signature and status lines, which the thin client writes back to git.
+  signature, the status lines and the exit status, which the thin client passes
+  back to git.
 - Only a request that comes through the thin client can match `trusted_signers`
   and skip the prompt. The daemon recognizes the thin client by the executable
   of the process on the other end of the socket, which must be the dispatcher's
@@ -33,6 +34,15 @@ pinentry, which shows the key, not the commit.
   ancestors, so its request always gets a prompt. The prompt shows the author,
   committer and message that the daemon reads from the bytes it signs, not the
   ones the client reported.
+- Only a commit carries the staged files. They describe the tree of the commit
+  being made, so for a tag or a push certificate they would mislead the prompt
+  and the `trusted_signers` match. A `trusted_signers` entry with a
+  `file_prefix` therefore matches only commits: a tag or a push certificate
+  that its app signs gets a prompt.
+- When git cannot name the repository or list a commit's staged files, the
+  signing fails, so no trusted signer matches facts that git never reported.
+- Only those three kinds are signed. Bytes that are none of them are refused,
+  because the prompt could not show what they are.
 - Calls that are not signing (verification, `--list-keys`, …) pass straight
   through to the real gpg.
 - `commit.gpgsign true` is recommended, so a plain `git commit` is gated too.
@@ -45,3 +55,6 @@ pinentry, which shows the key, not the commit.
   talks to gpg-agent directly is not gated ([ADR 0002](0002-visibility-not-isolation.md)).
 - The thin client needs the API socket and token, so it works only where the
   daemon runs; remote signing needs [ADR 0011](0011-remote-signing-through-per-remote-sockets.md).
+- git runs the thin client without the dispatcher's flags, so it finds the
+  token through the default config file. A daemon started with another state
+  directory or config file is not found.

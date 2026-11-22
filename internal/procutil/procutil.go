@@ -101,6 +101,22 @@ type Process struct {
 	CWD  *Path    `json:"cwd,omitempty"`
 }
 
+// Returns the process's executable, as PID.Exe reads it.
+func (p Process) ExePath() (Path, bool) {
+	if p.Exe == nil {
+		return "", false
+	}
+	return *p.Exe, true
+}
+
+// Returns the process's working directory, as PID.CWD reads it.
+func (p Process) CWDPath() (Path, bool) {
+	if p.CWD == nil {
+		return "", false
+	}
+	return *p.CWD, true
+}
+
 func (p PID) entry(comm string) Process {
 	proc := Process{Name: comm, PID: p, Args: p.Cmdline()}
 	if exe, ok := p.Exe(); ok {

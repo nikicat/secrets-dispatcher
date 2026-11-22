@@ -7,6 +7,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 )
 
 // Config holds daemon startup parameters.
@@ -39,7 +40,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// Create and export the dispatcher.
 	dispatcher := NewDispatcher(cfg.Version)
 
-	if err := conn.Export(dispatcher, ObjectPath, Interface); err != nil {
+	if err := conn.Export(dispatcher, ObjectPath, string(Interface)); err != nil {
 		return fmt.Errorf("export dispatcher: %w", err)
 	}
 
@@ -48,12 +49,12 @@ func Run(ctx context.Context, cfg Config) error {
 		Interfaces: []introspect.Interface{
 			introspect.IntrospectData,
 			{
-				Name:    Interface,
+				Name:    string(Interface),
 				Methods: introspect.Methods(dispatcher),
 			},
 		},
 	}
-	if err := conn.Export(introspect.NewIntrospectable(node), ObjectPath, "org.freedesktop.DBus.Introspectable"); err != nil {
+	if err := conn.Export(introspect.NewIntrospectable(node), ObjectPath, string(dbustypes.IntrospectableInterface)); err != nil {
 		return fmt.Errorf("export introspectable: %w", err)
 	}
 

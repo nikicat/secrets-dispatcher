@@ -1,11 +1,14 @@
-// Package wsmsg names the kinds of message the daemon's WebSocket sends.
-//
-// The api package writes these messages and the gpgsign thin client reads
-// them. api imports gpgsign, so the names live here where both can reach them.
+// Package wsmsg names the kinds of message the daemon's WebSocket sends, and
+// the JSON key that carries the kind.
 package wsmsg
 
 // The kind of a daemon WebSocket message.
 type Type string
+
+// The part of every daemon WebSocket message that names its kind.
+type Header struct {
+	Type Type `json:"type"`
+}
 
 const (
 	Snapshot               Type = "snapshot"

@@ -14,34 +14,48 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestParseGPGArgsSign(t *testing.T) {
+func TestParseGPGArgs(t *testing.T) {
+	passThrough := func(args ...string) gpgCall { return passThroughCall{args: args} }
+	sign := func(key approval.GPGKeyID) gpgCall { return signCall{keyID: key} }
 	tests := []struct {
 		name string
 		args []string
-		want bool
+		want gpgCall
 	}{
 		// git's real signing invocation (commits, tags, signed pushes).
-		{"git sign -bsau", []string{"--status-fd=2", "-bsau", "846FFFEFC1039264"}, true},
-		{"separate -s -u", []string{"-s", "-u", "KEY"}, true},
-		{"detach-sign short", []string{"-b", "-a", "-u", "KEY"}, true},
-		{"long --sign", []string{"--sign"}, true},
-		{"long --detach-sign", []string{"--detach-sign"}, true},
-		{"long --clearsign", []string{"--clearsign"}, true},
-		{"long --clear-sign", []string{"--clear-sign"}, true},
+		{"git sign -bsau", []string{"--status-fd=2", "-bsau", "846FFFEFC1039264"}, sign("846FFFEFC1039264")},
+		{"separate -bsa -u", []string{"--status-fd=2", "-bsa", "-u", "846FFFEFC1039264"}, sign("846FFFEFC1039264")},
+		{"separate -s -u", []string{"-s", "-u", "KEY"}, sign("KEY")},
+		{"detach-sign short", []string{"-b", "-a", "-u", "KEY"}, sign("KEY")},
+		{"long --sign", []string{"--sign", "-u", "KEY"}, sign("KEY")},
+		{"long --detach-sign", []string{"--detach-sign", "-u", "KEY"}, sign("KEY")},
+		{"long --clearsign", []string{"--clearsign", "-u", "KEY"}, sign("KEY")},
+		{"long --clear-sign", []string{"--clear-sign", "-u", "KEY"}, sign("KEY")},
 
 		// git's real verification invocation — must NOT be treated as signing.
-		{"git verify", []string{"--keyid-format=long", "--status-fd=1", "--verify", "/tmp/.git_vtag_tmpX", "-"}, false},
-		{"list keys", []string{"--list-keys"}, false},
-		{"list secret keys short", []string{"-K"}, false},
-		{"version probe", []string{"--version"}, false},
-		{"fingerprint", []string{"--fingerprint"}, false},
-		{"lone dash stdin", []string{"-"}, false},
-		{"empty", nil, false},
+		{"git verify", []string{"--keyid-format=long", "--status-fd=1", "--verify", "/tmp/.git_vtag_tmpX", "-"},
+			passThrough("--keyid-format=long", "--status-fd=1", "--verify", "/tmp/.git_vtag_tmpX", "-")},
+		{"list keys", []string{"--list-keys"}, passThrough("--list-keys")},
+		{"list secret keys short", []string{"-K"}, passThrough("-K")},
+		{"version probe", []string{"--version"}, passThrough("--version")},
+		{"fingerprint", []string{"--fingerprint"}, passThrough("--fingerprint")},
+		{"lone dash stdin", []string{"-"}, passThrough("-")},
+		{"only -u", []string{"-u", "ABCD1234"}, passThrough("-u", "ABCD1234")},
+		{"empty", nil, passThroughCall{}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, parseGPGArgs(tc.args).sign, "args=%v", tc.args)
+			got, err := parseGPGArgs(tc.args)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got, "args=%v", tc.args)
 		})
+	}
+}
+
+func TestParseGPGArgsRefusesSigningWithoutKey(t *testing.T) {
+	for _, args := range [][]string{{"--status-fd=2", "-bsa"}, {"--sign"}, {"-s", "-u"}} {
+		_, err := parseGPGArgs(args)
+		assert.ErrorIs(t, err, errNoSigningKey, "args=%v", args)
 	}
 }
 
@@ -153,4 +167,15 @@ func TestReportFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	assert.Equal(t, exitRefused, reportFailure(ctx, err))
+}
+
+// A commit signed outside a work tree fails, rather than reaching a trusted
+// signer with a repository name and staged files that git never reported.
+func TestCollectSignInfoOutsideWorkTreeFails(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
+	commit := "tree 8754a964a0ce1b6c5f7a88202174955bdcd58a98\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nfix\n"
+	_, err := collectSignInfo("KEY", strings.NewReader(commit))
+	assert.ErrorContains(t, err, "find the repository")
 }

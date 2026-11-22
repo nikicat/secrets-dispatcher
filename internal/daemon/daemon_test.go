@@ -14,6 +14,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	. "github.com/nikicat/secrets-dispatcher/internal/daemon"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
@@ -102,7 +103,7 @@ func waitForName(t *testing.T, addr, name string) {
 		}
 		obj := conn.BusObject()
 		var owners []string
-		if err := obj.Call("org.freedesktop.DBus.ListNames", 0).Store(&owners); err != nil {
+		if err := obj.Call(dbustypes.BusDaemonInterface.Member("ListNames"), 0).Store(&owners); err != nil {
 			conn.Close()
 			time.Sleep(100 * time.Millisecond)
 			continue
@@ -145,7 +146,7 @@ func TestDaemon_RegistersAndServesStubs(t *testing.T) {
 
 	// Verify Ping.
 	var pong string
-	if err := obj.Call(Interface+".Ping", 0).Store(&pong); err != nil {
+	if err := obj.Call(Interface.Member("Ping"), 0).Store(&pong); err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
 	if pong != "pong" {
@@ -154,7 +155,7 @@ func TestDaemon_RegistersAndServesStubs(t *testing.T) {
 
 	// Verify GetVersion.
 	var version string
-	if err := obj.Call(Interface+".GetVersion", 0).Store(&version); err != nil {
+	if err := obj.Call(Interface.Member("GetVersion"), 0).Store(&version); err != nil {
 		t.Fatalf("GetVersion: %v", err)
 	}
 	if version != "1.2.3-test" {
@@ -228,7 +229,7 @@ func TestDaemon_Introspectable(t *testing.T) {
 	obj := client.Object(BusName, ObjectPath)
 
 	var xml string
-	if err := obj.Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(&xml); err != nil {
+	if err := obj.Call(dbustypes.IntrospectableInterface.Member("Introspect"), 0).Store(&xml); err != nil {
 		t.Fatalf("Introspect: %v", err)
 	}
 

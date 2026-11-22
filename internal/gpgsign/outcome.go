@@ -9,7 +9,7 @@ import (
 )
 
 // The process exit status of the thin client. It is gpg's own status when gpg
-// ran (ERR-02).
+// ran, since git reads it as gpg's (ADR 0008).
 type ExitStatus int
 
 // Exit statuses the thin client sets itself.
@@ -56,8 +56,7 @@ func (o SignOutcome) report() ExitStatus {
 		errorf("signing request timed out")
 		return exitRefused
 	}
-	errorf("unexpected result %q from the daemon", o.Result)
-	return exitSystemError
+	return systemError(fmt.Errorf("unexpected result %q from the daemon", o.Result))
 }
 
 // Tells git on stderr why a sign request got no outcome. Returns exitRefused
@@ -68,12 +67,11 @@ func reportFailure(ctx context.Context, err error) ExitStatus {
 		errorf("signing interrupted")
 		return exitRefused
 	}
-	errorf("%v", err)
-	return exitSystemError
+	return systemError(err)
 }
 
 // Writes gpg's status lines to stderr and, when gpg succeeded, the signature
-// to stdout (SIGN-08). Returns gpg's own exit status (ERR-02).
+// to stdout. Returns gpg's own exit status.
 func (o SignOutcome) emit() ExitStatus {
 	if len(o.Status) > 0 {
 		os.Stderr.Write(o.Status) //nolint:errcheck

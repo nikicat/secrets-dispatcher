@@ -47,7 +47,7 @@ func (s *stubNotificationServer) Notify(appName string, replacesID uint32, icon,
 func (s *stubNotificationServer) CloseNotification(id uint32) *dbus.Error {
 	// Real servers direct NotificationClosed at the sending connection; on a
 	// plain dbus-daemon a broadcast reaches it the same way.
-	_ = s.conn.Emit(notifyPath, notifyInterface+".NotificationClosed", id, uint32(3))
+	_ = s.conn.Emit(notifyPath, notifyInterface.Member("NotificationClosed"), id, uint32(3))
 	return nil
 }
 
@@ -69,7 +69,7 @@ func newNotificationBus(t *testing.T) *stubNotificationServer {
 	t.Cleanup(func() { conn.Close() })
 
 	stub := &stubNotificationServer{conn: conn}
-	require.NoError(t, conn.Export(stub, notifyPath, notifyInterface))
+	require.NoError(t, conn.Export(stub, notifyPath, string(notifyInterface)))
 	reply, err := conn.RequestName(notifyDest, dbus.NameFlagDoNotQueue)
 	require.NoError(t, err)
 	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
@@ -135,16 +135,16 @@ func TestActionDeliverySurvivesUndrainedClosedBuffer(t *testing.T) {
 	// a blocking closed-send would have parked processSignals for good. We never
 	// read ClosedEvents(), mirroring production where nothing consumes it.
 	for i := range 64 {
-		require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface+".NotificationClosed", uint32(i), uint32(2)))
+		require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface.Member("NotificationClosed"), uint32(i), uint32(2)))
 	}
 	// Give the (possibly wedged) loop a moment to process the flood.
 	time.Sleep(200 * time.Millisecond)
 
-	require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface+".ActionInvoked", uint32(999), "approve"))
+	require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface.Member("ActionInvoked"), uint32(999), "approve"))
 
 	select {
 	case a := <-n.Actions():
-		assert.Equal(t, uint32(999), a.NotificationID)
+		assert.Equal(t, NotificationID(999), a.NotificationID)
 		assert.Equal(t, actionKey("approve"), a.ActionKey)
 	case <-time.After(5 * time.Second):
 		t.Fatal("ActionInvoked was not delivered — processSignals wedged on the undrained closed buffer")

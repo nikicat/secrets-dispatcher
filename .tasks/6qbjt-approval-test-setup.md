@@ -26,4 +26,12 @@ Done when each item below is fixed as its "Fix" says.
   two more copies of the NewManager config literal.
   Fix: use `newRuleManager()` (autoapprove_test.go) or one shared helper.
 
+- `internal/approval/gpgsign_test.go` (duplication). Nine tests write
+  `NewManager(ManagerConfig{Timeout: ..., HistoryMax: 100})` (lines 30, 54,
+  76, 97, 118, 148, 171, 213 and 278; seven with a 5-second timeout), and six
+  of them then subscribe a `testObserver` (30, 54, 76, 97, 118 and 213).
+  Fix: Each test calls the shared manager helper above, with a variant that
+  also subscribes and returns a testObserver; the two short-timeout tests
+  pass their timeout. (2026-11-21 23:24 unsmell run, b4-16)
+
 Found by the 2026-11-19 unsmell run (b1-19, b1-20, r1-5).

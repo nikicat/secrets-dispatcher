@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nikicat/secrets-dispatcher/internal/cli"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/service"
@@ -156,7 +157,7 @@ func TestServiceInstallFlags(t *testing.T) {
 func TestRequestCommandsTakeAnID(t *testing.T) {
 	c, cmd := parse(t, "approve", "abc", "--json")
 	assert.Equal(t, "approve <request-id>", cmd)
-	assert.Equal(t, "abc", c.Approve.ID)
+	assert.Equal(t, cli.IDPrefix("abc"), c.Approve.ID)
 	assert.True(t, c.Approve.JSON)
 
 	assert.Error(t, parseError(t, "deny"), "the ID is required")

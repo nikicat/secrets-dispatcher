@@ -26,8 +26,7 @@ func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
 			mgr := newTestManager()
 			r := NewResolver(mgr, proxy.SlowUpstream{})
 			r.GPGRunner = &fakeGPGRunner{res: tt.res}
-			id, err := mgr.CreateGPGSignRequest(signableGPGSignInfo().RequestInfo(local))
-			require.NoError(t, err)
+			id := mgr.Create(signableGPGSignInfo().RequestInfo(local))
 
 			require.NoError(t, r.ApproveAndAutoApprove(id))
 
@@ -43,8 +42,7 @@ func TestResolverApproveAndAutoApprove_GPGSignWithoutExe(t *testing.T) {
 	mgr := newTestManager()
 	r := NewResolver(mgr, proxy.SlowUpstream{})
 	r.GPGRunner = &fakeGPGRunner{res: approval.GPGResult{Signature: []byte("SIG")}}
-	id, err := mgr.CreateGPGSignRequest(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
-	require.NoError(t, err)
+	id := mgr.Create(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
 
 	require.ErrorIs(t, r.ApproveAndAutoApprove(id), approval.ErrNotAutoApprovable)
 

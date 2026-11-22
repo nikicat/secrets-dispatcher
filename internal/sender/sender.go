@@ -68,5 +68,8 @@ func (r ChainReader) IsSelf(exe procutil.Path) bool {
 // Returns pid and its ancestors, nearest first, cut as NewChainReader says.
 func (r ChainReader) Chain(pid procutil.PID) []procutil.Process {
 	chain := pid.Chain(r.end)
-	return slices.DeleteFunc(chain, func(p procutil.Process) bool { return p.Exe != nil && r.IsSelf(*p.Exe) })
+	return slices.DeleteFunc(chain, func(p procutil.Process) bool {
+		exe, ok := p.ExePath()
+		return ok && r.IsSelf(exe)
+	})
 }

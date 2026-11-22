@@ -1,10 +1,8 @@
 package proxy
 
 import (
-	"context"
 	"time"
 
-	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
@@ -32,27 +30,19 @@ func SenderCall(resolve func() approval.SenderInfo) UpstreamCallContext {
 	return UpstreamCallContext{resolveSender: resolve}
 }
 
-// Requires the user's approval of info, as approval.Manager.RequireApproval
-// does, and returns the context of the upstream call made for info. Errors as
-// RequireApproval does.
-func requireApproval(ctx context.Context, m *approval.Manager, info approval.RequestInfo) (UpstreamCallContext, error) {
-	prompted, err := m.RequireApproval(ctx, info)
-	if prompted {
-		return PromptedCall(info), err
-	}
-	return RequestCall(info), err
+// Returns the context of an upstream call that serves no approval request, made
+// for a caller whose SenderInfo is already resolved.
+func ResolvedSenderCall(sender approval.SenderInfo) UpstreamCallContext {
+	return RequestCall(approval.RequestInfo{SenderInfo: sender})
 }
 
-// UpstreamNotifier shows informational notifications about slow upstream calls.
+// Shows the user which caller and request a slow upstream call serves. A slow
+// call is often waiting on a pinentry or keyring unlock prompt, and that prompt
+// does not say which request opened it.
 type UpstreamNotifier interface {
 	// Shows a notification about a slow upstream call made for req, and returns a
 	// function that dismisses it.
 	NotifySlowUpstream(req approval.RequestInfo) func()
-}
-
-type propResult struct {
-	v   dbus.Variant
-	err error
 }
 
 // Where to report an upstream call that outlasts Threshold.

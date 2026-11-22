@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -91,7 +92,7 @@ func (e *testEnv) startProxy(mgr *approval.Manager) (mock *testutil.MockSecretSe
 func openPlainSession(t *testing.T, serviceObj dbus.BusObject) dbus.ObjectPath {
 	t.Helper()
 
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "plain", dbus.MakeVariant(""))
+	call := serviceObj.Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, "plain", dbus.MakeVariant(""))
 	if call.Err != nil {
 		t.Fatalf("OpenSession: %v", call.Err)
 	}
@@ -105,7 +106,7 @@ func openPlainSession(t *testing.T, serviceObj dbus.BusObject) dbus.ObjectPath {
 }
 
 // Waits for a request to appear in mgr's pending list and returns its ID.
-func waitPendingID(t *testing.T, mgr *approval.Manager) string {
+func waitPendingID(t *testing.T, mgr *approval.Manager) approval.RequestID {
 	t.Helper()
 	for range 50 {
 		if reqs := mgr.List(); len(reqs) > 0 {
@@ -128,7 +129,7 @@ func TestProxyBasicOperations(t *testing.T) {
 	// Test: Get Collections property
 	t.Run("GetCollections", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		variant, err := obj.GetProperty(dbustypes.ServiceInterface + ".Collections")
+		variant, err := obj.GetProperty(dbustypes.ServiceInterface.Member("Collections"))
 		if err != nil {
 			t.Fatalf("get Collections: %v", err)
 		}
@@ -146,7 +147,7 @@ func TestProxyBasicOperations(t *testing.T) {
 	// Test: ReadAlias
 	t.Run("ReadAlias", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := obj.Call(dbustypes.ServiceInterface+".ReadAlias", 0, "default")
+		call := obj.Call(dbustypes.ServiceInterface.Member("ReadAlias"), 0, "default")
 		if call.Err != nil {
 			t.Fatalf("ReadAlias: %v", call.Err)
 		}
@@ -164,7 +165,7 @@ func TestProxyBasicOperations(t *testing.T) {
 	// Test: SearchItems
 	t.Run("SearchItems", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"test-attr": "test-value"})
+		call := obj.Call(dbustypes.ServiceInterface.Member("SearchItems"), 0, map[string]string{"test-attr": "test-value"})
 		if call.Err != nil {
 			t.Fatalf("SearchItems: %v", call.Err)
 		}
@@ -187,7 +188,7 @@ func TestProxyBasicOperations(t *testing.T) {
 		t.Logf("Session: %s", sessionPath)
 
 		// Search for items
-		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"test-attr": "test-value"})
+		call := obj.Call(dbustypes.ServiceInterface.Member("SearchItems"), 0, map[string]string{"test-attr": "test-value"})
 		if call.Err != nil {
 			t.Fatalf("SearchItems: %v", call.Err)
 		}
@@ -202,7 +203,7 @@ func TestProxyBasicOperations(t *testing.T) {
 		}
 
 		// Get secrets
-		call = obj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, unlocked, sessionPath)
+		call = obj.Call(dbustypes.ServiceInterface.Member("GetSecrets"), 0, unlocked, sessionPath)
 		if call.Err != nil {
 			t.Fatalf("GetSecrets: %v", call.Err)
 		}
@@ -227,7 +228,7 @@ func TestProxyBasicOperations(t *testing.T) {
 	// Test: Unlock (should passthrough)
 	t.Run("Unlock", func(t *testing.T) {
 		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := obj.Call(dbustypes.ServiceInterface+".Unlock", 0, []dbus.ObjectPath{"/org/freedesktop/secrets/collection/default"})
+		call := obj.Call(dbustypes.ServiceInterface.Member("Unlock"), 0, []dbus.ObjectPath{testutil.DefaultCollectionPath})
 		if call.Err != nil {
 			t.Fatalf("Unlock: %v", call.Err)
 		}
@@ -255,7 +256,7 @@ func TestProxyItemOperations(t *testing.T) {
 
 		// Get secret from item
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call := itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		call := itemObj.Call(dbustypes.ItemInterface.Member("GetSecret"), 0, sessionPath)
 		if call.Err != nil {
 			t.Fatalf("Item.GetSecret: %v", call.Err)
 		}
@@ -275,7 +276,7 @@ func TestProxyItemOperations(t *testing.T) {
 	t.Run("ItemProperties", func(t *testing.T) {
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
 
-		label, err := itemObj.GetProperty(dbustypes.ItemInterface + ".Label")
+		label, err := itemObj.GetProperty(dbustypes.ItemLabel)
 		if err != nil {
 			t.Fatalf("get Label: %v", err)
 		}
@@ -283,7 +284,7 @@ func TestProxyItemOperations(t *testing.T) {
 			t.Errorf("wrong label: got %q", label.Value())
 		}
 
-		attrs, err := itemObj.GetProperty(dbustypes.ItemInterface + ".Attributes")
+		attrs, err := itemObj.GetProperty(dbustypes.ItemAttributes)
 		if err != nil {
 			t.Fatalf("get Attributes: %v", err)
 		}
@@ -302,7 +303,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 		sessionPath := openPlainSession(t, serviceObj)
 
 		// Create item
-		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
 		properties := map[string]dbus.Variant{
 			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("New Item"),
 			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"new-attr": "new-value"}),
@@ -314,7 +315,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 			ContentType: "text/plain",
 		}
 
-		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, properties, secret, true)
 		if call.Err != nil {
 			t.Fatalf("CreateItem: %v", call.Err)
 		}
@@ -331,7 +332,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 
 		// Verify we can get the secret back
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call = itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		call = itemObj.Call(dbustypes.ItemInterface.Member("GetSecret"), 0, sessionPath)
 		if call.Err != nil {
 			t.Fatalf("GetSecret: %v", call.Err)
 		}
@@ -348,8 +349,8 @@ func TestProxyCollectionOperations(t *testing.T) {
 
 	// Test: Collection.SearchItems
 	t.Run("CollectionSearchItems", func(t *testing.T) {
-		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
-		call := collObj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"new-attr": "new-value"})
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("SearchItems"), 0, map[string]string{"new-attr": "new-value"})
 		if call.Err != nil {
 			t.Fatalf("SearchItems: %v", call.Err)
 		}
@@ -375,15 +376,13 @@ func TestProxyAliasPathOperations(t *testing.T) {
 
 	mock.AddItem("Existing Secret", map[string]string{"app": "test"}, []byte("existing-value"))
 
-	aliasPath := dbus.ObjectPath("/org/freedesktop/secrets/aliases/default")
-
 	// Test: CreateItem via alias path (this is what secret-tool store does)
 	t.Run("CreateItemViaAlias", func(t *testing.T) {
 		serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 		sessionPath := openPlainSession(t, serviceObj)
 
 		// Create item via alias path
-		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultAliasPath)
 		properties := map[string]dbus.Variant{
 			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("Alias Item"),
 			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"alias-attr": "alias-value"}),
@@ -395,7 +394,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 			ContentType: "text/plain",
 		}
 
-		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, properties, secret, true)
 		if call.Err != nil {
 			t.Fatalf("CreateItem via alias: %v", call.Err)
 		}
@@ -413,8 +412,8 @@ func TestProxyAliasPathOperations(t *testing.T) {
 
 	// Test: SearchItems via alias path
 	t.Run("SearchItemsViaAlias", func(t *testing.T) {
-		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
-		call := collObj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"app": "test"})
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultAliasPath)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("SearchItems"), 0, map[string]string{"app": "test"})
 		if call.Err != nil {
 			t.Fatalf("SearchItems via alias: %v", call.Err)
 		}
@@ -432,9 +431,9 @@ func TestProxyAliasPathOperations(t *testing.T) {
 
 	// Test: Properties via alias path
 	t.Run("GetPropertiesViaAlias", func(t *testing.T) {
-		collObj := remoteConn.Object(dbustypes.BusName, aliasPath)
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultAliasPath)
 
-		label, err := collObj.GetProperty(dbustypes.CollectionInterface + ".Label")
+		label, err := collObj.GetProperty(dbustypes.CollectionLabel)
 		if err != nil {
 			t.Fatalf("get Label via alias: %v", err)
 		}
@@ -442,7 +441,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 			t.Errorf("wrong label: got %q, want %q", label.Value(), "Default")
 		}
 
-		locked, err := collObj.GetProperty(dbustypes.CollectionInterface + ".Locked")
+		locked, err := collObj.GetProperty(dbustypes.CollectionInterface.Member("Locked"))
 		if err != nil {
 			t.Fatalf("get Locked via alias: %v", err)
 		}
@@ -450,62 +449,6 @@ func TestProxyAliasPathOperations(t *testing.T) {
 			t.Error("expected collection to be unlocked")
 		}
 	})
-}
-
-func TestProxyClientDisconnectCancelsPendingRequest(t *testing.T) {
-	env := newTestEnv(t)
-
-	// Create an approval manager that requires approval (not auto-approve)
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
-
-	mock, clientConn := env.startProxy(approvalMgr)
-
-	// Add a test item and capture its path directly (avoids needing SearchItems which now requires approval)
-	itemPath := mock.AddItem("Test Secret", map[string]string{"test-attr": "test-value"}, []byte("test-secret"))
-
-	serviceObj := clientConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	sessionPath := openPlainSession(t, serviceObj)
-
-	// Use the item path directly (avoids SearchItems which now requires approval)
-	unlocked := []dbus.ObjectPath{itemPath}
-
-	// Start GetSecrets in a goroutine - it will block waiting for approval
-	secretsReturned := make(chan error, 1)
-	go func() {
-		call := serviceObj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, unlocked, sessionPath)
-		secretsReturned <- call.Err
-	}()
-
-	waitPendingID(t, approvalMgr)
-
-	// Now disconnect the client
-	clientConn.Close()
-	t.Log("Client disconnected")
-
-	// Wait for the pending request to be removed
-	var finalCount int
-	for range 50 {
-		finalCount = approvalMgr.PendingCount()
-		if finalCount == 0 {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	if finalCount != 0 {
-		t.Errorf("pending request was not removed after client disconnect: count=%d", finalCount)
-	} else {
-		t.Log("Pending request was correctly removed after client disconnect")
-	}
-
-	// The GetSecrets call should have returned an error (context cancelled or similar)
-	select {
-	case err := <-secretsReturned:
-		t.Logf("GetSecrets returned: %v", err)
-	case <-time.After(2 * time.Second):
-		// Timeout is acceptable - the goroutine might be stuck if cleanup didn't happen
-		t.Log("GetSecrets goroutine did not return (expected if feature not implemented)")
-	}
 }
 
 func TestProxyItemDeleteRequiresApproval(t *testing.T) {
@@ -521,7 +464,7 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 	deleteErr := make(chan error, 1)
 	go func() {
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call := itemObj.Call(dbustypes.ItemInterface+".Delete", 0)
+		call := itemObj.Call(dbustypes.ItemInterface.Member("Delete"), 0)
 		deleteErr <- call.Err
 	}()
 
@@ -549,43 +492,6 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 	}
 }
 
-// A denied Item.Delete returns an access denied error.
-func TestProxyItemDeleteDenied(t *testing.T) {
-	env := newTestEnv(t)
-
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
-
-	mock, remoteConn := env.startProxy(approvalMgr)
-
-	itemPath := mock.AddItem("Don't Delete Me", map[string]string{"app": "test"}, []byte("secret"))
-
-	deleteErr := make(chan error, 1)
-	go func() {
-		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call := itemObj.Call(dbustypes.ItemInterface+".Delete", 0)
-		deleteErr <- call.Err
-	}()
-
-	reqID := waitPendingID(t, approvalMgr)
-
-	// Deny the request
-	if err := approvalMgr.Deny(reqID); err != nil {
-		t.Fatalf("deny failed: %v", err)
-	}
-
-	// Delete should fail with access denied
-	select {
-	case err := <-deleteErr:
-		if err == nil {
-			t.Error("expected error after denial, got nil")
-		} else if !strings.Contains(err.Error(), "denied") {
-			t.Errorf("expected access denied error, got: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for Item.Delete to complete")
-	}
-}
-
 func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 	env := newTestEnv(t)
 
@@ -593,13 +499,13 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 
 	_, remoteConn := env.startProxy(approvalMgr)
 
-	collPath := dbus.ObjectPath("/org/freedesktop/secrets/collection/default")
+	collPath := testutil.DefaultCollectionPath
 
 	// Start Collection.Delete in a goroutine — it should block waiting for approval
 	deleteErr := make(chan error, 1)
 	go func() {
 		collObj := remoteConn.Object(dbustypes.BusName, collPath)
-		call := collObj.Call(dbustypes.CollectionInterface+".Delete", 0)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("Delete"), 0)
 		deleteErr <- call.Err
 	}()
 
@@ -653,7 +559,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	getSecretDone := make(chan error, 1)
 	go func() {
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call := itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		call := itemObj.Call(dbustypes.ItemInterface.Member("GetSecret"), 0, sessionPath)
 		getSecretDone <- call.Err
 	}()
 
@@ -666,7 +572,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	deleteErr := make(chan error, 1)
 	go func() {
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call := itemObj.Call(dbustypes.ItemInterface+".Delete", 0)
+		call := itemObj.Call(dbustypes.ItemInterface.Member("Delete"), 0)
 		deleteErr <- call.Err
 	}()
 
@@ -711,7 +617,7 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 			Value:       []byte("new-value"),
 			ContentType: "text/plain",
 		}
-		call := itemObj.Call(dbustypes.ItemInterface+".SetSecret", 0, newSecret)
+		call := itemObj.Call(dbustypes.ItemInterface.Member("SetSecret"), 0, newSecret)
 		setErr <- call.Err
 	}()
 
@@ -747,7 +653,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	// Start CreateItem in a goroutine — it should block
 	createErr := make(chan error, 1)
 	go func() {
-		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
 		properties := map[string]dbus.Variant{
 			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("New Item"),
 			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"svc": "test"}),
@@ -757,7 +663,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 			Value:       []byte("secret-value"),
 			ContentType: "text/plain",
 		}
-		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, properties, secret, true)
 		createErr <- call.Err
 	}()
 
@@ -802,7 +708,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	sessionPath := openPlainSession(t, serviceObj)
 
 	// CreateItem with Chrome's dummy schema — should return immediately without blocking
-	collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+	collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
 	properties := map[string]dbus.Variant{
 		"org.freedesktop.Secret.Item.Label": dbus.MakeVariant("Chrome Safe Storage"),
 		"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{
@@ -816,7 +722,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 		ContentType: "text/plain",
 	}
 
-	call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+	call := collObj.Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, properties, secret, true)
 	if call.Err != nil {
 		t.Fatalf("CreateItem returned error: %v", call.Err)
 	}
@@ -851,6 +757,51 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	}
 }
 
+// SetSecret on an item with Chrome's dummy secret schema succeeds without a
+// prompt, and neither reaches the backend nor the pending list.
+func TestProxySetSecretIgnoresChromeDummy(t *testing.T) {
+	env := newTestEnv(t)
+
+	approvalMgr := approval.NewManager(approval.ManagerConfig{
+		Timeout:           30 * time.Second,
+		HistoryMax:        100,
+		IgnoreChromeDummy: true,
+	})
+
+	mock, remoteConn := env.startProxy(approvalMgr)
+	itemPath := mock.AddItem("Chrome Safe Storage", map[string]string{"xdg:schema": "_chrome_dummy_schema_for_unlocking"}, []byte("old"))
+
+	serviceObj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	sessionPath := openPlainSession(t, serviceObj)
+
+	secret := dbustypes.Secret{Session: sessionPath, Value: []byte("dummy"), ContentType: "text/plain"}
+	if err := remoteConn.Object(dbustypes.BusName, itemPath).Call(dbustypes.ItemInterface.Member("SetSecret"), 0, secret).Err; err != nil {
+		t.Fatalf("SetSecret returned error: %v", err)
+	}
+
+	if count := approvalMgr.PendingCount(); count != 0 {
+		t.Errorf("expected 0 pending requests, got %d", count)
+	}
+	history := approvalMgr.History()
+	if len(history) != 1 || history[0].Resolution != approval.ResolutionIgnored {
+		t.Fatalf("expected one ignored history entry, got %+v", history)
+	}
+
+	// The backend still holds the old value.
+	got := make(chan *dbus.Call, 1)
+	go func() {
+		got <- serviceObj.Call(dbustypes.ServiceInterface.Member("GetSecrets"), 0, []dbus.ObjectPath{itemPath}, sessionPath)
+	}()
+	approvalMgr.Approve(waitPendingID(t, approvalMgr))
+	var secrets map[dbus.ObjectPath]dbustypes.Secret
+	if err := (<-got).Store(&secrets); err != nil {
+		t.Fatalf("GetSecrets: %v", err)
+	}
+	if v := string(secrets[itemPath].Value); v != "old" {
+		t.Errorf("expected backend value %q, got %q", "old", v)
+	}
+}
+
 // Any algorithm other than "plain" and the DH one is rejected.
 func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	env := newTestEnv(t)
@@ -858,7 +809,7 @@ func TestProxyRejectsUnsupportedAlgorithm(t *testing.T) {
 	_, remoteConn := env.startProxy(approval.NewDisabledManager())
 
 	obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-	call := obj.Call(dbustypes.ServiceInterface+".OpenSession", 0, "dh-ietf2048-sha512-aes256-cbc-pkcs7", dbus.MakeVariant(""))
+	call := obj.Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, "dh-ietf2048-sha512-aes256-cbc-pkcs7", dbus.MakeVariant(""))
 
 	if call.Err == nil {
 		t.Error("expected error for unsupported algorithm")
@@ -877,7 +828,7 @@ func openDHSession(t *testing.T, serviceObj dbus.BusObject) (*dhcrypto.Session, 
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 
-	call := serviceObj.Call(dbustypes.ServiceInterface+".OpenSession", 0,
+	call := serviceObj.Call(dbustypes.ServiceInterface.Member("OpenSession"), 0,
 		"dh-ietf1024-sha256-aes128-cbc-pkcs7", dbus.MakeVariant(kp.Public))
 	if call.Err != nil {
 		t.Fatalf("OpenSession(dh): %v", call.Err)
@@ -918,7 +869,7 @@ func TestProxyDHSession(t *testing.T) {
 		session, sessionPath := openDHSession(t, serviceObj)
 
 		itemObj := remoteConn.Object(dbustypes.BusName, itemPath)
-		call := itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, sessionPath)
+		call := itemObj.Call(dbustypes.ItemInterface.Member("GetSecret"), 0, sessionPath)
 		if call.Err != nil {
 			t.Fatalf("Item.GetSecret: %v", call.Err)
 		}
@@ -946,7 +897,7 @@ func TestProxyDHSession(t *testing.T) {
 	t.Run("ServiceGetSecretsEncrypted", func(t *testing.T) {
 		session, sessionPath := openDHSession(t, serviceObj)
 
-		call := serviceObj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"app": "dh-app"})
+		call := serviceObj.Call(dbustypes.ServiceInterface.Member("SearchItems"), 0, map[string]string{"app": "dh-app"})
 		if call.Err != nil {
 			t.Fatalf("SearchItems: %v", call.Err)
 		}
@@ -958,7 +909,7 @@ func TestProxyDHSession(t *testing.T) {
 			t.Fatal("no items found")
 		}
 
-		call = serviceObj.Call(dbustypes.ServiceInterface+".GetSecrets", 0, unlocked, sessionPath)
+		call = serviceObj.Call(dbustypes.ServiceInterface.Member("GetSecrets"), 0, unlocked, sessionPath)
 		if call.Err != nil {
 			t.Fatalf("GetSecrets: %v", call.Err)
 		}
@@ -993,7 +944,7 @@ func TestProxyDHSession(t *testing.T) {
 			t.Fatalf("encrypt: %v", err)
 		}
 
-		collObj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
+		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
 		properties := map[string]dbus.Variant{
 			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("DH Written"),
 			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"dh-written": "yes"}),
@@ -1004,7 +955,7 @@ func TestProxyDHSession(t *testing.T) {
 			Value:       ciphertext,
 			ContentType: "text/plain",
 		}
-		call := collObj.Call(dbustypes.CollectionInterface+".CreateItem", 0, properties, secret, true)
+		call := collObj.Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, properties, secret, true)
 		if call.Err != nil {
 			t.Fatalf("CreateItem: %v", call.Err)
 		}
@@ -1021,7 +972,7 @@ func TestProxyDHSession(t *testing.T) {
 		plainSession := openPlainSession(t, serviceObj)
 
 		itemObj := remoteConn.Object(dbustypes.BusName, newItem)
-		call = itemObj.Call(dbustypes.ItemInterface+".GetSecret", 0, plainSession)
+		call = itemObj.Call(dbustypes.ItemInterface.Member("GetSecret"), 0, plainSession)
 		if call.Err != nil {
 			t.Fatalf("GetSecret(plain): %v", call.Err)
 		}
@@ -1082,56 +1033,156 @@ func TestProxyDetectsSocketDisconnect(t *testing.T) {
 	}
 }
 
-func TestSearchItemsDenyRule(t *testing.T) {
-	const epiphanySchema = "org.epiphany.FormPassword"
+// Each call that opens an approval request puts the resolved sender and the
+// items it touches in the request, fails AccessDenied when the user denies it,
+// and is cancelled when the client disconnects.
+func TestProxyApprovalRequestCalls(t *testing.T) {
+	type approvalCall struct {
+		name  string
+		typ   approval.RequestType
+		label string
+		call  func(client *dbus.Conn, item, session dbus.ObjectPath) *dbus.Call
+	}
+	secret := func(session dbus.ObjectPath) dbustypes.Secret {
+		return dbustypes.Secret{Session: session, Value: []byte("v"), ContentType: "text/plain"}
+	}
+	calls := []approvalCall{
+		{"CollectionDelete", approval.RequestTypeDelete, "Default", func(c *dbus.Conn, _, _ dbus.ObjectPath) *dbus.Call {
+			return c.Object(dbustypes.BusName, testutil.DefaultCollectionPath).Call(dbustypes.CollectionInterface.Member("Delete"), 0)
+		}},
+		{"CreateItem", approval.RequestTypeWrite, "New Item", func(c *dbus.Conn, _, session dbus.ObjectPath) *dbus.Call {
+			props := map[string]dbus.Variant{dbustypes.ItemLabel: dbus.MakeVariant("New Item")}
+			return c.Object(dbustypes.BusName, testutil.DefaultCollectionPath).Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, props, secret(session), true)
+		}},
+		{"ItemDelete", approval.RequestTypeDelete, "My Secret", func(c *dbus.Conn, item, _ dbus.ObjectPath) *dbus.Call {
+			return c.Object(dbustypes.BusName, item).Call(dbustypes.ItemInterface.Member("Delete"), 0)
+		}},
+		{"GetSecret", approval.RequestTypeGetSecret, "My Secret", func(c *dbus.Conn, item, session dbus.ObjectPath) *dbus.Call {
+			return c.Object(dbustypes.BusName, item).Call(dbustypes.ItemInterface.Member("GetSecret"), 0, session)
+		}},
+		{"SetSecret", approval.RequestTypeWrite, "My Secret", func(c *dbus.Conn, item, session dbus.ObjectPath) *dbus.Call {
+			return c.Object(dbustypes.BusName, item).Call(dbustypes.ItemInterface.Member("SetSecret"), 0, secret(session))
+		}},
+		{"GetSecrets", approval.RequestTypeGetSecret, "My Secret", func(c *dbus.Conn, item, session dbus.ObjectPath) *dbus.Call {
+			return c.Object(dbustypes.BusName, dbustypes.ServicePath).Call(dbustypes.ServiceInterface.Member("GetSecrets"), 0, []dbus.ObjectPath{item}, session)
+		}},
+	}
+
+	for _, tc := range calls {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t)
+			approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
+			mock, client := env.startProxy(approvalMgr)
+			item := mock.AddItem("My Secret", map[string]string{"app": "test"}, []byte("value"))
+			session := openPlainSession(t, client.Object(dbustypes.BusName, dbustypes.ServicePath))
+
+			done := make(chan *dbus.Call, 1)
+			go func() { done <- tc.call(client, item, session) }()
+			req := approvalMgr.GetPending(waitPendingID(t, approvalMgr))
+			if req.Type != tc.typ {
+				t.Errorf("request type %q, want %q", req.Type, tc.typ)
+			}
+			if len(req.Items) != 1 || req.Items[0].Label != tc.label {
+				t.Errorf("request items %+v, want one labelled %q", req.Items, tc.label)
+			}
+			if req.SenderInfo.Sender == nil || string(*req.SenderInfo.Sender) != client.Names()[0] {
+				t.Errorf("request sender %v, want %s", req.SenderInfo.Sender, client.Names()[0])
+			}
+			if req.SenderInfo.Client != "test-client" {
+				t.Errorf("request client %q, want test-client", req.SenderInfo.Client)
+			}
+			if err := approvalMgr.Deny(req.ID); err != nil {
+				t.Fatalf("deny: %v", err)
+			}
+			var dbusErr dbus.Error
+			if call := <-done; !errors.As(call.Err, &dbusErr) || dbusErr.Name != string(dbustypes.AccessDenied) {
+				t.Fatalf("got %v, want AccessDenied", call.Err)
+			}
+
+			// A second request ends cancelled when its client disconnects.
+			go func() { done <- tc.call(client, item, session) }()
+			id := waitPendingID(t, approvalMgr)
+			client.Close()
+			for range 100 {
+				if e := approvalMgr.GetHistoryEntry(id); e != nil {
+					if e.Resolution != approval.ResolutionCancelled {
+						t.Fatalf("resolution %q, want cancelled", e.Resolution)
+					}
+					return
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			t.Fatal("request was not cancelled after the client disconnected")
+		})
+	}
+}
+
+// SearchItems and Unlock never prompt. A deny rule fails them with
+// AccessDenied. Otherwise they go upstream and are recorded as auto-approved.
+func TestPassthroughCallsAgainstTrustRules(t *testing.T) {
+	const deniedSchema = "org.epiphany.FormPassword"
 
 	env := newTestEnv(t)
-
 	approvalMgr := approval.NewManager(approval.ManagerConfig{
 		Timeout:    30 * time.Second,
 		HistoryMax: 100,
-		TrustRules: []approval.TrustRule{{
-			Name:             "deny-epiphany-search",
-			Action:           "deny",
-			RequestTypes:     []approval.RequestType{"search"},
-			SearchAttributes: map[string]approval.Glob{"xdg:schema": approval.MustGlob(epiphanySchema)},
-		}},
+		TrustRules: []approval.TrustRule{
+			{
+				Name:             "deny-search",
+				Action:           approval.RuleDeny,
+				RequestTypes:     []approval.RequestType{approval.RequestTypeSearch},
+				SearchAttributes: map[string]approval.Glob{"xdg:schema": approval.MustGlob(deniedSchema)},
+			},
+			{
+				Name:         "deny-unlock",
+				Action:       approval.RuleDeny,
+				RequestTypes: []approval.RequestType{approval.RequestTypeUnlock},
+			},
+		},
 	})
+	_, remoteConn := env.startProxy(approvalMgr)
+	service := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	coll := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
 
-	mock, remoteConn := env.startProxy(approvalMgr)
+	requireDenied := func(t *testing.T, call *dbus.Call, message string) {
+		t.Helper()
+		var dbusErr dbus.Error
+		if !errors.As(call.Err, &dbusErr) {
+			t.Fatalf("expected a D-Bus error, got %v", call.Err)
+		}
+		if dbusErr.Name != string(dbustypes.AccessDenied) || len(dbusErr.Body) != 1 || dbusErr.Body[0] != message {
+			t.Fatalf("got %s %v, want AccessDenied %q", dbusErr.Name, dbusErr.Body, message)
+		}
+	}
+	requireLatest := func(t *testing.T, typ approval.RequestType, res approval.Resolution) {
+		t.Helper()
+		history := approvalMgr.History()
+		if len(history) == 0 || history[0].Request.Type != typ || history[0].Resolution != res {
+			t.Fatalf("latest history entry %+v, want %s %s", history, typ, res)
+		}
+		if n := approvalMgr.PendingCount(); n != 0 {
+			t.Fatalf("%d requests pending, want none", n)
+		}
+	}
 
-	mock.AddItem("Form Password", map[string]string{"xdg:schema": epiphanySchema}, []byte("secret"))
-
-	// Service.SearchItems with denied attributes should fail
+	denied := map[string]string{"xdg:schema": deniedSchema}
 	t.Run("ServiceSearchDenied", func(t *testing.T) {
-		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"xdg:schema": epiphanySchema})
-		if call.Err == nil {
-			t.Fatal("expected access denied error, got nil")
-		}
-		if !strings.Contains(call.Err.Error(), "AccessDenied") && !strings.Contains(call.Err.Error(), "denied") {
-			t.Fatalf("expected access denied error, got: %v", call.Err)
-		}
+		requireDenied(t, service.Call(dbustypes.ServiceInterface.Member("SearchItems"), 0, denied), "access denied by trust rule: deny-search")
+		requireLatest(t, approval.RequestTypeSearch, approval.ResolutionDenied)
 	})
-
-	// Service.SearchItems with non-denied attributes should succeed
-	t.Run("ServiceSearchAllowed", func(t *testing.T) {
-		obj := remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath)
-		call := obj.Call(dbustypes.ServiceInterface+".SearchItems", 0, map[string]string{"xdg:schema": "org.gnome.keyring.Note"})
-		if call.Err != nil {
-			t.Fatalf("expected search to succeed, got: %v", call.Err)
-		}
-	})
-
-	// Collection.SearchItems with denied attributes should also fail
 	t.Run("CollectionSearchDenied", func(t *testing.T) {
-		obj := remoteConn.Object(dbustypes.BusName, "/org/freedesktop/secrets/collection/default")
-		call := obj.Call(dbustypes.CollectionInterface+".SearchItems", 0, map[string]string{"xdg:schema": epiphanySchema})
-		if call.Err == nil {
-			t.Fatal("expected access denied error, got nil")
+		requireDenied(t, coll.Call(dbustypes.CollectionInterface.Member("SearchItems"), 0, denied), "access denied by trust rule: deny-search")
+		requireLatest(t, approval.RequestTypeSearch, approval.ResolutionDenied)
+	})
+	t.Run("UnlockDenied", func(t *testing.T) {
+		requireDenied(t, service.Call(dbustypes.ServiceInterface.Member("Unlock"), 0, []dbus.ObjectPath{testutil.DefaultCollectionPath}), "access denied by trust rule: deny-unlock")
+		requireLatest(t, approval.RequestTypeUnlock, approval.ResolutionDenied)
+	})
+	t.Run("SearchAllowed", func(t *testing.T) {
+		call := service.Call(dbustypes.ServiceInterface.Member("SearchItems"), 0, map[string]string{"xdg:schema": "org.gnome.keyring.Note"})
+		if call.Err != nil {
+			t.Fatalf("SearchItems: %v", call.Err)
 		}
-		if !strings.Contains(call.Err.Error(), "AccessDenied") && !strings.Contains(call.Err.Error(), "denied") {
-			t.Fatalf("expected access denied error, got: %v", call.Err)
-		}
+		requireLatest(t, approval.RequestTypeSearch, approval.ResolutionAutoApproved)
 	})
 }

@@ -5,8 +5,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRequestSummary_GPGSign(t *testing.T) {
@@ -23,9 +26,9 @@ func TestRequestSummary_GPGSign(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := PendingRequest{
+			req := RequestRecord{
 				Type:        "gpg_sign",
-				GPGSignInfo: &GPGSignInfo{ChangedFiles: tt.files},
+				GPGSignInfo: &GPGSignInfo{Kind: approval.GPGSignCommit, ChangedFiles: tt.files},
 			}
 			got := requestSummary(req)
 			if got != tt.want {
@@ -38,28 +41,28 @@ func TestRequestSummary_GPGSign(t *testing.T) {
 func TestRequestSummary_GetSecret(t *testing.T) {
 	tests := []struct {
 		name string
-		req  PendingRequest
+		req  RequestRecord
 		want string
 	}{
 		{
 			name: "single item",
-			req:  PendingRequest{Items: []ItemInfo{{Label: "MyPassword"}}},
+			req:  RequestRecord{Items: []ItemInfo{{Label: "MyPassword"}}},
 			want: "MyPassword",
 		},
 		{
 			name: "multiple items",
-			req:  PendingRequest{Items: []ItemInfo{{Label: "A"}, {Label: "B"}}},
+			req:  RequestRecord{Items: []ItemInfo{{Label: "A"}, {Label: "B"}}},
 			want: "2 items",
 		},
 		{
 			name: "search attributes",
-			req:  PendingRequest{SearchAttributes: map[string]string{"service": "ssh"}},
+			req:  RequestRecord{SearchAttributes: map[string]string{"service": "ssh"}},
 			want: "service=ssh",
 		},
 		{
 			name: "empty",
-			req:  PendingRequest{},
-			want: "-",
+			req:  RequestRecord{},
+			want: "",
 		},
 	}
 
@@ -73,27 +76,22 @@ func TestRequestSummary_GetSecret(t *testing.T) {
 	}
 }
 
-func TestFormatRequest_GPGSign(t *testing.T) {
-	req := &PendingRequest{
-		ID:        "abc-123",
-		Client:    "git/2.43.0",
-		Type:      "gpg_sign",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		GPGSignInfo: &GPGSignInfo{
-			RepoName:     "myrepo",
-			CommitMsg:    "fix: correct typo\n\nLonger description here.",
-			Author:       "Alice <alice@example.com>",
-			Committer:    "Bob <bob@example.com>",
-			KeyID:        "ABCD1234",
-			ChangedFiles: []string{"main.go", "go.sum"},
-			ParentHash:   "deadbeef",
-		},
-	}
+func TestFormatEntry_GPGSign(t *testing.T) {
+	req := PendingEntry{Request: RequestRecord{ID: "abc-123", Client: "git/2.43.0", Type: "gpg_sign", GPGSignInfo: &GPGSignInfo{
+		Kind:         approval.GPGSignCommit,
+		RepoName:     "myrepo",
+		CommitMsg:    "fix: correct typo\n\nLonger description here.",
+		Author:       "Alice <alice@example.com>",
+		Committer:    "Bob <bob@example.com>",
+		KeyID:        "ABCD1234",
+		ChangedFiles: []string{"main.go", "go.sum"},
+		ParentHash:   "deadbeef",
+	}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
-		t.Fatalf("FormatRequest failed: %v", err)
+	if err := f.FormatEntry(req); err != nil {
+		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
 	out := buf.String()
@@ -123,26 +121,21 @@ func TestFormatRequest_GPGSign(t *testing.T) {
 	mustNotContain(t, out, "Query:")
 }
 
-func TestFormatRequest_GPGSign_SameCommitter(t *testing.T) {
-	req := &PendingRequest{
-		ID:        "abc-123",
-		Client:    "git/2.43.0",
-		Type:      "gpg_sign",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		GPGSignInfo: &GPGSignInfo{
-			RepoName:     "myrepo",
-			CommitMsg:    "chore: bump version",
-			Author:       "Alice <alice@example.com>",
-			Committer:    "Alice <alice@example.com>", // same as author
-			KeyID:        "ABCD1234",
-			ChangedFiles: []string{"VERSION"},
-		},
-	}
+func TestFormatEntry_GPGSign_SameCommitter(t *testing.T) {
+	req := PendingEntry{Request: RequestRecord{ID: "abc-123", Client: "git/2.43.0", Type: "gpg_sign", GPGSignInfo: &GPGSignInfo{
+		Kind:         approval.GPGSignCommit,
+		RepoName:     "myrepo",
+		CommitMsg:    "chore: bump version",
+		Author:       "Alice <alice@example.com>",
+		Committer:    "Alice <alice@example.com>", // same as author
+		KeyID:        "ABCD1234",
+		ChangedFiles: []string{"VERSION"},
+	}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
-		t.Fatalf("FormatRequest failed: %v", err)
+	if err := f.FormatEntry(req); err != nil {
+		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
 	out := buf.String()
@@ -152,19 +145,13 @@ func TestFormatRequest_GPGSign_SameCommitter(t *testing.T) {
 	mustNotContain(t, out, "Parent:")
 }
 
-func TestFormatRequest_GetSecret_Unchanged(t *testing.T) {
-	req := &PendingRequest{
-		ID:        "xyz-456",
-		Client:    "myapp",
-		Type:      "get_secret",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		Items:     []ItemInfo{{Label: "DatabasePassword", Path: "/org/secrets/1"}},
-	}
+func TestFormatEntry_GetSecret_Unchanged(t *testing.T) {
+	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{Label: "DatabasePassword", Path: "/org/secrets/1"}}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
-		t.Fatalf("FormatRequest failed: %v", err)
+	if err := f.FormatEntry(req); err != nil {
+		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
 	out := buf.String()
@@ -175,30 +162,22 @@ func TestFormatRequest_GetSecret_Unchanged(t *testing.T) {
 	mustNotContain(t, out, "Author:")
 }
 
-func TestFormatRequest_ShowsItemAttributes(t *testing.T) {
-	req := &PendingRequest{
-		ID:     "xyz-456",
-		Client: "myapp",
-		Type:   "get_secret",
-		Items: []ItemInfo{{
-			Label:      "MySecret",
-			Path:       "/org/freedesktop/secrets/collection/login/42",
-			Attributes: map[string]string{"service": "ssh", "user": "alice"},
-		}},
-		SenderInfo: sender.Info{
-			Sender:      new(sender.UniqueName(":1.42")),
-			PID:         1234,
-			UID:         new(procutil.UID(1000)),
-			SystemdUnit: "myapp.service",
-		},
-		Session:   "/org/freedesktop/secrets/session/s1",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}
+func TestFormatEntry_ShowsItemAttributes(t *testing.T) {
+	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{
+		Label:      "MySecret",
+		Path:       "/org/freedesktop/secrets/collection/login/42",
+		Attributes: map[string]string{"service": "ssh", "user": "alice"},
+	}}, SenderInfo: sender.Info{
+		Sender:      new(sender.UniqueName(":1.42")),
+		PID:         1234,
+		UID:         new(procutil.UID(1000)),
+		SystemdUnit: "myapp.service",
+	}, Session: "/org/freedesktop/secrets/session/s1"}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
-		t.Fatalf("FormatRequest failed: %v", err)
+	if err := f.FormatEntry(req); err != nil {
+		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
 	out := buf.String()
@@ -214,22 +193,16 @@ func TestFormatRequest_ShowsItemAttributes(t *testing.T) {
 	mustContain(t, out, "remaining)")
 }
 
-func TestFormatRequest_MultipleItemsShowAttributes(t *testing.T) {
-	req := &PendingRequest{
-		ID:     "xyz-789",
-		Client: "myapp",
-		Type:   "get_secret",
-		Items: []ItemInfo{
-			{Label: "Secret1", Path: "/org/secrets/1", Attributes: map[string]string{"service": "foo"}},
-			{Label: "Secret2", Path: "/org/secrets/2"},
-		},
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}
+func TestFormatEntry_MultipleItemsShowAttributes(t *testing.T) {
+	req := PendingEntry{Request: RequestRecord{ID: "xyz-789", Client: "myapp", Type: "get_secret", Items: []ItemInfo{
+		{Label: "Secret1", Path: "/org/secrets/1", Attributes: map[string]string{"service": "foo"}},
+		{Label: "Secret2", Path: "/org/secrets/2"},
+	}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
-		t.Fatalf("FormatRequest failed: %v", err)
+	if err := f.FormatEntry(req); err != nil {
+		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
 	out := buf.String()
@@ -240,37 +213,27 @@ func TestFormatRequest_MultipleItemsShowAttributes(t *testing.T) {
 	mustContain(t, out, "- Secret2  /org/secrets/2")
 }
 
-func TestFormatRequest_ShowsCollection(t *testing.T) {
-	req := &PendingRequest{
-		ID:        "xyz-456",
-		Client:    "myapp",
-		Type:      "get_secret",
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-		Items:     []ItemInfo{{Label: "pw", Path: "/org/freedesktop/secrets/collection/work/99"}},
-	}
+func TestFormatEntry_ShowsCollection(t *testing.T) {
+	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{Label: "pw", Path: "/org/freedesktop/secrets/collection/work/99"}}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatShowResult(&ShowResult{Request: *req}); err != nil {
-		t.Fatalf("FormatRequest failed: %v", err)
+	if err := f.FormatEntry(req); err != nil {
+		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
 	mustContain(t, buf.String(), "Coll:    work")
 }
 
-func TestFormatRequests_SummaryColumnHeader(t *testing.T) {
-	reqs := []PendingRequest{
-		{
-			ID:        "abc",
-			ExpiresAt: time.Now().Add(time.Minute),
-			Items:     []ItemInfo{{Label: "X"}},
-		},
+func TestFormatPending_SummaryColumnHeader(t *testing.T) {
+	reqs := []PendingEntry{
+		{Request: RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X"}}}, ExpiresAt: time.Now().Add(time.Minute)},
 	}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatRequests(reqs); err != nil {
-		t.Fatalf("FormatRequests failed: %v", err)
+	if err := f.FormatPending(reqs); err != nil {
+		t.Fatalf("FormatPending failed: %v", err)
 	}
 
 	out := buf.String()
@@ -279,19 +242,15 @@ func TestFormatRequests_SummaryColumnHeader(t *testing.T) {
 	mustNotContain(t, out, "SECRET")
 }
 
-func TestFormatRequests_CollectionColumn(t *testing.T) {
-	reqs := []PendingRequest{
-		{
-			ID:        "abc",
-			ExpiresAt: time.Now().Add(time.Minute),
-			Items:     []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/mykeys/1"}},
-		},
+func TestFormatPending_CollectionColumn(t *testing.T) {
+	reqs := []PendingEntry{
+		{Request: RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/mykeys/1"}}}, ExpiresAt: time.Now().Add(time.Minute)},
 	}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
-	if err := f.FormatRequests(reqs); err != nil {
-		t.Fatalf("FormatRequests failed: %v", err)
+	if err := f.FormatPending(reqs); err != nil {
+		t.Fatalf("FormatPending failed: %v", err)
 	}
 
 	mustContain(t, buf.String(), "mykeys")
@@ -300,7 +259,7 @@ func TestFormatRequests_CollectionColumn(t *testing.T) {
 func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
 	entries := []HistoryEntry{
 		{
-			Request:    PendingRequest{ID: "abc", Items: []ItemInfo{{Label: "X"}}},
+			Request:    RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X"}}},
 			Resolution: "approved",
 			ResolvedAt: time.Now(),
 		},
@@ -321,7 +280,7 @@ func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
 func TestFormatHistory_CollectionColumn(t *testing.T) {
 	entries := []HistoryEntry{
 		{
-			Request:    PendingRequest{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/login/42"}}},
+			Request:    RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/login/42"}}},
 			Resolution: "approved",
 			ResolvedAt: time.Now(),
 		},
@@ -385,4 +344,46 @@ func mustNotContain(t *testing.T, s, substr string) {
 	if strings.Contains(s, substr) {
 		t.Errorf("expected output NOT to contain %q\nfull output:\n%s", substr, s)
 	}
+}
+
+// Pins the column layout of the pending and history tables.
+func TestFormatTables_Layout(t *testing.T) {
+	uid := procutil.UID(1000)
+	req := RequestRecord{
+		ID:         "0123456789abcdef",
+		Client:     "a-client-name-longer-than-twenty",
+		Type:       "get_secret",
+		Items:      []ItemInfo{{Label: "a label that is longer than the summary column", Path: "/org/freedesktop/secrets/collection/a-very-long-collection/1"}},
+		SenderInfo: sender.Info{PID: 4242, UID: &uid},
+	}
+	var pending strings.Builder
+	require.NoError(t, NewFormatter(&pending, false).FormatPending([]PendingEntry{{Request: req, ExpiresAt: time.Now().Add(-time.Minute)}}))
+	assert.Equal(t, ""+
+		"ID        CLIENT                    PID    UID  TYPE          COLLECTION       SUMMARY                    EXPIRES\n"+
+		"--------  --------------------  -------  -----  ------------  ---------------  -------------------------  -------\n"+
+		"0123456…  a-client-name-longe…     4242   1000  get_secret    a-very-long-co…  a label that is longer t…  expired\n",
+		pending.String())
+
+	var history strings.Builder
+	require.NoError(t, NewFormatter(&history, false).FormatHistory([]HistoryEntry{{Request: RequestRecord{ID: "abc"}, Resolution: "auto_approved", ResolvedAt: time.Now().Add(time.Hour)}}))
+	assert.Equal(t, ""+
+		"ID        CLIENT                    PID    UID  TYPE          COLLECTION       RESULT      SUMMARY               RESOLVED\n"+
+		"--------  --------------------  -------  -----  ------------  ---------------  ----------  --------------------  --------\n"+
+		"abc       -                           -      -  -             -                auto_appr…  -                     just now\n",
+		history.String())
+
+	cyrillic := RequestRecord{
+		ID:         "abc",
+		Client:     "клиент-с-длинным-именем",
+		Type:       "get_secret",
+		Items:      []ItemInfo{{Label: "пароль от почты на работе и дома", Path: "/org/freedesktop/secrets/collection/login/1"}},
+		SenderInfo: sender.Info{PID: 4242, UID: &uid},
+	}
+	var cut strings.Builder
+	require.NoError(t, NewFormatter(&cut, false).FormatPending([]PendingEntry{{Request: cyrillic, ExpiresAt: time.Now().Add(-time.Minute)}}))
+	assert.Equal(t, ""+
+		"ID        CLIENT                    PID    UID  TYPE          COLLECTION       SUMMARY                    EXPIRES\n"+
+		"--------  --------------------  -------  -----  ------------  ---------------  -------------------------  -------\n"+
+		"abc       клиент-с-длинным-им…     4242   1000  get_secret    login            пароль от почты на работ…  expired\n",
+		cut.String())
 }

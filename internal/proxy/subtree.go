@@ -33,12 +33,12 @@ func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string)
 	path := pathOf(msg)
 
 	// Route based on path type
-	if !isCollectionPath(path) && !isItemPath(path) {
+	if !(collectionObjects{}).serves(path) && !(itemObjects{}).serves(path) {
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	obj := h.upstream(path)
-	variant, err := obj.GetProperty(iface + "." + property)
+	variant, err := obj.GetProperty(dbustypes.Interface(iface).Member(property))
 	if err != nil {
 		return dbus.Variant{}, dbustypes.ErrFailed(err)
 	}
@@ -50,12 +50,12 @@ func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string)
 func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
 	path := pathOf(msg)
 
-	if !isCollectionPath(path) && !isItemPath(path) {
+	if !(collectionObjects{}).serves(path) && !(itemObjects{}).serves(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	obj := h.upstream(path)
-	call := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface)
+	call := obj.Call(dbustypes.PropertiesInterface.Member("GetAll"), 0, iface)
 	if call.Err != nil {
 		return nil, dbustypes.ErrFailed(call.Err)
 	}
@@ -72,12 +72,12 @@ func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[s
 func (h *SubtreePropertiesHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
 	path := pathOf(msg)
 
-	if !isCollectionPath(path) && !isItemPath(path) {
+	if !(collectionObjects{}).serves(path) && !(itemObjects{}).serves(path) {
 		return dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	obj := h.upstream(path)
-	call := obj.Call("org.freedesktop.DBus.Properties.Set", 0, iface, property, value)
+	call := obj.Call(dbustypes.PropertiesInterface.Member("Set"), 0, iface, property, value)
 	if call.Err != nil {
 		return dbustypes.ErrFailed(call.Err)
 	}

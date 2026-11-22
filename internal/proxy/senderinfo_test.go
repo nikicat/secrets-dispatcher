@@ -29,15 +29,15 @@ type mockDBusClient struct {
 	unitErr  error
 }
 
-func (m *mockDBusClient) GetConnectionUnixProcessID(sender sender.UniqueName) (procutil.PID, error) {
+func (m *mockDBusClient) connectionPID(name sender.UniqueName) (procutil.PID, error) {
 	return m.pid, m.pidErr
 }
 
-func (m *mockDBusClient) GetConnectionUnixUser(sender sender.UniqueName) (procutil.UID, error) {
+func (m *mockDBusClient) connectionUser(name sender.UniqueName) (procutil.UID, error) {
 	return m.uid, m.uidErr
 }
 
-func (m *mockDBusClient) GetUnitByPID(pid procutil.PID) (systemd.Unit, error) {
+func (m *mockDBusClient) unitByPID(pid procutil.PID) (systemd.Unit, error) {
 	return m.unitName, m.unitErr
 }
 
@@ -194,13 +194,13 @@ func TestSenderInfoResolver_Resolve_InvokerResolution(t *testing.T) {
 		t.Fatal("expected non-empty ProcessChain")
 	}
 	self := info.ProcessChain[0]
-	if self.Exe == nil {
+	if _, ok := self.ExePath(); !ok {
 		t.Error("expected an Exe in first ProcessChain entry")
 	}
 	if len(self.Args) == 0 {
 		t.Error("expected non-empty Args in first ProcessChain entry")
 	}
-	if self.CWD == nil {
+	if _, ok := self.CWDPath(); !ok {
 		t.Error("expected a CWD in first ProcessChain entry")
 	}
 }
@@ -220,7 +220,7 @@ func TestSenderInfoResolver_Resolve_FiltersSelfExe(t *testing.T) {
 	info := resolver.Resolve(":1.99")
 	var foundSelf bool
 	for _, p := range info.ProcessChain {
-		if p.Exe != nil && *p.Exe == selfExe {
+		if exe, ok := p.ExePath(); ok && exe == selfExe {
 			foundSelf = true
 			break
 		}
@@ -235,7 +235,7 @@ func TestSenderInfoResolver_Resolve_FiltersSelfExe(t *testing.T) {
 	resolver.local = &reader
 	info = resolver.Resolve(":1.99")
 	for _, p := range info.ProcessChain {
-		if p.Exe != nil && *p.Exe == selfExe {
+		if exe, ok := p.ExePath(); ok && exe == selfExe {
 			t.Errorf("self exe %q should have been filtered from chain", selfExe)
 		}
 	}

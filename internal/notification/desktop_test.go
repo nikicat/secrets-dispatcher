@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,14 +17,15 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockNotifier records calls for testing.
 type mockNotifier struct {
 	mu        sync.Mutex
-	nextID    uint32
+	nextID    NotificationID
 	notified  []notifyCall
-	closed    []uint32
+	closed    []NotificationID
 	notifyErr error
 	closeErr  error
 }
@@ -35,7 +37,7 @@ type notifyCall struct {
 	buttons []Button
 }
 
-func (m *mockNotifier) Notify(summary, body, icon string, buttons []Button) (uint32, error) {
+func (m *mockNotifier) Notify(summary, body, icon string, buttons []Button) (NotificationID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.notifyErr != nil {
@@ -46,11 +48,11 @@ func (m *mockNotifier) Notify(summary, body, icon string, buttons []Button) (uin
 	return m.nextID, nil
 }
 
-func (m *mockNotifier) NotifyPersistent(summary, body, icon string) (uint32, error) {
+func (m *mockNotifier) NotifyPersistent(summary, body, icon string) (NotificationID, error) {
 	return m.Notify(summary, body, icon, nil)
 }
 
-func (m *mockNotifier) Close(id uint32) error {
+func (m *mockNotifier) Close(id NotificationID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closeErr != nil {
@@ -81,7 +83,7 @@ func (m *mockNotifier) lastNotify() notifyCall {
 	return m.notified[len(m.notified)-1]
 }
 
-func (m *mockNotifier) lastClosed() uint32 {
+func (m *mockNotifier) lastClosed() NotificationID {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.closed) == 0 {
@@ -98,43 +100,43 @@ type mockApprover struct {
 	err      error
 }
 
-func (a *mockApprover) Approve(id string) error {
+func (a *mockApprover) Approve(id approval.RequestID) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.err != nil {
 		return a.err
 	}
-	a.approved = append(a.approved, id)
+	a.approved = append(a.approved, string(id))
 	return nil
 }
 
-func (a *mockApprover) Deny(id string) error {
+func (a *mockApprover) Deny(id approval.RequestID) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.err != nil {
 		return a.err
 	}
-	a.denied = append(a.denied, id)
+	a.denied = append(a.denied, string(id))
 	return nil
 }
 
-func (a *mockApprover) AutoApprove(requestID string) error {
+func (a *mockApprover) AutoApprove(requestID approval.RequestID) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.err != nil {
 		return a.err
 	}
-	a.approved = append(a.approved, "auto:"+requestID)
+	a.approved = append(a.approved, "auto:"+string(requestID))
 	return nil
 }
 
-func (a *mockApprover) ApproveAndAutoApprove(id string) error {
+func (a *mockApprover) ApproveAndAutoApprove(id approval.RequestID) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.err != nil {
 		return a.err
 	}
-	a.approved = append(a.approved, "approve_auto:"+id)
+	a.approved = append(a.approved, "approve_auto:"+string(id))
 	return nil
 }
 
@@ -147,7 +149,7 @@ func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 }
 
 // Returns a GetSecret request for one item labelled "Secret", with no sender.
-func secretRequest(id string) *approval.Request {
+func secretRequest(id approval.RequestID) *approval.Request {
 	return &approval.Request{
 		ID:    id,
 		Type:  approval.RequestTypeGetSecret,
@@ -155,7 +157,7 @@ func secretRequest(id string) *approval.Request {
 	}
 }
 
-func TestHandler_OnEvent_RequestCreated(t *testing.T) {
+func TestHandler_RequestCreated(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
@@ -173,7 +175,7 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	if mock.notifyCount() != 1 {
 		t.Errorf("expected 1 notification, got %d", mock.notifyCount())
@@ -183,10 +185,10 @@ func TestHandler_OnEvent_RequestCreated(t *testing.T) {
 	if call.summary != "Secret requested" {
 		t.Errorf("unexpected summary: %s", call.summary)
 	}
-	if !contains(call.body, "<b>ssh-agent.service</b>@user@remote[1234]") {
+	if !strings.Contains(call.body, "<b>ssh-agent.service</b>@user@remote[1234]") {
 		t.Errorf("body should contain proc@client[pid] header: %s", call.body)
 	}
-	if !contains(call.body, "<i>GitHub Token</i>") {
+	if !strings.Contains(call.body, "<i>GitHub Token</i>") {
 		t.Errorf("body should contain italic secret label: %s", call.body)
 	}
 }
@@ -205,7 +207,7 @@ var remoteSender = approval.SenderInfo{InvokerName: "gh"}
 
 // Checks that the notification offers "Approve 2m" only for a request that
 // Request.AutoApprovable accepts.
-func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
+func TestHandler_RequestCreated_Actions(t *testing.T) {
 	tests := []struct {
 		name        string
 		sender      approval.SenderInfo
@@ -227,7 +229,7 @@ func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
 				SenderInfo: tt.sender,
 			}
 
-			h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+			h.RequestCreated(approval.Pending{Request: req})
 
 			if got := mock.lastNotify().buttons; !slices.Equal(got, tt.wantButtons) {
 				t.Errorf("buttons = %q, want %q", got, tt.wantButtons)
@@ -236,20 +238,20 @@ func TestHandler_OnEvent_RequestCreated_Actions(t *testing.T) {
 	}
 }
 
-func TestHandler_OnEvent_RequestResolved_ClosesNotification(t *testing.T) {
+func TestHandler_RequestResolved_ClosesNotification(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := secretRequest("test-456")
 
 	// Create notification
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	if mock.notifyCount() != 1 {
 		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
 	}
 
 	// Approve should close it
-	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
 	// Give async handler time to complete
 	time.Sleep(10 * time.Millisecond)
@@ -262,22 +264,24 @@ func TestHandler_OnEvent_RequestResolved_ClosesNotification(t *testing.T) {
 	}
 }
 
-func TestHandler_OnEvent_AllResolutionTypes(t *testing.T) {
-	resolutions := map[string]approval.EventType{
-		"approved":  approval.EventRequestApproved,
-		"denied":    approval.EventRequestDenied,
-		"expired":   approval.EventRequestExpired,
-		"cancelled": approval.EventRequestCancelled,
+func TestHandler_AllResolutionTypes(t *testing.T) {
+	resolutions := []approval.Resolution{
+		approval.ResolutionApproved,
+		approval.ResolutionDenied,
+		approval.ResolutionExpired,
+		approval.ResolutionCancelled,
+		approval.ResolutionAutoApproved,
+		approval.ResolutionIgnored,
 	}
 
-	for name, resolution := range resolutions {
-		t.Run(name, func(t *testing.T) {
+	for _, resolution := range resolutions {
+		t.Run(string(resolution), func(t *testing.T) {
 			h, mock, _ := newTestHandler()
 
 			req := secretRequest("test-req")
 
-			h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
-			h.OnEvent(approval.Event{Type: resolution, Request: req})
+			h.RequestCreated(approval.Pending{Request: req})
+			h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: resolution})
 
 			time.Sleep(10 * time.Millisecond)
 
@@ -288,13 +292,13 @@ func TestHandler_OnEvent_AllResolutionTypes(t *testing.T) {
 	}
 }
 
-func TestHandler_OnEvent_ResolveWithoutCreate(t *testing.T) {
+func TestHandler_ResolveWithoutCreate(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{ID: "unknown"}
 
 	// Should not panic or call close
-	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
 	if mock.closeCount() != 0 {
 		t.Errorf("should not close unknown notification")
@@ -307,18 +311,18 @@ func TestHandler_FormatBody_Search(t *testing.T) {
 	req := &approval.Request{
 		ID:   "search-1",
 		Type: approval.RequestTypeSearch,
-		SearchAttributes: map[string]string{
+		Payload: approval.SearchPayload{Attributes: map[string]string{
 			"service": "github",
-		},
+		}},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	call := mock.lastNotify()
 	if call.summary != "Secrets searched" {
 		t.Errorf("expected summary 'Secrets searched', got %q", call.summary)
 	}
-	if !contains(call.body, "<i>service=github</i>") {
+	if !strings.Contains(call.body, "<i>service=github</i>") {
 		t.Errorf("body should contain italic search attributes: %s", call.body)
 	}
 }
@@ -336,10 +340,10 @@ func TestHandler_FormatBody_MultipleItems(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<i>3 items</i>") {
+	if !strings.Contains(call.body, "<i>3 items</i>") {
 		t.Errorf("body should show italic item count: %s", call.body)
 	}
 }
@@ -360,10 +364,10 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<b>user@host</b>[5678]") {
+	if !strings.Contains(call.body, "<b>user@host</b>[5678]") {
 		t.Errorf("body should show client[pid]: %s", call.body)
 	}
 }
@@ -403,19 +407,23 @@ func TestHandler_FormatBody_SenderHeader(t *testing.T) {
 	}
 }
 
-func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
+// Returns the sign info of a commit with the given message and staged files in
+// the given repo.
+func commitSignInfo(t *testing.T, repo approval.RepoName, message string, staged ...string) *approval.GPGSignInfo {
+	t.Helper()
+	object := approval.SignedObject("tree 0\nauthor John <j@x> 1 +0000\n\n" + message + "\n")
+	info, err := approval.NewGPGSignInfo(object, repo, "ABCD1234", approval.ListedFiles(staged))
+	require.NoError(t, err)
+	return info
+}
+
+func TestHandler_GPGSignRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:   "gpg-1",
-		Type: approval.RequestTypeGPGSign,
-		GPGSignInfo: &approval.GPGSignInfo{
-			RepoName:     "my-project",
-			CommitMsg:    "Add feature\n\nSome body text",
-			Author:       "John",
-			KeyID:        "ABCD1234",
-			ChangedFiles: []string{"a.go", "b.go"},
-		},
+		ID:      "gpg-1",
+		Type:    approval.RequestTypeGPGSign,
+		Payload: commitSignInfo(t, "my-project", "Add feature\n\nSome body text", "a.go", "b.go"),
 		SenderInfo: approval.SenderInfo{
 			Info: sender.Info{
 				PID:         1234,
@@ -424,7 +432,7 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	if mock.notifyCount() != 1 {
 		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
@@ -437,13 +445,13 @@ func TestHandler_OnEvent_GPGSignRequest(t *testing.T) {
 	if call.icon != "emblem-important" {
 		t.Errorf("expected icon 'emblem-important', got %q", call.icon)
 	}
-	if !contains(call.body, "<b>my-project</b>: ") {
+	if !strings.Contains(call.body, "<b>my-project</b>: ") {
 		t.Errorf("body should contain bold repo: %s", call.body)
 	}
-	if !contains(call.body, "<i>Add feature</i>") {
+	if !strings.Contains(call.body, "<i>Add feature</i>") {
 		t.Errorf("body should contain italic commit subject: %s", call.body)
 	}
-	if contains(call.body, "Some body text") {
+	if strings.Contains(call.body, "Some body text") {
 		t.Errorf("body should NOT contain commit body text: %s", call.body)
 	}
 }
@@ -452,12 +460,9 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:   "gpg-pid-1",
-		Type: approval.RequestTypeGPGSign,
-		GPGSignInfo: &approval.GPGSignInfo{
-			RepoName:  "my-project",
-			CommitMsg: "Fix bug",
-		},
+		ID:      "gpg-pid-1",
+		Type:    approval.RequestTypeGPGSign,
+		Payload: commitSignInfo(t, "my-project", "Fix bug"),
 		SenderInfo: approval.SenderInfo{
 			Info: sender.Info{
 				PID: 5678,
@@ -465,34 +470,28 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<b>my-project</b>: ") {
+	if !strings.Contains(call.body, "<b>my-project</b>: ") {
 		t.Errorf("body should contain bold repo without process name: %s", call.body)
 	}
-	if !contains(call.body, "<i>Fix bug</i>") {
+	if !strings.Contains(call.body, "<i>Fix bug</i>") {
 		t.Errorf("body should contain italic commit subject: %s", call.body)
 	}
 }
 
-// TestHandler_FormatBody_EscapesInjectedMarkup is the regression test for Vuln 7:
-// client-controlled fields must be HTML-escaped before being interpolated into the
-// notification markup body, so an attacker cannot forge reassuring markup on the
-// (directly actionable) consent surface. The notification carries approve/deny
-// buttons, so injected bold/italic text would aid a consent spoof.
+// Guards that sender-controlled values reach the markup body escaped, so they
+// cannot forge markup on the consent surface (ADR 0007).
 func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	// A crafted commit message that tries to close the <i> and inject a bold
 	// "Verified" reassurance, plus a process comm that injects markup too.
 	req := &approval.Request{
-		ID:   "inject-1",
-		Type: approval.RequestTypeGPGSign,
-		GPGSignInfo: &approval.GPGSignInfo{
-			RepoName:  "repo<script>",
-			CommitMsg: "docs: typo</i> <b>Verified · GNOME Keyring</b>",
-		},
+		ID:      "inject-1",
+		Type:    approval.RequestTypeGPGSign,
+		Payload: commitSignInfo(t, "repo<script>", "docs: typo</i> <b>Verified · GNOME Keyring</b>"),
 		SenderInfo: approval.SenderInfo{
 			Info: sender.Info{
 				ProcessChain: []procutil.Process{{Name: "evil</b><b>git", PID: 9}},
@@ -500,7 +499,7 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 	body := mock.lastNotify().body
 
 	// No raw attacker-supplied tags survive.
@@ -517,24 +516,19 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 	assert.Contains(t, body, "<b>repo&lt;script&gt;</b>", "our own <b> tag must remain literal")
 }
 
-// TestHandler_FormatBody_QuotesNotEscaped guards against over-escaping: quotes
-// don't need escaping in the notification markup body (text is never inside an
-// attribute), and servers like dunst and mako render html.EscapeString's
-// &#39;/&#34; literally instead of decoding them.
+// Guards against over-escaping: quotes in the markup body stay as they are
+// (ADR 0007).
 func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
-		ID:   "quotes-1",
-		Type: approval.RequestTypeGPGSign,
-		GPGSignInfo: &approval.GPGSignInfo{
-			RepoName:  "my-project",
-			CommitMsg: `fix: don't say "hello" to <script> & friends`,
-		},
+		ID:         "quotes-1",
+		Type:       approval.RequestTypeGPGSign,
+		Payload:    commitSignInfo(t, "my-project", `fix: don't say "hello" to <script> & friends`),
 		SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 5678}},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 	body := mock.lastNotify().body
 
 	assert.Contains(t, body, `don't say "hello"`, "quotes must pass through verbatim")
@@ -543,7 +537,7 @@ func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
 	assert.Contains(t, body, "&lt;script&gt; &amp; friends", "markup-relevant characters must still be escaped")
 }
 
-func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
+func TestHandler_DeleteRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
@@ -560,7 +554,7 @@ func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	if mock.notifyCount() != 1 {
 		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
@@ -573,7 +567,7 @@ func TestHandler_OnEvent_DeleteRequest(t *testing.T) {
 	if call.icon != "dialog-warning" {
 		t.Errorf("expected icon 'dialog-warning', got %q", call.icon)
 	}
-	if !contains(call.body, "GitHub Token") {
+	if !strings.Contains(call.body, "GitHub Token") {
 		t.Errorf("body should contain item label: %s", call.body)
 	}
 }
@@ -597,13 +591,13 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 		},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	call := mock.lastNotify()
-	if !contains(call.body, "<b>My Secret</b>") {
+	if !strings.Contains(call.body, "<b>My Secret</b>") {
 		t.Errorf("body should contain bold item label: %s", call.body)
 	}
-	if !contains(call.body, "secret-tool") {
+	if !strings.Contains(call.body, "secret-tool") {
 		t.Errorf("body should contain process chain: %s", call.body)
 	}
 }
@@ -635,7 +629,7 @@ func TestHandler_FormatBody_ProcessChainExact(t *testing.T) {
 	}
 }
 
-func TestHandler_OnEvent_WriteRequest(t *testing.T) {
+func TestHandler_WriteRequest(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
@@ -647,7 +641,7 @@ func TestHandler_OnEvent_WriteRequest(t *testing.T) {
 		SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 1234}},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	call := mock.lastNotify()
 	if call.summary != "Secret write requested" {
@@ -656,12 +650,12 @@ func TestHandler_OnEvent_WriteRequest(t *testing.T) {
 	if call.icon != "dialog-warning" {
 		t.Errorf("expected icon 'dialog-warning', got %q", call.icon)
 	}
-	if !contains(call.body, "New Secret") {
+	if !strings.Contains(call.body, "New Secret") {
 		t.Errorf("body should contain item label: %s", call.body)
 	}
 }
 
-func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
+func TestHandler_GetSecretIcon(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
 	req := &approval.Request{
@@ -670,7 +664,7 @@ func TestHandler_OnEvent_GetSecretIcon(t *testing.T) {
 		Items: []approval.ItemInfo{{Label: "MySecret"}},
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	if mock.notifyCount() != 1 {
 		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
@@ -690,7 +684,7 @@ func TestHandler_ListenActions_Approve(t *testing.T) {
 
 	req := secretRequest("action-approve-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 	notifID := mock.lastNotify() // get the notification ID
 	_ = notifID
 
@@ -726,7 +720,7 @@ func TestHandler_ListenActions_Deny(t *testing.T) {
 
 	req := secretRequest("action-deny-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 	_ = mock
 
 	h.mu.Lock()
@@ -762,7 +756,7 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 
 	req := secretRequest("action-default-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	h.mu.Lock()
 	nID := h.notifications["action-default-1"]
@@ -822,7 +816,7 @@ func TestHandler_ListenActions_ApproverError(t *testing.T) {
 	approver.err = fmt.Errorf("not found")
 
 	req := secretRequest("err-1")
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	h.mu.Lock()
 	nID := h.notifications["err-1"]
@@ -850,7 +844,7 @@ func TestHandler_ReverseMapCleanup(t *testing.T) {
 
 	req := secretRequest("cleanup-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	h.mu.Lock()
 	nID := h.notifications["cleanup-1"]
@@ -861,7 +855,7 @@ func TestHandler_ReverseMapCleanup(t *testing.T) {
 		t.Fatal("reverse map should contain entry after creation")
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
 	h.mu.Lock()
 	_, hasNotif := h.notifications["cleanup-1"]
@@ -876,20 +870,6 @@ func TestHandler_ReverseMapCleanup(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && stringContains(s, substr)))
-}
-
-func stringContains(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 func newTestHandlerWithDelay(delay time.Duration) (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
@@ -902,7 +882,7 @@ func TestHandler_DelayedNotification_SuppressesQuickCancel(t *testing.T) {
 
 	req := secretRequest("quick-cancel-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	// No notification should be sent yet (still in delay window).
 	if mock.notifyCount() != 0 {
@@ -910,7 +890,7 @@ func TestHandler_DelayedNotification_SuppressesQuickCancel(t *testing.T) {
 	}
 
 	// Cancel before delay expires.
-	h.OnEvent(approval.Event{Type: approval.EventRequestCancelled, Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
 
 	// Wait past the delay to verify no notification fires.
 	time.Sleep(300 * time.Millisecond)
@@ -928,7 +908,7 @@ func TestHandler_DelayedNotification_FiresAfterDelay(t *testing.T) {
 
 	req := secretRequest("delayed-fire-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	// Wait for delay to expire.
 	time.Sleep(100 * time.Millisecond)
@@ -943,8 +923,8 @@ func TestHandler_DelayedNotification_ResolvedDuringDelay(t *testing.T) {
 
 	req := secretRequest("resolve-during-delay-1")
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
-	h.OnEvent(approval.Event{Type: approval.EventRequestApproved, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
 	// Wait past delay to verify nothing fires.
 	time.Sleep(300 * time.Millisecond)
@@ -964,7 +944,7 @@ func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
 		SenderInfo: localSender,
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
 
 	// Wait for notification to actually appear.
 	time.Sleep(50 * time.Millisecond)
@@ -973,7 +953,7 @@ func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
 	}
 
 	// Cancel after notification was shown — should close + show follow-up.
-	h.OnEvent(approval.Event{Type: approval.EventRequestCancelled, Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
 
 	// Original closed (1 close) + follow-up sent (2 notifies total).
 	if mock.notifyCount() != 2 {
@@ -1007,13 +987,13 @@ func newTestDBusNotifier(t *testing.T) *DBusNotifier {
 
 	n := &DBusNotifier{
 		conn:    conn,
-		signals: make(chan *dbus.Signal, 16),
-		actions: make(chan Action, 16),
+		signals: make(chan *dbus.Signal, signalBuffer),
+		actions: make(chan Action, signalBuffer),
 		done:    make(chan struct{}),
 	}
 
 	if err := conn.AddMatchSignal(
-		dbus.WithMatchInterface(notifyInterface),
+		dbus.WithMatchInterface(string(notifyInterface)),
 		dbus.WithMatchMember("ActionInvoked"),
 	); err != nil {
 		conn.Close()
@@ -1066,8 +1046,8 @@ func TestHandler_CancelledRemoteRequest_NoFollowUp(t *testing.T) {
 		SenderInfo: remoteSender,
 	}
 
-	h.OnEvent(approval.Event{Type: approval.EventRequestCreated, Request: req})
-	h.OnEvent(approval.Event{Type: approval.EventRequestCancelled, Request: req})
+	h.RequestCreated(approval.Pending{Request: req})
+	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
 
 	if mock.notifyCount() != 1 {
 		t.Errorf("notifications = %d, want 1 (no follow-up)", mock.notifyCount())

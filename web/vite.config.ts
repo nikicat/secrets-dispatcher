@@ -12,9 +12,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // changeOrigin stays off, so the daemon sees the dev server's Host,
+      // which matches the page's Origin (ADR 0006).
       "/api": {
         target: "http://localhost:8484",
-        changeOrigin: true,
+        ws: true,
       },
     },
   },

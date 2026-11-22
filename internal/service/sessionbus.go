@@ -34,26 +34,26 @@ const pokeTimeout = 10 * time.Second
 
 func (godbusSession) secretsOwner(ctx context.Context) (procutil.PID, error) {
 	var pid procutil.PID
-	err := callSession(ctx, busDaemon, busDaemonInterface+".GetConnectionUnixProcessID", []any{secretsService.dest}, &pid)
+	err := callSession(ctx, busDaemon, dbustypes.BusDaemonInterface.Member("GetConnectionUnixProcessID"), []any{secretsService.dest}, &pid)
 	return pid, err
 }
 
 func (godbusSession) reloadConfig(ctx context.Context) error {
-	return callSession(ctx, busDaemon, busDaemonInterface+"."+reloadConfigMethod, nil)
+	return callSession(ctx, busDaemon, dbustypes.BusDaemonInterface.Member(reloadConfigMethod), nil)
 }
 
 const reloadConfigMethod = "ReloadConfig"
 
 // The busctl command line that the dry run prints for reloadConfig
 // (ARCHITECTURE.md, "Service setup").
-var reloadConfigCommand = fmt.Sprintf("busctl --user call %s %s %s %s", busDaemon.dest, busDaemon.path, busDaemonInterface, reloadConfigMethod)
+var reloadConfigCommand = fmt.Sprintf("busctl --user call %s %s %s %s", busDaemon.dest, busDaemon.path, dbustypes.BusDaemonInterface, reloadConfigMethod)
 
 func (godbusSession) pokeSecrets(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, pokeTimeout)
 	defer cancel()
 	var collections dbus.Variant
-	return callSession(ctx, secretsService, "org.freedesktop.DBus.Properties.Get",
-		[]any{dbustypes.ServiceInterface, "Collections"}, &collections)
+	return callSession(ctx, secretsService, dbustypes.PropertiesInterface.Member("Get"),
+		[]any{string(dbustypes.ServiceInterface), "Collections"}, &collections)
 }
 
 // An object on the session bus.
@@ -62,10 +62,8 @@ type busObject struct {
 	path dbus.ObjectPath
 }
 
-const busDaemonInterface = "org.freedesktop.DBus"
-
 var (
-	busDaemon      = busObject{"org.freedesktop.DBus", "/org/freedesktop/DBus"}
+	busDaemon      = busObject{dbustypes.BusDaemonName, dbustypes.BusDaemonPath}
 	secretsService = busObject{dbustypes.BusName, dbustypes.ServicePath}
 )
 

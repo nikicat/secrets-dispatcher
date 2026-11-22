@@ -7,8 +7,12 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
+
+// The bus daemon's signal that a name changed owner.
+const nameOwnerChanged = "NameOwnerChanged"
 
 // Identifies a single in-flight request within a sender's set.
 type requestID uint64
@@ -18,12 +22,8 @@ type requestID uint64
 type clientTracker struct {
 	conn *dbus.Conn
 	mu   sync.Mutex
-	// clients maps a sender unique name to the set of its in-flight requests,
-	// each keyed by a tracker-assigned id. A single sender can have several
-	// approval requests pending at once — a client may issue overlapping Secret
-	// Service calls on one connection — and each is tracked and cancelled
-	// independently. All of a sender's requests are cancelled together only when
-	// that sender actually disconnects.
+	// In-flight requests by sender. A sender can have several at once, since a
+	// client may make overlapping calls on one connection.
 	clients map[sender.UniqueName]map[requestID]context.CancelFunc
 	// nextID assigns a unique id to each request; only accessed under mu.
 	nextID    requestID
@@ -43,9 +43,9 @@ func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 
 	// Subscribe to NameOwnerChanged signals to detect client disconnects
 	if err := conn.AddMatchSignal(
-		dbus.WithMatchInterface("org.freedesktop.DBus"),
-		dbus.WithMatchMember("NameOwnerChanged"),
-		dbus.WithMatchSender("org.freedesktop.DBus"),
+		dbus.WithMatchInterface(string(dbustypes.BusDaemonInterface)),
+		dbus.WithMatchMember(nameOwnerChanged),
+		dbus.WithMatchSender(dbustypes.BusDaemonName),
 	); err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func (t *clientTracker) processSignals() {
 				return
 			}
 
-			if signal.Name != "org.freedesktop.DBus.NameOwnerChanged" {
+			if signal.Name != dbustypes.BusDaemonInterface.Member(nameOwnerChanged) {
 				continue
 			}
 
@@ -107,16 +107,9 @@ func (t *clientTracker) clientDisconnected(sender sender.UniqueName) {
 	delete(t.clients, sender)
 }
 
-// contextForSender registers a single request for the given sender and returns
-// its context together with a release function. The context is cancelled when
-// the sender disconnects (or when release is called); release cancels and
-// forgets only this one request, leaving the sender's other in-flight requests
-// untouched. Each call registers an independent request, so overlapping
-// requests from the same sender never cancel one another.
-//
-// The context should be used for the duration of a single request, and release
-// called (typically deferred) when it completes. If the client has already
-// disconnected, the returned context is already cancelled.
+// Returns a context for one request from the sender, and a release that cancels
+// only that request. The context is also cancelled when the sender disconnects.
+// When the sender has already gone, the context is cancelled from the start.
 func (t *clientTracker) contextForSender(parent context.Context, sender sender.UniqueName) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(parent)
 
@@ -147,13 +140,8 @@ func (t *clientTracker) contextForSender(parent context.Context, sender sender.U
 		}
 	}
 
-	// Check if the client is still connected. This handles the race where:
-	// 1. Client sends request then immediately disconnects
-	// 2. NameOwnerChanged signal is processed before we added sender to clients map
-	// 3. We miss the disconnect signal because sender wasn't tracked yet
-	// By checking now, we detect this case and cancel this request immediately.
-	if _, err := nameOwner(t.conn, string(sender)); err != nil {
-		// Client already disconnected - cancel this request immediately.
+	// Its NameOwnerChanged may have come before the sender was tracked.
+	if _, err := (busDaemon{t.conn}).nameOwner(string(sender)); err != nil {
 		release()
 	}
 

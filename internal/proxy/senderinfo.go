@@ -23,9 +23,9 @@ func pathOf(msg dbus.Message) dbus.ObjectPath {
 
 // dbusClient abstracts D-Bus operations for testing.
 type dbusClient interface {
-	GetConnectionUnixProcessID(sender sender.UniqueName) (procutil.PID, error)
-	GetConnectionUnixUser(sender sender.UniqueName) (procutil.UID, error)
-	GetUnitByPID(pid procutil.PID) (systemd.Unit, error)
+	connectionPID(name sender.UniqueName) (procutil.PID, error)
+	connectionUser(name sender.UniqueName) (procutil.UID, error)
+	unitByPID(pid procutil.PID) (systemd.Unit, error)
 }
 
 // SenderInfoResolver resolves D-Bus sender information (PID, UID, systemd unit).
@@ -40,7 +40,7 @@ type SenderInfoResolver struct {
 
 // Returns a resolver that asks conn about senders and names them clientName.
 func newSenderInfoResolver(conn *dbus.Conn, clientName approval.ClientName, local *sender.ChainReader) *SenderInfoResolver {
-	return &SenderInfoResolver{client: &realDBusClient{conn: conn}, clientName: clientName, local: local}
+	return &SenderInfoResolver{client: realDBusClient{busDaemon{conn}}, clientName: clientName, local: local}
 }
 
 // newSenderInfoResolverWithClient creates a resolver with a custom client (for testing).
@@ -48,17 +48,14 @@ func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
 	return &SenderInfoResolver{client: client, local: &sender.ChainReader{}}
 }
 
-// Resolve retrieves sender information for a D-Bus sender.
-// Returns partial information if some queries fail (never fails completely).
-//
-// Uses GetConnectionUnixProcessID and GetConnectionUnixUser instead of
-// GetConnectionCredentials to avoid ProcessFD which cannot be forwarded
-// over SSH tunneled sockets (dbus-broker v34+ includes ProcessFD).
+// Returns what the bus reports about the sender, and on a local bus also its
+// systemd unit and process chain. The bus is asked in a way that works over an
+// SSH tunnel (ADR 0003).
 func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo {
 	info := approval.SenderInfo{Client: r.clientName, Sender: &name}
 
 	// Get PID
-	pid, err := r.client.GetConnectionUnixProcessID(name)
+	pid, err := r.client.connectionPID(name)
 	if err != nil {
 		slog.Warn("failed to get connection PID", "sender", name, "error", err)
 	} else {
@@ -66,7 +63,7 @@ func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo
 	}
 
 	// Get UID (username resolution not possible - logind is on system bus, not session bus)
-	uid, err := r.client.GetConnectionUnixUser(name)
+	uid, err := r.client.connectionUser(name)
 	if err != nil {
 		slog.Warn("failed to get connection UID", "sender", name, "error", err)
 	} else {
@@ -82,7 +79,7 @@ func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo
 	// systemd-managed services). Stored separately from InvokerName (the spoofable
 	// comm) and consulted by the `unit` process matcher.
 	if info.PID != 0 {
-		if unit, err := r.client.GetUnitByPID(pid); err != nil {
+		if unit, err := r.client.unitByPID(pid); err != nil {
 			slog.Debug("failed to get unit by PID", "pid", pid, "error", err)
 		} else {
 			info.SystemdUnit = unit
@@ -104,40 +101,10 @@ func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo
 
 // realDBusClient implements dbusClient using a real D-Bus connection.
 type realDBusClient struct {
-	conn *dbus.Conn
+	busDaemon
 }
 
-func (c *realDBusClient) GetConnectionUnixProcessID(sender sender.UniqueName) (procutil.PID, error) {
-	obj := c.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
-	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixProcessID", 0, string(sender))
-	if call.Err != nil {
-		return 0, call.Err
-	}
-
-	var pid procutil.PID
-	if err := call.Store(&pid); err != nil {
-		return 0, err
-	}
-
-	return pid, nil
-}
-
-func (c *realDBusClient) GetConnectionUnixUser(sender sender.UniqueName) (procutil.UID, error) {
-	obj := c.conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
-	call := obj.Call("org.freedesktop.DBus.GetConnectionUnixUser", 0, string(sender))
-	if call.Err != nil {
-		return 0, call.Err
-	}
-
-	var uid procutil.UID
-	if err := call.Store(&uid); err != nil {
-		return 0, err
-	}
-
-	return uid, nil
-}
-
-func (c *realDBusClient) GetUnitByPID(pid procutil.PID) (systemd.Unit, error) {
+func (c realDBusClient) unitByPID(pid procutil.PID) (systemd.Unit, error) {
 	obj := c.conn.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
 	call := obj.Call("org.freedesktop.systemd1.Manager.GetUnitByPID", 0, pid)
 	if call.Err != nil {

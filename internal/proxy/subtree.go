@@ -6,15 +6,14 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
 
-// SubtreePropertiesHandler handles Properties interface for both collections and items.
-// It routes based on path type.
+// Serves org.freedesktop.DBus.Properties for collections and items by
+// forwarding each call to the upstream object of the same path.
 type SubtreePropertiesHandler struct {
 	localConn *dbus.Conn
 	sessions  *SessionManager
 	logger    *logging.Logger
 }
 
-// NewSubtreePropertiesHandler creates a new handler.
 func NewSubtreePropertiesHandler(localConn *dbus.Conn, sessions *SessionManager, logger *logging.Logger) *SubtreePropertiesHandler {
 	return &SubtreePropertiesHandler{
 		localConn: localConn,
@@ -23,16 +22,13 @@ func NewSubtreePropertiesHandler(localConn *dbus.Conn, sessions *SessionManager,
 	}
 }
 
-// upstream returns the backend object at path on the upstream Secret Service bus.
 func (h *SubtreePropertiesHandler) upstream(path dbus.ObjectPath) dbus.BusObject {
 	return h.localConn.Object(dbustypes.BusName, path)
 }
 
-// Get implements org.freedesktop.DBus.Properties.Get for collections and items.
 func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
-	path := pathOf(msg)
+	path := dbustypes.PathOf(msg)
 
-	// Route based on path type
 	if !(collectionObjects{}).serves(path) && !(itemObjects{}).serves(path) {
 		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(path))
 	}
@@ -46,9 +42,8 @@ func (h *SubtreePropertiesHandler) Get(msg dbus.Message, iface, property string)
 	return variant, nil
 }
 
-// GetAll implements org.freedesktop.DBus.Properties.GetAll for collections and items.
 func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
-	path := pathOf(msg)
+	path := dbustypes.PathOf(msg)
 
 	if !(collectionObjects{}).serves(path) && !(itemObjects{}).serves(path) {
 		return nil, dbustypes.ErrObjectNotFound(string(path))
@@ -68,9 +63,8 @@ func (h *SubtreePropertiesHandler) GetAll(msg dbus.Message, iface string) (map[s
 	return props, nil
 }
 
-// Set implements org.freedesktop.DBus.Properties.Set for collections and items.
 func (h *SubtreePropertiesHandler) Set(msg dbus.Message, iface, property string, value dbus.Variant) *dbus.Error {
-	path := pathOf(msg)
+	path := dbustypes.PathOf(msg)
 
 	if !(collectionObjects{}).serves(path) && !(itemObjects{}).serves(path) {
 		return dbustypes.ErrObjectNotFound(string(path))

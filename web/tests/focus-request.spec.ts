@@ -1,5 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
-import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
+import {
+  type CommitFields,
+  startTestBackend,
+  type TestBackend,
+  testCommit,
+} from "./fixtures/test-utils.mts";
 
 declare global {
   interface Window {
@@ -26,20 +31,9 @@ test.afterAll(async () => {
 
 /** POST a GPG sign request and return the request_id. */
 async function createRequest(
-  overrides: Record<string, unknown> = {},
+  overrides: Partial<CommitFields> = {},
 ): Promise<string> {
-  return backend.createGPGSignRequest(
-    {
-      repo_name: "test-repo",
-      commit_msg: "test: focus mode commit",
-      author: "Dev <dev@example.com> 1700000000 +0000",
-      committer: "Dev <dev@example.com> 1700000000 +0000",
-      key_id: "FOCUS001",
-      changed_files: ["main.go"],
-      ...overrides,
-    },
-    "focus-test",
-  );
+  return backend.createGPGSignRequest(testCommit(overrides), "focus-test");
 }
 
 /** Deny a request via API. */
@@ -176,8 +170,6 @@ test.describe("Focus Mode — Auto-close on Resolve", () => {
   test("approve in UI calls window.close()", async ({ page }) => {
     const reqId = await createRequest({
       commit_msg: "feat: approve in UI",
-      commit_object:
-        "tree 8754a964a0ce1b6c5f7a88202174955bdcd58a98\nauthor Dev <dev@example.com> 1700000000 +0000\ncommitter Dev <dev@example.com> 1700000000 +0000\n\nfeat: approve in UI\n",
     });
 
     await openFocused(page, reqId);
@@ -275,14 +267,7 @@ test.describe("Focus Mode — Request Expiration", () => {
 
   test("shows message when focused request expires", async ({ page }) => {
     const reqId = await shortBackend.createGPGSignRequest(
-      {
-        repo_name: "test-repo",
-        commit_msg: "feat: will expire",
-        author: "Dev <dev@example.com> 1700000000 +0000",
-        committer: "Dev <dev@example.com> 1700000000 +0000",
-        key_id: "EXPIRE01",
-        changed_files: ["main.go"],
-      },
+      testCommit({ commit_msg: "feat: will expire" }),
       "expire-test",
     );
 

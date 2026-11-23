@@ -829,6 +829,7 @@
                       rule.process?.cwd ??
                       rule.process?.unit ??
                       undefined}
+                    client={rule.client}
                     collection={rule.secret?.collection ?? undefined}
                     attributes={rule.secret?.attributes ??
                       rule.search_attributes ??

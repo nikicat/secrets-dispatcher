@@ -7,21 +7,16 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
-// TestTrackerContextForDisconnectedClient verifies that when contextForSender
-// is called for a client that has already disconnected, the returned context
-// is already cancelled.
-//
-// This tests the race condition where:
-// 1. Client sends a D-Bus method call
-// 2. Client immediately disconnects (Ctrl+C)
-// 3. NameOwnerChanged signal is processed (but sender not tracked yet)
-// 4. Handler runs and calls contextForSender
-// 5. Without the fix, the context would never be cancelled
+// Checks that clientTracker.contextForSender returns a cancelled context for a
+// client that disconnected before the call, as a client killed right after
+// calling does.
 func TestTrackerContextForDisconnectedClient(t *testing.T) {
 	addr := testutil.StartDBusDaemon(t)
 
@@ -69,9 +64,25 @@ func TestTrackerContextForDisconnectedClient(t *testing.T) {
 	}
 }
 
-// TestTrackerDisconnectedClientRequestNotPending verifies that when a client
-// has already disconnected before contextForSender is called, the approval
-// request is immediately cancelled and removed from pending.
+// A call that arrives after the tracker closed, while the proxy shuts down, gets
+// a cancelled context.
+func TestTrackerContextAfterClose(t *testing.T) {
+	addr := testutil.StartDBusDaemon(t)
+	conn, err := dbus.Connect(addr)
+	require.NoError(t, err)
+	defer conn.Close()
+	tracker, err := newClientTracker(conn)
+	require.NoError(t, err)
+	tracker.close()
+
+	ctx, release := tracker.contextForSender(context.Background(), uniqueName(conn))
+	defer release()
+
+	assert.Error(t, ctx.Err(), "context of a request after close is not cancelled")
+}
+
+// Checks that an approval request from a client that disconnected before
+// clientTracker.contextForSender ran is cancelled and leaves the pending list.
 func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 	addr := testutil.StartDBusDaemon(t)
 
@@ -139,8 +150,7 @@ func TestTrackerDisconnectedClientRequestNotPending(t *testing.T) {
 	}
 }
 
-// TestTrackerContextCancelledOnDisconnect verifies the normal case where
-// a client disconnects while being tracked, and the context is cancelled.
+// Checks that a tracked client's context is cancelled when it disconnects.
 func TestTrackerContextCancelledOnDisconnect(t *testing.T) {
 	addr := testutil.StartDBusDaemon(t)
 
@@ -191,7 +201,7 @@ func TestTrackerContextCancelledOnDisconnect(t *testing.T) {
 	}
 }
 
-// requireNotCancelled fails the test immediately if ctx is already cancelled.
+// Fails the test at once if the given context is already cancelled.
 func requireNotCancelled(t *testing.T, ctx context.Context, msg string) {
 	t.Helper()
 	select {
@@ -201,7 +211,7 @@ func requireNotCancelled(t *testing.T, ctx context.Context, msg string) {
 	}
 }
 
-// requireCancelled fails the test if ctx is not cancelled within d.
+// Fails the test if the given context is not cancelled within the given time.
 func requireCancelled(t *testing.T, ctx context.Context, d time.Duration, msg string) {
 	t.Helper()
 	select {
@@ -211,15 +221,9 @@ func requireCancelled(t *testing.T, ctx context.Context, d time.Duration, msg st
 	}
 }
 
-// TestTrackerConcurrentRequestsFromSameSender is a regression test for issue #6:
-// two approval requests in flight at the same time from a single D-Bus sender
-// must be tracked independently. Registering a second request must not cancel
-// the first, completing one must not cancel the other, and only an actual
-// disconnect cancels whatever is still pending.
-//
-// The old tracker kept a single cancel function per sender, so a second
-// concurrent request cancelled the first (its approval notification vanished),
-// and one request's cleanup cancelled the other.
+// Checks that two requests in flight from one sender are tracked apart
+// (issue #6): neither starting nor finishing one cancels the other, and only
+// the sender's disconnect cancels what is still pending.
 func TestTrackerConcurrentRequestsFromSameSender(t *testing.T) {
 	addr := testutil.StartDBusDaemon(t)
 

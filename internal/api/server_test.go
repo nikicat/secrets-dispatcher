@@ -38,7 +38,7 @@ func TestServer_Integration(t *testing.T) {
 
 	// Test without auth
 	t.Run("no auth returns 401", func(t *testing.T) {
-		resp, err := client.Get(baseURL + "/api/v1/status")
+		resp, err := client.Get(baseURL.URL("/api/v1/status"))
 		if err != nil {
 			t.Fatalf("request failed: %v", err)
 		}
@@ -51,7 +51,7 @@ func TestServer_Integration(t *testing.T) {
 
 	// Test with valid auth
 	t.Run("valid auth works", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/status", nil)
+		req, _ := http.NewRequest(http.MethodGet, baseURL.URL("/api/v1/status"), nil)
 		auth.Token().Authorize(req.Header)
 
 		resp, err := client.Do(req)
@@ -86,7 +86,7 @@ func TestServer_Integration(t *testing.T) {
 		started := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
 
 		// Get pending list via API
-		req, _ := http.NewRequest(http.MethodGet, baseURL+"/api/v1/pending", nil)
+		req, _ := http.NewRequest(http.MethodGet, baseURL.URL("/api/v1/pending"), nil)
 		auth.Token().Authorize(req.Header)
 
 		resp, err := client.Do(req)
@@ -103,7 +103,7 @@ func TestServer_Integration(t *testing.T) {
 		}
 
 		// Approve via API
-		req, _ = http.NewRequest(http.MethodPost, baseURL+"/api/v1/pending/"+string(started.ID)+"/approve", nil)
+		req, _ = http.NewRequest(http.MethodPost, baseURL.URL("/api/v1/pending/"+string(started.ID)+"/approve"), nil)
 		auth.Token().Authorize(req.Header)
 
 		resp, err = client.Do(req)

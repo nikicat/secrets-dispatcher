@@ -7,7 +7,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log/slog"
-	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -25,19 +25,21 @@ type proxyAgent struct {
 	destination *string
 	logger      *slog.Logger
 
-	// cache key list so we can look up comments for sign requests
-	keysMu sync.Mutex
-	keys   []*agent.Key
+	// The keys of the latest List. A sign request takes its key's comment from
+	// them.
+	keys atomic.Pointer[[]*agent.Key]
 }
 
 func newProxyAgent(upstream agent.Agent, approvalMgr *approval.Manager, senderInfo approval.SenderInfo, destination *string, logger *slog.Logger) *proxyAgent {
-	return &proxyAgent{
+	p := &proxyAgent{
 		upstream:    upstream,
 		approval:    approvalMgr,
 		senderInfo:  senderInfo,
 		destination: destination,
 		logger:      logger,
 	}
+	p.keys.Store(&[]*agent.Key{})
+	return p
 }
 
 func (p *proxyAgent) List() ([]*agent.Key, error) {
@@ -45,9 +47,7 @@ func (p *proxyAgent) List() ([]*agent.Key, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.keysMu.Lock()
-	p.keys = keys
-	p.keysMu.Unlock()
+	p.keys.Store(&keys)
 	return keys, nil
 }
 
@@ -91,11 +91,7 @@ func (p *proxyAgent) findKeyComment(key ssh.PublicKey) string {
 	blob := key.Marshal()
 	h := sha256.Sum256(blob)
 
-	p.keysMu.Lock()
-	keys := p.keys
-	p.keysMu.Unlock()
-
-	for _, k := range keys {
+	for _, k := range *p.keys.Load() {
 		kh := sha256.Sum256(k.Marshal())
 		if h == kh {
 			return k.Comment

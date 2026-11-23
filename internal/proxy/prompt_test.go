@@ -6,70 +6,15 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
-	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestIsPromptPath(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"/org/freedesktop/secrets/prompt/p1", true},
-		{"/org/freedesktop/secrets/prompt/u42", true},
-		{"/org/freedesktop/secrets/prompt/sub/path", true},
-
-		// The subtree root itself is not a prompt object
-		{"/org/freedesktop/secrets/prompt", false},
-		{"/org/freedesktop/secrets/prompt/", false},
-
-		{"/org/freedesktop/secrets", false},
-		{"/org/freedesktop/secrets/collection/default", false},
-		{"/org/freedesktop/secrets/promptx/p1", false},
-		{"/completely/different/path", false},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.path, func(t *testing.T) {
-			assert.Equal(t, tc.want, isPromptPath(dbus.ObjectPath(tc.path)))
-		})
-	}
-}
-
 const testCollectionPath = dbus.ObjectPath("/org/freedesktop/secrets/collection/default")
 
-// promptTestEnv runs a mock Secret Service on a private backend bus and the
-// proxy in front of it on a private front bus, mirroring the production
-// topology (client -> front bus -> proxy -> backend bus -> real service).
-type promptTestEnv struct {
-	client *dbus.Conn
-	mock   *testutil.MockSecretService
-}
-
-func newPromptTestEnv(t *testing.T) *promptTestEnv {
-	t.Helper()
-	frontAddr, backendAddr := testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t)
-
-	mockConn, err := dbus.Connect(backendAddr)
-	require.NoError(t, err, "connect mock to backend bus")
-	t.Cleanup(func() { mockConn.Close() })
-
-	mock := testutil.NewMockSecretService()
-	require.NoError(t, mock.Register(mockConn), "register mock service")
-
-	startTestProxy(t, frontAddr, backendAddr)
-
-	client, err := dbus.Connect(frontAddr)
-	require.NoError(t, err, "connect client to front bus")
-	t.Cleanup(func() { client.Close() })
-
-	return &promptTestEnv{client: client, mock: mock}
-}
-
-// subscribeCompleted subscribes the client to Prompt.Completed signals on the
-// front bus and returns the delivery channel.
-func (e *promptTestEnv) subscribeCompleted(t *testing.T) chan *dbus.Signal {
+// Subscribes the client to Prompt.Completed on the front bus and returns the
+// channel the signals arrive on.
+func (e *mockServiceEnv) subscribeCompleted(t *testing.T) chan *dbus.Signal {
 	t.Helper()
 	require.NoError(t, e.client.AddMatchSignal(
 		dbus.WithMatchInterface(string(dbustypes.PromptInterface)),
@@ -80,9 +25,9 @@ func (e *promptTestEnv) subscribeCompleted(t *testing.T) chan *dbus.Signal {
 	return ch
 }
 
-// unlockViaPrompt calls Service.Unlock for the default collection and returns
-// the prompt path the backend requires.
-func (e *promptTestEnv) unlockViaPrompt(t *testing.T) dbus.ObjectPath {
+// Asks the proxy to unlock the locked default collection and returns the
+// prompt that the backend requires first.
+func (e *mockServiceEnv) startUnlock(t *testing.T) dbus.ObjectPath {
 	t.Helper()
 	var unlocked []dbus.ObjectPath
 	var promptPath dbus.ObjectPath
@@ -91,7 +36,7 @@ func (e *promptTestEnv) unlockViaPrompt(t *testing.T) dbus.ObjectPath {
 		Store(&unlocked, &promptPath)
 	require.NoError(t, err, "Unlock via proxy")
 	require.Empty(t, unlocked, "locked collection must not unlock without a prompt")
-	require.True(t, isPromptPath(promptPath), "Unlock should return a prompt path, got %q", promptPath)
+	require.True(t, dbustypes.IsPromptPath(promptPath), "Unlock should return a prompt path, got %q", promptPath)
 	return promptPath
 }
 
@@ -114,12 +59,12 @@ func waitCompleted(t *testing.T, ch chan *dbus.Signal, promptPath dbus.ObjectPat
 // Regression test for issue #1. A client calls Prompt, through the proxy, on
 // the path that Unlock returns for a locked collection, and sees Completed.
 func TestPromptForwardingUnlockFlow(t *testing.T) {
-	env := newPromptTestEnv(t)
+	env := newMockServiceEnv(t)
 	itemPath := env.mock.AddItem("Locked Secret", map[string]string{"app": "prompt-test"}, []byte("hunter2"))
 	env.mock.SetLocked(true)
 
 	completed := env.subscribeCompleted(t)
-	promptPath := env.unlockViaPrompt(t)
+	promptPath := env.startUnlock(t)
 
 	err := env.client.Object(dbustypes.BusName, promptPath).
 		Call(dbustypes.PromptInterface.Member("Prompt"), 0, "window-42").Err
@@ -152,14 +97,14 @@ func TestPromptForwardingUnlockFlow(t *testing.T) {
 	assert.Equal(t, []byte("hunter2"), secrets[itemPath].Value)
 }
 
-// TestPromptDismiss verifies Dismiss is forwarded and the dismissal is
-// reported via Completed(dismissed=true) while the collection stays locked.
+// Checks that Dismiss is forwarded and reported in Completed(dismissed=true)
+// while the collection stays locked.
 func TestPromptDismiss(t *testing.T) {
-	env := newPromptTestEnv(t)
+	env := newMockServiceEnv(t)
 	env.mock.SetLocked(true)
 
 	completed := env.subscribeCompleted(t)
-	promptPath := env.unlockViaPrompt(t)
+	promptPath := env.startUnlock(t)
 
 	err := env.client.Object(dbustypes.BusName, promptPath).
 		Call(dbustypes.PromptInterface.Member("Dismiss"), 0).Err
@@ -172,12 +117,12 @@ func TestPromptDismiss(t *testing.T) {
 	assert.True(t, env.mock.Locked(), "collection must stay locked after dismissal")
 }
 
-// TestPromptOnNonPromptPath verifies the handler rejects paths outside the
-// prompt namespace (here: the subtree root itself) with NoSuchObject.
+// Checks that a Prompt call on PromptsPath itself, which names no prompt,
+// fails with NoSuchObject.
 func TestPromptOnNonPromptPath(t *testing.T) {
-	env := newPromptTestEnv(t)
+	env := newMockServiceEnv(t)
 
-	err := env.client.Object(dbustypes.BusName, "/org/freedesktop/secrets/prompt").
+	err := env.client.Object(dbustypes.BusName, dbustypes.PromptsPath).
 		Call(dbustypes.PromptInterface.Member("Prompt"), 0, "").Err
 	require.Error(t, err)
 	var dbusErr dbus.Error

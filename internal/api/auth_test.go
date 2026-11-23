@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +40,7 @@ func TestNewAuth(t *testing.T) {
 // Checks that rr holds the JSON error response with message want.
 func assertErrorBody(t *testing.T, rr *httptest.ResponseRecorder, want string) {
 	t.Helper()
-	var body ErrorResponse
+	var body apiclient.ErrorResponse
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 	assert.Equal(t, want, body.Error)
 }

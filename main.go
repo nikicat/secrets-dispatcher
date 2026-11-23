@@ -204,12 +204,12 @@ type requestArg struct {
 
 type listCmd struct{ clientFlags }
 
-func (c listCmd) Run() error {
+func (c listCmd) Run(ctx context.Context) error {
 	client, err := c.client()
 	if err != nil {
 		return err
 	}
-	requests, err := client.Pending()
+	requests, err := client.Pending(ctx)
 	if err != nil {
 		return err
 	}
@@ -221,12 +221,12 @@ type showCmd struct {
 	requestArg
 }
 
-func (c showCmd) Run() error {
+func (c showCmd) Run(ctx context.Context) error {
 	client, err := c.client()
 	if err != nil {
 		return err
 	}
-	result, err := client.Find(c.ID)
+	result, err := client.Find(ctx, c.ID)
 	if err != nil {
 		return err
 	}
@@ -240,13 +240,13 @@ type decideCmd[D cli.Decision] struct {
 	requestArg
 }
 
-func (c decideCmd[D]) Run() error {
+func (c decideCmd[D]) Run(ctx context.Context) error {
 	client, err := c.client()
 	if err != nil {
 		return err
 	}
 	var d D
-	id, err := client.Resolve(c.ID, d)
+	id, err := client.Resolve(ctx, c.ID, d)
 	if err != nil {
 		return err
 	}
@@ -255,12 +255,12 @@ func (c decideCmd[D]) Run() error {
 
 type historyCmd struct{ clientFlags }
 
-func (c historyCmd) Run() error {
+func (c historyCmd) Run(ctx context.Context) error {
 	client, err := c.client()
 	if err != nil {
 		return err
 	}
-	entries, err := client.History()
+	entries, err := client.History(ctx)
 	if err != nil {
 		return err
 	}
@@ -456,7 +456,7 @@ func (c gpgSignSetupCmd) Run() error {
 
 // Sets up the companion user's deployment, or checks an existing one.
 type provisionCmd struct {
-	User          string `placeholder:"USER" help:"Desktop username to provision companion for (default: $SUDO_USER)."`
+	User          string `env:"SUDO_USER" placeholder:"USER" help:"Desktop username to provision the companion for."`
 	CompanionName string `placeholder:"NAME" help:"Override companion username (default: secrets-{user})."`
 	HomeBase      string `placeholder:"DIR" help:"Parent directory for companion homes (default: ${default_home_base})."`
 	Check         bool   `help:"Validate deployment instead of provisioning."`
@@ -488,11 +488,18 @@ type daemonCmd struct {
 }
 
 func (c daemonCmd) Run(ctx context.Context) error {
-	slog.SetDefault(slog.New(newLogHandler(c.LogLevel, c.LogFormat)))
+	setDefaultLogger(c.LogLevel, c.LogFormat)
 	return daemon.Run(ctx, daemon.Config{
-		BusAddress: c.BusAddress,
-		Version:    version,
+		Bus:     c.bus(),
+		Version: version,
 	})
+}
+
+func (c daemonCmd) bus() daemon.Bus {
+	if c.BusAddress == "" {
+		return daemon.SystemBus{}
+	}
+	return daemon.BusAt(c.BusAddress)
 }
 
 type versionCmd struct{}
@@ -518,25 +525,14 @@ func (c serveCmd) Run(ctx context.Context) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
-	slog.SetDefault(slog.New(newLogHandler(settings.Serve.LogLevel, settings.Serve.LogFormat)))
+	setDefaultLogger(settings.Serve.LogLevel, settings.Serve.LogFormat)
 
-	approvalMgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:             time.Duration(settings.Serve.Timeout),
-		HistoryMax:          settings.Serve.HistoryLimit,
-		ApprovalWindow:      time.Duration(settings.Serve.ApprovalWindow),
-		AutoApproveDuration: time.Duration(settings.Serve.AutoApproveDuration),
-		TrustedSigners:      settings.Serve.TrustedSigners,
-		IgnoreChromeDummy:   settings.Serve.IgnoreChromeDummySecret,
-		TrustRules:          settings.Serve.Rules,
-	})
+	approvalMgr := approval.NewManager(settings.Serve.ManagerConfig())
 
 	// Set up desktop notifications
 	var desktopNotifier *notification.DBusNotifier
 	var notifHandler *notification.Handler
-	slowUpstream := proxy.SlowUpstream{
-		Threshold: time.Duration(settings.Serve.UpstreamSlowThreshold),
-		Always:    settings.Serve.UpstreamSlowAlways,
-	}
+	slowUpstream := settings.Serve.SlowUpstream()
 	if settings.Serve.Notifications {
 		notifier, err := notification.NewDBusNotifier()
 		if err != nil {
@@ -660,13 +656,11 @@ func (c serveCmd) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	for i, run := range runners {
-		wg.Add(1)
-		go func(idx int, runFn runner) {
-			defer wg.Done()
-			if err := runFn(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Error("runner error", "index", idx, "error", err)
+		wg.Go(func() {
+			if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("runner error", "index", i, "error", err)
 			}
-		}(i, run)
+		})
 	}
 	wg.Wait()
 	return nil
@@ -684,28 +678,31 @@ func serveRemotes(apiServer *api.Server, remotes []config.RemoteConfig) error {
 	return nil
 }
 
-// Returns a handler that writes log records at the given level and above to
-// stderr, in the given format. Under systemd, text has no colors and no
-// times, since the journal adds its own times.
-func newLogHandler(level config.LogLevel, format config.LogFormat) slog.Handler {
+// Makes the default logger write records at the given level and above to
+// stderr, in the given format. Under systemd, text has no colors and no times,
+// since the journal adds its own times.
+func setDefaultLogger(level config.LogLevel, format config.LogFormat) {
+	var handler slog.Handler
 	if format.OrDefault() == config.LogJSON {
-		return slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level.Level()})
-	}
-	underSystemd := os.Getenv("INVOCATION_ID") != ""
-	opts := &tint.Options{
-		Level:      level.Level(),
-		TimeFormat: time.TimeOnly,
-		NoColor:    underSystemd,
-	}
-	if underSystemd {
-		opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				return slog.Attr{}
-			}
-			return a
+		handler = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: level.Level()})
+	} else {
+		underSystemd := os.Getenv("INVOCATION_ID") != ""
+		opts := &tint.Options{
+			Level:      level.Level(),
+			TimeFormat: time.TimeOnly,
+			NoColor:    underSystemd,
 		}
+		if underSystemd {
+			opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+				if a.Key == slog.TimeKey {
+					return slog.Attr{}
+				}
+				return a
+			}
+		}
+		handler = tint.NewTextHandler(os.Stderr, opts)
 	}
-	return tint.NewTextHandler(os.Stderr, opts)
+	slog.SetDefault(slog.New(handler))
 }
 
 type apiEndpoint struct {

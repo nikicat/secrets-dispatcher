@@ -11,7 +11,7 @@ import (
 
 func TestSlowUpstreamNotifier_NotifiesAndDismisses(t *testing.T) {
 	mock := &mockNotifier{}
-	n := newSlowUpstreamNotifier(mock)
+	n := NewSlowUpstreamNotifier(mock)
 
 	dismiss := n.NotifySlowUpstream(approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}})
 

@@ -45,10 +45,10 @@ func requireGPGSign(t *testing.T, req *approval.Request) *approval.GPGSignInfo {
 	return info
 }
 
-// Returns the JSON request body that asks to sign the given object and context.
-func gpgSignBody(t *testing.T, info approval.GPGSignInfo) string {
+// Returns the given object's bytes as a JSON string.
+func jsonString(t *testing.T, object approval.SignedObject) string {
 	t.Helper()
-	raw, err := json.Marshal(gpgsign.SignRequest{GPGSignInfo: &info})
+	raw, err := json.Marshal(string(object))
 	require.NoError(t, err)
 	return string(raw)
 }
@@ -73,7 +73,7 @@ func TestHandleGPGSignRequest_ValidBody(t *testing.T) {
 	}
 
 	// Verify a pending request exists with the returned ID.
-	pending := mgr.List()
+	pending := mgr.Pending()
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending request after POST, got %d", len(pending))
 	}
@@ -99,18 +99,10 @@ func TestHandleGPGSignRequest_MissingCommitObject(t *testing.T) {
 	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	rr := postGPGSign(t, handlers, gpgSignBody(t, approval.GPGSignInfo{
-		RepoName: "myrepo",
-		KeyID:    "ABCD1234",
-		Signed: approval.SignedPayload{
-			Message: "fix: thing",
-			Signer:  "A",
-			Details: approval.CommitDetails{Committer: "A"},
-		},
-	}))
+	rr := postGPGSign(t, handlers, `{"gpg_sign_info":{"repo_name":"myrepo","key_id":"ABCD1234","kind":"commit","commit_msg":"fix: thing","author":"A","committer":"A"}}`)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code, "empty commit_object must be rejected")
-	assert.Empty(t, mgr.List(), "no pending request may be created")
+	assert.Empty(t, mgr.Pending(), "no pending request may be created")
 }
 
 // A commit object the daemon cannot parse in full is refused with 400, so the
@@ -119,12 +111,11 @@ func TestHandleGPGSignRequest_OversizedLineRejected(t *testing.T) {
 	mgr := newTestManager()
 	handlers := testHandlers(t, mgr)
 
-	object, err := json.Marshal("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A\n\n" + strings.Repeat("a", 2<<20) + "\n")
-	require.NoError(t, err)
-	rr := postGPGSign(t, handlers, `{"gpg_sign_info":{"repo_name":"myrepo","key_id":"ABCD1234","commit_object":`+string(object)+`}}`)
+	object := approval.SignedObject("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A\n\n" + strings.Repeat("a", 2<<20) + "\n")
+	rr := postGPGSign(t, handlers, `{"gpg_sign_info":{"repo_name":"myrepo","key_id":"ABCD1234","commit_object":`+jsonString(t, object)+`}}`)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Empty(t, mgr.List(), "no pending request may be created")
+	assert.Empty(t, mgr.Pending(), "no pending request may be created")
 }
 
 func TestHandleGPGSignRequest_WrongMethod(t *testing.T) {
@@ -197,24 +188,14 @@ func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
 		"\n" +
 		"backdoor: exfiltrate secrets\n")
 
-	rr := postGPGSign(t, handlers, gpgSignBody(t, approval.GPGSignInfo{
-		RepoName:     "myrepo",
-		KeyID:        "ABCD1234",
-		SignedObject: commitObject,
-		Signed: approval.SignedPayload{
-			Message: "docs: fix typo",
-			Signer:  "Benign Author <good@example.com>",
-			Details: approval.CommitDetails{
-				Committer:    "Benign Author <good@example.com>",
-				ParentHash:   "2222222222222222222222222222222222222222",
-				ChangedFiles: []string{"README.md"},
-			},
-		},
-	}))
+	rr := postGPGSign(t, handlers, `{"gpg_sign_info":{"repo_name":"myrepo","key_id":"ABCD1234",`+
+		`"kind":"commit","commit_msg":"docs: fix typo","author":"Benign Author <good@example.com>",`+
+		`"committer":"Benign Author <good@example.com>","parent_hash":"2222222222222222222222222222222222222222",`+
+		`"changed_files":["README.md"],"commit_object":`+jsonString(t, commitObject)+`}}`)
 
 	require.Equalf(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
 
-	pending := mgr.List()
+	pending := mgr.Pending()
 	require.Len(t, pending, 1)
 	info := requireGPGSign(t, pending[0].Request)
 
@@ -228,9 +209,9 @@ func TestHandleGPGSignRequest_DisplayBoundToCommitObject(t *testing.T) {
 			ParentHash:   "1111111111111111111111111111111111111111",
 			ChangedFiles: []string{"README.md"},
 		},
-	}, info.Signed, "the display must be bound to the commit object")
+	}, info.Signed(), "the display must be bound to the commit object")
 	// The bytes to be signed must be preserved verbatim.
-	assert.Equal(t, commitObject, info.SignedObject, "commit object must not be mutated")
+	assert.Equal(t, commitObject, info.SignedObject(), "commit object must not be mutated")
 }
 
 // The prompt for an annotated tag shows the fields of the signed tag object,
@@ -246,23 +227,14 @@ func TestHandleGPGSignRequest_DisplayBoundToTagObject(t *testing.T) {
 		"\n" +
 		"release: v9.9.9\n")
 
-	rr := postGPGSign(t, handlers, gpgSignBody(t, approval.GPGSignInfo{
-		RepoName:     "myrepo",
-		KeyID:        "ABCD1234",
-		SignedObject: tagObject,
-		Signed: approval.SignedPayload{
-			Message: "docs: fix typo",
-			Signer:  "Benign Author <good@example.com>",
-			Details: approval.CommitDetails{
-				Committer:    "Benign Author <good@example.com>",
-				ChangedFiles: []string{"README.md"},
-			},
-		},
-	}))
+	rr := postGPGSign(t, handlers, `{"gpg_sign_info":{"repo_name":"myrepo","key_id":"ABCD1234",`+
+		`"kind":"commit","commit_msg":"docs: fix typo","author":"Benign Author <good@example.com>",`+
+		`"committer":"Benign Author <good@example.com>","changed_files":["README.md"],`+
+		`"commit_object":`+jsonString(t, tagObject)+`}}`)
 
 	require.Equalf(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
 
-	pending := mgr.List()
+	pending := mgr.Pending()
 	require.Len(t, pending, 1)
 	info := requireGPGSign(t, pending[0].Request)
 
@@ -271,8 +243,8 @@ func TestHandleGPGSignRequest_DisplayBoundToTagObject(t *testing.T) {
 		Message: "release: v9.9.9",
 		Signer:  "Real Tagger <tag@example.com> 1700000000 +0000",
 		Details: approval.TagDetails{Name: "v9.9.9", Target: "1111111111111111111111111111111111111111"},
-	}, info.Signed, "kind and display must be re-derived from the tag object")
-	assert.Equal(t, tagObject, info.SignedObject, "signed bytes must not be mutated")
+	}, info.Signed(), "kind and display must be re-derived from the tag object")
+	assert.Equal(t, tagObject, info.SignedObject(), "signed bytes must not be mutated")
 }
 
 // An approval.Observer that keeps the messages a WebSocket would send when a
@@ -313,35 +285,14 @@ func TestHandleGPGSignRequest_UnverifiableInvokerStaysPending(t *testing.T) {
 	// A rule with no invoker exe must never match, because exe is the sole
 	// identity and an empty exe fails closed. No request can produce such a
 	// rule, so the test writes one by hand.
-	mgr.AddAutoApproveRule(approval.AutoApproveRule{
-		ID:          "no-exe",
-		RequestType: approval.RequestTypeGPGSign,
-	})
+	mgr.AddAutoApproveRule(approval.AutoApproveScope{RequestType: approval.RequestTypeGPGSign}, "")
 
 	rr := postGPGSign(t, handlers, validGPGSignBody)
 
 	require.Equalf(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
 
 	// The request must be pending (awaiting a decision), not silently signed.
-	assert.Len(t, mgr.List(), 1, "unverifiable invoker must not be auto-approved")
-}
-
-// A gpg_sign auto-approve rule matches a caller with the rule's invoker exe,
-// never one that only shares its comm.
-func TestGPGSignEphemeralRuleMatchesOnInvokerExe(t *testing.T) {
-	mgr := newTestManager()
-
-	exeSender := localSender("git", "/usr/bin/git")
-	mustAddRule(t, mgr, &approval.Request{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender})
-
-	// Same exe → matches.
-	assert.NotNil(t, mgr.CheckAutoApproveRules(approval.RequestInfo{Type: approval.RequestTypeGPGSign, SenderInfo: exeSender}),
-		"rule should match a caller with the same invoker exe")
-
-	// Same spoofable comm but a different real exe → must NOT match.
-	spoofed := localSender("git", "/tmp/malware") // attacker set comm to "git"
-	assert.Nil(t, mgr.CheckAutoApproveRules(approval.RequestInfo{Type: approval.RequestTypeGPGSign, SenderInfo: spoofed}),
-		"rule must not match a caller that only spoofed the comm")
+	assert.Len(t, mgr.Pending(), 1, "unverifiable invoker must not be auto-approved")
 }
 
 // An auto-approve rule for another invoker leaves the request pending.
@@ -361,7 +312,7 @@ func TestHandleGPGSignRequest_NoMatchingRuleStaysPending(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
-	if pending := mgr.List(); len(pending) != 1 {
+	if pending := mgr.Pending(); len(pending) != 1 {
 		t.Fatalf("expected 1 pending request when no rule matches, got %d", len(pending))
 	}
 }

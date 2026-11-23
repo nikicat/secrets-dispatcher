@@ -49,8 +49,8 @@ Done when each item below is fixed as its "Fix" says.
 - `internal/notification/desktop.go:211-220` (long comment). Notify's doc is
   nine lines that restate ADR 0007's decision (critical urgency, no transient
   hint, expire 0, the GNOME 46 probe) instead of linking it.
-  Fix: "Sends a notification that stays until it is closed (ADR 0007).
-  Reconnects and retries once when the connection has dropped."
+  Fix: "Sends a notification that stays until it is closed (ADR 0007)." The
+  DBusNotifier type doc owns the reconnect-and-retry fact.
 - `internal/notification/desktop_test.go:974-995` (duplication).
   newTestDBusNotifier rebuilds DBusNotifier by hand, copying connect's
   ActionInvoked subscription and leaving out the NotificationClosed one and

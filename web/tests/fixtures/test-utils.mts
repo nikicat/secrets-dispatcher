@@ -12,6 +12,7 @@ import type { AddressInfo } from "node:net";
 import { preview, type PreviewServer } from "vite";
 import { expect, type Page, type WebSocketRoute } from "@playwright/test";
 import type {
+  ItemInfo,
   PendingRequest,
   SenderInfo,
   WSMessage,
@@ -38,11 +39,11 @@ export interface TestBackend {
   /** Logs the page in and resolves once it shows the connected client. */
   authenticate: (page: Page) => Promise<void>;
   /**
-   * Posts a GPG sign request for a commit with the given display fields, as
-   * `client`, and returns its request ID.
+   * Posts a GPG sign request for the given commit from the given client, and
+   * returns its request ID.
    */
   createGPGSignRequest: (
-    info: Record<string, unknown>,
+    commit: CommitFields,
     client?: string,
   ) => Promise<string>;
 }
@@ -84,20 +85,58 @@ export function generateJWT(secret: string): string {
 }
 
 /**
- * Build a raw git commit object from display fields, the way a real thin
- * client feeds one to gpg. The daemon re-derives author/committer/message/
- * parent from these bytes (WYSIWYS) and discards the client's display fields,
- * so tests must supply a commit_object consistent with their expectations.
+ * The daemon shows only what the commit object says (ADR 0008), so only the
+ * repository, key and changed files travel beside it. The rest goes into the
+ * object.
  */
-export function buildCommitObject(info: Record<string, unknown>): string {
+export interface CommitFields {
+  repo_name: string;
+  key_id: string;
+  changed_files: string[];
+  parent_hash?: string;
+  author: string;
+  committer: string;
+  commit_msg: string;
+}
+
+/**
+ * Returns the raw git commit object for the given commit, as git hands it to
+ * gpg.
+ */
+export function buildCommitObject(commit: CommitFields): string {
   const lines = ["tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904"];
-  if (typeof info.parent_hash === "string" && info.parent_hash !== "") {
-    lines.push(`parent ${info.parent_hash}`);
+  if (commit.parent_hash) {
+    lines.push(`parent ${commit.parent_hash}`);
   }
-  lines.push(`author ${info.author ?? ""}`);
-  lines.push(`committer ${info.committer ?? ""}`);
-  const msg = typeof info.commit_msg === "string" ? info.commit_msg : "";
-  return `${lines.join("\n")}\n\n${msg}\n`;
+  lines.push(`author ${commit.author}`);
+  lines.push(`committer ${commit.committer}`);
+  return `${lines.join("\n")}\n\n${commit.commit_msg}\n`;
+}
+
+/** Returns a commit with test defaults, overridden by the given fields. */
+export function testCommit(fields: Partial<CommitFields> = {}): CommitFields {
+  return {
+    repo_name: "test-repo",
+    commit_msg: "test: commit",
+    author: "Dev <dev@example.com> 1700000000 +0000",
+    committer: "Dev <dev@example.com> 1700000000 +0000",
+    key_id: "TESTKEY1",
+    changed_files: ["main.go"],
+    ...fields,
+  };
+}
+
+/**
+ * Returns a secret item with the given label in the given collection, as the
+ * backend sends it.
+ */
+export function secretItem(collection: string, label: string): ItemInfo {
+  return {
+    path: `/org/freedesktop/secrets/collection/${collection}/1`,
+    label,
+    attributes: {},
+    collection,
+  };
 }
 
 /** Fields of a pending request that override the test defaults. */
@@ -117,13 +156,7 @@ export function pendingRequest({
     id: "test-request",
     client: "local",
     type: "get_secret",
-    items: [
-      {
-        path: "/org/freedesktop/secrets/collection/default/1",
-        label: "Test Secret",
-        attributes: {},
-      },
-    ],
+    items: [secretItem("default", "Test Secret")],
     session: "/org/freedesktop/secrets/session/s1",
     sender_info: {
       sender: ":1.100",
@@ -134,7 +167,11 @@ export function pendingRequest({
     },
     created_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 300_000).toISOString(),
-    auto_approvable: true,
+    auto_approve_scope: {
+      invoker_exe: "/usr/bin/test",
+      request_type: "get_secret",
+      collection: "default",
+    },
     ...fields,
   };
 }
@@ -418,7 +455,7 @@ export async function startTestBackend(
       await page.goto(await generateLoginURL());
       await expect(page.getByText("client connected")).toBeVisible();
     },
-    createGPGSignRequest: async (info, client = "test-repo") => {
+    createGPGSignRequest: async (commit, client = "test-repo") => {
       const res = await fetch(`${url}/api/v1/gpg-sign/request`, {
         method: "POST",
         headers: {
@@ -427,9 +464,12 @@ export async function startTestBackend(
         },
         body: JSON.stringify({
           client,
-          // The daemon rebinds display fields to commit_object (WYSIWYS), so
-          // the posted metadata only shows in the UI if the raw bytes agree.
-          gpg_sign_info: { commit_object: buildCommitObject(info), ...info },
+          gpg_sign_info: {
+            commit_object: buildCommitObject(commit),
+            repo_name: commit.repo_name,
+            key_id: commit.key_id,
+            changed_files: commit.changed_files,
+          },
         }),
       });
       if (!res.ok) {

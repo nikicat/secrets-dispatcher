@@ -2,9 +2,6 @@ package proxy
 
 import (
 	"context"
-	"maps"
-	"slices"
-	"strings"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
@@ -12,7 +9,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
 
-// Service implements org.freedesktop.Secret.Service.
+// Serves org.freedesktop.Secret.Service.
 type Service struct {
 	properties
 }
@@ -29,23 +26,20 @@ func (serviceObject) object(_ dbus.Message, iface dbustypes.Interface) (dbus.Obj
 	return dbustypes.ServicePath, nil
 }
 
-// OpenSession opens a session for secret transfer.
+// Opens a session for transferring secrets.
 // Signature: OpenSession(algorithm String, input Variant) -> (output Variant, result ObjectPath)
 func (s *Service) OpenSession(algorithm string, input dbus.Variant) (dbus.Variant, dbus.ObjectPath, *dbus.Error) {
-	output, sessionPath, err := s.sessions.CreateSession(s.backendConn, algorithm, input)
+	output, sessionPath, err := s.sessions.CreateSession(algorithm, input)
 	if err != nil {
 		s.logger.LogOpenSession(context.Background(), algorithm, "", logging.ResultError, err)
-		if dbusErr, ok := err.(*dbus.Error); ok {
-			return dbus.Variant{}, "", dbusErr
-		}
-		return dbus.Variant{}, "", dbustypes.ErrFailed(err)
+		return dbus.Variant{}, dbustypes.NoObject, dbustypes.AsDBusError(err)
 	}
 
 	s.logger.LogOpenSession(context.Background(), algorithm, sessionPath, logging.ResultOK, nil)
 	return output, sessionPath, nil
 }
 
-// SearchItems searches for items matching the given attributes.
+// Returns the items whose attributes match the given ones.
 // Signature: SearchItems(attributes Dict<String,String>) -> (unlocked Array<ObjectPath>, locked Array<ObjectPath>)
 func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
 	upstreamCall, err := s.caller(msg).passthrough(searchRequest(attributes))
@@ -64,7 +58,9 @@ func (s *Service) SearchItems(msg dbus.Message, attributes map[string]string) ([
 	return unlocked, locked, nil
 }
 
-// GetSecrets retrieves secrets for multiple items.
+// Returns the given items' secrets, encoded for the given session, when the one
+// request for all of them is approved (ADR 0004). Errors with AccessDenied when
+// it is denied or expires, and with NoSession when the session is unknown.
 // Signature: GetSecrets(items Array<ObjectPath>, session ObjectPath) -> (secrets Dict<ObjectPath,Secret>)
 func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session dbus.ObjectPath) (map[dbus.ObjectPath]dbustypes.Secret, *dbus.Error) {
 	caller, release := s.startApprovalCaller(msg)
@@ -82,22 +78,19 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 		return nil, dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	localSession, ok := s.sessions.GetLocalSession(session)
+	upstreamSession, ok := s.sessions.UpstreamSession(session)
 	if !ok {
 		s.logger.LogGetSecrets(context.Background(), items, logging.ResultError, dbustypes.ErrSessionNotFound(string(session)))
 		return nil, dbustypes.ErrSessionNotFound(string(session))
 	}
 
-	call := s.callUpstream(upstreamCall, dbustypes.ServicePath, dbustypes.ServiceInterface.Member("GetSecrets"), items, localSession)
-	// The return type is Dict<ObjectPath, Secret> where Secret is (oayays)
+	call := s.callUpstream(upstreamCall, dbustypes.ServicePath, dbustypes.ServiceInterface.Member("GetSecrets"), items, upstreamSession)
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	if err := call.Store(&secrets); err != nil {
 		s.logger.LogGetSecrets(context.Background(), items, logging.ResultError, err)
 		return nil, dbustypes.ErrFailed(err)
 	}
 
-	// Rewrite session paths and, for DH sessions, encrypt each secret value for
-	// the client.
 	for path, secret := range secrets {
 		encoded, err := s.sessions.ForClient(session, secret)
 		if err != nil {
@@ -111,18 +104,18 @@ func (s *Service) GetSecrets(msg dbus.Message, items []dbus.ObjectPath, session 
 	return secrets, nil
 }
 
-// Unlock unlocks the specified objects.
+// Unlocks the given items and collections.
 // Signature: Unlock(objects Array<ObjectPath>) -> (unlocked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	caller := s.caller(msg)
 	infos := make([]approval.ItemInfo, len(objects))
 	for i, path := range objects {
-		infos[i] = caller.collectionInfo(path)
+		infos[i] = caller.objectInfo(path)
 	}
 
 	upstreamCall, err := caller.passthrough(approval.RequestInfo{Items: infos, Type: approval.RequestTypeUnlock})
 	if err != nil {
-		return nil, "/", dbustypes.ErrAccessDenied(err.Error())
+		return nil, dbustypes.NoObject, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	call := s.callUpstream(upstreamCall, dbustypes.ServicePath, dbustypes.ServiceInterface.Member("Unlock"), objects)
@@ -130,41 +123,41 @@ func (s *Service) Unlock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.Ob
 	var prompt dbus.ObjectPath
 	if err := call.Store(&unlocked, &prompt); err != nil {
 		s.logger.LogUnlock(context.Background(), objects, 0, logging.ResultError, err)
-		return nil, "/", dbustypes.ErrFailed(err)
+		return nil, dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	s.logger.LogUnlock(context.Background(), objects, len(unlocked), logging.ResultOK, nil)
 	return unlocked, prompt, nil
 }
 
-// Lock locks the specified objects.
+// Locks the given items and collections.
 // Signature: Lock(objects Array<ObjectPath>) -> (locked Array<ObjectPath>, prompt ObjectPath)
 func (s *Service) Lock(msg dbus.Message, objects []dbus.ObjectPath) ([]dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	call := s.callUpstream(s.callContext(msg), dbustypes.ServicePath, dbustypes.ServiceInterface.Member("Lock"), objects)
 	var locked []dbus.ObjectPath
 	var prompt dbus.ObjectPath
 	if err := call.Store(&locked, &prompt); err != nil {
-		return nil, "/", dbustypes.ErrFailed(err)
+		return nil, dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	return locked, prompt, nil
 }
 
-// ReadAlias returns the collection with the given alias.
+// Returns the collection with the given alias.
 // Signature: ReadAlias(name String) -> (collection ObjectPath)
 func (s *Service) ReadAlias(msg dbus.Message, name string) (dbus.ObjectPath, *dbus.Error) {
 	call := s.callUpstream(s.callContext(msg), dbustypes.ServicePath, dbustypes.ServiceInterface.Member("ReadAlias"), name)
 	var collection dbus.ObjectPath
 	if err := call.Store(&collection); err != nil {
 		s.logger.LogReadAlias(context.Background(), name, "", logging.ResultError, err)
-		return "/", dbustypes.ErrFailed(err)
+		return dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	s.logger.LogReadAlias(context.Background(), name, collection, logging.ResultOK, nil)
 	return collection, nil
 }
 
-// SetAlias sets an alias for a collection.
+// Gives the given collection the given alias.
 // Signature: SetAlias(name String, collection ObjectPath)
 func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.ObjectPath) *dbus.Error {
 	call := s.callUpstream(s.callContext(msg), dbustypes.ServicePath, dbustypes.ServiceInterface.Member("SetAlias"), name, collection)
@@ -174,21 +167,20 @@ func (s *Service) SetAlias(msg dbus.Message, name string, collection dbus.Object
 	return nil
 }
 
-// CreateCollection creates a new collection.
+// Creates a collection.
 // Signature: CreateCollection(properties Dict<String,Variant>, alias String) -> (collection ObjectPath, prompt ObjectPath)
 func (s *Service) CreateCollection(msg dbus.Message, properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	call := s.callUpstream(s.callContext(msg), dbustypes.ServicePath, dbustypes.ServiceInterface.Member("CreateCollection"), properties, alias)
 	var collection, prompt dbus.ObjectPath
 	if err := call.Store(&collection, &prompt); err != nil {
-		return "/", "/", dbustypes.ErrFailed(err)
+		return dbustypes.NoObject, dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	return collection, prompt, nil
 }
 
-// Introspect returns introspection XML for the Service interface.
-func (s *Service) Introspect() string {
-	return `<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+// The introspection XML of the Service object.
+const serviceIntrospection = `<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
 "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
   <interface name="org.freedesktop.Secret.Service">
@@ -265,18 +257,12 @@ func (s *Service) Introspect() string {
     </method>
   </interface>
 </node>`
-}
 
 // Returns the request to search for items with the given attributes. The
-// request has one item. Its label lists the attributes as key=value pairs,
-// sorted by key.
-func searchRequest(attributes map[string]string) approval.RequestInfo {
-	pairs := make([]string, 0, len(attributes))
-	for _, k := range slices.Sorted(maps.Keys(attributes)) {
-		pairs = append(pairs, k+"="+attributes[k])
-	}
+// request has one item, labelled with the attributes.
+func searchRequest(attributes dbustypes.Attributes) approval.RequestInfo {
 	return approval.RequestInfo{
-		Items:   []approval.ItemInfo{{Label: strings.Join(pairs, ", ")}},
+		Items:   []approval.ItemInfo{{Label: attributes.String()}},
 		Type:    approval.RequestTypeSearch,
 		Payload: approval.SearchPayload{Attributes: attributes},
 	}

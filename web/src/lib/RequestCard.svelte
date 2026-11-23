@@ -437,7 +437,7 @@
         Approve
       {/if}
     </button>
-    {#if request.auto_approvable}
+    {#if request.auto_approve_scope}
       <button
         class="btn-approve-auto"
         onclick={handleApproveAndAutoApprove}

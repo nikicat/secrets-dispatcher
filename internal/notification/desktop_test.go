@@ -20,7 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockNotifier records calls for testing.
+// A Notifier that records its calls.
 type mockNotifier struct {
 	mu        sync.Mutex
 	nextID    NotificationID
@@ -92,53 +92,36 @@ func (m *mockNotifier) lastClosed() NotificationID {
 	return m.closed[len(m.closed)-1]
 }
 
-// mockApprover records approve/deny calls.
+// An Approver that records its approve and deny calls.
 type mockApprover struct {
 	mu       sync.Mutex
-	approved []string
-	denied   []string
+	approved []approval.RequestID
+	denied   []approval.RequestID
 	err      error
 }
 
-func (a *mockApprover) Approve(id approval.RequestID) error {
+// Returns the configured error.
+func (a *mockApprover) fail() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.err != nil {
-		return a.err
+	return a.err
+}
+
+// Appends the given ID to the given record, or returns the configured error.
+func (a *mockApprover) record(calls *[]approval.RequestID, id approval.RequestID) error {
+	if err := a.fail(); err != nil {
+		return err
 	}
-	a.approved = append(a.approved, string(id))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	*calls = append(*calls, id)
 	return nil
 }
 
-func (a *mockApprover) Deny(id approval.RequestID) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.err != nil {
-		return a.err
-	}
-	a.denied = append(a.denied, string(id))
-	return nil
-}
-
-func (a *mockApprover) AutoApprove(requestID approval.RequestID) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.err != nil {
-		return a.err
-	}
-	a.approved = append(a.approved, "auto:"+string(requestID))
-	return nil
-}
-
-func (a *mockApprover) ApproveAndAutoApprove(id approval.RequestID) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.err != nil {
-		return a.err
-	}
-	a.approved = append(a.approved, "approve_auto:"+string(id))
-	return nil
-}
+func (a *mockApprover) Approve(id approval.RequestID) error            { return a.record(&a.approved, id) }
+func (a *mockApprover) Deny(id approval.RequestID) error               { return a.record(&a.denied, id) }
+func (a *mockApprover) AddRuleFromCancelled(approval.RequestID) error  { return a.fail() }
+func (a *mockApprover) ApproveAndAutoApprove(approval.RequestID) error { return a.fail() }
 
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
@@ -974,7 +957,7 @@ func useTestSessionBus(t *testing.T) {
 	t.Setenv("DBUS_SESSION_BUS_ADDRESS", testutil.StartDBusDaemon(t))
 }
 
-// newTestDBusNotifier creates a DBusNotifier connected to a private test bus.
+// Returns a DBusNotifier connected to a private test bus.
 func newTestDBusNotifier(t *testing.T) *DBusNotifier {
 	t.Helper()
 
@@ -1054,5 +1037,20 @@ func TestHandler_CancelledRemoteRequest_NoFollowUp(t *testing.T) {
 	}
 	if mock.closeCount() != 1 {
 		t.Errorf("closes = %d, want 1", mock.closeCount())
+	}
+}
+
+func TestFormatDurationShort(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0s"},
+		{45 * time.Second, "45s"},
+		{2 * time.Minute, "2m"},
+		{90 * time.Second, "1m30s"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, formatDurationShort(tt.d), tt.d.String())
 	}
 }

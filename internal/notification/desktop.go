@@ -32,19 +32,16 @@ const signalBuffer = 16
 // The ID a notification server assigns to a notification it shows.
 type NotificationID uint32
 
-// Notifier defines the interface for sending desktop notifications.
 type Notifier interface {
-	// Notify sends a notification and returns its ID.
 	Notify(summary, body, icon string, buttons []Button) (NotificationID, error)
-	// Close closes a notification by ID.
 	Close(id NotificationID) error
 }
 
-// Approver resolves approval requests.
+// Resolves approval requests.
 type Approver interface {
 	Approve(id approval.RequestID) error
 	Deny(id approval.RequestID) error
-	AutoApprove(requestID approval.RequestID) error
+	AddRuleFromCancelled(requestID approval.RequestID) error
 	ApproveAndAutoApprove(id approval.RequestID) error
 }
 
@@ -68,22 +65,21 @@ type Button struct {
 	Label string
 }
 
-// Action represents a user interaction with a notification button.
+// An ActionInvoked signal for a notification we sent.
 type Action struct {
 	NotificationID NotificationID
 	ActionKey      actionKey
 }
 
-// Closed reports a NotificationClosed signal for a notification we sent.
-// The server directs these at the sending connection only, so this is the
-// one place they can be observed (third-party monitors never see them).
+// A NotificationClosed signal for a notification we sent. The server sends
+// these only to the sending connection (ADR 0007).
 type Closed struct {
 	NotificationID NotificationID
 	Reason         uint32 // 1=expired, 2=dismissed by user, 3=CloseNotification, 4=undefined
 }
 
-// DBusNotifier sends notifications via D-Bus and listens for action button clicks.
-// It automatically reconnects if the session bus connection drops.
+// A Notifier on a private session bus connection. A call that finds the
+// connection dropped reconnects and retries once.
 type DBusNotifier struct {
 	mu      sync.Mutex
 	conn    *dbus.Conn
@@ -93,8 +89,8 @@ type DBusNotifier struct {
 	done    chan struct{}
 }
 
-// NewDBusNotifier creates a notifier using a private session bus connection and
-// starts listening for ActionInvoked and NotificationClosed signals.
+// Returns a notifier on a private session bus connection, already listening
+// for ActionInvoked and NotificationClosed signals.
 func NewDBusNotifier() (*DBusNotifier, error) {
 	n := &DBusNotifier{
 		signals: make(chan *dbus.Signal, signalBuffer),
@@ -112,8 +108,8 @@ func NewDBusNotifier() (*DBusNotifier, error) {
 	return n, nil
 }
 
-// connect establishes a private session bus connection and subscribes to
-// ActionInvoked signals. Must be called with n.mu held (or during construction).
+// Opens a private session bus connection and subscribes to ActionInvoked
+// signals. Must be called with n.mu held (or during construction).
 func (n *DBusNotifier) connect() error {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
@@ -140,9 +136,8 @@ func (n *DBusNotifier) connect() error {
 	return nil
 }
 
-// reconnect closes the dead connection and establishes a new one.
-// It creates a fresh signals channel and restarts the processSignals goroutine
-// (the old one exits when godbus closes its channel via Terminate).
+// Replaces the dead connection, with a fresh signals channel and processSignals
+// goroutine (the old one exits when godbus closes its channel via Terminate).
 // Must be called with n.mu held.
 func (n *DBusNotifier) reconnect() error {
 	if n.conn != nil {
@@ -157,24 +152,19 @@ func (n *DBusNotifier) reconnect() error {
 	return nil
 }
 
-// Actions returns a channel that receives action button clicks.
+// Returns the ActionInvoked signals of this connection's notifications. Events
+// that find the buffer full are dropped.
 func (n *DBusNotifier) Actions() <-chan Action {
 	return n.actions
 }
 
-// ClosedEvents returns a channel that receives NotificationClosed signals for
-// notifications sent on this connection. Reason 1 (expired) on an approval
-// notification means the server took it down before the user acted on it,
-// which ADR 0007 rules out.
-//
-// Only the e2e notifprobe consumes this; the daemon does not. A caller that
-// never drains it will NOT stall the notifier — processSignals drops closed
-// events when the buffer is full rather than blocking (see processSignals).
+// Returns the NotificationClosed signals of this connection's notifications.
+// Events that find the buffer full are dropped.
 func (n *DBusNotifier) ClosedEvents() <-chan Closed {
 	return n.closed
 }
 
-// Stop stops the signal listener goroutine and closes the D-Bus connection.
+// Stops the signal listener goroutine and closes the D-Bus connection.
 func (n *DBusNotifier) Stop() {
 	close(n.done)
 	n.mu.Lock()
@@ -223,10 +213,8 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 				if !ok1 || !ok2 {
 					continue
 				}
-				// Only the e2e notifprobe drains ClosedEvents(); the daemon never
-				// calls it, so in the daemon this send fills the buffer and (before
-				// the default) wedged the loop after signalBuffer closes. Dropping
-				// when full is safe — nothing in the daemon acts on these events.
+				// Drop when full: nothing may block this loop on a reader that
+				// never drains the channel.
 				select {
 				case n.closed <- Closed{NotificationID: NotificationID(id), Reason: reason}:
 				case <-n.done:
@@ -238,8 +226,7 @@ func (n *DBusNotifier) processSignals(ch <-chan *dbus.Signal) {
 	}
 }
 
-// Notify sends a desktop notification with optional action buttons.
-// If the D-Bus connection is dead, it reconnects and retries once.
+// Sends a desktop notification with optional action buttons.
 //
 // expire_timeout must be 0 (never expire): spec-honoring daemons (dunst,
 // mako, KDE) close a -1 ("server default") notification after their default
@@ -295,7 +282,7 @@ func (n *DBusNotifier) doNotifyFull(summary, body, icon string, buttons []Button
 	return NotificationID(id), nil
 }
 
-// NotifyPersistent sends a critical notification that never auto-expires.
+// Sends a critical notification that never auto-expires.
 // Dismiss it with Close (CloseNotification).
 func (n *DBusNotifier) NotifyPersistent(summary, body, icon string) (NotificationID, error) {
 	n.mu.Lock()
@@ -311,8 +298,6 @@ func (n *DBusNotifier) NotifyPersistent(summary, body, icon string) (Notificatio
 	return id, err
 }
 
-// Close closes a notification by ID.
-// If the D-Bus connection is dead, it reconnects and retries once.
 func (n *DBusNotifier) Close(id NotificationID) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -336,8 +321,7 @@ func (n *DBusNotifier) doClose(id NotificationID) error {
 	return nil
 }
 
-// Handler receives approval events and shows desktop notifications.
-// It also processes notification action button clicks (Approve/Deny).
+// The desktop notification surface for approving requests (ADR 0007).
 type Handler struct {
 	notifier   Notifier
 	approver   Approver
@@ -353,8 +337,7 @@ type Handler struct {
 	requests      map[NotificationID]approval.RequestID
 	pending       *delaygroup.Group[approval.RequestID] // notifications waiting for the grace period
 
-	// cancelledRequests stores recently cancelled requests for auto-approve lookup.
-	// Keys are request IDs, values expire after 5 minutes.
+	// Recently cancelled requests, kept 5 minutes for auto-approve lookup.
 	cancelledRequests map[approval.RequestID]cancelledEntry
 }
 
@@ -394,8 +377,8 @@ func NewHandler(notifier Notifier, approver Approver, listenAddr config.ListenAd
 	}
 }
 
-// ListenActions reads from the actions channel and resolves requests.
-// It blocks until the channel is closed or ctx is cancelled.
+// Reads from the given actions channel and resolves requests.
+// Blocks until the channel is closed or the context is cancelled.
 func (h *Handler) ListenActions(ctx context.Context, actions <-chan Action) {
 	for {
 		select {
@@ -440,7 +423,7 @@ func (h *Handler) handleAction(action Action) {
 	case actionDeny:
 		err = h.approver.Deny(reqID)
 	case actionAutoApprove:
-		err = h.approver.AutoApprove(reqID)
+		err = h.approver.AddRuleFromCancelled(reqID)
 	case actionDismiss:
 		return // just close the notification, do nothing
 	default:
@@ -484,7 +467,6 @@ func (h *Handler) RuleAdded(approval.AutoApproveRule) {}
 // Rules show only in the web UI.
 func (h *Handler) RuleRemoved(approval.AutoApproveRule) {}
 
-// notificationMeta returns the summary title and icon for a request based on its type.
 func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string) {
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
@@ -502,7 +484,7 @@ func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string)
 	}
 }
 
-// formatDurationShort formats a duration as a compact human-readable string (e.g. "2m", "90s").
+// Returns a compact label for the given duration, such as "2m" or "1m30s".
 func formatDurationShort(d time.Duration) string {
 	if d <= 0 {
 		return "0s"
@@ -654,7 +636,7 @@ func formatProcessChain(chain []procutil.Process, showPIDs bool) string {
 	return strings.Join(names, " ← ")
 }
 
-// commitSubject returns the first line of a commit message.
+// Returns the first line of a commit message.
 func commitSubject(msg string) string {
 	if before, _, ok := strings.Cut(msg, "\n"); ok {
 		return before
@@ -690,19 +672,11 @@ func (h *Handler) formatBody(req *approval.Request) string {
 	}
 
 	search, _ := req.Search()
-	// escapedSearchAttrs renders "k=v, k=v" with keys and values escaped.
-	escapedSearchAttrs := func() string {
-		attrs := make([]string, 0, len(search.Attributes))
-		for k, v := range search.Attributes {
-			attrs = append(attrs, fmt.Sprintf("%s=%s", esc(k), esc(v)))
-		}
-		return strings.Join(attrs, ", ")
-	}
 
 	switch req.Type {
 	case approval.RequestTypeGPGSign:
 		if sign, ok := req.GPGSign(); ok {
-			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(string(sign.RepoName)), esc(commitSubject(sign.Signed.Message)))
+			fmt.Fprintf(&b, "<b>%s</b>: <i>%s</i>", esc(string(sign.RepoName)), esc(commitSubject(sign.Signed().Message)))
 			writeChain(req.SenderInfo.ProcessChain)
 		}
 	case approval.RequestTypeSSHSign:
@@ -724,7 +698,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 				}
 			case approval.RequestTypeSearch:
 				if len(search.Attributes) > 0 {
-					fmt.Fprintf(&b, "<b>%s</b>", escapedSearchAttrs())
+					fmt.Fprintf(&b, "<b>%s</b>", esc(search.Attributes.String()))
 				} else {
 					b.WriteString("<b>all</b>")
 				}
@@ -742,7 +716,7 @@ func (h *Handler) formatBody(req *approval.Request) string {
 				}
 			case approval.RequestTypeSearch:
 				if len(search.Attributes) > 0 {
-					fmt.Fprintf(&b, "<i>%s</i>", escapedSearchAttrs())
+					fmt.Fprintf(&b, "<i>%s</i>", esc(search.Attributes.String()))
 				} else {
 					b.WriteString("<i>all</i>")
 				}

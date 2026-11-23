@@ -10,8 +10,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
 
-// CollectionHandler handles Collection interface calls for collection objects.
-// It is exported as a subtree handler for /org/freedesktop/secrets/collection/*.
+// Serves org.freedesktop.Secret.Collection.
 type CollectionHandler struct {
 	properties
 }
@@ -29,12 +28,13 @@ func (o collectionObjects) object(msg dbus.Message, _ dbustypes.Interface) (dbus
 	return calledPathIn(o, msg)
 }
 
-// Delete deletes the collection.
+// Deletes the collection when the request is approved. Errors with AccessDenied
+// when it is denied or expires.
 // Signature: Delete() -> (prompt ObjectPath)
 func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	path, dbusErr := c.object(msg, dbustypes.CollectionInterface)
 	if dbusErr != nil {
-		return "/", dbusErr
+		return dbustypes.NoObject, dbusErr
 	}
 
 	caller, release := c.startApprovalCaller(msg)
@@ -44,13 +44,13 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 	upstreamCall, err := caller.requireApproval(info)
 	if err != nil {
 		c.logger.LogCollectionDelete(caller.ctx, path, logging.ResultDenied, err)
-		return "/", dbustypes.ErrAccessDenied(err.Error())
+		return dbustypes.NoObject, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	call := c.callUpstream(upstreamCall, path, dbustypes.CollectionInterface.Member("Delete"))
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
-		return "/", dbustypes.ErrFailed(err)
+		return dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	c.logger.LogCollectionDelete(context.Background(), path, logging.ResultOK, nil)
@@ -58,7 +58,7 @@ func (c *CollectionHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Err
 	return prompt, nil
 }
 
-// SearchItems searches for items in this collection matching the given attributes.
+// Returns the items in the collection whose attributes match the given ones.
 // Signature: SearchItems(attributes Dict<String,String>) -> (results Array<ObjectPath>)
 func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
 	path, dbusErr := c.object(msg, dbustypes.CollectionInterface)
@@ -82,42 +82,46 @@ func (c *CollectionHandler) SearchItems(msg dbus.Message, attributes map[string]
 	return results, nil
 }
 
-// CreateItem creates a new item in the collection.
+// Creates an item in the collection when the request is approved. An ignored
+// write (ADR 0005) succeeds with no item and writes nothing. Errors with
+// InvalidArgs on a mistyped property, AccessDenied on a denied or expired request.
 // Signature: CreateItem(properties Dict<String,Variant>, secret Secret, replace Boolean) -> (item ObjectPath, prompt ObjectPath)
 func (c *CollectionHandler) CreateItem(msg dbus.Message, properties map[string]dbus.Variant, secret dbustypes.Secret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
 	path, dbusErr := c.object(msg, dbustypes.CollectionInterface)
 	if dbusErr != nil {
-		return "/", "/", dbusErr
+		return dbustypes.NoObject, dbustypes.NoObject, dbusErr
 	}
-
-	itemInfo := itemInfoFromProperties(string(path), properties)
 
 	caller, release := c.startApprovalCaller(msg)
 	defer release()
+
+	itemInfo, err := itemInfoFromProperties(string(path), properties)
+	if err != nil {
+		c.logger.LogCreateItem(caller.ctx, path, logging.ResultError, err)
+		return dbustypes.NoObject, dbustypes.NoObject, dbustypes.AsDBusError(err)
+	}
 
 	info := approval.RequestInfo{Items: []approval.ItemInfo{itemInfo}, Session: secret.Session, Type: approval.RequestTypeWrite}
 	upstreamCall, err := caller.requireApproval(info)
 	if errors.Is(err, approval.ErrIgnored) {
 		c.logger.LogCreateItem(caller.ctx, path, logging.ResultIgnored, nil)
-		return "/", "/", nil
+		return dbustypes.NoObject, dbustypes.NoObject, nil
 	}
 	if err != nil {
 		c.logger.LogCreateItem(caller.ctx, path, logging.ResultDenied, err)
-		return "/", "/", dbustypes.ErrAccessDenied(err.Error())
+		return dbustypes.NoObject, dbustypes.NoObject, dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	// Map the remote session to the upstream session, decrypting the value for
-	// DH sessions before forwarding it to the (plain) upstream service.
-	localSecret, err := c.sessions.ForUpstream(secret)
+	upstreamSecret, err := c.sessions.ForUpstream(secret)
 	if err != nil {
 		c.logger.LogCreateItem(caller.ctx, path, logging.ResultError, err)
-		return "/", "/", sessionSecretError(secret.Session, err)
+		return dbustypes.NoObject, dbustypes.NoObject, sessionSecretError(secret.Session, err)
 	}
 
-	call := c.callUpstream(upstreamCall, path, dbustypes.CollectionInterface.Member("CreateItem"), properties, localSecret, replace)
+	call := c.callUpstream(upstreamCall, path, dbustypes.CollectionInterface.Member("CreateItem"), properties, upstreamSecret, replace)
 	var item, prompt dbus.ObjectPath
 	if err := call.Store(&item, &prompt); err != nil {
-		return "/", "/", dbustypes.ErrFailed(err)
+		return dbustypes.NoObject, dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	// Cache the new item path so immediate read-back (e.g., gh verification) is auto-approved.

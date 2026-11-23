@@ -5,8 +5,11 @@ import (
 	"testing"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 )
 
 func TestCollectionObjectsServes(t *testing.T) {
@@ -88,24 +91,20 @@ func TestSearchRequest(t *testing.T) {
 }
 
 func TestItemInfoFromProperties(t *testing.T) {
-	got := itemInfoFromProperties("/org/freedesktop/secrets/collection/login", map[string]dbus.Variant{
-		"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("token"),
-		"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"service": "gh"}),
-		"Label":                                  dbus.MakeVariant("unqualified"),
+	got, err := itemInfoFromProperties("/org/freedesktop/secrets/collection/login", map[string]dbus.Variant{
+		dbustypes.ItemLabel:      dbus.MakeVariant("token"),
+		dbustypes.ItemAttributes: dbus.MakeVariant(map[string]string{"service": "gh"}),
+		"Label":                  dbus.MakeVariant("unqualified"),
 	})
-	want := approval.ItemInfo{
+	require.NoError(t, err)
+	assert.Equal(t, approval.ItemInfo{
 		Path:       "/org/freedesktop/secrets/collection/login",
 		Label:      "token",
 		Attributes: map[string]string{"service": "gh"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("itemInfoFromProperties = %+v, want %+v", got, want)
-	}
+	}, got)
 
-	got = itemInfoFromProperties("/c", map[string]dbus.Variant{
-		"org.freedesktop.Secret.Item.Label": dbus.MakeVariant(42),
+	_, err = itemInfoFromProperties("/c", map[string]dbus.Variant{
+		dbustypes.ItemLabel: dbus.MakeVariant(42),
 	})
-	if !reflect.DeepEqual(got, approval.ItemInfo{Path: "/c"}) {
-		t.Errorf("itemInfoFromProperties with a mistyped label = %+v, want only the path", got)
-	}
+	assert.Error(t, err, "a mistyped label")
 }

@@ -2,7 +2,9 @@
 package testutil
 
 import (
+	"cmp"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 
@@ -28,7 +30,7 @@ type MockSecretService struct {
 type MockItem struct {
 	Path        dbus.ObjectPath
 	Label       string
-	Attributes  map[string]string
+	Attributes  dbustypes.Attributes
 	Secret      []byte
 	ContentType string
 }
@@ -60,6 +62,10 @@ func (m *MockSecretService) Register(conn *dbus.Conn) error {
 	// Export Properties interface
 	if err := conn.Export(m, dbustypes.ServicePath, string(dbustypes.PropertiesInterface)); err != nil {
 		return fmt.Errorf("export Properties: %w", err)
+	}
+
+	if err := conn.ExportSubtree(mockSessions{m}, dbustypes.SessionsPath, string(dbustypes.SessionInterface)); err != nil {
+		return fmt.Errorf("export sessions: %w", err)
 	}
 
 	// Export Introspectable
@@ -99,7 +105,7 @@ func (m *MockSecretService) OpenSession(algorithm string, input dbus.Variant) (d
 	}
 
 	id := m.sessionCtr.Add(1)
-	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/session/%d", id))
+	path := dbustypes.SessionPath(id)
 
 	m.mu.Lock()
 	m.sessions[path] = true
@@ -109,6 +115,33 @@ func (m *MockSecretService) OpenSession(algorithm string, input dbus.Variant) (d
 	return dbus.MakeVariant(""), path, nil
 }
 
+// The sessions that OpenSession opened, served as one subtree exported at
+// Register: an Export from inside a call raced godbus's object table under
+// go test -race (2026-11-22).
+type mockSessions struct {
+	service *MockSecretService
+}
+
+// Ends the session at the called path, so that secrets no longer travel over
+// it. Errors with NoSession when the path names no open session.
+func (s mockSessions) Close(msg dbus.Message) *dbus.Error {
+	path := dbustypes.PathOf(msg)
+	s.service.mu.Lock()
+	defer s.service.mu.Unlock()
+	if !s.service.sessions[path] {
+		return dbustypes.ErrSessionNotFound(string(path))
+	}
+	delete(s.service.sessions, path)
+	return nil
+}
+
+// Reports whether the session at the given path is open.
+func (m *MockSecretService) HasSession(path dbus.ObjectPath) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.sessions[path]
+}
+
 // SearchItems searches for items matching attributes.
 func (m *MockSecretService) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, []dbus.ObjectPath, *dbus.Error) {
 	m.mu.RLock()
@@ -116,7 +149,7 @@ func (m *MockSecretService) SearchItems(attributes map[string]string) ([]dbus.Ob
 
 	var matched []dbus.ObjectPath
 	for path, item := range m.items {
-		if matchesAttributes(item.Attributes, attributes) {
+		if item.Attributes.Contain(attributes) {
 			matched = append(matched, path)
 		}
 	}
@@ -163,7 +196,7 @@ func (m *MockSecretService) Unlock(objects []dbus.ObjectPath) ([]dbus.ObjectPath
 	m.mu.RUnlock()
 
 	if !locked {
-		return objects, "/", nil
+		return objects, dbustypes.NoObject, nil
 	}
 	return nil, m.newPrompt(objects), nil
 }
@@ -173,7 +206,7 @@ func (m *MockSecretService) Lock(objects []dbus.ObjectPath) ([]dbus.ObjectPath, 
 	m.mu.Lock()
 	m.locked = true
 	m.mu.Unlock()
-	return objects, "/", nil
+	return objects, dbustypes.NoObject, nil
 }
 
 // ReadAlias returns the collection for an alias.
@@ -181,7 +214,7 @@ func (m *MockSecretService) ReadAlias(name string) (dbus.ObjectPath, *dbus.Error
 	if name == "default" {
 		return DefaultCollectionPath, nil
 	}
-	return "/", nil
+	return dbustypes.NoObject, nil
 }
 
 // SetAlias sets an alias (mock no-op).
@@ -191,7 +224,7 @@ func (m *MockSecretService) SetAlias(name string, collection dbus.ObjectPath) *d
 
 // CreateCollection creates a collection (mock returns default).
 func (m *MockSecretService) CreateCollection(properties map[string]dbus.Variant, alias string) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	return DefaultCollectionPath, "/", nil
+	return DefaultCollectionPath, dbustypes.NoObject, nil
 }
 
 // Get implements Properties.Get.
@@ -325,7 +358,7 @@ func (m *MockSecretService) LastWindowID() string {
 // prompted, and returns its path.
 func (m *MockSecretService) newPrompt(objects []dbus.ObjectPath) dbus.ObjectPath {
 	id := m.promptCtr.Add(1)
-	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/prompt/p%d", id))
+	path := dbustypes.PromptPath(fmt.Sprintf("p%d", id))
 
 	prompt := &mockPrompt{service: m, path: path, objects: objects}
 	m.conn.Export(prompt, path, string(dbustypes.PromptInterface))
@@ -369,7 +402,7 @@ type mockCollection struct {
 }
 
 func (c *mockCollection) Delete() (dbus.ObjectPath, *dbus.Error) {
-	return "/", nil
+	return dbustypes.NoObject, nil
 }
 
 func (c *mockCollection) SearchItems(attributes map[string]string) ([]dbus.ObjectPath, *dbus.Error) {
@@ -378,41 +411,31 @@ func (c *mockCollection) SearchItems(attributes map[string]string) ([]dbus.Objec
 }
 
 func (c *mockCollection) CreateItem(properties map[string]dbus.Variant, secret dbustypes.Secret, replace bool) (dbus.ObjectPath, dbus.ObjectPath, *dbus.Error) {
-	// Extract label from properties
-	label := "Untitled"
-	if v, ok := properties["org.freedesktop.Secret.Item.Label"]; ok {
-		if s, ok := v.Value().(string); ok {
-			label = s
-		}
+	props, err := dbustypes.ParseItemProperties(properties)
+	if err != nil {
+		return dbustypes.NoObject, dbustypes.NoObject, dbustypes.AsDBusError(err)
 	}
-
-	// Extract attributes from properties
-	attrs := make(map[string]string)
-	if v, ok := properties["org.freedesktop.Secret.Item.Attributes"]; ok {
-		if a, ok := v.Value().(map[string]string); ok {
-			attrs = a
-		}
-	}
+	label := cmp.Or(props.Label, "Untitled")
 
 	// Check for existing item with same attributes (for replace)
 	if replace {
 		c.service.mu.Lock()
 		for path, item := range c.service.items {
-			if matchesAttributes(item.Attributes, attrs) && len(item.Attributes) == len(attrs) {
+			if maps.Equal(item.Attributes, props.Attributes) {
 				// Update existing item
 				item.Label = label
 				item.Secret = secret.Value
 				item.ContentType = secret.ContentType
 				c.service.mu.Unlock()
-				return path, "/", nil
+				return path, dbustypes.NoObject, nil
 			}
 		}
 		c.service.mu.Unlock()
 	}
 
 	// Create new item
-	path := c.service.AddItem(label, attrs, secret.Value)
-	return path, "/", nil
+	path := c.service.AddItem(label, props.Attributes, secret.Value)
+	return path, dbustypes.NoObject, nil
 }
 
 func (c *mockCollection) Get(iface, property string) (dbus.Variant, *dbus.Error) {
@@ -463,7 +486,7 @@ func (i *mockItem) Delete() (dbus.ObjectPath, *dbus.Error) {
 	i.service.mu.Lock()
 	delete(i.service.items, i.path)
 	i.service.mu.Unlock()
-	return "/", nil
+	return dbustypes.NoObject, nil
 }
 
 func (i *mockItem) GetSecret(session dbus.ObjectPath) (dbustypes.Secret, *dbus.Error) {
@@ -506,23 +529,15 @@ func (i *mockItem) SetSecret(secret dbustypes.Secret) *dbus.Error {
 }
 
 func (i *mockItem) Get(iface, property string) (dbus.Variant, *dbus.Error) {
-	i.service.mu.RLock()
-	defer i.service.mu.RUnlock()
-
-	item, ok := i.service.items[i.path]
+	props, dbusErr := i.GetAll(iface)
+	if dbusErr != nil {
+		return dbus.Variant{}, dbusErr
+	}
+	v, ok := props[property]
 	if !ok {
-		return dbus.Variant{}, dbustypes.ErrObjectNotFound(string(i.path))
+		return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownProperty"}
 	}
-
-	switch property {
-	case "Label":
-		return dbus.MakeVariant(item.Label), nil
-	case "Attributes":
-		return dbus.MakeVariant(item.Attributes), nil
-	case "Locked":
-		return dbus.MakeVariant(i.service.locked), nil
-	}
-	return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownProperty"}
+	return v, nil
 }
 
 func (i *mockItem) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
@@ -537,21 +552,12 @@ func (i *mockItem) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 	return map[string]dbus.Variant{
 		"Label":      dbus.MakeVariant(item.Label),
 		"Attributes": dbus.MakeVariant(item.Attributes),
-		"Locked":     dbus.MakeVariant(false),
+		"Locked":     dbus.MakeVariant(i.service.locked),
 	}, nil
 }
 
 func (i *mockItem) Set(iface, property string, value dbus.Variant) *dbus.Error {
 	return nil
-}
-
-func matchesAttributes(itemAttrs, searchAttrs map[string]string) bool {
-	for k, v := range searchAttrs {
-		if itemAttrs[k] != v {
-			return false
-		}
-	}
-	return true
 }
 
 type introspectable struct {

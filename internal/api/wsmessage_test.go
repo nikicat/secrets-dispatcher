@@ -37,7 +37,7 @@ func goldenEnd(res approval.Resolution) []WSMessage {
 func TestWSMessage_JSON(t *testing.T) {
 	pending := approval.Pending{Request: goldenRequest(), ExpiresAt: goldenTime.Add(time.Minute)}
 	entry := convertHistoryEntry(approval.HistoryEntry{Request: goldenRequest(), Resolution: approval.ResolutionApproved, ResolvedAt: goldenTime})
-	rule := approval.AutoApproveRule{ID: "rule-1", InvokerName: "gh", InvokerExe: "/usr/bin/gh", RequestType: approval.RequestTypeGetSecret, Collection: "default", ExpiresAt: goldenTime}
+	rule := approval.AutoApproveRule{ID: "rule-1", InvokerName: "gh", InvokerExe: "/usr/bin/gh", RequestType: approval.RequestTypeGetSecret, Collection: approval.OnlyCollection("default"), ExpiresAt: goldenTime}
 	client := proxy.ClientInfo{Name: "laptop", SocketPath: "/run/laptop.sock"}
 	signed := goldenRequest()
 	signed.Type = approval.RequestTypeGPGSign
@@ -46,7 +46,7 @@ func TestWSMessage_JSON(t *testing.T) {
 
 	const (
 		// The golden request's object without its closing brace.
-		recordJSON  = `{"id":"req-1","client":"laptop","items":[{"path":"/org/freedesktop/secrets/collection/default/1","label":"Token","attributes":null}],"session":"/session/1","created_at":"2026-11-21T12:00:00Z","type":"get_secret","sender_info":{"pid":0,"invoker_name":""},"auto_approvable":false`
+		recordJSON  = `{"id":"req-1","client":"laptop","items":[{"path":"/org/freedesktop/secrets/collection/default/1","label":"Token","attributes":null,"collection":"default"}],"session":"/session/1","created_at":"2026-11-21T12:00:00Z","type":"get_secret","sender_info":{"pid":0,"invoker_name":""}`
 		pendingJSON = recordJSON + `,"expires_at":"2026-11-21T12:01:00Z"}`
 		entryJSON   = `{"request":` + recordJSON + `},"resolution":"approved","resolved_at":"2026-11-21T12:00:00Z"}`
 		ruleJSON    = `{"id":"rule-1","invoker_name":"gh","invoker_exe":"/usr/bin/gh","request_type":"get_secret","collection":"default","expires_at":"2026-11-21T12:00:00Z"}`
@@ -62,10 +62,13 @@ func TestWSMessage_JSON(t *testing.T) {
 			msg: WSMessage{snapshotMsg{
 				Version: "v1", Requests: []PendingRequest{convertPending(pending)}, Clients: []proxy.ClientInfo{client},
 				History: []HistoryEntry{entry}, AutoApproveRules: []approval.AutoApproveRule{rule},
-				TrustedSigners: []approval.TrustedSigner{}, TrustRules: []approval.TrustRule{},
+				TrustedSigners: []approval.TrustedSigner{}, TrustRules: []TrustRule{
+					convertTrustRule(approval.TrustRule{Name: "approve-local", Action: approval.RuleApprove}),
+					convertTrustRule(approval.TrustRule{Action: approval.RuleDeny}),
+				},
 				AutoApproveDurationSeconds: 120, NotificationDelayMS: 500,
 			}},
-			want: `{"type":"snapshot","version":"v1","requests":[` + pendingJSON + `],"clients":[` + clientJSON + `],"history":[` + entryJSON + `],"auto_approve_rules":[` + ruleJSON + `],"trusted_signers":[],"trust_rules":[],"auto_approve_duration_seconds":120,"notification_delay_ms":500}`,
+			want: `{"type":"snapshot","version":"v1","requests":[` + pendingJSON + `],"clients":[` + clientJSON + `],"history":[` + entryJSON + `],"auto_approve_rules":[` + ruleJSON + `],"trusted_signers":[],"trust_rules":[{"name":"approve-local","action":"approve","client":"local"},{"action":"deny","client":"*"}],"auto_approve_duration_seconds":120,"notification_delay_ms":500}`,
 		},
 		{
 			name: "request_created",
@@ -85,12 +88,12 @@ func TestWSMessage_JSON(t *testing.T) {
 		{
 			name: "request_expired",
 			msg:  goldenEnd(approval.ResolutionExpired)[0],
-			want: `{"type":"request_expired","id":"req-1"}`,
+			want: `{"type":"request_expired","id":"req-1","result":"expired"}`,
 		},
 		{
 			name: "request_cancelled",
 			msg:  goldenEnd(approval.ResolutionCancelled)[0],
-			want: `{"type":"request_cancelled","id":"req-1"}`,
+			want: `{"type":"request_cancelled","id":"req-1","result":"cancelled"}`,
 		},
 		{
 			name: "history_entry",

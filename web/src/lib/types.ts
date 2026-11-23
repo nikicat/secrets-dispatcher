@@ -1,7 +1,14 @@
+// The name of a Secret Service collection (dbustypes.CollectionName).
+export type CollectionName = string;
+
+// A shell pattern, as Go path.Match reads it (approval.Glob).
+export type Glob = string;
+
 export interface ItemInfo {
   path: string;
   label: string;
   attributes: Record<string, string>;
+  collection?: CollectionName;
 }
 
 export interface ProcessInfo {
@@ -58,9 +65,9 @@ export interface RequestRecord {
   search_attributes?: Record<string, string>;
   sender_info: SenderInfo;
   gpg_sign_info?: GPGSignInfo;
-  // True if the Go approval.Request.AutoApprovable accepts the request. False
-  // otherwise.
-  auto_approvable: boolean;
+  // The scope that an auto-approve rule made from the request gets, for a
+  // request that Go approval.Request.AutoApprovable accepts.
+  auto_approve_scope?: AutoApproveScope;
 }
 
 export interface PendingRequest extends RequestRecord {
@@ -95,18 +102,29 @@ export type AuthState = "checking" | "authenticated" | "unauthenticated";
 export type Resolution =
   "approved" | "denied" | "expired" | "cancelled" | "auto_approved" | "ignored";
 
+// The resolutions that a request_resolved message reports.
+export type ResolvedResult = Extract<
+  Resolution,
+  "approved" | "denied" | "auto_approved"
+>;
+
 export interface HistoryEntry {
   request: RequestRecord;
   resolution: Resolution;
   resolved_at: string;
 }
 
-export interface AutoApproveRule {
+// The requests that an auto-approve rule covers (Go approval.AutoApproveScope).
+export interface AutoApproveScope {
+  invoker_exe: string;
+  request_type: string;
+  collection?: CollectionName;
+  attributes?: Record<string, string>;
+}
+
+export interface AutoApproveRule extends AutoApproveScope {
   id: string;
   invoker_name: string;
-  request_type: string;
-  collection: string;
-  attributes?: Record<string, string>;
   expires_at: string;
 }
 
@@ -117,17 +135,17 @@ export interface TrustedSigner {
 }
 
 export interface ProcessMatcher {
-  exe?: string;
-  name?: string;
-  args?: string;
-  cwd?: string;
-  unit?: string;
+  exe?: Glob;
+  name?: Glob;
+  args?: Glob;
+  cwd?: Glob;
+  unit?: Glob;
 }
 
 export interface SecretMatcher {
-  collection?: string;
-  label?: string;
-  attributes?: Record<string, string>;
+  collection?: Glob;
+  label?: Glob;
+  attributes?: Record<string, Glob>;
 }
 
 // What a matching trust rule does with a request (approval.RuleAction).
@@ -138,8 +156,9 @@ export interface TrustRule {
   action: RuleAction;
   request_types?: string[];
   process?: ProcessMatcher;
+  client: Glob;
   secret?: SecretMatcher;
-  search_attributes?: Record<string, string>;
+  search_attributes?: Record<string, Glob>;
 }
 
 // WebSocket message types
@@ -153,8 +172,7 @@ export type WSMessage =
   | WSClientDisconnectedMessage
   | WSHistoryEntryMessage
   | WSAutoApproveRuleAddedMessage
-  | WSAutoApproveRuleRemovedMessage
-  | WSPingMessage;
+  | WSAutoApproveRuleRemovedMessage;
 
 export interface WSSnapshotMessage {
   type: "snapshot";
@@ -177,17 +195,19 @@ export interface WSRequestCreatedMessage {
 export interface WSRequestResolvedMessage {
   type: "request_resolved";
   id: string;
-  result: "approved" | "denied";
+  result: ResolvedResult;
 }
 
 export interface WSRequestExpiredMessage {
   type: "request_expired";
   id: string;
+  result: "expired";
 }
 
 export interface WSRequestCancelledMessage {
   type: "request_cancelled";
   id: string;
+  result: "cancelled";
 }
 
 export interface WSClientConnectedMessage {
@@ -213,8 +233,4 @@ export interface WSAutoApproveRuleAddedMessage {
 export interface WSAutoApproveRuleRemovedMessage {
   type: "auto_approve_rule_removed";
   id: string;
-}
-
-export interface WSPingMessage {
-  type: "ping";
 }

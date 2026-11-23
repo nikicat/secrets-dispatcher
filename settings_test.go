@@ -154,6 +154,15 @@ func TestServiceInstallFlags(t *testing.T) {
 	assert.Equal(t, service.NarrateChanges, c.Service.Install.narration())
 }
 
+func TestProvisionUserDefaultsToSudoUser(t *testing.T) {
+	t.Setenv("SUDO_USER", "alice")
+	c, _ := parse(t, "provision")
+	assert.Equal(t, "alice", c.Provision.User)
+
+	c, _ = parse(t, "provision", "--user", "bob")
+	assert.Equal(t, "bob", c.Provision.User, "the flag wins over the environment")
+}
+
 func TestRequestCommandsTakeAnID(t *testing.T) {
 	c, cmd := parse(t, "approve", "abc", "--json")
 	assert.Equal(t, "approve <request-id>", cmd)

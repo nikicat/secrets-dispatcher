@@ -14,12 +14,12 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
-// absentPID is above Linux's PID_MAX_LIMIT (4194304), so no /proc entry exists for it: the
-// resolver walks the real /proc chain of the mocked PID, and a real process with a fixed small
-// PID (a test browser in a container's PID namespace, say) would be resolved instead.
+// A PID above Linux's PID_MAX_LIMIT (4194304), without a /proc entry. The
+// resolver walks the real /proc chain of the mocked PID, so a small fixed PID
+// could name a real process, such as a test browser in a container.
 const absentPID = 1 << 30
 
-// mockDBusClient implements dbusClient for testing.
+// Answers sender queries with fixed results.
 type mockDBusClient struct {
 	pid      procutil.PID
 	pidErr   error

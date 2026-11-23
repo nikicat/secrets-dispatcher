@@ -1,11 +1,15 @@
 package approval
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -34,13 +38,13 @@ func itemInCollection(collection, name string) ItemInfo {
 
 // Adds an auto-approve rule made from req and returns its ID. Fails the test
 // when req is not AutoApprovable.
-func mustAddRule(t *testing.T, mgr *Manager, req *Request) string {
+func mustAddRule(t *testing.T, mgr *Manager, req *Request) AutoApproveRuleID {
 	t.Helper()
-	rule, err := req.AutoApproveRule()
+	scope, err := req.AutoApproveScope()
 	if err != nil {
-		t.Fatalf("AutoApproveRule: %v", err)
+		t.Fatalf("AutoApproveScope: %v", err)
 	}
-	return mgr.AddAutoApproveRule(rule)
+	return mgr.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
 }
 
 func newRuleManager() *Manager {
@@ -49,24 +53,24 @@ func newRuleManager() *Manager {
 
 func waitPendingID(t *testing.T, mgr *Manager) RequestID {
 	t.Helper()
-	for range 100 {
-		if reqs := mgr.List(); len(reqs) > 0 {
-			return reqs[0].ID
+	var id RequestID
+	require.Eventually(t, func() bool {
+		if reqs := mgr.Pending(); len(reqs) > 0 {
+			id = reqs[0].ID
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("request did not appear in pending list")
-	return ""
+		return id != ""
+	}, time.Second, 10*time.Millisecond, "request did not appear in pending list")
+	return id
 }
 
-func TestRequestAutoApproveRule_RefusesRequestWithoutExe(t *testing.T) {
+func TestRequestAutoApproveScope_RefusesRequestWithoutExe(t *testing.T) {
 	req := &Request{
 		ID:         "remote-1",
 		Type:       RequestTypeGetSecret,
 		SenderInfo: SenderInfo{Client: "remote:laptop", Info: sender.Info{InvokerName: "gh"}},
 	}
 
-	_, err := req.AutoApproveRule()
+	_, err := req.AutoApproveScope()
 	if !errors.Is(err, ErrNotAutoApprovable) {
 		t.Fatalf("err = %v, want ErrNotAutoApprovable", err)
 	}
@@ -90,7 +94,7 @@ func TestApproveAndAutoApprove_LeavesRequestWithoutExePending(t *testing.T) {
 	if err := mgr.ApproveAndAutoApprove(id); !errors.Is(err, ErrNotAutoApprovable) {
 		t.Fatalf("err = %v, want ErrNotAutoApprovable", err)
 	}
-	if mgr.GetPending(id) == nil {
+	if _, ok := mgr.GetPending(id); !ok {
 		t.Fatal("request was resolved, want it still pending")
 	}
 	if rules := mgr.ListAutoApproveRules(); len(rules) != 0 {
@@ -104,6 +108,35 @@ func TestApproveAndAutoApprove_LeavesRequestWithoutExePending(t *testing.T) {
 	if approvalErr != nil {
 		t.Errorf("RequireApproval = %v, want nil", approvalErr)
 	}
+}
+
+func TestAddRuleFromCancelled_OnlyCancelledRequestsEarnARule(t *testing.T) {
+	mgr := newRuleManager()
+	end := func(resolve func(RequestID) error) RequestID {
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			_, _ = mgr.RequireApproval(context.Background(), RequestInfo{
+				Session:    "session",
+				Type:       RequestTypeGetSecret,
+				SenderInfo: testSender("gh", "/usr/bin/gh"),
+			})
+		})
+		id := waitPendingID(t, mgr)
+		require.NoError(t, resolve(id))
+		wg.Wait()
+		return id
+	}
+
+	denied := end(mgr.Deny)
+	assert.ErrorIs(t, mgr.AddRuleFromCancelled(denied), ErrNotFound)
+	assert.ErrorIs(t, mgr.AddRuleFromCancelled("unknown"), ErrNotFound)
+	assert.Empty(t, mgr.ListAutoApproveRules())
+
+	cancelled := end(mgr.Cancel)
+	require.NoError(t, mgr.AddRuleFromCancelled(cancelled))
+	rules := mgr.ListAutoApproveRules()
+	require.Len(t, rules, 1)
+	assert.Equal(t, RequestTypeGetSecret, rules[0].RequestType)
 }
 
 func TestAutoApproveRule_MatchesRetry(t *testing.T) {
@@ -123,7 +156,7 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 	mustAddRule(t, mgr, req)
 
 	// A retry with the same invoker, type, collection and attributes matches.
-	rule := mgr.CheckAutoApproveRules(RequestInfo{
+	_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 		Items: []ItemInfo{{
 			Path:       itemPath("default", "i99"),
 			Attributes: map[string]string{"service": "gh:github.com", "extra": "val"},
@@ -131,7 +164,7 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 		Type:       RequestTypeWrite,
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	})
-	if rule == nil {
+	if !ok {
 		t.Fatal("expected auto-approve rule to match retry request")
 	}
 }
@@ -139,34 +172,38 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 // A process that sets its comm to a trusted app's name but runs another binary
 // is not auto-approved, since rules match on the exe (ADR 0005).
 func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-
-	// User approved "always allow" for the real node binary reading login secrets.
-	mustAddRule(t, mgr, &Request{
-		Type:       RequestTypeGetSecret,
-		Items:      []ItemInfo{itemInCollection("login", "github-token")},
-		SenderInfo: testSender("node", "/usr/bin/node"),
-	})
-
-	// Malware sets comm to "node" but runs /tmp/malware.
-	spoofed := testSender("node", "/tmp/malware")
-	rule := mgr.CheckAutoApproveRules(RequestInfo{
-		Items:      []ItemInfo{itemInCollection("login", "github-token")},
-		Type:       RequestTypeGetSecret,
-		SenderInfo: spoofed,
-	})
-	if rule != nil {
-		t.Fatal("comm-spoofed caller with a different exe must not match the auto-approve rule")
+	tests := []struct {
+		name  string
+		typ   RequestType
+		items []ItemInfo
+		comm  string
+		exe   procutil.Path
+	}{
+		{
+			name:  "get_secret",
+			typ:   RequestTypeGetSecret,
+			items: []ItemInfo{itemInCollection("login", "github-token")},
+			comm:  "node",
+			exe:   "/usr/bin/node",
+		},
+		{name: "gpg_sign", typ: RequestTypeGPGSign, comm: "git", exe: "/usr/bin/git"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+			genuine := RequestInfo{Type: tt.typ, Items: tt.items, SenderInfo: testSender(tt.comm, tt.exe)}
+			// The user chose "always allow" for the real binary.
+			mustAddRule(t, mgr, &Request{RequestInfo: genuine})
 
-	// The genuine binary still matches.
-	rule = mgr.CheckAutoApproveRules(RequestInfo{
-		Items:      []ItemInfo{itemInCollection("login", "github-token")},
-		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("node", "/usr/bin/node"),
-	})
-	if rule == nil {
-		t.Fatal("the genuine invoker exe should still match")
+			// Malware sets its comm to the trusted name but runs /tmp/malware.
+			spoofed := genuine
+			spoofed.SenderInfo = testSender(tt.comm, "/tmp/malware")
+			_, ok := mgr.CheckAutoApproveRules(spoofed)
+			assert.False(t, ok, "comm-spoofed caller with a different exe must not match the auto-approve rule")
+
+			_, ok = mgr.CheckAutoApproveRules(genuine)
+			assert.True(t, ok, "the genuine invoker exe should still match")
+		})
 	}
 }
 
@@ -181,12 +218,12 @@ func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
 	}
 	mustAddRule(t, mgr, req)
 
-	rule := mgr.CheckAutoApproveRules(RequestInfo{
+	_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 		Items:      []ItemInfo{itemInCollection("default", "i1")},
 		Type:       RequestTypeGetSecret,
 		SenderInfo: testSender("seahorse", "/usr/bin/seahorse"),
 	})
-	if rule != nil {
+	if ok {
 		t.Fatal("expected no match for different invoker")
 	}
 }
@@ -204,12 +241,12 @@ func TestAutoApproveRule_Expiry(t *testing.T) {
 
 	time.Sleep(60 * time.Millisecond)
 
-	rule := mgr.CheckAutoApproveRules(RequestInfo{
+	_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 		Items:      []ItemInfo{itemInCollection("default", "i1")},
 		Type:       RequestTypeGetSecret,
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	})
-	if rule != nil {
+	if ok {
 		t.Fatal("expected expired rule not to match")
 	}
 
@@ -284,7 +321,7 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 	mustAddRule(t, mgr, req)
 
 	// A request with more attributes than the rule names still matches.
-	rule := mgr.CheckAutoApproveRules(RequestInfo{
+	_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 		Items: []ItemInfo{{
 			Path:       itemPath("default", "i2"),
 			Attributes: map[string]string{"service": "gh:github.com", "user": "nb"},
@@ -292,12 +329,12 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 		Type:       RequestTypeGetSecret,
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	})
-	if rule == nil {
+	if !ok {
 		t.Fatal("expected subset attribute match")
 	}
 
 	// A request with a different attribute value does not match.
-	rule = mgr.CheckAutoApproveRules(RequestInfo{
+	_, ok = mgr.CheckAutoApproveRules(RequestInfo{
 		Items: []ItemInfo{{
 			Path:       itemPath("default", "i2"),
 			Attributes: map[string]string{"service": "other:example.com"},
@@ -305,7 +342,7 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 		Type:       RequestTypeGetSecret,
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	})
-	if rule != nil {
+	if ok {
 		t.Fatal("expected no match for different attribute value")
 	}
 }
@@ -320,11 +357,12 @@ func TestAutoApproveRule_AttributeValuesAreLiteral(t *testing.T) {
 			Items:      []ItemInfo{{Path: path, Attributes: map[string]string{"service": made}}},
 			SenderInfo: testSender("gh", "/usr/bin/gh"),
 		})
-		return mgr.CheckAutoApproveRules(RequestInfo{
+		_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 			Items:      []ItemInfo{{Path: path, Attributes: map[string]string{"service": asked}}},
 			Type:       RequestTypeGetSecret,
 			SenderInfo: testSender("gh", "/usr/bin/gh"),
-		}) != nil
+		})
+		return ok
 	}
 
 	assert.False(t, covers("*", "other"), "a rule made from the value * covers another value")
@@ -418,20 +456,20 @@ func TestAutoApproveRule_DifferentAttributeKeysNotDeduped(t *testing.T) {
 			SenderInfo: testSender("gh", "/usr/bin/gh"),
 		}
 	}
-	rule1, err := writeRequest("i1", map[string]string{"a": ""}).AutoApproveRule()
+	scope1, err := writeRequest("i1", map[string]string{"a": ""}).AutoApproveScope()
 	if err != nil {
-		t.Fatalf("AutoApproveRule: %v", err)
+		t.Fatalf("AutoApproveScope: %v", err)
 	}
-	rule2, err := writeRequest("i2", map[string]string{"b": "x"}).AutoApproveRule()
+	scope2, err := writeRequest("i2", map[string]string{"b": "x"}).AutoApproveScope()
 	if err != nil {
-		t.Fatalf("AutoApproveRule: %v", err)
+		t.Fatalf("AutoApproveScope: %v", err)
 	}
 
-	if rule1.sameScope(rule2) {
-		t.Error("rules with attributes {a: \"\"} and {b: x} share a scope")
+	if scope1.Equal(scope2) {
+		t.Error("scopes with attributes {a: \"\"} and {b: x} are equal")
 	}
-	mgr.AddAutoApproveRule(rule1)
-	mgr.AddAutoApproveRule(rule2)
+	mgr.AddAutoApproveRule(scope1, "gh")
+	mgr.AddAutoApproveRule(scope2, "gh")
 	if rules := mgr.ListAutoApproveRules(); len(rules) != 2 {
 		t.Fatalf("expected 2 rules, got %d", len(rules))
 	}
@@ -446,16 +484,16 @@ func TestAutoApproveRule_RefreshRacesCheck(t *testing.T) {
 		Type:       RequestTypeGetSecret,
 		SenderInfo: testSender("gh", "/usr/bin/gh"),
 	}
-	rule, err := req.AutoApproveRule()
+	scope, err := req.AutoApproveScope()
 	if err != nil {
-		t.Fatalf("AutoApproveRule: %v", err)
+		t.Fatalf("AutoApproveScope: %v", err)
 	}
-	mgr.AddAutoApproveRule(rule)
+	mgr.AddAutoApproveRule(scope, "gh")
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		for range 200 {
-			mgr.AddAutoApproveRule(rule)
+			mgr.AddAutoApproveRule(scope, "gh")
 		}
 	})
 	wg.Go(func() {
@@ -464,4 +502,26 @@ func TestAutoApproveRule_RefreshRacesCheck(t *testing.T) {
 		}
 	})
 	wg.Wait()
+}
+
+// A rule for any collection leaves the collection key out of its JSON and its
+// log record, and both scopes survive a JSON round trip.
+func TestCollectionScope_JSONAndLog(t *testing.T) {
+	for _, scope := range []CollectionScope{AnyCollection, OnlyCollection("login")} {
+		rule := AutoApproveRule{ID: "r", InvokerExe: "/usr/bin/gh", RequestType: RequestTypeGetSecret, Collection: scope}
+		data, err := json.Marshal(rule)
+		require.NoError(t, err)
+		var log bytes.Buffer
+		slog.New(slog.NewTextHandler(&log, nil)).Info("rule", "rule", rule)
+		if scope == AnyCollection {
+			assert.NotContains(t, string(data), "collection")
+			assert.NotContains(t, log.String(), "collection")
+		} else {
+			assert.Contains(t, string(data), `"collection":"login"`)
+			assert.Contains(t, log.String(), "rule.collection=login")
+		}
+		var got AutoApproveRule
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, scope, got.Collection)
+	}
 }

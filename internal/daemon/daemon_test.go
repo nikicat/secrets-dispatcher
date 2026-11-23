@@ -127,8 +127,8 @@ func TestDaemon_RegistersAndServesStubs(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Run(ctx, Config{
-			BusAddress: addr,
-			Version:    "1.2.3-test",
+			Bus:     BusAt(addr),
+			Version: "1.2.3-test",
 		})
 	}()
 
@@ -199,7 +199,7 @@ func TestDaemon_NameAlreadyTaken(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, Config{BusAddress: addr, Version: "test"})
+	err = Run(ctx, Config{Bus: BusAt(addr), Version: "test"})
 	if err == nil {
 		t.Fatal("Run() succeeded but expected an error for name-already-taken")
 	}
@@ -215,7 +215,7 @@ func TestDaemon_Introspectable(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Run(ctx, Config{BusAddress: addr, Version: "test"})
+		errCh <- Run(ctx, Config{Bus: BusAt(addr), Version: "test"})
 	}()
 
 	waitForName(t, addr, BusName)

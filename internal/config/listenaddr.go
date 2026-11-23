@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
@@ -34,8 +35,8 @@ func (a ListenAddr) OrDefault() ListenAddr {
 	return a
 }
 
-// Returns the root URL of the API and the web UI, with no trailing slash.
-func (a ListenAddr) BaseURL() string { return "http://" + string(a) }
+// Returns the root URL of the API and the web UI.
+func (a ListenAddr) BaseURL() apiclient.BaseURL { return apiclient.BaseURL("http://" + string(a)) }
 
 // Returns the web UI link that exchanges the given login token for a browser
 // session (ADR 0006).
@@ -49,5 +50,5 @@ func (a ListenAddr) RequestURL(id approval.RequestID) string {
 }
 
 func (a ListenAddr) webUIURL(query url.Values) string {
-	return a.BaseURL() + "/?" + query.Encode()
+	return a.BaseURL().URL("/?" + query.Encode())
 }

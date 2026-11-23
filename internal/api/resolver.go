@@ -27,13 +27,13 @@ func NewResolver(manager *approval.Manager, slowUpstream proxy.SlowUpstream) *Re
 // Approve resolves a pending request. For GPG signing requests, it runs the
 // real gpg binary to produce the signature before approving.
 func (r *Resolver) Approve(id approval.RequestID) error {
-	req := r.Manager.GetPending(id)
-	if req == nil {
+	pending, ok := r.Manager.GetPending(id)
+	if !ok {
 		return approval.ErrNotFound
 	}
 
-	if sign, ok := req.GPGSign(); ok {
-		_, err := r.approveGPGSign(req, sign)
+	if sign, ok := pending.GPGSign(); ok {
+		_, err := r.approveGPGSign(pending.Request, sign)
 		return err
 	}
 
@@ -45,44 +45,31 @@ func (r *Resolver) Deny(id approval.RequestID) error {
 	return r.Manager.Deny(id)
 }
 
-// Adds an auto-approve rule made from the cancelled request with the given ID.
-// Errors with approval.ErrNotFound when no cancelled request has that ID, and
-// as approval.Request.AutoApproveRule does otherwise.
-func (r *Resolver) AutoApprove(requestID approval.RequestID) error {
-	entry := r.Manager.GetHistoryEntry(requestID)
-	if entry == nil {
-		return approval.ErrNotFound
-	}
-	if entry.Resolution != approval.ResolutionCancelled {
-		return approval.ErrNotFound
-	}
-	rule, err := entry.Request.AutoApproveRule()
-	if err != nil {
-		return err
-	}
-	r.Manager.AddAutoApproveRule(rule)
-	return nil
+// Adds an auto-approve rule made from the cancelled request with the given ID,
+// as approval.Manager.AddRuleFromCancelled does, with the same errors.
+func (r *Resolver) AddRuleFromCancelled(requestID approval.RequestID) error {
+	return r.Manager.AddRuleFromCancelled(requestID)
 }
 
-// Approves the pending request id and adds an auto-approve rule, as
-// Manager.ApproveAndAutoApprove does, with the same errors. A gpg_sign request
-// is approved with gpg's result, and a failed signature earns no rule.
+// Approves the pending request with the given ID and adds an auto-approve
+// rule, as Manager.ApproveAndAutoApprove does, with the same errors. A gpg_sign
+// request is approved with gpg's result, and a failed signature earns no rule.
 func (r *Resolver) ApproveAndAutoApprove(id approval.RequestID) error {
-	req := r.Manager.GetPending(id)
-	if req == nil {
+	pending, ok := r.Manager.GetPending(id)
+	if !ok {
 		return approval.ErrNotFound
 	}
 
-	if sign, ok := req.GPGSign(); ok {
-		rule, err := req.AutoApproveRule()
+	if sign, ok := pending.GPGSign(); ok {
+		scope, err := pending.AutoApproveScope()
 		if err != nil {
 			return err
 		}
-		res, err := r.approveGPGSign(req, sign)
+		res, err := r.approveGPGSign(pending.Request, sign)
 		if err != nil || !res.Succeeded() {
 			return err
 		}
-		r.Manager.AddAutoApproveRule(rule)
+		r.Manager.AddAutoApproveRule(scope, pending.SenderInfo.InvokerName)
 		return nil
 	}
 
@@ -98,7 +85,7 @@ func (r *Resolver) signGPG(sign *approval.GPGSignInfo, call proxy.UpstreamCallCo
 		err error
 	}
 	out := proxy.WithSlowNotify(r.SlowUpstream, call, func() run {
-		res, err := r.GPGRunner.Sign(sign.KeyID, sign.SignedObject)
+		res, err := r.GPGRunner.Sign(sign.KeyID, sign.SignedObject())
 		return run{res, err}
 	})
 	return out.res, out.err

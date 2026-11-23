@@ -107,12 +107,17 @@ func (f ListedFiles) List() ([]string, error) { return f, nil }
 // A gpg_sign request's object and its context. RepoName describes the working
 // tree, not the signed object (ADR 0008).
 type GPGSignInfo struct {
-	RepoName     RepoName
-	KeyID        GPGKeyID
-	SignedObject SignedObject
-	// What SignedObject says.
-	Signed SignedPayload
+	RepoName RepoName
+	KeyID    GPGKeyID
+	object   SignedObject
+	signed   SignedPayload
 }
+
+// Returns the bytes that gpg signs.
+func (i *GPGSignInfo) SignedObject() SignedObject { return i.object }
+
+// Returns what SignedObject says.
+func (i *GPGSignInfo) Signed() SignedPayload { return i.signed }
 
 // Returns the sign info of the given object, with the display fields read from
 // its bytes. Only a commit gets the given staged files. Errors as
@@ -129,7 +134,7 @@ func NewGPGSignInfo(object SignedObject, repo RepoName, key GPGKeyID, staged Sta
 		}
 		signed.Details = signed.Details.withChangedFiles(files)
 	}
-	return &GPGSignInfo{RepoName: repo, KeyID: key, SignedObject: object, Signed: signed}, nil
+	return &GPGSignInfo{RepoName: repo, KeyID: key, object: object, signed: signed}, nil
 }
 
 // The JSON form of GPGSignInfo. Its display keys keep their commit names for
@@ -150,24 +155,20 @@ type gpgSignInfoWire struct {
 }
 
 // Errors when SignedObject is not valid UTF-8, since commit_object is a JSON
-// string and cannot carry such bytes unchanged. Errors also when Signed has no
-// Details.
+// string and cannot carry such bytes unchanged.
 func (i GPGSignInfo) MarshalJSON() ([]byte, error) {
-	if i.Signed.Details == nil {
-		return nil, errors.New("gpg sign info: the signed object's kind is not set")
-	}
-	if !utf8.Valid(i.SignedObject) {
+	if !utf8.Valid(i.object) {
 		return nil, errors.New("gpg sign info: the object to sign is not valid UTF-8, and the daemon API carries it as a JSON string")
 	}
 	w := gpgSignInfoWire{
 		RepoName:     i.RepoName,
-		Kind:         i.Signed.Details.Kind(),
-		CommitMsg:    i.Signed.Message,
-		Author:       i.Signed.Signer,
+		Kind:         i.signed.Details.Kind(),
+		CommitMsg:    i.signed.Message,
+		Author:       i.signed.Signer,
 		KeyID:        i.KeyID,
-		CommitObject: string(i.SignedObject),
+		CommitObject: string(i.object),
 	}
-	i.Signed.Details.toWire(&w)
+	i.signed.Details.toWire(&w)
 	return json.Marshal(w)
 }
 
@@ -228,8 +229,8 @@ func (e HistoryEntry) GPGOutput() *GPGResult {
 // line of the object's message.
 func (i *GPGSignInfo) RequestInfo(sender SenderInfo) RequestInfo {
 	label := string(i.RepoName)
-	if i.Signed.Message != "" {
-		subject := i.Signed.Message
+	if i.signed.Message != "" {
+		subject := i.signed.Message
 		if len(subject) > 60 {
 			subject = subject[:60]
 		}

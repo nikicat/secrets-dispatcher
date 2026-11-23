@@ -53,7 +53,7 @@ Done when each item below is fixed as its "Fix" says.
   says its rule is "for a different invoker name", but rules match on exe and
   the httptest caller has none, so it repeats UnverifiableInvokerStaysPending.
   Fix: give the caller a different exe, or drop the test for the manager-level
-  TestGPGSignEphemeralRuleMatchesOnInvokerExe.
+  TestAutoApproveRule_CommSpoofDoesNotMatch/gpg_sign in internal/approval.
 
 Found by the 2026-11-19 unsmell run (b3-8, x-9, b3-9, b3-11, b3-19), and the
 2026-11-21 23:24 run (b4-20, x-16).

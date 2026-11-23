@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/stretchr/testify/require"
@@ -48,11 +50,11 @@ func newTestManager(edits ...func(*approval.ManagerConfig)) *approval.Manager {
 	return approval.NewManager(cfg)
 }
 
-func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) string {
+func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) approval.AutoApproveRuleID {
 	t.Helper()
-	rule, err := req.AutoApproveRule()
+	scope, err := req.AutoApproveScope()
 	require.NoError(t, err)
-	return mgr.AddAutoApproveRule(rule)
+	return mgr.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
 }
 
 func signableGPGSignInfo() *approval.GPGSignInfo {
@@ -98,7 +100,7 @@ func startPending(t *testing.T, mgr *approval.Manager, items ...approval.ItemInf
 	done := startRequest(t.Context(), mgr, items...)
 	var id approval.RequestID
 	require.Eventually(t, func() bool {
-		if reqs := mgr.List(); len(reqs) > 0 {
+		if reqs := mgr.Pending(); len(reqs) > 0 {
 			id = reqs[0].ID
 		}
 		return id != ""
@@ -258,7 +260,7 @@ func TestHandleApprove_NotFound(t *testing.T) {
 		t.Errorf("expected status 404, got %d", rr.Code)
 	}
 
-	var resp ErrorResponse
+	var resp apiclient.ErrorResponse
 	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -505,4 +507,16 @@ func TestHandleTestInjectHistory_UnknownResolution(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rr.Code)
 	require.Empty(t, mgr.History())
+}
+
+// The client reads the message of an error answer that the API writes.
+func TestWriteError_ClientReadsMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, "request not found or expired", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	client := apiclient.New(apiclient.BaseURL(srv.URL), config.AuthToken("token"), srv.Client())
+
+	_, err := apiclient.GetJSON[struct{}](t.Context(), client, "/")
+	require.EqualError(t, err, "daemon returned status 404: request not found or expired")
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -62,7 +63,7 @@ func (b *prompterBridge) claim() error {
 		return nil
 	}
 	if err := b.backendConn.Export(b, dbus.ObjectPath(systemPrompterPath), string(prompterInterface)); err != nil {
-		_, _ = b.backendConn.ReleaseName(systemPrompterName)
+		busDaemon{b.backendConn}.releaseName(context.Background(), systemPrompterName)
 		return fmt.Errorf("export prompter bridge: %w", err)
 	}
 	b.active = true
@@ -83,13 +84,13 @@ func (b *prompterBridge) BeginPrompting(msg dbus.Message, callback dbus.ObjectPa
 	return b.toShell.forwardVoid(msg)
 }
 
-// PerformPrompt drives one round of the prompt (shows the dialog, collects the
-// reply). Pure pass-through; the exchange payload is opaque to us.
+// Forwards one round of the prompt to gnome-shell, which shows the dialog and
+// collects the reply. The exchange payload passes through unread.
 func (b *prompterBridge) PerformPrompt(msg dbus.Message, callback dbus.ObjectPath, promptType string, properties map[string]dbus.Variant, exchange string) *dbus.Error {
 	return b.toShell.forwardVoid(msg)
 }
 
-// StopPrompting ends the prompt; tear down the callback proxy afterward.
+// Forwards the end of the prompt, then unexports its callback proxy.
 func (b *prompterBridge) StopPrompting(msg dbus.Message, callback dbus.ObjectPath) *dbus.Error {
 	err := b.toShell.forwardVoid(msg)
 	b.unexportCallback(callback)
@@ -124,7 +125,7 @@ func (b *prompterBridge) unexportCallback(path dbus.ObjectPath) {
 	delete(b.callbacks, path)
 }
 
-func (b *prompterBridge) close() {
+func (b *prompterBridge) close(ctx context.Context) {
 	b.mu.Lock()
 	for path := range b.callbacks {
 		_ = b.frontConn.Export(nil, path, string(prompterCallbackInterface))
@@ -132,26 +133,24 @@ func (b *prompterBridge) close() {
 	}
 	b.mu.Unlock()
 	if b.active {
-		_, _ = b.backendConn.ReleaseName(systemPrompterName)
+		busDaemon{b.backendConn}.releaseName(ctx, systemPrompterName)
 	}
 }
 
-// prompterCallback is the front-bus proxy for a gnome-keyring callback object.
-// gnome-shell calls PromptReady here; we forward it to gnome-keyring's real
-// callback on the backend bus.
+// Stands in on the front bus for a gnome-keyring callback object, relaying
+// gnome-shell's calls to the real callback on the backend bus.
 type prompterCallback struct {
 	toKeyring callForwarder
 	logger    *logging.Logger
 }
 
-// PromptReady relays the prompter's reply (including the exchange payload with
-// the encrypted password) back to gnome-keyring, verbatim.
+// Relays the prompter's reply, with the exchange payload that carries the
+// encrypted password, to gnome-keyring unchanged.
 func (c *prompterCallback) PromptReady(msg dbus.Message, reply string, properties map[string]dbus.Variant, exchange string) *dbus.Error {
 	return c.toKeyring.forwardVoid(msg)
 }
 
-// PromptDone relays the prompter's final "prompt finished" notification back to
-// gnome-keyring so it can tear the prompt down.
+// Relays to gnome-keyring that the prompt finished.
 func (c *prompterCallback) PromptDone(msg dbus.Message) *dbus.Error {
 	return c.toKeyring.forwardVoid(msg)
 }

@@ -6,25 +6,17 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
-// DecodeUnitPath decodes a systemd unit path to extract the unit name.
-// D-Bus encodes special characters in object paths:
-//   - _2d → -
-//   - _2e → .
-//   - _5f → _
-//
-// Example: /org/freedesktop/systemd1/unit/ssh_2eservice → ssh.service
-func DecodeUnitPath(path string) systemd.Unit {
-	// Extract the unit name from the path
-	const prefix = "/org/freedesktop/systemd1/unit/"
-	if !strings.HasPrefix(path, prefix) {
-		return ""
+// Returns the unit that the given systemd unit object path names, such as
+// ssh.service for .../unit/ssh_2eservice. False when the path is not a unit path.
+func DecodeUnitPath(path string) (systemd.Unit, bool) {
+	encoded, ok := strings.CutPrefix(path, "/org/freedesktop/systemd1/unit/")
+	if !ok || encoded == "" {
+		return "", false
 	}
-
-	encoded := path[len(prefix):]
-	return systemd.Unit(decodeDBusPath(encoded))
+	return systemd.Unit(decodeDBusPath(encoded)), true
 }
 
-// decodeDBusPath decodes D-Bus path encoding.
+// Decodes the _XX hex escapes of a D-Bus path element.
 func decodeDBusPath(s string) string {
 	var result strings.Builder
 	result.Grow(len(s))
@@ -45,7 +37,7 @@ func decodeDBusPath(s string) string {
 	return result.String()
 }
 
-// decodeHex decodes a two-character hex string to a byte.
+// Returns the byte that two hex digits spell.
 func decodeHex(hex string) (byte, bool) {
 	if len(hex) != 2 {
 		return 0, false
@@ -60,7 +52,7 @@ func decodeHex(hex string) (byte, bool) {
 	return high<<4 | low, true
 }
 
-// hexValue returns the numeric value of a hex digit.
+// Returns the value of a hex digit.
 func hexValue(c byte) (byte, bool) {
 	switch {
 	case c >= '0' && c <= '9':

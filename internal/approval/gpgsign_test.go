@@ -36,7 +36,8 @@ func TestCreate_GPGSign_ValidInfo(t *testing.T) {
 		t.Fatal("expected non-empty request ID")
 	}
 
-	assert.NotNil(t, mgr.GetPending(id), "request %q is not pending", id)
+	_, ok := mgr.GetPending(id)
+	assert.True(t, ok, "request %q is not pending", id)
 
 	events := obs.WaitForEvents(t.Context(), 1, time.Second)
 	ev := findEvent(events, evCreated)
@@ -67,7 +68,8 @@ func TestCreate_GPGSign_Expiry(t *testing.T) {
 	assert.Equal(t, evCreated, events[0].Type)
 	assert.Equal(t, evExpired, events[1].Type)
 	assert.Equal(t, id, events[1].Request.ID)
-	assert.Nil(t, mgr.GetPending(id), "expired request %q is still pending", id)
+	_, ok := mgr.GetPending(id)
+	assert.False(t, ok, "expired request %q is still pending", id)
 }
 
 // Approving a gpg_sign request ends it as approved, and the request is no
@@ -89,7 +91,8 @@ func TestCreate_GPGSign_Approve(t *testing.T) {
 	}
 	assert.Equal(t, evCreated, events[0].Type)
 	assert.Equal(t, evApproved, events[1].Type)
-	assert.Nil(t, mgr.GetPending(id), "approved request %q is still pending", id)
+	_, ok := mgr.GetPending(id)
+	assert.False(t, ok, "approved request %q is still pending", id)
 }
 
 // Denying a gpg_sign request ends it as denied.
@@ -131,7 +134,8 @@ func TestCreate_GPGSign_Cancel(t *testing.T) {
 	}
 	assert.Equal(t, evCreated, events[0].Type)
 	assert.Equal(t, evCancelled, events[1].Type)
-	assert.Nil(t, mgr.GetPending(id), "cancelled request %q is still pending", id)
+	_, ok := mgr.GetPending(id)
+	assert.False(t, ok, "cancelled request %q is still pending", id)
 
 	time.Sleep(50 * time.Millisecond)
 	history := mgr.History()
@@ -151,8 +155,8 @@ func TestCreate_GPGSign_InfoPreserved(t *testing.T) {
 	info, _ := in.GPGSign()
 	id := mgr.Create(in)
 
-	req := mgr.GetPending(id)
-	require.NotNil(t, req, "request %q is not pending", id)
+	req, ok := mgr.GetPending(id)
+	require.True(t, ok, "request %q is not pending", id)
 	if req.Type != RequestTypeGPGSign {
 		t.Errorf("expected type %q, got %q", RequestTypeGPGSign, req.Type)
 	}

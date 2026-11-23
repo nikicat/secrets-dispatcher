@@ -22,3 +22,8 @@ const (
 	ClientConnected        Type = "client_connected"
 	ClientDisconnected     Type = "client_disconnected"
 )
+
+// Reports whether messages of the type report how a request ended.
+func (t Type) EndsRequest() bool {
+	return t == RequestResolved || t == RequestExpired || t == RequestCancelled
+}

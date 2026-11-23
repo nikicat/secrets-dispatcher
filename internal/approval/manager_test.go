@@ -28,7 +28,7 @@ func TestManager_RequireApproval_Approved(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -65,7 +65,7 @@ func TestManager_RequireApproval_Denied(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -129,7 +129,7 @@ func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
 	}
 }
 
-func TestManager_List(t *testing.T) {
+func TestManager_Pending(t *testing.T) {
 	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
 
 	// Start multiple approval requests
@@ -152,7 +152,7 @@ func TestManager_List(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	reqs := mgr.List()
+	reqs := mgr.Pending()
 	if len(reqs) != 3 {
 		t.Errorf("expected 3 pending requests, got %d", len(reqs))
 	}
@@ -173,7 +173,7 @@ func TestManager_Cancel_Success(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -257,7 +257,7 @@ func TestManager_Concurrent(t *testing.T) {
 	}
 
 	// Approve half, deny half
-	reqs := mgr.List()
+	reqs := mgr.Pending()
 	for i, req := range reqs {
 		if i%2 == 0 {
 			mgr.Approve(req.ID)
@@ -318,7 +318,7 @@ func TestManager_RequestFields(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	reqs := mgr.List()
+	reqs := mgr.Pending()
 	if len(reqs) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(reqs))
 	}
@@ -360,7 +360,7 @@ func TestManager_CleanupAfterApproval(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -484,7 +484,7 @@ func TestManager_Observer_Approved(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -529,7 +529,7 @@ func TestManager_Observer_Denied(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -591,7 +591,7 @@ func TestManager_Observer_CancelMethod(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -749,7 +749,7 @@ func TestHistory_RecordsApproved(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -792,7 +792,7 @@ func TestHistory_RecordsDenied(t *testing.T) {
 	// Wait for request to appear
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -900,7 +900,7 @@ func TestHistory_NewestFirst(t *testing.T) {
 		// Wait for request to appear
 		var reqID RequestID
 		for range 100 {
-			reqs := mgr.List()
+			reqs := mgr.Pending()
 			if len(reqs) > 0 {
 				reqID = reqs[0].ID
 				break
@@ -945,7 +945,7 @@ func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -983,7 +983,7 @@ func TestApprovalCache_Expired(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -1018,7 +1018,7 @@ func TestApprovalCache_DifferentSender(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -1051,7 +1051,7 @@ func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -1093,7 +1093,7 @@ func TestApprovalCache_WriteBypassesCache(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -1222,7 +1222,7 @@ func TestApprovalCache_DifferentItem(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -1455,13 +1455,13 @@ func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
 
 	// Genuine caller: comm is "firefox", real systemd unit is "firefox.service".
 	genuine := SenderInfo{Client: ClientLocal, InvokerName: "firefox", SystemdUnit: "firefox.service"}
-	assert.NotNil(t, mgr.CheckTrustRules(RequestInfo{Items: items, Type: RequestTypeGetSecret, SenderInfo: genuine}),
-		"unit rule should match the real systemd unit")
+	_, ok := mgr.CheckTrustRules(RequestInfo{Items: items, Type: RequestTypeGetSecret, SenderInfo: genuine})
+	assert.True(t, ok, "unit rule should match the real systemd unit")
 
 	// Spoofer: sets its comm to "firefox.service" but has no such systemd unit.
 	spoofed := SenderInfo{Client: ClientLocal, InvokerName: "firefox.service", SystemdUnit: ""}
-	assert.Nil(t, mgr.CheckTrustRules(RequestInfo{Items: items, Type: RequestTypeGetSecret, SenderInfo: spoofed}),
-		"unit rule must not match a comm spoofed to look like a unit name")
+	_, ok = mgr.CheckTrustRules(RequestInfo{Items: items, Type: RequestTypeGetSecret, SenderInfo: spoofed})
+	assert.False(t, ok, "unit rule must not match a comm spoofed to look like a unit name")
 }
 
 // Malware that speaks the socket protocol directly, with a trusted signer among
@@ -1545,23 +1545,23 @@ func TestCheckTrustRules(t *testing.T) {
 	gopassSender := SenderInfo{Client: ClientLocal, InvokerName: "gopass", SystemdUnit: "gopass-secret-service.service", ProcessChain: []procutil.Process{{Name: "gopass", PID: 300}}}
 
 	t.Run("match process name + request type", func(t *testing.T) {
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Type:       RequestTypeSearch,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 		})
-		if rule == nil || rule.Name != "approve-gh-search" {
+		if !ok || rule.Name != "approve-gh-search" {
 			t.Errorf("expected approve-gh-search, got %v", rule)
 		}
 	})
 
 	t.Run("no match wrong request type", func(t *testing.T) {
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 		})
 		// No rule matches. Rule 0 covers only search, and with no items neither
 		// the label rule nor the attribute rule can match.
-		if rule != nil {
+		if ok {
 			t.Errorf("expected no match, got %v", rule.Name)
 		}
 	})
@@ -1571,12 +1571,12 @@ func TestCheckTrustRules(t *testing.T) {
 			Path:  "/org/freedesktop/secrets/collection/default/123",
 			Label: "Chrome Safe Storage",
 		}}
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Items:      items,
 			Type:       RequestTypeWrite,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: chromeChain},
 		})
-		if rule == nil || rule.Name != "ignore-chrome-write" {
+		if !ok || rule.Name != "ignore-chrome-write" {
 			t.Errorf("expected ignore-chrome-write, got %v", rule)
 		}
 	})
@@ -1586,25 +1586,25 @@ func TestCheckTrustRules(t *testing.T) {
 			Path:  "/org/freedesktop/secrets/collection/login/123",
 			Label: "Chrome Safe Storage",
 		}}
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Items:      items,
 			Type:       RequestTypeWrite,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: chromeChain},
 		})
 		// Rule 1 requires the default collection, so a write to the login
 		// collection matches no rule.
-		if rule != nil {
+		if ok {
 			t.Errorf("expected no match, got %v", rule.Name)
 		}
 	})
 
 	t.Run("match unit glob", func(t *testing.T) {
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}},
 			Type:       RequestTypeGetSecret,
 			SenderInfo: gopassSender,
 		})
-		if rule == nil || rule.Name != "approve-all-from-unit" {
+		if !ok || rule.Name != "approve-all-from-unit" {
 			t.Errorf("expected approve-all-from-unit, got %v", rule)
 		}
 	})
@@ -1614,23 +1614,23 @@ func TestCheckTrustRules(t *testing.T) {
 			Path:  "/org/freedesktop/secrets/collection/default/1",
 			Label: "GitHub Token",
 		}}
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Items:      items,
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "random-app", PID: 999}}},
 		})
-		if rule == nil || rule.Name != "approve-by-label" {
+		if !ok || rule.Name != "approve-by-label" {
 			t.Errorf("expected approve-by-label, got %v", rule)
 		}
 	})
 
 	t.Run("match search attributes", func(t *testing.T) {
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Type:       RequestTypeSearch,
 			Payload:    SearchPayload{Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"}},
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "app", PID: 1}}},
 		})
-		if rule == nil || rule.Name != "approve-search-attrs" {
+		if !ok || rule.Name != "approve-search-attrs" {
 			t.Errorf("expected approve-search-attrs, got %v", rule)
 		}
 	})
@@ -1641,12 +1641,12 @@ func TestCheckTrustRules(t *testing.T) {
 			Label:      "WiFi Password",
 			Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.NetworkPassword", "ssid": "home"},
 		}}
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Items:      items,
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "nm-applet", PID: 500}}},
 		})
-		if rule == nil || rule.Name != "approve-by-attributes" {
+		if !ok || rule.Name != "approve-by-attributes" {
 			t.Errorf("expected approve-by-attributes, got %v", rule)
 		}
 	})
@@ -1668,43 +1668,43 @@ func TestCheckTrustRules(t *testing.T) {
 			Label:      "token",
 			Attributes: map[string]string{"username": "kubelogin/tokencache/e91d908"},
 		}}
-		rule := m.CheckTrustRules(RequestInfo{
+		rule, ok := m.CheckTrustRules(RequestInfo{
 			Items:      items,
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "kubectl", PID: 1}}},
 		})
-		if rule == nil || rule.Name != "approve-glob-attrs" {
+		if !ok || rule.Name != "approve-glob-attrs" {
 			t.Errorf("expected approve-glob-attrs, got %v", rule)
 		}
 		// Non-matching value
 		items[0].Attributes["username"] = "other/path"
-		rule = m.CheckTrustRules(RequestInfo{
+		rule, ok = m.CheckTrustRules(RequestInfo{
 			Items:      items,
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "kubectl", PID: 1}}},
 		})
-		if rule != nil {
-			t.Errorf("expected nil for non-matching glob, got %v", rule)
+		if ok {
+			t.Errorf("expected no match for non-matching glob, got %v", rule)
 		}
 	})
 
 	t.Run("first match wins", func(t *testing.T) {
 		// gh doing search matches rule 0 (approve-gh-search), not rule 4 (approve-search-attrs)
-		rule := mgr.CheckTrustRules(RequestInfo{
+		rule, ok := mgr.CheckTrustRules(RequestInfo{
 			Type:       RequestTypeSearch,
 			Payload:    SearchPayload{Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"}},
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 		})
-		if rule == nil || rule.Name != "approve-gh-search" {
+		if !ok || rule.Name != "approve-gh-search" {
 			t.Errorf("expected first match approve-gh-search, got %v", rule)
 		}
 	})
 
 	t.Run("empty rules", func(t *testing.T) {
 		m := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10})
-		rule := m.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret})
-		if rule != nil {
-			t.Errorf("expected nil from empty rules, got %v", rule)
+		rule, ok := m.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret})
+		if ok {
+			t.Errorf("expected no match from empty rules, got %v", rule)
 		}
 	})
 }
@@ -2081,7 +2081,7 @@ func TestRequireApproval_NotAutoApproved_ManualApproval(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -2197,7 +2197,7 @@ func TestRequireApproval_NotAutoApproved_Denied(t *testing.T) {
 
 	var reqID RequestID
 	for range 100 {
-		reqs := mgr.List()
+		reqs := mgr.Pending()
 		if len(reqs) > 0 {
 			reqID = reqs[0].ID
 			break
@@ -2266,9 +2266,9 @@ func TestCheckTrustRules_Client(t *testing.T) {
 		{"symbiosis", RequestTypeUnlock, "any-client"},
 	}
 	for _, c := range cases {
-		rule := mgr.CheckTrustRules(RequestInfo{Type: c.typ, SenderInfo: SenderInfo{Client: c.client}})
+		rule, ok := mgr.CheckTrustRules(RequestInfo{Type: c.typ, SenderInfo: SenderInfo{Client: c.client}})
 		got := ""
-		if rule != nil {
+		if ok {
 			got = rule.Name
 		}
 		assert.Equal(t, c.want, got, "client %q, type %q", c.client, c.typ)
@@ -2288,11 +2288,14 @@ func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
 	})
 
 	forwarded := SenderInfo{Client: "symbiosis", Sender: new(sender.UniqueName(":1.7")), PID: 42}
-	assert.Nil(t, mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: forwarded}), `unit "*"`)
-	assert.Nil(t, mgr.CheckTrustRules(RequestInfo{Type: RequestTypeSearch, SenderInfo: forwarded}), "empty process")
+	_, ok := mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: forwarded})
+	assert.False(t, ok, `unit "*"`)
+	_, ok = mgr.CheckTrustRules(RequestInfo{Type: RequestTypeSearch, SenderInfo: forwarded})
+	assert.False(t, ok, "empty process")
 
 	local := SenderInfo{Client: ClientLocal, SystemdUnit: "app.service"}
-	assert.NotNil(t, mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: local}), `unit "*" on a local sender`)
+	_, ok = mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: local})
+	assert.True(t, ok, `unit "*" on a local sender`)
 }
 
 // An expired request ends exactly once. It leaves no pending request and one

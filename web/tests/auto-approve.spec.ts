@@ -72,6 +72,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
           {
             id: "test-rule-1",
             invoker_name: "test-invoker",
+            invoker_exe: "/usr/bin/test-invoker",
             request_type: "get_secret",
             collection: "default",
             expires_at: expiresAt,
@@ -102,6 +103,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
           auto_approve_rule: {
             id: "ws-rule-1",
             invoker_name: "ws-invoker",
+            invoker_exe: "/usr/bin/ws-invoker",
             request_type: "search",
             collection: "login",
             expires_at: expiresAt,
@@ -133,6 +135,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
           {
             id: "rule-to-remove",
             invoker_name: "remove-me",
+            invoker_exe: "/usr/bin/remove-me",
             request_type: "search",
             collection: "login",
             expires_at: expiresAt,
@@ -173,6 +176,7 @@ test.describe("Auto-Approve Rule Reset", () => {
           {
             id: "reset-rule",
             invoker_name: "reset-invoker",
+            invoker_exe: "/usr/bin/reset-invoker",
             request_type: "get_secret",
             collection: "default",
             expires_at: initialExpiry,
@@ -198,6 +202,7 @@ test.describe("Auto-Approve Rule Reset", () => {
       auto_approve_rule: {
         id: "reset-rule",
         invoker_name: "reset-invoker",
+        invoker_exe: "/usr/bin/reset-invoker",
         request_type: "get_secret",
         collection: "default",
         expires_at: resetExpiry,
@@ -223,8 +228,8 @@ test.describe("Auto-Approve Rule Reset", () => {
           {
             id: "tick-rule",
             invoker_name: "tick-invoker",
+            invoker_exe: "/usr/bin/tick-invoker",
             request_type: "search",
-            collection: "",
             expires_at: initialExpiry,
           },
         ],
@@ -244,8 +249,8 @@ test.describe("Auto-Approve Rule Reset", () => {
       auto_approve_rule: {
         id: "tick-rule",
         invoker_name: "tick-invoker",
+        invoker_exe: "/usr/bin/tick-invoker",
         request_type: "search",
-        collection: "",
         expires_at: resetExpiry,
       },
     });
@@ -275,8 +280,8 @@ test.describe("Auto-Approve Rule Timer", () => {
           {
             id: "timer-rule",
             invoker_name: "timer-test",
+            invoker_exe: "/usr/bin/timer-test",
             request_type: "get_secret",
-            collection: "",
             expires_at: expiresAt,
           },
         ],
@@ -310,8 +315,8 @@ test.describe("Auto-Approve Rule Timer", () => {
           {
             id: "expiring-rule",
             invoker_name: "expiring-test",
+            invoker_exe: "/usr/bin/expiring-test",
             request_type: "get_secret",
-            collection: "",
             expires_at: expiresAt,
           },
         ],
@@ -335,7 +340,7 @@ test.describe("Auto-Approve Rule Timer", () => {
 test.describe("Approve and auto-approve", () => {
   const localAndRemote = () => [
     pendingRequest({ id: "local-req" }),
-    pendingRequest({ id: "remote-req", auto_approvable: false }),
+    pendingRequest({ id: "remote-req", auto_approve_scope: undefined }),
   ];
 
   test("is offered only on a request a rule could match", async ({ page }) => {
@@ -389,5 +394,53 @@ test.describe("Approve and auto-approve", () => {
     const remote = entry("remote-req");
     await expect(remote.locator(".history-resolution")).toBeVisible();
     await expect(remote.locator(".btn-auto-approve")).toHaveCount(0);
+  });
+
+  test("of similar requests offers a timer reset when a rule has the request's scope", async ({
+    page,
+  }) => {
+    const expiresAt = new Date(Date.now() + 90_000).toISOString();
+    const scope = (exe: string) => ({
+      invoker_exe: exe,
+      request_type: "get_secret",
+      collection: "default",
+    });
+    const cancelled = (id: string, exe: string): HistoryEntry => ({
+      request: pendingRequest({ id, auto_approve_scope: scope(exe) }),
+      resolution: "cancelled",
+      resolved_at: new Date().toISOString(),
+    });
+    await routeSnapshot(page, {
+      rewrite: (s) => ({
+        ...s,
+        history: [
+          cancelled("same-exe", "/usr/bin/test"),
+          cancelled("other-exe", "/usr/bin/spoofed"),
+        ],
+        // The rule's invoker name differs from the requests' on purpose: rules
+        // match on the executable only.
+        auto_approve_rules: [
+          {
+            id: "rule",
+            invoker_name: "renamed",
+            ...scope("/usr/bin/test"),
+            expires_at: expiresAt,
+          },
+        ],
+      }),
+    });
+
+    const loginURL = await backend.generateLoginURL();
+    await page.goto(loginURL);
+
+    const button = (id: string) =>
+      page
+        .locator(".history-entry")
+        .filter({ has: page.locator(`.history-request-id[title="${id}"]`) })
+        .locator(".btn-auto-approve");
+    await expect(button("same-exe")).toHaveText("Reset auto-approve timer", {
+      timeout: 10000,
+    });
+    await expect(button("other-exe")).toHaveText("Auto-approve similar");
   });
 });

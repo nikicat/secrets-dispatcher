@@ -11,9 +11,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
-// mockShellPrompter stands in for gnome-shell's real prompter on the front bus:
-// it owns org.gnome.keyring.SystemPrompter and records the calls the bridge
-// forwards to it. It can also drive the reverse Callback.
+// Stands in for gnome-shell's prompter on the front bus, recording the calls
+// that the bridge forwards to it.
 type mockShellPrompter struct {
 	begin   chan promptCall
 	perform chan promptCall
@@ -40,8 +39,8 @@ func (m *mockShellPrompter) StopPrompting(msg dbus.Message, callback dbus.Object
 	return nil
 }
 
-// mockKeyringCallback stands in for the backend gnome-keyring's callback object:
-// it records the PromptReady/PromptDone calls the bridge forwards back.
+// Stands in for the backend gnome-keyring's callback object, recording the
+// PromptReady and PromptDone calls that the bridge forwards back.
 type mockKeyringCallback struct {
 	ready chan string
 	done  chan struct{}
@@ -57,18 +56,13 @@ func (m *mockKeyringCallback) PromptDone(msg dbus.Message) *dbus.Error {
 	return nil
 }
 
-// TestPrompterBridge is the regression for the locked-keyring hang: the backend
-// gnome-keyring reaches its unlock prompter over the private bus, where the
-// only SystemPrompter is the display-less gcr-prompter fallback, so unlock
-// hangs forever. The bridge must claim SystemPrompter on the backend bus and
-// relay the whole two-way protocol to the real prompter (gnome-shell) on the
-// front bus. This test drives both directions: keyring→shell (Begin/Perform/
-// Stop) and shell→keyring (PromptReady/PromptDone).
+// Checks that the bridge, holding SystemPrompter on the backend bus, carries the
+// unlock prompt to gnome-shell's prompter on the session bus (ADR 0009) in both
+// directions: Begin/Perform/StopPrompting to it and PromptReady/PromptDone back.
 func TestPrompterBridge(t *testing.T) {
 	frontAddr, backendAddr := testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t)
 
-	// gnome-shell's prompter on the front bus, present before the proxy starts
-	// (so the bridge's guard sees it and activates).
+	// gnome-shell's prompter on the front bus, present before the proxy starts.
 	shellConn, err := dbus.Connect(frontAddr)
 	require.NoError(t, err)
 	t.Cleanup(func() { shellConn.Close() })
@@ -82,7 +76,7 @@ func TestPrompterBridge(t *testing.T) {
 
 	// The proxy (and thus the bridge) between the two buses.
 	p := startSessionBusTestProxy(t, frontAddr, backendAddr)
-	require.True(t, p.conn.prompter.active, "bridge should activate when the front bus has a prompter and the backend does not")
+	require.True(t, p.conn.prompter.active, "bridge should claim the prompter name on the backend bus")
 
 	// The backend gnome-keyring: a connection that exports a callback object
 	// and calls the SystemPrompter (now the bridge) on the backend bus.
@@ -127,14 +121,9 @@ func TestPrompterBridge(t *testing.T) {
 	assert.Equal(t, callbackPath, recvCall(t, shell.stop, "StopPrompting").callback)
 }
 
-// TestPrompterBridgeClaimsBackendBeforePrompter is the relogin regression: the
-// proxy can start (or restart) BEFORE gnome-shell re-registers its prompter —
-// both come up with the graphical session and the proxy often wins the race.
-// The bridge must claim the backend SystemPrompter name IMMEDIATELY regardless,
-// so the gcr-prompter fallback (which the backend bus would D-Bus-activate on
-// the first unlock, and which draws a GTK dialog because the backend shares the
-// graphical session) can never win that window. Forwarding to the real prompter
-// is resolved by name at prompt time, so it doesn't need gnome-shell present yet.
+// Checks that the bridge claims SystemPrompter on the backend bus before
+// gnome-shell registers its prompter, so the gcr-prompter fallback cannot win a
+// relogin race, and forwards to gnome-shell once it is up (ADR 0009).
 func TestPrompterBridgeClaimsBackendBeforePrompter(t *testing.T) {
 	frontAddr, backendAddr := testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t)
 

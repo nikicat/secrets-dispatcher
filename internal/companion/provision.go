@@ -18,13 +18,12 @@ import (
 // The default of Config.HomeBase.
 const DefaultHomeBase = "/var/lib/secret-companion"
 
-// Config holds the inputs for provisioning a companion user.
+// The inputs for provisioning a companion user.
 type Config struct {
-	// DesktopUser is the regular Linux username that owns the desktop session.
-	// If empty, Provision attempts to read it from the SUDO_USER environment variable.
+	// The Linux user that owns the desktop session.
 	DesktopUser string
 
-	// CompanionName, if non-empty, overrides the default "secrets-{DesktopUser}" username.
+	// Overrides the default companion username "secrets-{DesktopUser}".
 	CompanionName string
 
 	// The parent directory of companion homes, or empty for DefaultHomeBase.
@@ -37,7 +36,6 @@ func (c *Config) defaults() {
 	}
 }
 
-// companionUsername returns the companion Linux username derived from cfg.
 func (c Config) companionUsername() string {
 	if c.CompanionName != "" {
 		return c.CompanionName
@@ -45,38 +43,20 @@ func (c Config) companionUsername() string {
 	return "secrets-" + c.DesktopUser
 }
 
-// homeDir returns the companion user's home directory.
 func (c Config) homeDir() companionHome {
 	return companionHome(filepath.Join(c.HomeBase, c.DesktopUser))
 }
 
-// Provision creates the companion user and all deployment artifacts for the
-// secrets-dispatcher v2.0 privilege separation model.
-//
-// Steps performed (all idempotent):
-//  1. Validate preconditions (root, non-empty user)
-//  2. Create companion Linux user
-//  3. Create home directory with 0700 permissions owned by companion user
-//  4. Create gopass/GPG directory skeleton
-//  5. Write D-Bus system bus policy file
-//  6. Write systemd user unit file
-//  7. Write PAM session hook config
-//  8. Include the hook in the login session stack
-//  9. Enable systemd linger for companion user
-//
-// Provision requires root (os.Geteuid() == 0).
+// Creates the companion user and its deployment, part of the privilege
+// separation experiment (ADR 0002). It can run again, and each run rewrites the
+// deployment's files. Errors when not run as root or no desktop user is given.
 func Provision(cfg Config) error {
 	cfg.defaults()
 
-	// 1. Validate preconditions.
 	if geteuidFunc() != procutil.RootUID {
 		return fmt.Errorf("provision requires root; run: sudo secrets-dispatcher provision")
 	}
 
-	// If DesktopUser is empty, try SUDO_USER (set by sudo when running as root).
-	if cfg.DesktopUser == "" {
-		cfg.DesktopUser = os.Getenv("SUDO_USER")
-	}
 	if cfg.DesktopUser == "" {
 		return fmt.Errorf("no desktop user specified: use --user flag or run via sudo")
 	}
@@ -90,7 +70,6 @@ func Provision(cfg Config) error {
 		"home_dir", homeDir,
 	)
 
-	// 2. Create companion user (idempotent: skip if already exists).
 	if err := ensureUser(companionUser, homeDir); err != nil {
 		return fmt.Errorf("ensure companion user: %w", err)
 	}
@@ -101,37 +80,32 @@ func Provision(cfg Config) error {
 	}
 	c := companion{account: acct, home: homeDir}
 
-	// 3. Create home directory with correct ownership and permissions.
 	if err := c.home.Dir().ensure(c.account, 0700); err != nil {
 		return fmt.Errorf("ensure home dir: %w", err)
 	}
 
-	// 4. Create gopass/GPG directory skeleton (PROV-03 Phase 4 scope = dirs only).
 	if err := c.ensureDirectorySkeleton(); err != nil {
 		return fmt.Errorf("ensure directory skeleton: %w", err)
 	}
 
-	// 5. Write D-Bus system bus policy file.
 	if err := c.writeDBusPolicy(cfg.DesktopUser); err != nil {
 		return fmt.Errorf("write D-Bus policy: %w", err)
 	}
 
-	// 6. Write systemd user unit file to companion's XDG config directory.
 	if err := c.writeSystemdUnit(); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
 	}
 
-	// 7. Write PAM session hook config.
 	if err := writePAMConfig(c.name); err != nil {
 		return fmt.Errorf("write PAM config: %w", err)
 	}
 
-	// 8. Include the hook in the login session stack.
 	if err := includePAMConfig(); err != nil {
 		return fmt.Errorf("include PAM config: %w", err)
 	}
 
-	// 9. Enable linger so companion's systemd --user persists after desktop logout.
+	// Linger keeps the companion's systemd user manager running after the desktop
+	// user logs out.
 	slog.Info("enabling systemd linger", "companion_user", c.name)
 	if err := loginctlFunc("enable-linger", c.name); err != nil {
 		return fmt.Errorf("enable linger: %w", err)
@@ -141,7 +115,7 @@ func Provision(cfg Config) error {
 	return nil
 }
 
-// ensureUser creates the companion Linux user if it does not already exist.
+// Creates the given companion Linux user unless it exists.
 func ensureUser(username string, homeDir companionHome) error {
 	if _, err := userLookupFunc(username); err == nil {
 		slog.Info("companion user already exists, skipping creation", "username", username)
@@ -158,8 +132,7 @@ func ensureUser(username string, homeDir companionHome) error {
 	return userAddFunc(username, homeDir.String(), "/usr/sbin/nologin")
 }
 
-// ensureDirectorySkeleton creates the gopass and GPG directory skeleton under companion home.
-// Phase 4 scope: directories only. Actual gopass init + GPG key generation is Phase 5.
+// Creates the companion's gopass and GPG directories, empty.
 func (c companion) ensureDirectorySkeleton() error {
 	for _, d := range []companionDir{c.home.GopassDir(), c.home.GnupgDir()} {
 		if err := d.ensure(c.account, 0700); err != nil {
@@ -169,7 +142,8 @@ func (c companion) ensureDirectorySkeleton() error {
 	return nil
 }
 
-// writeDBusPolicy renders and writes the D-Bus system bus policy file.
+// Writes the system bus policy that lets the given desktop user call the
+// companion daemon.
 func (c companion) writeDBusPolicy(desktopUser string) error {
 	type templateVars struct {
 		CompanionUser string
@@ -192,7 +166,8 @@ func (c companion) writeDBusPolicy(desktopUser string) error {
 // The companion daemon's systemd user unit.
 const daemonUnit systemd.Unit = "secrets-dispatcher-daemon.service"
 
-// writeSystemdUnit renders and writes the systemd user unit file to the companion's XDG dir.
+// Writes the daemon's systemd user unit into the companion's XDG config
+// directory.
 func (c companion) writeSystemdUnit() error {
 	type templateVars struct {
 		CompanionHome companionHome
@@ -310,7 +285,6 @@ func includePAMConfig() error {
 	return writeFileFunc(stack.path, content, stack.mode)
 }
 
-// renderTemplate executes a text/template and returns the rendered bytes.
 func renderTemplate(name, tmplStr string, data any) ([]byte, error) {
 	tmpl, err := template.New(name).Parse(tmplStr)
 	if err != nil {

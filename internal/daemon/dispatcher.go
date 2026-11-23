@@ -1,6 +1,5 @@
-// Package daemon implements the secrets-dispatcher companion daemon.
-// The daemon registers on the system D-Bus as net.mowaka.SecretsDispatcher1
-// and serves stub methods. Phase 5 replaces the stubs with real business logic.
+// Package daemon is the companion daemon of the privilege separation
+// experiment (ADR 0002). Its methods are stubs.
 package daemon
 
 import (
@@ -16,23 +15,20 @@ const (
 	Interface  dbustypes.Interface = "net.mowaka.SecretsDispatcher1"
 )
 
-// Dispatcher is the D-Bus object exported under ObjectPath/Interface.
-// Phase 4 provides stub responses only; Phase 5 adds real logic.
+// The D-Bus object exported under ObjectPath and Interface.
 type Dispatcher struct {
 	version string
 }
 
-// NewDispatcher creates a Dispatcher that reports the given version string.
 func NewDispatcher(version string) *Dispatcher {
 	return &Dispatcher{version: version}
 }
 
-// Ping is a health-check stub. Returns "pong" to confirm the daemon is alive.
+// Answers "pong" and has no other effect.
 func (d *Dispatcher) Ping() (string, *dbus.Error) {
 	return "pong", nil
 }
 
-// GetVersion returns the daemon version string.
 func (d *Dispatcher) GetVersion() (string, *dbus.Error) {
 	return d.version, nil
 }

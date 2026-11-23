@@ -2,6 +2,11 @@
 package dbus
 
 import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/godbus/dbus/v5"
@@ -43,6 +48,85 @@ const (
 	ItemAttributes  = string(ItemInterface) + ".Attributes"
 )
 
+// The attributes of a Secret Service item, or of a search for items, each key
+// to its value.
+type Attributes map[string]string
+
+// Returns the attributes as key=value pairs sorted by key, joined by ", ".
+func (a Attributes) String() string {
+	pairs := make([]string, 0, len(a))
+	for _, k := range slices.Sorted(maps.Keys(a)) {
+		pairs = append(pairs, k+"="+a[k])
+	}
+	return strings.Join(pairs, ", ")
+}
+
+// Checks whether the attributes hold every key of the given ones with the same
+// value. A missing key reads as the empty string.
+func (a Attributes) Contain(want Attributes) bool {
+	for k, v := range want {
+		if a[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// The label and attributes of an item, as CreateItem takes them.
+type ItemProperties struct {
+	Label      string
+	Attributes Attributes
+}
+
+// Returns the property dict that CreateItem takes.
+func (p ItemProperties) Variants() map[string]dbus.Variant {
+	return map[string]dbus.Variant{
+		ItemLabel: dbus.MakeVariant(p.Label),
+		// The plain map type, which ParseItemProperties reads back.
+		ItemAttributes: dbus.MakeVariant(map[string]string(p.Attributes)),
+	}
+}
+
+// Reads the label and attributes from the given property dict. Errors with
+// InvalidArgs when the label is not a string or the attributes are not a
+// string-to-string dict.
+func ParseItemProperties(props map[string]dbus.Variant) (ItemProperties, error) {
+	label, err := propertyValue[string](props, ItemLabel)
+	if err != nil {
+		return ItemProperties{}, err
+	}
+	attributes, err := propertyValue[map[string]string](props, ItemAttributes)
+	if err != nil {
+		return ItemProperties{}, err
+	}
+	return ItemProperties{Label: label, Attributes: attributes}, nil
+}
+
+// Returns the value of the named property in the given dict. Errors with
+// InvalidArgs when the value is not a T.
+func propertyValue[T any](props map[string]dbus.Variant, name string) (T, error) {
+	var value T
+	v, ok := props[name]
+	if !ok {
+		return value, nil
+	}
+	if value, ok = v.Value().(T); !ok {
+		return value, InvalidArgs.WithMessage(fmt.Sprintf("property %s has type %s, not %s", name, v.Signature(), dbus.SignatureOf(value)))
+	}
+	return value, nil
+}
+
+// Returns the value of the given header field of an incoming message.
+func Header[T any](msg dbus.Message, field dbus.HeaderField) T {
+	v, _ := msg.Headers[field].Value().(T)
+	return v
+}
+
+// Returns the object path an incoming message is addressed to.
+func PathOf(msg dbus.Message) dbus.ObjectPath {
+	return Header[dbus.ObjectPath](msg, dbus.FieldPath)
+}
+
 // Object paths, bus name and session algorithms of the Secret Service.
 const (
 	ServicePath = "/org/freedesktop/secrets"
@@ -53,10 +137,17 @@ const (
 	CollectionsPath = ServicePath + "/collection"
 	AliasesPath     = ServicePath + "/aliases"
 
+	// Roots of the prompt and session paths.
+	PromptsPath  = ServicePath + "/prompt"
+	SessionsPath = ServicePath + "/session"
+
 	// Algorithms for OpenSession.
 	AlgorithmPlain = "plain"
 	AlgorithmDH    = "dh-ietf1024-sha256-aes128-cbc-pkcs7"
 )
+
+// The path that the Secret Service returns for no object or for no prompt.
+const NoObject dbus.ObjectPath = "/"
 
 // Secret represents a secret value in the Secret Service protocol.
 // D-Bus signature: (oayays) - object path, byte array, byte array, string
@@ -80,6 +171,7 @@ const (
 	NotSupported     ErrorName = "org.freedesktop.DBus.Error.NotSupported"
 	InvalidSignature ErrorName = "org.freedesktop.DBus.Error.InvalidSignature"
 	UnknownInterface ErrorName = "org.freedesktop.DBus.Error.UnknownInterface"
+	InvalidArgs      ErrorName = "org.freedesktop.DBus.Error.InvalidArgs"
 	AccessDenied     ErrorName = "org.freedesktop.DBus.Error.AccessDenied"
 	Failed           ErrorName = "org.freedesktop.DBus.Error.Failed"
 )
@@ -124,10 +216,24 @@ func ErrFailed(err error) *dbus.Error {
 	return Failed.WithMessage(err.Error())
 }
 
+// Returns the D-Bus error that the given error holds, by value or by pointer,
+// or else a Failed error with its message.
+func AsDBusError(err error) *dbus.Error {
+	if derr, ok := errors.AsType[*dbus.Error](err); ok {
+		return derr
+	}
+	if derr, ok := errors.AsType[dbus.Error](err); ok {
+		return &derr
+	}
+	return ErrFailed(err)
+}
+
+// A collection's name, or an alias such as "default".
+type CollectionName string
+
 // A collection as an object path names it.
 type CollectionRef struct {
-	// The collection's name, or an alias such as "default".
-	Name string
+	Name CollectionName
 	// True if Name is an alias. False otherwise.
 	Alias bool
 }
@@ -170,8 +276,24 @@ func cutCollection(path dbus.ObjectPath) (ref CollectionRef, after string, ok bo
 	if end < 0 {
 		end = len(rest)
 	}
-	ref.Name = rest[:end]
+	ref.Name = CollectionName(rest[:end])
 	return ref, rest[end:], true
+}
+
+// Returns the object path of the session with the given id.
+func SessionPath(id uint64) dbus.ObjectPath {
+	return dbus.ObjectPath(SessionsPath + "/" + strconv.FormatUint(id, 10))
+}
+
+// Returns the object path of the prompt with the given name.
+func PromptPath(name string) dbus.ObjectPath {
+	return dbus.ObjectPath(PromptsPath + "/" + name)
+}
+
+// Checks whether the given path names an object under PromptsPath.
+func IsPromptPath(path dbus.ObjectPath) bool {
+	name, ok := strings.CutPrefix(string(path), PromptsPath+"/")
+	return ok && name != ""
 }
 
 // Returns the collection that a collection path names or that an item path

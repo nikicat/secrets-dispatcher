@@ -1,4 +1,3 @@
-// Package proxy implements the Secret Service proxy.
 package proxy
 
 import (
@@ -17,22 +16,21 @@ const nameOwnerChanged = "NameOwnerChanged"
 // Identifies a single in-flight request within a sender's set.
 type requestID uint64
 
-// clientTracker tracks D-Bus clients and provides contexts that get cancelled
-// when the client disconnects.
 type clientTracker struct {
-	conn *dbus.Conn
-	mu   sync.Mutex
-	// In-flight requests by sender. A sender can have several at once, since a
-	// client may make overlapping calls on one connection.
-	clients map[sender.UniqueName]map[requestID]context.CancelFunc
-	// nextID assigns a unique id to each request; only accessed under mu.
-	nextID    requestID
+	conn      *dbus.Conn
 	signals   chan *dbus.Signal
 	done      chan struct{}
 	closeOnce sync.Once
+
+	mu sync.Mutex
+	// In-flight requests by sender. A sender can have several at once, since a
+	// client may make overlapping calls on one connection.
+	clients map[sender.UniqueName]map[requestID]context.CancelFunc
+	nextID  requestID
+	closed  bool
 }
 
-// newClientTracker creates a new tracker and starts listening for NameOwnerChanged signals.
+// Returns a tracker that watches the given connection for NameOwnerChanged.
 func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 	t := &clientTracker{
 		conn:    conn,
@@ -58,7 +56,6 @@ func newClientTracker(conn *dbus.Conn) (*clientTracker, error) {
 	return t, nil
 }
 
-// processSignals handles NameOwnerChanged signals.
 func (t *clientTracker) processSignals() {
 	for {
 		select {
@@ -109,11 +106,17 @@ func (t *clientTracker) clientDisconnected(sender sender.UniqueName) {
 
 // Returns a context for one request from the sender, and a release that cancels
 // only that request. The context is also cancelled when the sender disconnects.
-// When the sender has already gone, the context is cancelled from the start.
+// When the sender has already gone or the tracker is closed, the context is
+// cancelled from the start.
 func (t *clientTracker) contextForSender(parent context.Context, sender sender.UniqueName) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(parent)
 
 	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		cancel()
+		return ctx, cancel
+	}
 	id := t.nextID
 	t.nextID++
 	reqs := t.clients[sender]
@@ -148,7 +151,7 @@ func (t *clientTracker) contextForSender(parent context.Context, sender sender.U
 	return ctx, release
 }
 
-// close stops the tracker.
+// Stops watching and cancels all requests in flight.
 func (t *clientTracker) close() {
 	t.closeOnce.Do(func() {
 		// Signal the processSignals goroutine to stop
@@ -167,5 +170,6 @@ func (t *clientTracker) close() {
 			cancel()
 		}
 	}
-	t.clients = nil
+	clear(t.clients)
+	t.closed = true
 }

@@ -4,10 +4,12 @@ import (
 	"testing"
 
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDecodeUnitPath(t *testing.T) {
-	tests := []struct {
+	units := []struct {
 		name string
 		path string
 		want systemd.Unit
@@ -33,21 +35,6 @@ func TestDecodeUnitPath(t *testing.T) {
 			want: "tmux-spawn-0aafefab-9589-4202-b2af-d21fe94b5bf3.scope",
 		},
 		{
-			name: "no prefix",
-			path: "/some/other/path",
-			want: "",
-		},
-		{
-			name: "empty path",
-			path: "",
-			want: "",
-		},
-		{
-			name: "just prefix",
-			path: "/org/freedesktop/systemd1/unit/",
-			want: "",
-		},
-		{
 			name: "plain unit name",
 			path: "/org/freedesktop/systemd1/unit/simple",
 			want: "simple",
@@ -58,13 +45,23 @@ func TestDecodeUnitPath(t *testing.T) {
 			want: "foo.bar",
 		},
 	}
-
-	for _, tt := range tests {
+	for _, tt := range units {
 		t.Run(tt.name, func(t *testing.T) {
-			got := DecodeUnitPath(tt.path)
-			if got != tt.want {
-				t.Errorf("DecodeUnitPath(%q) = %q, want %q", tt.path, got, tt.want)
-			}
+			got, ok := DecodeUnitPath(tt.path)
+			require.True(t, ok, "DecodeUnitPath(%q)", tt.path)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	notUnits := map[string]string{
+		"no prefix":   "/some/other/path",
+		"empty path":  "",
+		"just prefix": "/org/freedesktop/systemd1/unit/",
+	}
+	for name, path := range notUnits {
+		t.Run(name, func(t *testing.T) {
+			_, ok := DecodeUnitPath(path)
+			assert.False(t, ok, "DecodeUnitPath(%q)", path)
 		})
 	}
 }

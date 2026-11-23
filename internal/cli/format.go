@@ -4,22 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
+	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-// Formatter outputs data in various formats.
+// Writes the CLI's output as JSON or as text.
 type Formatter struct {
 	w      io.Writer
 	asJSON bool
 }
 
-// NewFormatter creates a new formatter.
 func NewFormatter(w io.Writer, asJSON bool) *Formatter {
 	return &Formatter{w: w, asJSON: asJSON}
 }
@@ -36,8 +36,8 @@ func (f *Formatter) FormatPending(entries []PendingEntry) error {
 	}
 
 	t := requestTable(
-		[]column[PendingEntry]{{title: "SUMMARY", width: 25, value: entrySummary[PendingEntry]}},
-		lastColumn[PendingEntry]{title: "EXPIRES", value: func(e PendingEntry) string { return formatRemaining(e.ExpiresAt) }},
+		[]column[PendingEntry]{{title: "SUMMARY", width: 25, value: func(e PendingEntry) string { return e.Request.Summary() }}},
+		lastColumn[PendingEntry]{title: "EXPIRES", value: func(e PendingEntry) string { return timeLeftUntil(e.ExpiresAt).String() }},
 	)
 	t.writeHeader(f.w)
 	for _, entry := range entries {
@@ -133,15 +133,13 @@ func requestColumns[R Entry]() []column[R] {
 		}},
 		{title: "TYPE", width: 12, value: func(e R) string { return string(e.Record().Type) }},
 		{title: "COLLECTION", width: 15, value: func(e R) string {
-			if ref, ok := requestCollection(e.Record()); ok {
-				return ref.Name
+			if name, ok := e.Record().Collection(); ok {
+				return string(name)
 			}
 			return ""
 		}},
 	}
 }
-
-func entrySummary[R Entry](e R) string { return requestSummary(e.Record()) }
 
 func truncate(s string, maxLen int) string {
 	r := []rune(s)
@@ -151,7 +149,8 @@ func truncate(s string, maxLen int) string {
 	return string(r[:maxLen-1]) + "…"
 }
 
-func requestSummary(req RequestRecord) string {
+// Returns a short description of what the request asks for.
+func (req RequestRecord) Summary() string {
 	if req.GPGSignInfo != nil {
 		switch req.GPGSignInfo.Kind {
 		case approval.GPGSignTag:
@@ -171,7 +170,7 @@ func requestSummary(req RequestRecord) string {
 	}
 	if len(req.Items) == 0 {
 		if len(req.SearchAttributes) > 0 {
-			return formatAttrs(req.SearchAttributes)
+			return req.SearchAttributes.String()
 		}
 		return ""
 	}
@@ -181,12 +180,21 @@ func requestSummary(req RequestRecord) string {
 	return fmt.Sprintf("%d items", len(req.Items))
 }
 
-func formatRemaining(expiresAt time.Time) string {
-	remaining := time.Until(expiresAt).Round(time.Second)
-	if remaining <= 0 {
+// The time left until a pending request expires, to the second.
+type timeLeft time.Duration
+
+func timeLeftUntil(expiresAt time.Time) timeLeft {
+	return timeLeft(time.Until(expiresAt).Round(time.Second))
+}
+
+func (l timeLeft) expired() bool { return l <= 0 }
+
+// Returns the time left, or "expired".
+func (l timeLeft) String() string {
+	if l.expired() {
 		return "expired"
 	}
-	return remaining.String()
+	return time.Duration(l).String()
 }
 
 // Writes the entry as JSON or as text.
@@ -199,135 +207,165 @@ func (f *Formatter) FormatEntry(e Entry) error {
 }
 
 func (e PendingEntry) String() string {
-	var b strings.Builder
-	writeRequest(&b, &e.Request)
-	writeExpiry(&b, e.ExpiresAt)
-	return b.String()
+	var d details
+	d.request(&e.Request)
+	d.expiry(e.ExpiresAt)
+	return d.String()
 }
 
 func (e HistoryEntry) String() string {
-	var b strings.Builder
-	writeRequest(&b, &e.Request)
-	fmt.Fprintf(&b, "Result:  %s\n", e.Resolution)
-	fmt.Fprintf(&b, "Resolved: %s (%s)\n", e.ResolvedAt.Format(time.RFC3339), formatAgo(e.ResolvedAt))
-	return b.String()
+	var d details
+	d.request(&e.Request)
+	d.field("Result", string(e.Resolution))
+	d.field("Resolved", fmt.Sprintf("%s (%s)", e.ResolvedAt.Format(time.RFC3339), formatAgo(e.ResolvedAt)))
+	return d.String()
 }
 
-func writeRequest(w io.Writer, req *RequestRecord) {
-	fmt.Fprintf(w, "ID:      %s\n", req.ID)
-	fmt.Fprintf(w, "Client:  %s\n", req.Client)
-	fmt.Fprintf(w, "Type:    %s\n", req.Type)
+// A request written as text, one labeled field per line.
+type details struct{ strings.Builder }
 
-	if ref, ok := requestCollection(*req); ok {
-		fmt.Fprintf(w, "Coll:    %s\n", ref.Name)
-	}
+// The width of a field's label and its colon, which fits the longest label.
+const labelWidth = len("Committer:")
 
-	// Sender process info
-	if name := req.SenderInfo.DisplayName(); name != "" {
-		fmt.Fprintf(w, "Process: %s\n", name)
-	}
-	if req.SenderInfo.PID != 0 {
-		fmt.Fprintf(w, "PID:     %d\n", req.SenderInfo.PID)
-	}
-	if s := req.SenderInfo.Sender; s != nil {
-		fmt.Fprintf(w, "Sender:  %s\n", *s)
-	}
-	if len(req.SenderInfo.ProcessChain) > 0 {
-		fmt.Fprintln(w, "Chain:")
-		for _, p := range req.SenderInfo.ProcessChain {
-			exe := p.Name
-			if path, ok := p.ExePath(); ok {
-				exe = string(path)
-			}
-			fmt.Fprintf(w, "  %s[%d]", exe, p.PID)
-			if cwd, ok := p.CWDPath(); ok {
-				fmt.Fprintf(w, " cwd=%s", cwd)
-			}
-			fmt.Fprintln(w)
-			if len(p.Args) > 1 {
-				fmt.Fprintf(w, "    args: %s\n", strings.Join(p.Args[1:], " "))
-			}
-		}
-	}
+// Writes a line of the given label and value, with every value in one column.
+func (d *details) field(label, value string) {
+	fmt.Fprintf(d, "%-*s %s\n", labelWidth, label+":", value)
+}
 
-	if req.GPGSignInfo != nil {
-		info := req.GPGSignInfo
-		fmt.Fprintf(w, "Repo:    %s\n", info.RepoName)
-		// The approver on the trusted VT sees which kind of object they sign,
-		// with that kind's own fields.
-		switch info.Kind {
-		case approval.GPGSignTag:
-			fmt.Fprintln(w, "Signing: annotated tag")
-			if info.TagName != "" {
-				fmt.Fprintf(w, "Tag:     %s\n", info.TagName)
-			}
-			fmt.Fprintf(w, "Tagger:  %s\n", info.Author)
-			fmt.Fprintf(w, "Key:     %s\n", info.KeyID)
-			if info.Target != "" {
-				fmt.Fprintf(w, "Target:  %s\n", info.Target)
-			}
-			writeSignMessage(w, info.CommitMsg)
-		case approval.GPGSignPush:
-			fmt.Fprintln(w, "Signing: signed push")
-			fmt.Fprintf(w, "Pusher:  %s\n", info.Author)
-			if info.Pushee != "" {
-				fmt.Fprintf(w, "Pushee:  %s\n", info.Pushee)
-			}
-			fmt.Fprintf(w, "Key:     %s\n", info.KeyID)
-			fmt.Fprintln(w, "\nRef updates:")
-			for line := range strings.SplitSeq(info.CommitMsg, "\n") {
-				if line != "" {
-					fmt.Fprintf(w, "  %s\n", line)
-				}
-			}
-		case approval.GPGSignCommit:
-			fmt.Fprintf(w, "Author:  %s\n", info.Author)
-			fmt.Fprintf(w, "Key:     %s\n", info.KeyID)
-			writeSignMessage(w, info.CommitMsg)
-			fmt.Fprintln(w)
-			fmt.Fprintf(w, "Changed files (%d):\n", len(info.ChangedFiles))
-			for _, file := range info.ChangedFiles {
-				fmt.Fprintf(w, "  %s\n", file)
-			}
-			if info.Committer != "" && info.Committer != info.Author {
-				fmt.Fprintf(w, "\nCommitter: %s\n", info.Committer)
-			}
-			if info.ParentHash != "" {
-				fmt.Fprintf(w, "Parent:    %s\n", info.ParentHash)
-			}
-		}
-	} else {
-		if len(req.Items) == 1 {
-			fmt.Fprintf(w, "Secret:  %s\n", req.Items[0].Label)
-			fmt.Fprintf(w, "Path:    %s\n", req.Items[0].Path)
-			formatItemAttrs(w, req.Items[0].Attributes, "  ")
-		} else if len(req.Items) > 1 {
-			fmt.Fprintf(w, "Secrets: %d items\n", len(req.Items))
-			for _, item := range req.Items {
-				fmt.Fprintf(w, "  - %s  %s\n", item.Label, item.Path)
-				formatItemAttrs(w, item.Attributes, "    ")
-			}
-		}
-
-		if len(req.SearchAttributes) > 0 {
-			attrs := formatAttrs(req.SearchAttributes)
-			fmt.Fprintf(w, "Query:   %s\n", attrs)
-		}
+func (d *details) request(req *RequestRecord) {
+	d.field("ID", string(req.ID))
+	d.field("Client", string(req.Client))
+	d.field("Type", string(req.Type))
+	if name, ok := req.Collection(); ok {
+		d.field("Coll", string(name))
 	}
-
 	if req.Session != "" {
-		fmt.Fprintf(w, "Session: %s\n", req.Session)
+		d.field("Session", string(req.Session))
 	}
-	fmt.Fprintf(w, "Created: %s\n", req.CreatedAt.Format(time.RFC3339))
+	d.sender(req.SenderInfo)
+	if req.GPGSignInfo != nil {
+		d.signInfo(req.GPGSignInfo)
+	} else {
+		d.items(req)
+	}
+	d.field("Created", req.CreatedAt.Format(time.RFC3339))
 }
 
-func writeExpiry(w io.Writer, expiresAt time.Time) {
-	remaining := time.Until(expiresAt).Round(time.Second)
-	if remaining > 0 {
-		fmt.Fprintf(w, "Expires: %s (%s remaining)\n", expiresAt.Format(time.RFC3339), remaining)
-	} else {
-		fmt.Fprintf(w, "Expires: %s (expired)\n", expiresAt.Format(time.RFC3339))
+// Writes the sender process and its process chain.
+func (d *details) sender(info sender.Info) {
+	if name := info.DisplayName(); name != "" {
+		d.field("Process", name)
 	}
+	if info.PID != 0 {
+		d.field("PID", info.PID.String())
+	}
+	if s := info.Sender; s != nil {
+		d.field("Sender", string(*s))
+	}
+	if len(info.ProcessChain) == 0 {
+		return
+	}
+	fmt.Fprintln(d, "Chain:")
+	for _, p := range info.ProcessChain {
+		exe := p.Name
+		if path, ok := p.ExePath(); ok {
+			exe = string(path)
+		}
+		fmt.Fprintf(d, "  %s[%d]", exe, p.PID)
+		if cwd, ok := p.CWDPath(); ok {
+			fmt.Fprintf(d, " cwd=%s", cwd)
+		}
+		fmt.Fprintln(d)
+		if len(p.Args) > 1 {
+			fmt.Fprintf(d, "    args: %s\n", strings.Join(p.Args[1:], " "))
+		}
+	}
+}
+
+// Writes the repository and the object to sign, with the fields of its kind.
+func (d *details) signInfo(info *GPGSignInfo) {
+	d.field("Repo", string(info.RepoName))
+	switch info.Kind {
+	case approval.GPGSignTag:
+		d.tag(info)
+	case approval.GPGSignPush:
+		d.push(info)
+	case approval.GPGSignCommit:
+		d.commit(info)
+	}
+}
+
+func (d *details) tag(info *GPGSignInfo) {
+	d.field("Signing", "annotated tag")
+	if info.TagName != "" {
+		d.field("Tag", string(info.TagName))
+	}
+	d.field("Tagger", info.Author)
+	d.field("Key", string(info.KeyID))
+	if info.Target != "" {
+		d.field("Target", string(info.Target))
+	}
+	d.signMessage(info.CommitMsg)
+}
+
+func (d *details) push(info *GPGSignInfo) {
+	d.field("Signing", "signed push")
+	d.field("Pusher", info.Author)
+	if info.Pushee != "" {
+		d.field("Pushee", string(info.Pushee))
+	}
+	d.field("Key", string(info.KeyID))
+	fmt.Fprintln(d, "\nRef updates:")
+	for line := range strings.SplitSeq(info.CommitMsg, "\n") {
+		if line != "" {
+			fmt.Fprintf(d, "  %s\n", line)
+		}
+	}
+}
+
+func (d *details) commit(info *GPGSignInfo) {
+	d.field("Author", info.Author)
+	d.field("Key", string(info.KeyID))
+	d.signMessage(info.CommitMsg)
+	fmt.Fprintln(d)
+	fmt.Fprintf(d, "Changed files (%d):\n", len(info.ChangedFiles))
+	for _, file := range info.ChangedFiles {
+		fmt.Fprintf(d, "  %s\n", file)
+	}
+	if info.Committer != "" && info.Committer != info.Author {
+		fmt.Fprintln(d)
+		d.field("Committer", info.Committer)
+	}
+	if info.ParentHash != "" {
+		d.field("Parent", string(info.ParentHash))
+	}
+}
+
+// Writes the secret items that the request reads, and its search query.
+func (d *details) items(req *RequestRecord) {
+	if len(req.Items) == 1 {
+		d.field("Secret", req.Items[0].Label)
+		d.field("Path", req.Items[0].Path)
+		d.itemAttrs(req.Items[0].Attributes, "  ")
+	} else if len(req.Items) > 1 {
+		d.field("Secrets", fmt.Sprintf("%d items", len(req.Items)))
+		for _, item := range req.Items {
+			fmt.Fprintf(d, "  - %s  %s\n", item.Label, item.Path)
+			d.itemAttrs(item.Attributes, "    ")
+		}
+	}
+	if len(req.SearchAttributes) > 0 {
+		d.field("Query", req.SearchAttributes.String())
+	}
+}
+
+func (d *details) expiry(expiresAt time.Time) {
+	left := timeLeftUntil(expiresAt)
+	status := left.String()
+	if !left.expired() {
+		status += " remaining"
+	}
+	d.field("Expires", fmt.Sprintf("%s (%s)", expiresAt.Format(time.RFC3339), status))
 }
 
 func commitSubject(msg string) string {
@@ -348,16 +386,16 @@ func commitBody(msg string) string {
 
 // Writes a signed object's message as an indented subject line followed by its
 // body.
-func writeSignMessage(w io.Writer, msg string) {
-	fmt.Fprintf(w, "\n    %s\n", commitSubject(msg))
+func (d *details) signMessage(msg string) {
+	fmt.Fprintf(d, "\n    %s\n", commitSubject(msg))
 	if body := commitBody(msg); body != "" {
 		for line := range strings.SplitSeq(body, "\n") {
-			fmt.Fprintf(w, "    %s\n", line)
+			fmt.Fprintf(d, "    %s\n", line)
 		}
 	}
 }
 
-// FormatHistory outputs history entries as a table.
+// Writes the history entries as JSON or as a table.
 func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 	if f.asJSON {
 		return json.NewEncoder(f.w).Encode(entries)
@@ -371,7 +409,7 @@ func (f *Formatter) FormatHistory(entries []HistoryEntry) error {
 	t := requestTable(
 		[]column[HistoryEntry]{
 			{title: "RESULT", width: 10, value: func(e HistoryEntry) string { return string(e.Resolution) }},
-			{title: "SUMMARY", width: 20, value: entrySummary[HistoryEntry]},
+			{title: "SUMMARY", width: 20, value: func(e HistoryEntry) string { return e.Request.Summary() }},
 		},
 		lastColumn[HistoryEntry]{title: "RESOLVED", value: func(e HistoryEntry) string { return formatAgo(e.ResolvedAt) }},
 	)
@@ -403,34 +441,20 @@ func (f *Formatter) FormatDecision(d Decision, id approval.RequestID) error {
 	return nil
 }
 
-// Returns the collection of the request's first item, or false when it names
-// none.
-func requestCollection(req RequestRecord) (dbustypes.CollectionRef, bool) {
-	if len(req.Items) == 0 {
-		return dbustypes.CollectionRef{}, false
+// Returns the collection of the request's first item.
+func (req RequestRecord) Collection() (dbustypes.CollectionName, bool) {
+	if len(req.Items) == 0 || req.Items[0].Collection == nil {
+		return "", false
 	}
-	return dbustypes.CollectionOf(dbus.ObjectPath(req.Items[0].Path))
+	return *req.Items[0].Collection, true
 }
 
-func formatItemAttrs(w io.Writer, attrs map[string]string, indent string) {
+func (d *details) itemAttrs(attrs dbustypes.Attributes, indent string) {
 	if len(attrs) == 0 {
 		return
 	}
-	keys := make([]string, 0, len(attrs))
-	for k := range attrs {
-		keys = append(keys, k)
+	fmt.Fprintf(d, "%sAttrs:\n", indent)
+	for _, k := range slices.Sorted(maps.Keys(attrs)) {
+		fmt.Fprintf(d, "%s  %s: %s\n", indent, k, attrs[k])
 	}
-	sort.Strings(keys)
-	fmt.Fprintf(w, "%sAttrs:\n", indent)
-	for _, k := range keys {
-		fmt.Fprintf(w, "%s  %s: %s\n", indent, k, attrs[k])
-	}
-}
-
-func formatAttrs(attrs map[string]string) string {
-	parts := make([]string, 0, len(attrs))
-	for k, v := range attrs {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
-	}
-	return strings.Join(parts, ", ")
 }

@@ -5,17 +5,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/godbus/dbus/v5/introspect"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-// Proxy connects to a front-facing D-Bus (where clients connect) and a backend
-// D-Bus (where the real Secret Service lives), registering as
-// org.freedesktop.secrets on the front bus and proxying requests to the backend.
+// Serves org.freedesktop.secrets on the front bus, where clients connect, by
+// relaying their requests to the real Secret Service on the backend bus.
 type Proxy struct {
 	clientName approval.ClientName
 	local      *sender.ChainReader
@@ -31,7 +32,6 @@ type connection struct {
 	prompter  *prompterBridge
 }
 
-// Config holds configuration for the proxy.
 type Config struct {
 	// Reads the callers' process chains. Nil for a forwarded bus, as
 	// SenderInfoResolver.local explains.
@@ -39,14 +39,12 @@ type Config struct {
 	SlowUpstream SlowUpstream
 }
 
-// Returns a proxy that serves the bus of clientName with cfg and gates its
-// requests through approvalMgr.
+// Returns a proxy that serves nothing until Dial or ConnectWith.
 func New(clientName approval.ClientName, approvalMgr *approval.Manager, cfg Config) *Proxy {
 	return &Proxy{
 		clientName: clientName,
 		local:      cfg.Local,
 		base: handlerBase{
-			sessions:     NewSessionManager(),
 			logger:       logging.New(clientName),
 			approval:     approvalMgr,
 			slowUpstream: cfg.SlowUpstream,
@@ -126,9 +124,9 @@ func (p *Proxy) Dial(front, backend Connector) error {
 	return p.ConnectWith(frontConn, backendConn)
 }
 
-// Serves the Secret Service from backendConn to clients on frontConn.
-// On a forwarded bus it may return while the bus name is still queued (ADR 0001).
-// When it errors, it closes both connections.
+// Serves the Secret Service from the given backend connection to the clients
+// on the given front connection, closing both when it errors. On a forwarded
+// bus it may return while the bus name is still queued (ADR 0001).
 func (p *Proxy) ConnectWith(frontConn, backendConn *dbus.Conn) error {
 	c, err := p.connect(frontConn, backendConn)
 	if err != nil {
@@ -175,6 +173,7 @@ func (p *Proxy) connect(frontConn, backendConn *dbus.Conn) (*connection, error) 
 		h: &handler{
 			handlerBase: p.base,
 			backendConn: backendConn,
+			sessions:    NewSessionManager(backendConn),
 			tracker:     tracker,
 			resolver:    newSenderInfoResolver(frontConn, p.clientName, p.local),
 		},
@@ -200,7 +199,7 @@ func (c *connection) export() error {
 		return fmt.Errorf("export Properties interface for Service: %w", err)
 	}
 
-	if err := c.frontConn.Export(introspectable{service.Introspect}, dbustypes.ServicePath, string(dbustypes.IntrospectableInterface)); err != nil {
+	if err := c.frontConn.Export(introspect.Introspectable(serviceIntrospection), dbustypes.ServicePath, string(dbustypes.IntrospectableInterface)); err != nil {
 		return fmt.Errorf("export Introspectable interface: %w", err)
 	}
 
@@ -220,10 +219,14 @@ func (c *connection) export() error {
 		}
 	}
 
+	if err := c.frontConn.ExportSubtree(sessionHandler{h.sessions}, dbustypes.SessionsPath, string(dbustypes.SessionInterface)); err != nil {
+		return fmt.Errorf("export Session subtree: %w", err)
+	}
+
 	// Unlock, Lock, CreateCollection, CreateItem and Delete return prompt paths.
 	// Without this export a client cannot act on them, and a locked collection
 	// is a dead end.
-	if err := c.frontConn.ExportSubtree(prompt, "/org/freedesktop/secrets/prompt", string(dbustypes.PromptInterface)); err != nil {
+	if err := c.frontConn.ExportSubtree(prompt, dbustypes.PromptsPath, string(dbustypes.PromptInterface)); err != nil {
 		return fmt.Errorf("export Prompt subtree: %w", err)
 	}
 
@@ -254,7 +257,8 @@ var errBusNameTaken = errors.New("failed to become primary owner")
 // Checks whether the proxy serves the session bus rather than a forwarded bus.
 func (p *Proxy) servesSessionBus() bool { return p.local != nil }
 
-// Run blocks until the context is cancelled or the front connection is closed.
+// Blocks until the given context ends or the front connection closes. Errors
+// with the context's error when the context ends.
 func (p *Proxy) Run(ctx context.Context) error {
 	if p.conn == nil {
 		return fmt.Errorf("not connected")
@@ -276,7 +280,7 @@ func (p *Proxy) Run(ctx context.Context) error {
 	}
 }
 
-// Close shuts down the proxy and closes all connections.
+// Shuts the proxy down and closes its connections.
 func (p *Proxy) Close() error {
 	p.base.logger.Info("shutting down")
 	if p.conn != nil {
@@ -286,19 +290,16 @@ func (p *Proxy) Close() error {
 	return nil
 }
 
+// How long closing a connection waits on the upstream, so that a stalled
+// upstream cannot hang shutdown.
+const closeTimeout = 5 * time.Second
+
 // Stops what the connection serves and closes both connections.
 func (c *connection) close() {
-	c.prompter.close()
+	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	defer cancel()
+	c.prompter.close(ctx)
 	c.signals.close()
-	c.h.close()
+	c.h.close(ctx)
 	c.frontConn.Close()
-}
-
-// introspectable implements org.freedesktop.DBus.Introspectable.
-type introspectable struct {
-	introspectFunc func() string
-}
-
-func (i introspectable) Introspect() (string, *dbus.Error) {
-	return i.introspectFunc(), nil
 }

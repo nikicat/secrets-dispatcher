@@ -30,7 +30,8 @@ func TestResolverApproveAndAutoApprove_GPGSign(t *testing.T) {
 
 			require.NoError(t, r.ApproveAndAutoApprove(id))
 
-			assert.Nil(t, mgr.GetPending(id), "the request is resolved")
+			_, ok := mgr.GetPending(id)
+			assert.False(t, ok, "the request is resolved")
 			assert.Equal(t, tt.wantRule, len(mgr.ListAutoApproveRules()) == 1)
 		})
 	}
@@ -46,6 +47,7 @@ func TestResolverApproveAndAutoApprove_GPGSignWithoutExe(t *testing.T) {
 
 	require.ErrorIs(t, r.ApproveAndAutoApprove(id), approval.ErrNotAutoApprovable)
 
-	assert.NotNil(t, mgr.GetPending(id), "the request stays pending")
+	_, ok := mgr.GetPending(id)
+	assert.True(t, ok, "the request stays pending")
 	assert.Empty(t, mgr.ListAutoApproveRules())
 }

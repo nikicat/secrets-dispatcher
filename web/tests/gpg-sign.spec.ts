@@ -584,8 +584,6 @@ test.describe("GPG Sign Approval Flow", () => {
       committer: "Dev <dev@example.com> 1700000000 +0000",
       key_id: "APPR0001",
       changed_files: ["main.go"],
-      commit_object:
-        "tree 8754a964a0ce1b6c5f7a88202174955bdcd58a98\nauthor Dev <dev@example.com> 1700000000 +0000\ncommitter Dev <dev@example.com> 1700000000 +0000\n\nfeat: to be approved\n",
     });
 
     const card = page.locator(".card--gpg_sign");

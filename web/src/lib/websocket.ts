@@ -3,6 +3,7 @@ import type {
   ClientInfo,
   HistoryEntry,
   PendingRequest,
+  ResolvedResult,
   TrustedSigner,
   TrustRule,
   WSMessage,
@@ -21,7 +22,7 @@ export interface ApprovalWebSocketCallbacks {
     notificationDelayMS: number,
   ) => void;
   onRequestCreated?: (request: PendingRequest) => void;
-  onRequestResolved?: (id: string, result: "approved" | "denied") => void;
+  onRequestResolved?: (id: string, result: ResolvedResult) => void;
   onRequestExpired?: (id: string) => void;
   onRequestCancelled?: (id: string) => void;
   onClientConnected?: (client: ClientInfo) => void;
@@ -187,9 +188,6 @@ export class ApprovalWebSocket {
         break;
       case "auto_approve_rule_removed":
         this.callbacks.onAutoApproveRuleRemoved?.(msg.id);
-        break;
-      case "ping":
-        // Server ping, no action needed
         break;
     }
   }

@@ -14,19 +14,16 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
-// ClientInfo represents information about a connected client.
 type ClientInfo struct {
 	Name       approval.ClientName `json:"name"`
 	SocketPath unixsock.Path       `json:"socket_path"`
 }
 
-// ClientObserver receives notifications about client connections.
 type ClientObserver interface {
 	OnClientConnected(client ClientInfo)
 	OnClientDisconnected(client ClientInfo)
 }
 
-// proxyInstance holds a running proxy and its cancellation function.
 type proxyInstance struct {
 	proxy  *Proxy
 	claim  Claim
@@ -34,8 +31,7 @@ type proxyInstance struct {
 	done   chan struct{} // closed once the proxy has closed and its name is free
 }
 
-// The running proxies by socket path. Only the manager's event loop adds one, and a proxy removes itself
-// once it has stopped, so nothing else holds this lock.
+// The running proxies by socket path.
 type proxySet struct {
 	mu     sync.RWMutex
 	byPath map[unixsock.Path]*proxyInstance
@@ -67,7 +63,9 @@ func (s *proxySet) snapshot() map[unixsock.Path]*proxyInstance {
 	return maps.Clone(s.byPath)
 }
 
-// Manager watches a directory for socket files and manages proxy connections.
+// Runs a proxy for each socket in a directory while the socket exists, under
+// the socket's client name. A socket whose client name another bus holds is
+// skipped.
 type Manager struct {
 	socketsDir unixsock.Dir
 	factory    Factory
@@ -78,11 +76,8 @@ type Manager struct {
 	observers   []ClientObserver
 }
 
-// Returns a manager that runs a proxy from factory for each socket in
-// socketsDir, under the socket's client name. A socket whose client name
-// another bus holds is skipped.
+// Creates the sockets directory if it does not exist.
 func NewManager(socketsDir unixsock.Dir, factory Factory) (*Manager, error) {
-	// Create the sockets directory if it doesn't exist
 	if err := socketsDir.MkdirAll(0755); err != nil {
 		return nil, fmt.Errorf("create sockets directory: %w", err)
 	}
@@ -100,8 +95,8 @@ func NewManager(socketsDir unixsock.Dir, factory Factory) (*Manager, error) {
 	}, nil
 }
 
-// Run starts watching for sockets and managing proxies.
-// It blocks until the context is cancelled.
+// Blocks until the given context ends and returns its error. Errors when the
+// sockets directory cannot be watched or read.
 func (m *Manager) Run(ctx context.Context) error {
 	// Start watching the directory
 	if err := m.watcher.Add(m.socketsDir.String()); err != nil {
@@ -136,7 +131,6 @@ func (m *Manager) Run(ctx context.Context) error {
 	}
 }
 
-// Clients returns information about all connected clients.
 func (m *Manager) Clients() []ClientInfo {
 	proxies := m.proxies.snapshot()
 	clients := make([]ClientInfo, 0, len(proxies))
@@ -149,14 +143,13 @@ func (m *Manager) Clients() []ClientInfo {
 	return clients
 }
 
-// Subscribe adds an observer to receive client connection events.
+// Tells the given observer of each later connect and disconnect.
 func (m *Manager) Subscribe(obs ClientObserver) {
 	m.observersMu.Lock()
 	defer m.observersMu.Unlock()
 	m.observers = append(m.observers, obs)
 }
 
-// Unsubscribe removes an observer.
 func (m *Manager) Unsubscribe(obs ClientObserver) {
 	m.observersMu.Lock()
 	defer m.observersMu.Unlock()
@@ -168,7 +161,6 @@ func (m *Manager) Unsubscribe(obs ClientObserver) {
 	}
 }
 
-// notifyConnected notifies all observers of a client connection.
 func (m *Manager) notifyConnected(client ClientInfo) {
 	m.observersMu.RLock()
 	defer m.observersMu.RUnlock()
@@ -177,7 +169,6 @@ func (m *Manager) notifyConnected(client ClientInfo) {
 	}
 }
 
-// notifyDisconnected notifies all observers of a client disconnection.
 func (m *Manager) notifyDisconnected(client ClientInfo) {
 	m.observersMu.RLock()
 	defer m.observersMu.RUnlock()
@@ -186,7 +177,6 @@ func (m *Manager) notifyDisconnected(client ClientInfo) {
 	}
 }
 
-// scanExistingSockets connects to all existing socket files in the directory.
 func (m *Manager) scanExistingSockets(ctx context.Context) error {
 	entries, err := m.socketsDir.ReadDir()
 	if err != nil {
@@ -205,7 +195,6 @@ func (m *Manager) scanExistingSockets(ctx context.Context) error {
 	return nil
 }
 
-// handleEvent handles fsnotify events.
 func (m *Manager) handleEvent(ctx context.Context, event fsnotify.Event) {
 	socket := unixsock.Path(event.Name)
 	if !socket.IsSocketFile() {
@@ -225,7 +214,7 @@ func (m *Manager) handleEvent(ctx context.Context, event fsnotify.Event) {
 	}
 }
 
-// startProxy starts a new proxy for the given socket.
+// Starts a proxy for the given socket unless one runs already.
 func (m *Manager) startProxy(ctx context.Context, socketPath unixsock.Path) {
 	if _, exists := m.proxies.get(socketPath); exists {
 		return
@@ -264,7 +253,8 @@ func (m *Manager) startProxy(ctx context.Context, socketPath unixsock.Path) {
 	go m.serve(proxyCtx, socketPath, inst)
 }
 
-// Runs inst until ctx ends or its socket closes, then gives its client name back.
+// Runs the given proxy until the context ends or its socket closes, then gives
+// its client name back.
 func (m *Manager) serve(ctx context.Context, socketPath unixsock.Path, inst *proxyInstance) {
 	defer close(inst.done)
 	p := inst.proxy
@@ -287,7 +277,7 @@ func (m *Manager) serve(ctx context.Context, socketPath unixsock.Path, inst *pro
 	m.proxies.remove(socketPath)
 }
 
-// Stops the proxy for socketPath and returns once its client name is free.
+// Stops the proxy of the given socket and returns once its client name is free.
 func (m *Manager) stopProxy(socketPath unixsock.Path) {
 	if inst, exists := m.proxies.get(socketPath); exists {
 		inst.cancel()

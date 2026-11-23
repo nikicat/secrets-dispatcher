@@ -10,28 +10,31 @@ import (
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 )
 
-// Config holds daemon startup parameters.
+// The daemon's startup parameters.
 type Config struct {
-	// BusAddress is the D-Bus address to connect to.
-	// Empty means the system bus (production). Non-empty connects to a custom
-	// address — used by integration tests to point at a private dbus-daemon.
-	BusAddress string
+	Bus Bus
 
-	// Version is the string reported by GetVersion().
+	// The version that GetVersion reports.
 	Version string
 }
 
-// Run starts the daemon, registers on D-Bus, sends READY=1 via sd-notify,
-// and blocks until ctx is cancelled. Returns nil on clean shutdown.
+// The bus that the daemon registers on.
+type Bus interface {
+	Connect() (*dbus.Conn, error)
+}
+
+type SystemBus struct{}
+
+// The bus at a D-Bus address, such as unix:path=/run/dbus/system_bus_socket.
+type BusAt string
+
+func (SystemBus) Connect() (*dbus.Conn, error) { return dbus.ConnectSystemBus() }
+func (a BusAt) Connect() (*dbus.Conn, error)   { return dbus.Connect(string(a)) }
+
+// Registers the daemon on D-Bus, sends READY=1 via sd-notify, and serves until
+// the given context ends.
 func Run(ctx context.Context, cfg Config) error {
-	// Connect to the appropriate D-Bus bus.
-	var conn *dbus.Conn
-	var err error
-	if cfg.BusAddress == "" {
-		conn, err = dbus.ConnectSystemBus()
-	} else {
-		conn, err = dbus.Connect(cfg.BusAddress)
-	}
+	conn, err := cfg.Bus.Connect()
 	if err != nil {
 		return fmt.Errorf("connect to D-Bus: %w", err)
 	}

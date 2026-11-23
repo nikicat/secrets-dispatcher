@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
@@ -70,7 +71,7 @@ var (
 )
 
 // Returns the glob a request's client must match.
-func (r *TrustRule) clientGlob() Glob {
+func (r *TrustRule) ClientGlob() Glob {
 	switch {
 	case !r.Client.IsZero():
 		return r.Client
@@ -86,7 +87,7 @@ func (r *TrustRule) matches(info RequestInfo) bool {
 	if len(r.RequestTypes) > 0 && !slices.Contains(r.RequestTypes, info.Type) {
 		return false
 	}
-	if !r.clientGlob().Matches(string(info.SenderInfo.Client)) {
+	if !r.ClientGlob().Matches(string(info.SenderInfo.Client)) {
 		return false
 	}
 	if r.Process != nil && !r.Process.matches(info.SenderInfo) {
@@ -310,8 +311,7 @@ func (pm *ProcessMatcher) matches(senderInfo SenderInfo) bool {
 // Selects requests by the secret items they name. An omitted field constrains
 // nothing, and the fields that are set must all match (ADR 0005).
 type SecretMatcher struct {
-	// The collection segment of the item's object path must match. That segment
-	// is a collection name, or an alias such as default.
+	// Matches the dbustypes.CollectionName that the item's object path names.
 	Collection Glob `yaml:"collection,omitempty" json:"collection,omitzero"`
 	Label      Glob `yaml:"label,omitempty" json:"label,omitzero"`
 	// A missing attribute reads as the empty string.
@@ -334,7 +334,7 @@ func (sm *SecretMatcher) matches(items []ItemInfo, action RuleAction) bool {
 }
 
 func (sm *SecretMatcher) matchesItem(item ItemInfo) bool {
-	if ref, ok := item.Collection(); !sm.Collection.IsZero() && (!ok || !sm.Collection.Matches(ref.Name)) {
+	if ref, ok := item.Collection(); !sm.Collection.IsZero() && (!ok || !sm.Collection.Matches(string(ref.Name))) {
 		return false
 	}
 	if !sm.Label.IsZero() && !sm.Label.Matches(item.Label) {
@@ -343,7 +343,7 @@ func (sm *SecretMatcher) matchesItem(item ItemInfo) bool {
 	return attributesMatch(sm.Attributes, item.Attributes)
 }
 
-func attributesMatch(ruleAttrs map[string]Glob, reqAttrs map[string]string) bool {
+func attributesMatch(ruleAttrs map[string]Glob, reqAttrs dbustypes.Attributes) bool {
 	for k, v := range ruleAttrs {
 		if !v.Matches(reqAttrs[k]) {
 			return false

@@ -67,7 +67,7 @@ func (rh *remoteHarness) signAsync(t *testing.T, ctx context.Context) <-chan rem
 func (rh *remoteHarness) waitPending(t *testing.T) *approval.Request {
 	t.Helper()
 	var pending []approval.Pending
-	require.Eventually(t, func() bool { pending = rh.mgr.List(); return len(pending) == 1 }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { pending = rh.mgr.Pending(); return len(pending) == 1 }, 2*time.Second, 10*time.Millisecond)
 	return pending[0].Request
 }
 
@@ -78,7 +78,7 @@ func TestRemoteSign_ApprovedReturnsSignature(t *testing.T) {
 	req := rh.waitPending(t)
 	assert.Equal(t, approval.ClientName("remote:nb-home"), req.SenderInfo.Client)
 	assert.Empty(t, req.SenderInfo.ProcessChain, "a remote request has no local process chain")
-	assert.Equal(t, "fix: remote", requireGPGSign(t, req).Signed.Message, "display stays bound to the signed bytes")
+	assert.Equal(t, "fix: remote", requireGPGSign(t, req).Signed().Message, "display stays bound to the signed bytes")
 	require.NoError(t, rh.h.resolver.Approve(req.ID))
 
 	out := <-result
@@ -121,7 +121,7 @@ func TestRemoteSign_DroppedConnectionCancelsRequest(t *testing.T) {
 	rh.waitPending(t)
 	cancel()
 	assert.ErrorIs(t, (<-result).err, context.Canceled)
-	require.Eventually(t, func() bool { return len(rh.mgr.List()) == 0 }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return len(rh.mgr.Pending()) == 0 }, 2*time.Second, 10*time.Millisecond)
 	assert.Equal(t, approval.ResolutionCancelled, rh.mgr.History()[0].Resolution)
 }
 
@@ -149,7 +149,7 @@ func TestRemoteSign_ServesNothingButSigning(t *testing.T) {
 	socket := newRemoteHarness(t).remote.SocketPath
 	client := gpgsign.UnixSocketClient(socket)
 	for _, path := range []string{"/api/v1/pending", "/api/v1/ws", "/api/v1/log"} {
-		resp, err := client.Get(gpgsign.SocketURL(path))
+		resp, err := client.Get(gpgsign.SocketBaseURL.URL(path))
 		require.NoError(t, err)
 		resp.Body.Close()
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode, path)

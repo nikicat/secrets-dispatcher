@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/stretchr/testify/assert"
@@ -30,9 +31,9 @@ func TestRequestSummary_GPGSign(t *testing.T) {
 				Type:        "gpg_sign",
 				GPGSignInfo: &GPGSignInfo{Kind: approval.GPGSignCommit, ChangedFiles: tt.files},
 			}
-			got := requestSummary(req)
+			got := req.Summary()
 			if got != tt.want {
-				t.Errorf("requestSummary() = %q, want %q", got, tt.want)
+				t.Errorf("Summary() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -68,9 +69,9 @@ func TestRequestSummary_GetSecret(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := requestSummary(tt.req)
+			got := tt.req.Summary()
 			if got != tt.want {
-				t.Errorf("requestSummary() = %q, want %q", got, tt.want)
+				t.Errorf("Summary() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -97,9 +98,9 @@ func TestFormatEntry_GPGSign(t *testing.T) {
 	out := buf.String()
 
 	// Primary fields
-	mustContain(t, out, "Repo:    myrepo")
-	mustContain(t, out, "Author:  Alice <alice@example.com>")
-	mustContain(t, out, "Key:     ABCD1234")
+	mustContain(t, out, "Repo:      myrepo")
+	mustContain(t, out, "Author:    Alice <alice@example.com>")
+	mustContain(t, out, "Key:       ABCD1234")
 
 	// Commit subject indented
 	mustContain(t, out, "    fix: correct typo")
@@ -155,8 +156,8 @@ func TestFormatEntry_GetSecret_Unchanged(t *testing.T) {
 	}
 
 	out := buf.String()
-	mustContain(t, out, "Secret:  DatabasePassword")
-	mustContain(t, out, "Path:    /org/secrets/1")
+	mustContain(t, out, "Secret:    DatabasePassword")
+	mustContain(t, out, "Path:      /org/secrets/1")
 	mustNotContain(t, out, "Coll:")
 	mustNotContain(t, out, "Repo:")
 	mustNotContain(t, out, "Author:")
@@ -181,14 +182,14 @@ func TestFormatEntry_ShowsItemAttributes(t *testing.T) {
 	}
 
 	out := buf.String()
-	mustContain(t, out, "Secret:  MySecret")
-	mustContain(t, out, "Path:    /org/freedesktop/secrets/collection/login/42")
+	mustContain(t, out, "Secret:    MySecret")
+	mustContain(t, out, "Path:      /org/freedesktop/secrets/collection/login/42")
 	mustContain(t, out, "  Attrs:\n")
 	mustContain(t, out, "    service: ssh\n")
 	mustContain(t, out, "    user: alice\n")
-	mustContain(t, out, "Process: myapp.service")
-	mustContain(t, out, "Sender:  :1.42")
-	mustContain(t, out, "Session: /org/freedesktop/secrets/session/s1")
+	mustContain(t, out, "Process:   myapp.service")
+	mustContain(t, out, "Sender:    :1.42")
+	mustContain(t, out, "Session:   /org/freedesktop/secrets/session/s1")
 	mustContain(t, out, "Expires:")
 	mustContain(t, out, "remaining)")
 }
@@ -206,7 +207,7 @@ func TestFormatEntry_MultipleItemsShowAttributes(t *testing.T) {
 	}
 
 	out := buf.String()
-	mustContain(t, out, "Secrets: 2 items")
+	mustContain(t, out, "Secrets:   2 items")
 	mustContain(t, out, "- Secret1  /org/secrets/1")
 	mustContain(t, out, "    Attrs:\n")
 	mustContain(t, out, "      service: foo\n")
@@ -214,7 +215,7 @@ func TestFormatEntry_MultipleItemsShowAttributes(t *testing.T) {
 }
 
 func TestFormatEntry_ShowsCollection(t *testing.T) {
-	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{Label: "pw", Path: "/org/freedesktop/secrets/collection/work/99"}}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
+	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{Label: "pw", Path: "/org/freedesktop/secrets/collection/work/99", Collection: new(dbustypes.CollectionName("work"))}}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
 	var buf strings.Builder
 	f := NewFormatter(&buf, false)
@@ -222,7 +223,7 @@ func TestFormatEntry_ShowsCollection(t *testing.T) {
 		t.Fatalf("FormatEntry failed: %v", err)
 	}
 
-	mustContain(t, buf.String(), "Coll:    work")
+	mustContain(t, buf.String(), "Coll:      work")
 }
 
 func TestFormatPending_SummaryColumnHeader(t *testing.T) {
@@ -244,7 +245,7 @@ func TestFormatPending_SummaryColumnHeader(t *testing.T) {
 
 func TestFormatPending_CollectionColumn(t *testing.T) {
 	reqs := []PendingEntry{
-		{Request: RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/mykeys/1"}}}, ExpiresAt: time.Now().Add(time.Minute)},
+		{Request: RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/mykeys/1", Collection: new(dbustypes.CollectionName("mykeys"))}}}, ExpiresAt: time.Now().Add(time.Minute)},
 	}
 
 	var buf strings.Builder
@@ -280,7 +281,7 @@ func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
 func TestFormatHistory_CollectionColumn(t *testing.T) {
 	entries := []HistoryEntry{
 		{
-			Request:    RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/login/42"}}},
+			Request:    RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/login/42", Collection: new(dbustypes.CollectionName("login"))}}},
 			Resolution: "approved",
 			ResolvedAt: time.Now(),
 		},
@@ -353,7 +354,7 @@ func TestFormatTables_Layout(t *testing.T) {
 		ID:         "0123456789abcdef",
 		Client:     "a-client-name-longer-than-twenty",
 		Type:       "get_secret",
-		Items:      []ItemInfo{{Label: "a label that is longer than the summary column", Path: "/org/freedesktop/secrets/collection/a-very-long-collection/1"}},
+		Items:      []ItemInfo{{Label: "a label that is longer than the summary column", Path: "/org/freedesktop/secrets/collection/a-very-long-collection/1", Collection: new(dbustypes.CollectionName("a-very-long-collection"))}},
 		SenderInfo: sender.Info{PID: 4242, UID: &uid},
 	}
 	var pending strings.Builder
@@ -376,7 +377,7 @@ func TestFormatTables_Layout(t *testing.T) {
 		ID:         "abc",
 		Client:     "клиент-с-длинным-именем",
 		Type:       "get_secret",
-		Items:      []ItemInfo{{Label: "пароль от почты на работе и дома", Path: "/org/freedesktop/secrets/collection/login/1"}},
+		Items:      []ItemInfo{{Label: "пароль от почты на работе и дома", Path: "/org/freedesktop/secrets/collection/login/1", Collection: new(dbustypes.CollectionName("login"))}},
 		SenderInfo: sender.Info{PID: 4242, UID: &uid},
 	}
 	var cut strings.Builder
@@ -386,4 +387,41 @@ func TestFormatTables_Layout(t *testing.T) {
 		"--------  --------------------  -------  -----  ------------  ---------------  -------------------------  -------\n"+
 		"abc       клиент-с-длинным-им…     4242   1000  get_secret    login            пароль от почты на работ…  expired\n",
 		cut.String())
+}
+
+// Pins the text layout of a history entry. Every value sits in one column,
+// whatever its label.
+func TestFormatEntry_Layout(t *testing.T) {
+	future := time.Date(2999, 1, 1, 0, 0, 0, 0, time.UTC)
+	entry := HistoryEntry{
+		Request: RequestRecord{
+			ID: "abc", Client: "git", Type: "gpg_sign", Session: "/s/1",
+			CreatedAt: time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC),
+			GPGSignInfo: &GPGSignInfo{
+				Kind: approval.GPGSignCommit, RepoName: "repo", CommitMsg: "fix: x",
+				Author: "Alice", Committer: "Bob", KeyID: "KEY", ChangedFiles: []string{"a.go"}, ParentHash: "def",
+			},
+		},
+		Resolution: "approved",
+		ResolvedAt: future,
+	}
+	var out strings.Builder
+	require.NoError(t, NewFormatter(&out, false).FormatEntry(entry))
+	assert.Equal(t, ""+
+		"ID:        abc\n"+
+		"Client:    git\n"+
+		"Type:      gpg_sign\n"+
+		"Session:   /s/1\n"+
+		"Repo:      repo\n"+
+		"Author:    Alice\n"+
+		"Key:       KEY\n"+
+		"\n    fix: x\n"+
+		"\nChanged files (1):\n"+
+		"  a.go\n"+
+		"\nCommitter: Bob\n"+
+		"Parent:    def\n"+
+		"Created:   2026-11-22T10:00:00Z\n"+
+		"Result:    approved\n"+
+		"Resolved:  2999-01-01T00:00:00Z (just now)\n",
+		out.String())
 }

@@ -9,7 +9,6 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-// persistentNotifier sends persistent notifications and can dismiss them.
 type persistentNotifier interface {
 	NotifyPersistent(summary, body, icon string) (NotificationID, error)
 	Close(id NotificationID) error
@@ -20,11 +19,7 @@ type SlowUpstreamNotifier struct {
 	notifier persistentNotifier
 }
 
-func NewSlowUpstreamNotifier(notifier *DBusNotifier) *SlowUpstreamNotifier {
-	return &SlowUpstreamNotifier{notifier: notifier}
-}
-
-func newSlowUpstreamNotifier(notifier persistentNotifier) *SlowUpstreamNotifier {
+func NewSlowUpstreamNotifier(notifier persistentNotifier) *SlowUpstreamNotifier {
 	return &SlowUpstreamNotifier{notifier: notifier}
 }
 

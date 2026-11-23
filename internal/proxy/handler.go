@@ -11,7 +11,6 @@ import (
 
 // The part of a handler that exists before its buses are connected.
 type handlerBase struct {
-	sessions     *SessionManager
 	logger       *logging.Logger
 	approval     *approval.Manager
 	slowUpstream SlowUpstream
@@ -21,15 +20,16 @@ type handler struct {
 	handlerBase
 	// Reaches the real Secret Service, on the session bus or a private bus.
 	backendConn *dbus.Conn
+	sessions    *SessionManager
 	tracker     *clientTracker
 	resolver    *SenderInfoResolver
 }
 
 // Stops tracking clients, closes the backend sessions and closes the backend
 // connection.
-func (h *handler) close() {
+func (h *handler) close(ctx context.Context) {
 	h.tracker.close()
-	h.sessions.CloseAll(h.backendConn)
+	h.sessions.CloseAll(ctx)
 	h.backendConn.Close()
 }
 
@@ -75,7 +75,8 @@ func (h *handler) caller(msg dbus.Message) caller {
 	return caller{h: h, sender: h.resolver.Resolve(senderOf(msg))}
 }
 
-// Returns the label and attributes of the upstream item at the given path.
+// Returns the label and attributes of the upstream item at the given path. Both
+// are empty when the backend gives either with the wrong type, which is logged.
 func (c caller) itemInfo(path dbus.ObjectPath) approval.ItemInfo {
 	props := make(map[string]dbus.Variant, 2)
 	for _, property := range []string{dbustypes.ItemLabel, dbustypes.ItemAttributes} {
@@ -83,7 +84,12 @@ func (c caller) itemInfo(path dbus.ObjectPath) approval.ItemInfo {
 			props[property] = v
 		}
 	}
-	return itemInfoFromProperties(string(path), props)
+	info, err := itemInfoFromProperties(string(path), props)
+	if err != nil {
+		c.h.logger.Warn("backend item has a mistyped property", "path", path, "error", err)
+		return approval.ItemInfo{Path: string(path)}
+	}
+	return info
 }
 
 // Returns the upstream collection at the given path as an item.
@@ -93,6 +99,14 @@ func (c caller) collectionInfo(path dbus.ObjectPath) approval.ItemInfo {
 		info.Label, _ = v.Value().(string)
 	}
 	return info
+}
+
+// Returns the upstream item or collection at the given path as an item.
+func (c caller) objectInfo(path dbus.ObjectPath) approval.ItemInfo {
+	if _, ok := dbustypes.ParseItemPath(path); ok {
+		return c.itemInfo(path)
+	}
+	return c.collectionInfo(path)
 }
 
 // Lets the call's sender make the given request without a prompt, as
@@ -132,14 +146,14 @@ func (c approvalCaller) requireApproval(info approval.RequestInfo) (UpstreamCall
 	return RequestCall(info), err
 }
 
-// Returns the item at the given path that the given properties describe. The
-// keys of the map are qualified property names, such as
-// org.freedesktop.Secret.Item.Label.
-func itemInfoFromProperties(path string, props map[string]dbus.Variant) approval.ItemInfo {
-	info := approval.ItemInfo{Path: path}
-	info.Label, _ = props[dbustypes.ItemLabel].Value().(string)
-	info.Attributes, _ = props[dbustypes.ItemAttributes].Value().(map[string]string)
-	return info
+// Returns the item at the given path that the given property dict describes.
+// Errors when a property has the wrong type.
+func itemInfoFromProperties(path string, props map[string]dbus.Variant) (approval.ItemInfo, error) {
+	p, err := dbustypes.ParseItemProperties(props)
+	if err != nil {
+		return approval.ItemInfo{}, err
+	}
+	return approval.ItemInfo{Path: path, Label: p.Label, Attributes: p.Attributes}, nil
 }
 
 // Serves org.freedesktop.DBus.Properties by forwarding each call upstream, to
@@ -165,7 +179,7 @@ type pathSet interface {
 // Returns the path of the called object. Errors with NoSuchObject when the
 // given set does not hold it.
 func calledPathIn(set pathSet, msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
-	path := pathOf(msg)
+	path := dbustypes.PathOf(msg)
 	if !set.serves(path) {
 		return "", dbustypes.ErrObjectNotFound(string(path))
 	}

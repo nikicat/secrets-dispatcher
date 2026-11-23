@@ -87,8 +87,8 @@ func collectSignInfo(keyID approval.GPGKeyID, stdin io.Reader) (*approval.GPGSig
 	return approval.NewGPGSignInfo(object, repo, keyID, gitStagedFiles{})
 }
 
-// Signs info through the remote socket that remoteSocketEnv names, or through
-// the local daemon when it names none. Cancelling ctx cancels the request.
+// Signs the given sign info through the remote socket that remoteSocketEnv
+// names, or through the local daemon when it names none.
 func (c thinClient) sign(ctx context.Context, info *approval.GPGSignInfo) (SignOutcome, error) {
 	if socket := unixsock.Path(os.Getenv(remoteSocketEnv)); socket != "" {
 		c.debugf("remote socket=%s", socket)
@@ -97,8 +97,9 @@ func (c thinClient) sign(ctx context.Context, info *approval.GPGSignInfo) (SignO
 	return c.signLocal(ctx, info)
 }
 
-// Signs info through the local daemon's API socket and blocks until the
-// request is resolved. Cancelling ctx cancels the request on the daemon.
+// Signs the given sign info through the local daemon's API socket and blocks
+// until the request is resolved. Cancelling the given context cancels the
+// request on the daemon.
 func (c thinClient) signLocal(ctx context.Context, info *approval.GPGSignInfo) (SignOutcome, error) {
 	client, err := c.locateLocalDaemon()
 	if err != nil {

@@ -68,7 +68,7 @@ type snapshotMsg struct {
 	History                    []HistoryEntry             `json:"history"`
 	AutoApproveRules           []approval.AutoApproveRule `json:"auto_approve_rules"`
 	TrustedSigners             []approval.TrustedSigner   `json:"trusted_signers"`
-	TrustRules                 []approval.TrustRule       `json:"trust_rules"`
+	TrustRules                 []TrustRule                `json:"trust_rules"`
 	AutoApproveDurationSeconds int                        `json:"auto_approve_duration_seconds,omitempty"`
 	NotificationDelayMS        int                        `json:"notification_delay_ms,omitempty"`
 }
@@ -77,18 +77,11 @@ type requestCreatedMsg struct {
 	Request PendingRequest `json:"request"`
 }
 
-type requestResolvedMsg struct {
-	ID approval.RequestID `json:"id"`
-	gpgsign.SignOutcome
-}
+type requestResolvedMsg struct{ gpgsign.RequestEnd }
 
-type requestExpiredMsg struct {
-	ID approval.RequestID `json:"id"`
-}
+type requestExpiredMsg struct{ gpgsign.RequestEnd }
 
-type requestCancelledMsg struct {
-	ID approval.RequestID `json:"id"`
-}
+type requestCancelledMsg struct{ gpgsign.RequestEnd }
 
 type historyEntryMsg struct {
 	HistoryEntry HistoryEntry `json:"history_entry"`
@@ -99,7 +92,7 @@ type autoApproveRuleAddedMsg struct {
 }
 
 type autoApproveRuleRemovedMsg struct {
-	ID string `json:"id"`
+	ID approval.AutoApproveRuleID `json:"id"`
 }
 
 type clientConnectedMsg struct {
@@ -154,7 +147,6 @@ type wsConnection struct {
 
 var _ approval.Observer = (*wsConnection)(nil)
 
-// HandleWS handles WebSocket upgrade requests.
 func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	if !h.auth.ValidateRequest(r) {
 		writeError(w, "unauthorized", http.StatusUnauthorized)
@@ -181,11 +173,7 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 		cancel:  cancel,
 	}
 
-	h.connsMu.Lock()
-	h.conns[wsc] = struct{}{}
-	h.connsMu.Unlock()
-
-	h.manager.Subscribe(wsc)
+	h.attach(wsc)
 
 	if err := wsc.sendSnapshot(); err != nil {
 		slog.Error("Failed to send snapshot", "error", err)
@@ -197,27 +185,41 @@ func (h *WSHandler) HandleWS(w http.ResponseWriter, r *http.Request) {
 	go wsc.readPump()
 }
 
-// Returns the request_resolved message for a settled request.
-func resolvedMessage(entry approval.HistoryEntry) WSMessage {
-	return WSMessage{requestResolvedMsg{ID: entry.Request.ID, SignOutcome: gpgsign.OutcomeOf(entry)}}
+// Registers the connection for broadcasts and approval events.
+func (h *WSHandler) attach(wsc *wsConnection) {
+	h.connsMu.Lock()
+	h.conns[wsc] = struct{}{}
+	h.connsMu.Unlock()
+
+	h.manager.Subscribe(wsc)
+}
+
+// Undoes WSHandler.attach.
+func (h *WSHandler) detach(wsc *wsConnection) {
+	h.manager.Unsubscribe(wsc)
+
+	h.connsMu.Lock()
+	delete(h.conns, wsc)
+	h.connsMu.Unlock()
 }
 
 // Returns the messages that tell the WebSocket peer a request ended, in
 // sending order. The last one carries the request's History entry.
 func endedMessages(entry approval.HistoryEntry) []WSMessage {
 	var msgs []WSMessage
+	end := gpgsign.RequestEndOf(entry)
 	switch entry.Resolution {
 	case approval.ResolutionApproved, approval.ResolutionDenied:
-		msgs = append(msgs, resolvedMessage(entry))
+		msgs = append(msgs, WSMessage{requestResolvedMsg{end}})
 	case approval.ResolutionExpired:
-		msgs = append(msgs, WSMessage{requestExpiredMsg{ID: entry.Request.ID}})
+		msgs = append(msgs, WSMessage{requestExpiredMsg{end}})
 	case approval.ResolutionCancelled:
-		msgs = append(msgs, WSMessage{requestCancelledMsg{ID: entry.Request.ID}})
+		msgs = append(msgs, WSMessage{requestCancelledMsg{end}})
 	case approval.ResolutionAutoApproved:
 		// A gpg_sign auto-approval carries the signature that the thin client
 		// waits for.
 		if entry.GPGOutput() != nil {
-			msgs = append(msgs, resolvedMessage(entry))
+			msgs = append(msgs, WSMessage{requestResolvedMsg{end}})
 		}
 	}
 	return append(msgs, WSMessage{historyEntryMsg{convertHistoryEntry(entry)}})
@@ -282,11 +284,6 @@ func (wsc *wsConnection) sendSnapshot() error {
 		trustedSigners = []approval.TrustedSigner{}
 	}
 
-	trustRules := h.manager.ListTrustRules()
-	if trustRules == nil {
-		trustRules = []approval.TrustRule{}
-	}
-
 	msg := WSMessage{snapshotMsg{
 		Version:                    BuildVersion,
 		Requests:                   requests,
@@ -294,7 +291,7 @@ func (wsc *wsConnection) sendSnapshot() error {
 		History:                    history,
 		AutoApproveRules:           autoApproveRules,
 		TrustedSigners:             trustedSigners,
-		TrustRules:                 trustRules,
+		TrustRules:                 trustRules(h.manager),
 		AutoApproveDurationSeconds: int(h.manager.AutoApproveDuration().Seconds()),
 		NotificationDelayMS:        int(h.notificationDelay.Milliseconds()),
 	}}
@@ -306,13 +303,39 @@ func (wsc *wsConnection) sendSnapshot() error {
 
 	// Written before writePump starts, so it bypasses the send channel and
 	// always arrives first.
-	ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
-	defer cancel()
 	slog.Debug("ws send snapshot", "requests", len(requests), "clients", len(clients), "history", len(history))
-	return wsc.conn.Write(ctx, websocket.MessageText, data)
+	return wsc.writeText(data, writeSnapshot)
 }
 
-// writePump pumps messages from the send channel to the WebSocket connection.
+// The kind of a write to the WebSocket peer, which the log of a failed write
+// names.
+type writeKind string
+
+const (
+	writeSnapshot writeKind = "snapshot"
+	writeMessage  writeKind = "message"
+	writePing     writeKind = "ping"
+)
+
+// Runs the given write to the WebSocket peer under the write deadline. Logs a
+// failed write with the given kind, unless the connection was torn down.
+func (wsc *wsConnection) write(op func(ctx context.Context) error, kind writeKind) error {
+	ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
+	defer cancel()
+	err := op(ctx)
+	if err != nil && !isConnClosedErr(err) {
+		slog.Debug("WebSocket write failed", "op", kind, "error", err)
+	}
+	return err
+}
+
+// Writes the given encoded message to the WebSocket peer as one text frame.
+func (wsc *wsConnection) writeText(data []byte, kind writeKind) error {
+	return wsc.write(func(ctx context.Context) error {
+		return wsc.conn.Write(ctx, websocket.MessageText, data)
+	}, kind)
+}
+
 func (wsc *wsConnection) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -325,28 +348,13 @@ func (wsc *wsConnection) writePump() {
 		case <-wsc.ctx.Done():
 			return
 
-		case message, ok := <-wsc.send:
-			if !ok {
-				return
-			}
-			ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
-			err := wsc.conn.Write(ctx, websocket.MessageText, message)
-			cancel()
-			if err != nil {
-				if !isConnClosedErr(err) {
-					slog.Debug("WebSocket write failed", "error", err)
-				}
+		case message := <-wsc.send:
+			if wsc.writeText(message, writeMessage) != nil {
 				return
 			}
 
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(wsc.ctx, writeWait)
-			err := wsc.conn.Ping(ctx)
-			cancel()
-			if err != nil {
-				if !isConnClosedErr(err) {
-					slog.Debug("WebSocket ping failed", "error", err)
-				}
+			if wsc.write(wsc.conn.Ping, writePing) != nil {
 				return
 			}
 		}
@@ -365,16 +373,9 @@ func (wsc *wsConnection) readPump() {
 	}
 }
 
-// close cleans up the connection.
 func (wsc *wsConnection) close() {
 	wsc.cancel()
-
-	wsc.handler.manager.Unsubscribe(wsc)
-
-	wsc.handler.connsMu.Lock()
-	delete(wsc.handler.conns, wsc)
-	wsc.handler.connsMu.Unlock()
-
+	wsc.handler.detach(wsc)
 	wsc.conn.Close(websocket.StatusNormalClosure, "")
 }
 
@@ -386,10 +387,15 @@ func convertRequest(req *approval.Request) RequestRecord {
 			Path:       item.Path,
 			Label:      item.Label,
 			Attributes: item.Attributes,
+			Collection: item.CollectionName(),
 		}
 	}
 	sign, _ := req.GPGSign()
 	search, _ := req.Search()
+	var scope *approval.AutoApproveScope
+	if s, err := req.AutoApproveScope(); err == nil {
+		scope = &s
+	}
 	return RequestRecord{
 		ID:               req.ID,
 		Client:           req.SenderInfo.Client,
@@ -400,7 +406,7 @@ func convertRequest(req *approval.Request) RequestRecord {
 		SearchAttributes: search.Attributes,
 		SenderInfo:       req.SenderInfo.Info,
 		GPGSignInfo:      sign,
-		AutoApprovable:   req.AutoApprovable(),
+		AutoApproveScope: scope,
 	}
 }
 
@@ -409,9 +415,8 @@ func convertPending(p approval.Pending) PendingRequest {
 	return PendingRequest{RequestRecord: convertRequest(p.Request), ExpiresAt: p.ExpiresAt}
 }
 
-// The slice is never nil, so it encodes as [] in JSON.
 func pendingRequests(m *approval.Manager) []PendingRequest {
-	pending := m.List()
+	pending := m.Pending()
 	requests := make([]PendingRequest, len(pending))
 	for i, p := range pending {
 		requests[i] = convertPending(p)
@@ -419,7 +424,6 @@ func pendingRequests(m *approval.Manager) []PendingRequest {
 	return requests
 }
 
-// The slice is never nil, so it encodes as [] in JSON.
 func historyEntries(m *approval.Manager) []HistoryEntry {
 	history := m.History()
 	entries := make([]HistoryEntry, len(history))
@@ -427,6 +431,19 @@ func historyEntries(m *approval.Manager) []HistoryEntry {
 		entries[i] = convertHistoryEntry(entry)
 	}
 	return entries
+}
+
+func convertTrustRule(rule approval.TrustRule) TrustRule {
+	return TrustRule{TrustRule: rule, Client: rule.ClientGlob()}
+}
+
+func trustRules(m *approval.Manager) []TrustRule {
+	rules := m.ListTrustRules()
+	out := make([]TrustRule, len(rules))
+	for i, rule := range rules {
+		out[i] = convertTrustRule(rule)
+	}
+	return out
 }
 
 // Checks whether err is expected teardown of the connection, which is not

@@ -13,6 +13,8 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/dhcrypto"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Two isolated D-Bus daemons: the local one holds the backend, the remote one
@@ -105,17 +107,17 @@ func openPlainSession(t *testing.T, serviceObj dbus.BusObject) dbus.ObjectPath {
 	return sessionPath
 }
 
-// Waits for a request to appear in mgr's pending list and returns its ID.
-func waitPendingID(t *testing.T, mgr *approval.Manager) approval.RequestID {
+// Waits for a request to appear in the given manager's pending list and returns it.
+func waitPending(t *testing.T, mgr *approval.Manager) approval.Pending {
 	t.Helper()
 	for range 50 {
-		if reqs := mgr.List(); len(reqs) > 0 {
-			return reqs[0].ID
+		if reqs := mgr.Pending(); len(reqs) > 0 {
+			return reqs[0]
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("approval request did not appear")
-	return ""
+	return approval.Pending{}
 }
 
 func TestProxyBasicOperations(t *testing.T) {
@@ -156,7 +158,7 @@ func TestProxyBasicOperations(t *testing.T) {
 		if err := call.Store(&collection); err != nil {
 			t.Fatalf("store result: %v", err)
 		}
-		if collection == "/" || collection == "" {
+		if collection == dbustypes.NoObject || collection == "" {
 			t.Error("expected non-empty collection path")
 		}
 		t.Logf("Default collection: %s", collection)
@@ -304,10 +306,10 @@ func TestProxyCollectionOperations(t *testing.T) {
 
 		// Create item
 		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
-		properties := map[string]dbus.Variant{
-			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("New Item"),
-			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"new-attr": "new-value"}),
-		}
+		properties := dbustypes.ItemProperties{
+			Label:      "New Item",
+			Attributes: map[string]string{"new-attr": "new-value"},
+		}.Variants()
 		secret := dbustypes.Secret{
 			Session:     sessionPath,
 			Parameters:  nil,
@@ -325,7 +327,7 @@ func TestProxyCollectionOperations(t *testing.T) {
 			t.Fatalf("store result: %v", err)
 		}
 
-		if itemPath == "/" || itemPath == "" {
+		if itemPath == dbustypes.NoObject || itemPath == "" {
 			t.Error("expected valid item path")
 		}
 		t.Logf("Created item: %s", itemPath)
@@ -383,10 +385,10 @@ func TestProxyAliasPathOperations(t *testing.T) {
 
 		// Create item via alias path
 		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultAliasPath)
-		properties := map[string]dbus.Variant{
-			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("Alias Item"),
-			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"alias-attr": "alias-value"}),
-		}
+		properties := dbustypes.ItemProperties{
+			Label:      "Alias Item",
+			Attributes: map[string]string{"alias-attr": "alias-value"},
+		}.Variants()
 		secret := dbustypes.Secret{
 			Session:     sessionPath,
 			Parameters:  nil,
@@ -404,7 +406,7 @@ func TestProxyAliasPathOperations(t *testing.T) {
 			t.Fatalf("store result: %v", err)
 		}
 
-		if itemPath == "/" || itemPath == "" {
+		if itemPath == dbustypes.NoObject || itemPath == "" {
 			t.Error("expected valid item path")
 		}
 		t.Logf("Created item via alias: %s", itemPath)
@@ -468,16 +470,15 @@ func TestProxyItemDeleteRequiresApproval(t *testing.T) {
 		deleteErr <- call.Err
 	}()
 
-	reqID := waitPendingID(t, approvalMgr)
+	req := waitPending(t, approvalMgr)
 
 	// Verify request type
-	req := approvalMgr.GetPending(reqID)
 	if req.Type != approval.RequestTypeDelete {
 		t.Errorf("expected request type 'delete', got %q", req.Type)
 	}
 
 	// Approve the request
-	if err := approvalMgr.Approve(reqID); err != nil {
+	if err := approvalMgr.Approve(req.ID); err != nil {
 		t.Fatalf("approve failed: %v", err)
 	}
 
@@ -509,10 +510,9 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 		deleteErr <- call.Err
 	}()
 
-	reqID := waitPendingID(t, approvalMgr)
+	req := waitPending(t, approvalMgr)
 
 	// Verify request type and that it captured the collection label
-	req := approvalMgr.GetPending(reqID)
 	if req.Type != approval.RequestTypeDelete {
 		t.Errorf("expected request type 'delete', got %q", req.Type)
 	}
@@ -524,7 +524,7 @@ func TestProxyCollectionDeleteRequiresApproval(t *testing.T) {
 	}
 
 	// Approve the request
-	if err := approvalMgr.Approve(reqID); err != nil {
+	if err := approvalMgr.Approve(req.ID); err != nil {
 		t.Fatalf("approve failed: %v", err)
 	}
 
@@ -564,8 +564,7 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	}()
 
 	// Approve GetSecret
-	reqID := waitPendingID(t, approvalMgr)
-	approvalMgr.Approve(reqID)
+	approvalMgr.Approve(waitPending(t, approvalMgr).ID)
 	<-getSecretDone
 
 	// Now try Delete — it should still require approval (not use cache)
@@ -577,14 +576,12 @@ func TestProxyItemDeleteNoAutoApprove(t *testing.T) {
 	}()
 
 	// Should see a new pending request
-	deleteReqID := waitPendingID(t, approvalMgr)
-
-	req := approvalMgr.GetPending(deleteReqID)
+	req := waitPending(t, approvalMgr)
 	if req.Type != approval.RequestTypeDelete {
 		t.Errorf("expected request type 'delete', got %q", req.Type)
 	}
 
-	approvalMgr.Approve(deleteReqID)
+	approvalMgr.Approve(req.ID)
 
 	select {
 	case err := <-deleteErr:
@@ -621,14 +618,12 @@ func TestProxySetSecretRequiresApproval(t *testing.T) {
 		setErr <- call.Err
 	}()
 
-	reqID := waitPendingID(t, approvalMgr)
-
-	req := approvalMgr.GetPending(reqID)
+	req := waitPending(t, approvalMgr)
 	if req.Type != approval.RequestTypeWrite {
 		t.Errorf("expected request type 'write', got %q", req.Type)
 	}
 
-	approvalMgr.Approve(reqID)
+	approvalMgr.Approve(req.ID)
 
 	select {
 	case err := <-setErr:
@@ -654,10 +649,10 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	createErr := make(chan error, 1)
 	go func() {
 		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
-		properties := map[string]dbus.Variant{
-			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("New Item"),
-			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"svc": "test"}),
-		}
+		properties := dbustypes.ItemProperties{
+			Label:      "New Item",
+			Attributes: map[string]string{"svc": "test"},
+		}.Variants()
 		secret := dbustypes.Secret{
 			Session:     sessionPath,
 			Value:       []byte("secret-value"),
@@ -667,9 +662,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 		createErr <- call.Err
 	}()
 
-	reqID := waitPendingID(t, approvalMgr)
-
-	req := approvalMgr.GetPending(reqID)
+	req := waitPending(t, approvalMgr)
 	if req.Type != approval.RequestTypeWrite {
 		t.Errorf("expected request type 'write', got %q", req.Type)
 	}
@@ -677,7 +670,7 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 		t.Errorf("expected item label 'New Item', got %v", req.Items)
 	}
 
-	approvalMgr.Approve(reqID)
+	approvalMgr.Approve(req.ID)
 
 	select {
 	case err := <-createErr:
@@ -687,6 +680,28 @@ func TestProxyCreateItemRequiresApproval(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timeout waiting for CreateItem to complete")
 	}
+}
+
+// CreateItem with a mistyped Label fails with InvalidArgs before it asks for
+// approval, and reaches neither the backend nor the pending list.
+func TestProxyCreateItemRejectsMistypedLabel(t *testing.T) {
+	env := newTestEnv(t)
+	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 30 * time.Second, HistoryMax: 100})
+	mock, remoteConn := env.startProxy(approvalMgr)
+	initialItemCount := mock.ItemCount()
+
+	sessionPath := openPlainSession(t, remoteConn.Object(dbustypes.BusName, dbustypes.ServicePath))
+	properties := map[string]dbus.Variant{dbustypes.ItemLabel: dbus.MakeVariant(42)}
+	secret := dbustypes.Secret{Session: sessionPath, Value: []byte("secret-value"), ContentType: "text/plain"}
+	call := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath).
+		Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, properties, secret, true)
+
+	var dbusErr dbus.Error
+	require.ErrorAs(t, call.Err, &dbusErr)
+	assert.Equal(t, string(dbustypes.InvalidArgs), dbusErr.Name)
+	assert.Zero(t, approvalMgr.PendingCount())
+	assert.Empty(t, approvalMgr.History())
+	assert.Equal(t, initialItemCount, mock.ItemCount())
 }
 
 // CreateItem with Chrome's dummy secret schema reaches neither the backend nor
@@ -709,12 +724,12 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 
 	// CreateItem with Chrome's dummy schema — should return immediately without blocking
 	collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
-	properties := map[string]dbus.Variant{
-		"org.freedesktop.Secret.Item.Label": dbus.MakeVariant("Chrome Safe Storage"),
-		"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{
+	properties := dbustypes.ItemProperties{
+		Label: "Chrome Safe Storage",
+		Attributes: map[string]string{
 			"xdg:schema": "_chrome_dummy_schema_for_unlocking",
-		}),
-	}
+		},
+	}.Variants()
 	secret := dbustypes.Secret{
 		Session:     sessionPath,
 		Parameters:  nil,
@@ -733,7 +748,7 @@ func TestProxyCreateItemIgnoresChromeDummy(t *testing.T) {
 	}
 
 	// Ignored CreateItem returns ("/", "/")
-	if itemPath != "/" {
+	if itemPath != dbustypes.NoObject {
 		t.Errorf("expected item path '/', got %q", itemPath)
 	}
 
@@ -792,7 +807,7 @@ func TestProxySetSecretIgnoresChromeDummy(t *testing.T) {
 	go func() {
 		got <- serviceObj.Call(dbustypes.ServiceInterface.Member("GetSecrets"), 0, []dbus.ObjectPath{itemPath}, sessionPath)
 	}()
-	approvalMgr.Approve(waitPendingID(t, approvalMgr))
+	approvalMgr.Approve(waitPending(t, approvalMgr).ID)
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	if err := (<-got).Store(&secrets); err != nil {
 		t.Fatalf("GetSecrets: %v", err)
@@ -945,10 +960,10 @@ func TestProxyDHSession(t *testing.T) {
 		}
 
 		collObj := remoteConn.Object(dbustypes.BusName, testutil.DefaultCollectionPath)
-		properties := map[string]dbus.Variant{
-			"org.freedesktop.Secret.Item.Label":      dbus.MakeVariant("DH Written"),
-			"org.freedesktop.Secret.Item.Attributes": dbus.MakeVariant(map[string]string{"dh-written": "yes"}),
-		}
+		properties := dbustypes.ItemProperties{
+			Label:      "DH Written",
+			Attributes: map[string]string{"dh-written": "yes"},
+		}.Variants()
 		secret := dbustypes.Secret{
 			Session:     sessionPath,
 			Parameters:  iv,
@@ -963,7 +978,7 @@ func TestProxyDHSession(t *testing.T) {
 		if err := call.Store(&newItem, &prompt); err != nil {
 			t.Fatalf("store CreateItem result: %v", err)
 		}
-		if newItem == "/" || newItem == "" {
+		if newItem == dbustypes.NoObject || newItem == "" {
 			t.Fatal("expected a valid item path")
 		}
 
@@ -1051,7 +1066,7 @@ func TestProxyApprovalRequestCalls(t *testing.T) {
 			return c.Object(dbustypes.BusName, testutil.DefaultCollectionPath).Call(dbustypes.CollectionInterface.Member("Delete"), 0)
 		}},
 		{"CreateItem", approval.RequestTypeWrite, "New Item", func(c *dbus.Conn, _, session dbus.ObjectPath) *dbus.Call {
-			props := map[string]dbus.Variant{dbustypes.ItemLabel: dbus.MakeVariant("New Item")}
+			props := dbustypes.ItemProperties{Label: "New Item"}.Variants()
 			return c.Object(dbustypes.BusName, testutil.DefaultCollectionPath).Call(dbustypes.CollectionInterface.Member("CreateItem"), 0, props, secret(session), true)
 		}},
 		{"ItemDelete", approval.RequestTypeDelete, "My Secret", func(c *dbus.Conn, item, _ dbus.ObjectPath) *dbus.Call {
@@ -1078,7 +1093,7 @@ func TestProxyApprovalRequestCalls(t *testing.T) {
 
 			done := make(chan *dbus.Call, 1)
 			go func() { done <- tc.call(client, item, session) }()
-			req := approvalMgr.GetPending(waitPendingID(t, approvalMgr))
+			req := waitPending(t, approvalMgr)
 			if req.Type != tc.typ {
 				t.Errorf("request type %q, want %q", req.Type, tc.typ)
 			}
@@ -1101,10 +1116,10 @@ func TestProxyApprovalRequestCalls(t *testing.T) {
 
 			// A second request ends cancelled when its client disconnects.
 			go func() { done <- tc.call(client, item, session) }()
-			id := waitPendingID(t, approvalMgr)
+			id := waitPending(t, approvalMgr).ID
 			client.Close()
 			for range 100 {
-				if e := approvalMgr.GetHistoryEntry(id); e != nil {
+				if e, ok := approvalMgr.GetHistoryEntry(id); ok {
 					if e.Resolution != approval.ResolutionCancelled {
 						t.Fatalf("resolution %q, want cancelled", e.Resolution)
 					}

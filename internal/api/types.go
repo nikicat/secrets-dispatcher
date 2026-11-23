@@ -6,6 +6,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
@@ -24,9 +25,10 @@ type PendingListResponse struct {
 
 // ItemInfo contains metadata about a secret item.
 type ItemInfo struct {
-	Path       string            `json:"path"`
-	Label      string            `json:"label"`
-	Attributes map[string]string `json:"attributes"`
+	Path       string                    `json:"path"`
+	Label      string                    `json:"label"`
+	Attributes dbustypes.Attributes      `json:"attributes"`
+	Collection *dbustypes.CollectionName `json:"collection,omitempty"`
 }
 
 // A request as the API sends it in a History entry. PendingRequest adds what
@@ -38,12 +40,12 @@ type RequestRecord struct {
 	Session          dbus.ObjectPath       `json:"session"`
 	CreatedAt        time.Time             `json:"created_at"`
 	Type             approval.RequestType  `json:"type"`
-	SearchAttributes map[string]string     `json:"search_attributes,omitempty"`
+	SearchAttributes dbustypes.Attributes  `json:"search_attributes,omitempty"`
 	SenderInfo       sender.Info           `json:"sender_info"`
 	GPGSignInfo      *approval.GPGSignInfo `json:"gpg_sign_info,omitempty"`
-	// True if approval.Request.AutoApprovable accepts the request. False
-	// otherwise.
-	AutoApprovable bool `json:"auto_approvable"`
+	// The scope that an auto-approve rule made from the request gets, for a
+	// request that approval.Request.AutoApprovable accepts.
+	AutoApproveScope *approval.AutoApproveScope `json:"auto_approve_scope,omitempty"`
 }
 
 // Returns the approval payload for the record's type, or nil for a type that
@@ -63,14 +65,16 @@ type PendingRequest struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// A trust rule as the API sends it, with Client set to the glob the rule
+// matches clients with, the default included.
+type TrustRule struct {
+	approval.TrustRule
+	Client approval.Glob `json:"client"`
+}
+
 // ActionResponse is returned by approve/deny endpoints.
 type ActionResponse struct {
 	Status string `json:"status"`
-}
-
-// ErrorResponse is returned on errors.
-type ErrorResponse struct {
-	Error string `json:"error"`
 }
 
 // LogEntry represents an audit log entry (deprecated, use HistoryEntry).

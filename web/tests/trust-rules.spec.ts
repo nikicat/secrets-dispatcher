@@ -48,6 +48,7 @@ test.describe("Trust Rules WebSocket", () => {
             action: "approve",
             request_types: ["search", "get_secret"],
             process: { name: "gh" },
+            client: "laptop",
             secret: { collection: "default" },
           },
         ],
@@ -64,6 +65,10 @@ test.describe("Trust Rules WebSocket", () => {
 
     await expect(page.getByText("Allow GitHub CLI")).toBeVisible();
     await expect(page.getByText("config")).toBeVisible();
+    const props = page.locator(".rule-entry .props-table");
+    await expect(
+      props.getByRole("row", { name: "client laptop" }),
+    ).toBeVisible();
   });
 
   test("ignore action trust rule displays correctly", async ({ page }) => {
@@ -74,6 +79,7 @@ test.describe("Trust Rules WebSocket", () => {
           {
             name: "Ignore Chrome dummy",
             action: "ignore",
+            client: "local",
             request_types: ["write"],
             secret: {
               attributes: {
@@ -105,16 +111,19 @@ test.describe("Trust Rules WebSocket", () => {
           {
             name: "Approve gh",
             action: "approve",
+            client: "local",
             request_types: ["search"],
           },
           {
             name: "Ignore Chrome",
             action: "ignore",
+            client: "local",
             request_types: ["write"],
           },
           {
             name: "Deny everyone",
             action: "deny",
+            client: "*",
             request_types: ["delete"],
           },
         ],
@@ -144,12 +153,14 @@ test.describe("Trust Rules WebSocket", () => {
           {
             name: "Rule One",
             action: "approve",
+            client: "local",
             request_types: ["search"],
             process: { name: "gh" },
           },
           {
             name: "Rule Two",
             action: "ignore",
+            client: "local",
             request_types: ["write"],
             process: { exe: "/opt/google/chrome/chrome" },
           },
@@ -197,6 +208,7 @@ test.describe("Trust Rules WebSocket", () => {
           {
             name: "Config rule",
             action: "approve",
+            client: "local",
             request_types: ["search"],
             process: { name: "gh" },
           },
@@ -205,6 +217,7 @@ test.describe("Trust Rules WebSocket", () => {
           {
             id: "temp-rule-1",
             invoker_name: "temp-invoker",
+            invoker_exe: "/usr/bin/temp-invoker",
             request_type: "get_secret",
             collection: "default",
             expires_at: expiresAt,

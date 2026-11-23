@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
@@ -194,7 +195,7 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// ServeConfig holds serve-subcommand settings.
+// The settings of the serve command.
 type ServeConfig struct {
 	Upstream                UpstreamConfig           `yaml:"upstream"`
 	Downstream              []BusConfig              `yaml:"downstream"`
@@ -247,7 +248,7 @@ func (n *RemoteName) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// SSHConfig configures the SSH agent proxy. Nil means disabled.
+// The settings of the SSH agent proxy.
 type SSHConfig struct {
 	// The real agent's socket. WithDefaults fills an empty one from
 	// $SSH_AUTH_SOCK.
@@ -257,7 +258,7 @@ type SSHConfig struct {
 	Listen unixsock.Path `yaml:"listen"`
 }
 
-// Config is the top-level configuration file structure.
+// The configuration file.
 type Config struct {
 	StateDir StateDir    `yaml:"state_dir"`
 	Listen   ListenAddr  `yaml:"listen"`
@@ -295,4 +296,25 @@ type ServeSettings struct {
 	UpstreamSlowAlways      bool                     `yaml:"upstream_slow_always"`
 	Rules                   []approval.TrustRule     `yaml:"rules,omitempty"`
 	Remotes                 []RemoteConfig           `yaml:"remotes,omitempty"`
+}
+
+// Returns the approval manager's part of the settings.
+func (s ServeSettings) ManagerConfig() approval.ManagerConfig {
+	return approval.ManagerConfig{
+		Timeout:             time.Duration(s.Timeout),
+		HistoryMax:          s.HistoryLimit,
+		ApprovalWindow:      time.Duration(s.ApprovalWindow),
+		AutoApproveDuration: time.Duration(s.AutoApproveDuration),
+		TrustedSigners:      s.TrustedSigners,
+		IgnoreChromeDummy:   s.IgnoreChromeDummySecret,
+		TrustRules:          s.Rules,
+	}
+}
+
+// Returns the slow-upstream report settings, without the notifier.
+func (s ServeSettings) SlowUpstream() proxy.SlowUpstream {
+	return proxy.SlowUpstream{
+		Threshold: time.Duration(s.UpstreamSlowThreshold),
+		Always:    s.UpstreamSlowAlways,
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
@@ -68,7 +69,7 @@ func newWSFixtureWith(t *testing.T, mgr *approval.Manager, provider ClientProvid
 		mgr:     mgr,
 		auth:    auth,
 		handler: handler,
-		url:     "ws" + strings.TrimPrefix(server.URL, "http"),
+		url:     apiclient.BaseURL(server.URL).WebSocketURL(""),
 	}
 }
 
@@ -284,17 +285,17 @@ func ghSecretRequest() *approval.Request {
 	}
 }
 
-func TestConvertRequest_EncodesAutoApprovable(t *testing.T) {
+func TestConvertRequest_EncodesAutoApproveScope(t *testing.T) {
 	noExe := ghSecretRequest()
 	noExe.SenderInfo.ProcessChain[0].Exe = nil
 
 	tests := []struct {
 		name string
 		req  *approval.Request
-		want bool
+		want any
 	}{
-		{"local process with exe", ghSecretRequest(), true},
-		{"process without exe", noExe, false},
+		{"local process with exe", ghSecretRequest(), map[string]any{"invoker_exe": "/usr/bin/gh", "request_type": "get_secret", "collection": "default"}},
+		{"process without exe", noExe, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -303,7 +304,7 @@ func TestConvertRequest_EncodesAutoApprovable(t *testing.T) {
 
 			var fields map[string]any
 			require.NoError(t, json.Unmarshal(data, &fields))
-			assert.Equal(t, tt.want, fields["auto_approvable"])
+			assert.Equal(t, tt.want, fields["auto_approve_scope"])
 		})
 	}
 }
@@ -344,9 +345,7 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 	if msg.AutoApproveRule.RequestType != approval.RequestTypeGetSecret {
 		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRule.RequestType)
 	}
-	if msg.AutoApproveRule.Collection != "default" {
-		t.Errorf("expected collection 'default', got '%s'", msg.AutoApproveRule.Collection)
-	}
+	assert.Equal(t, approval.OnlyCollection("default"), msg.AutoApproveRule.Collection)
 	if msg.AutoApproveRule.ID == "" {
 		t.Error("expected non-empty rule ID")
 	}

@@ -4,6 +4,7 @@ package approval
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,17 +24,17 @@ import (
 // Reports a request that the user denied, or that Manager.Cancel ended.
 var ErrDenied = errors.New("access denied by user")
 
-// ErrTimeout is returned when a request times out waiting for approval.
+// Reports a request that expired while it waited for approval.
 var ErrTimeout = errors.New("approval request timed out")
 
-// ErrNotFound is returned when a request ID doesn't exist.
-var ErrNotFound = errors.New("request not found")
+// Reports an ID that names no pending request or rule.
+var ErrNotFound = errors.New("not found")
 
 // Reports a request dropped without asking the user, by an ignore trust rule
 // or as a Chrome dummy secret write.
 var ErrIgnored = errors.New("request ignored by trust rule")
 
-// ErrDeniedByRule is returned when a request is denied by a trust rule with action "deny".
+// Reports a request that a trust rule with action "deny" denied.
 var ErrDeniedByRule = errors.New("access denied by trust rule")
 
 // Reports a request that Request.AutoApprovable rejects, so no auto-approve
@@ -52,11 +53,10 @@ type Observer interface {
 	RuleRemoved(AutoApproveRule)
 }
 
-// ItemInfo contains metadata about a secret item.
 type ItemInfo struct {
 	Path       string
 	Label      string
-	Attributes map[string]string
+	Attributes dbustypes.Attributes
 }
 
 // Returns the item's label, or its path when it has no label.
@@ -73,6 +73,15 @@ func (i ItemInfo) Collection() (dbustypes.CollectionRef, bool) {
 	return dbustypes.CollectionOf(dbus.ObjectPath(i.Path))
 }
 
+// Returns the name of the collection that the item's path names, if any.
+func (i ItemInfo) CollectionName() *dbustypes.CollectionName {
+	ref, ok := i.Collection()
+	if !ok {
+		return nil
+	}
+	return &ref.Name
+}
+
 // The item attributes of an ssh_sign item: the key's fingerprint and the host
 // the request is for. Trust rules can match them like any other item attribute.
 const (
@@ -87,7 +96,7 @@ func SSHSignItem(fingerprint, comment string, destination *string) ItemInfo {
 	if label == "" {
 		label = fingerprint
 	}
-	attrs := map[string]string{sshFingerprintAttr: fingerprint}
+	attrs := dbustypes.Attributes{sshFingerprintAttr: fingerprint}
 	if destination != nil {
 		attrs[sshDestinationAttr] = *destination
 	}
@@ -100,7 +109,6 @@ func (i ItemInfo) SSHDestination() string {
 	return i.Attributes[sshDestinationAttr]
 }
 
-// RequestType indicates the type of secret access request.
 type RequestType string
 
 const (
@@ -140,7 +148,7 @@ type Payload interface {
 
 // What a search request searches for.
 type SearchPayload struct {
-	Attributes map[string]string
+	Attributes dbustypes.Attributes
 }
 
 func (SearchPayload) requestType() RequestType { return RequestTypeSearch }
@@ -224,34 +232,28 @@ func (r *Request) AutoApprovable() bool {
 	return ok
 }
 
-// Returns a temporary rule that auto-approves requests like this one (ADR 0004)
-// once Manager.AddAutoApproveRule installs it. Errors with ErrNotAutoApprovable
-// when the request is not AutoApprovable.
-func (r *Request) AutoApproveRule() (AutoApproveRule, error) {
+// Returns the scope of an auto-approve rule that covers requests like this one
+// (ADR 0004). Errors with ErrNotAutoApprovable when the request is not
+// AutoApprovable.
+func (r *Request) AutoApproveScope() (AutoApproveScope, error) {
 	exe, ok := r.SenderInfo.invokerExe()
 	if !ok {
-		return AutoApproveRule{}, ErrNotAutoApprovable
+		return AutoApproveScope{}, ErrNotAutoApprovable
 	}
-	rule := AutoApproveRule{
-		ID:          uuid.New().String(),
-		InvokerName: r.SenderInfo.InvokerName,
-		InvokerExe:  exe,
-		RequestType: r.Type,
-	}
+	scope := AutoApproveScope{InvokerExe: exe, RequestType: r.Type}
 
 	if len(r.Items) > 0 {
 		if ref, ok := r.Items[0].Collection(); ok {
-			rule.Collection = ref.Name
+			scope.Collection = OnlyCollection(ref.Name)
 		}
-		rule.Attributes = r.Items[0].Attributes
+		scope.Attributes = r.Items[0].Attributes
 	}
 	if search, ok := r.Search(); ok && len(search.Attributes) > 0 {
-		rule.Attributes = search.Attributes
+		scope.Attributes = search.Attributes
 	}
-	return rule, nil
+	return scope, nil
 }
 
-// Resolution represents how a request was resolved.
 type Resolution string
 
 const (
@@ -295,7 +297,6 @@ func (r *Resolution) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// HistoryEntry represents a resolved approval request.
 type HistoryEntry struct {
 	Request    *Request
 	Resolution Resolution
@@ -308,26 +309,42 @@ func (r *Request) historyEntry(res Resolution) HistoryEntry {
 	return HistoryEntry{Request: r, Resolution: res, ResolvedAt: time.Now()}
 }
 
+// Identifies one auto-approve rule for its whole life.
+type AutoApproveRuleID string
+
 // A temporary rule that auto-approves requests like one the user approved
 // (ADR 0004). InvokerName is for display only.
 type AutoApproveRule struct {
-	ID          string            `json:"id"`
+	ID          AutoApproveRuleID `json:"id"`
 	InvokerName string            `json:"invoker_name"`
-	InvokerExe  procutil.Path     `json:"invoker_exe,omitempty"`
-	RequestType RequestType       `json:"request_type"`
-	Collection  string            `json:"collection"`
-	Attributes  map[string]string `json:"attributes,omitempty"`
-	ExpiresAt   time.Time         `json:"expires_at"`
+	AutoApproveScope
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// The requests that an auto-approve rule covers.
+type AutoApproveScope struct {
+	InvokerExe  procutil.Path        `json:"invoker_exe,omitempty"`
+	RequestType RequestType          `json:"request_type"`
+	Collection  CollectionScope      `json:"collection,omitzero"`
+	Attributes  dbustypes.Attributes `json:"attributes,omitempty"`
+}
+
+func (s AutoApproveScope) Equal(o AutoApproveScope) bool {
+	return s.InvokerExe == o.InvokerExe &&
+		s.RequestType == o.RequestType &&
+		s.Collection == o.Collection &&
+		maps.Equal(s.Attributes, o.Attributes)
 }
 
 func (r AutoApproveRule) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("rule_id", r.ID),
+	attrs := []slog.Attr{
+		slog.Any("rule_id", r.ID),
 		slog.String("invoker", r.InvokerName),
 		slog.Any("type", r.RequestType),
-		slog.String("collection", r.Collection),
+		slog.Any("collection", r.Collection),
 		slog.Time("expires_at", r.ExpiresAt),
-	)
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // Checks whether the rule has expired by the given time.
@@ -335,32 +352,86 @@ func (r AutoApproveRule) expired(now time.Time) bool {
 	return !r.ExpiresAt.After(now)
 }
 
-// Checks whether the rule approves the given request. Like an approve trust
+// Checks whether the scope covers the given request. Like an approve trust
 // rule, it must cover every item of the request (ADR 0005). A request with no
-// items matches only a rule with no collection and no attributes.
-func (r AutoApproveRule) matches(info RequestInfo) bool {
+// items matches only a scope with no collection and no attributes.
+func (s AutoApproveScope) matches(info RequestInfo) bool {
 	exe, ok := info.SenderInfo.invokerExe()
-	if !ok || r.InvokerExe != exe || r.RequestType != info.Type {
+	if !ok || s.InvokerExe != exe || s.RequestType != info.Type {
 		return false
 	}
 	if len(info.Items) == 0 {
-		return r.Collection == "" && len(r.Attributes) == 0
+		return s.Collection == AnyCollection && len(s.Attributes) == 0
 	}
 	for _, it := range info.Items {
-		if ref, ok := it.Collection(); r.Collection != "" && (!ok || r.Collection != ref.Name) {
+		if !s.Collection.covers(it) {
 			return false
 		}
-		if !attributesContain(it.Attributes, r.Attributes) {
+		if !it.Attributes.Contain(s.Attributes) {
 			return false
 		}
 	}
 	return true
 }
 
+// The collections whose items an auto-approve rule covers. AnyCollection covers
+// every item, including an item in no collection. OnlyCollection covers only
+// the items of the named collection.
+type CollectionScope struct {
+	name dbustypes.CollectionName
+	only bool
+}
+
+var AnyCollection CollectionScope
+
+func OnlyCollection(name dbustypes.CollectionName) CollectionScope {
+	return CollectionScope{name: name, only: true}
+}
+
+// Checks whether the given item lies in a collection that the scope covers.
+func (c CollectionScope) covers(item ItemInfo) bool {
+	if !c.only {
+		return true
+	}
+	ref, ok := item.Collection()
+	return ok && ref.Name == c.name
+}
+
+// Returns the collection name, or for AnyCollection an empty group, which slog
+// leaves out.
+func (c CollectionScope) LogValue() slog.Value {
+	if !c.only {
+		return slog.GroupValue()
+	}
+	return slog.StringValue(string(c.name))
+}
+
+func (c CollectionScope) MarshalJSON() ([]byte, error) {
+	if !c.only {
+		return []byte("null"), nil
+	}
+	return json.Marshal(c.name)
+}
+
+func (c *CollectionScope) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*c = AnyCollection
+		return nil
+	}
+	var name dbustypes.CollectionName
+	if err := json.Unmarshal(data, &name); err != nil {
+		return err
+	}
+	*c = OnlyCollection(name)
+	return nil
+}
+
 // The default lifetime of an auto-approve rule (ADR 0004).
 const DefaultAutoApproveDuration = 2 * time.Minute
 
-// Manager tracks pending approval requests and handles blocking until decision.
+// The one approval manager that every approval surface decides through
+// (ADR 0007). Each access is a separate request, apart from the short
+// approval cache (ADR 0004).
 type Manager struct {
 	mu      sync.RWMutex
 	pending map[RequestID]*pendingRequest
@@ -388,11 +459,10 @@ type Manager struct {
 	trustRules          []TrustRule
 }
 
-// ManagerConfig holds configuration for the approval Manager.
 type ManagerConfig struct {
-	// Timeout is how long a request waits for user approval before expiring.
+	// How long a request waits for user approval before it expires.
 	Timeout time.Duration
-	// HistoryMax is the maximum number of resolved requests kept in history.
+	// The maximum number of ended requests that History keeps.
 	HistoryMax int
 	// How long the user's approval of an item also approves later requests from
 	// the same sender for that item. Zero turns this off.
@@ -401,13 +471,13 @@ type ManagerConfig struct {
 	// DefaultAutoApproveDuration.
 	AutoApproveDuration time.Duration
 	TrustedSigners      []TrustedSigner
-	// IgnoreChromeDummy silently ignores Chrome's dummy secret writes.
+	// True if the manager drops Chrome's dummy secret writes without asking. False
+	// otherwise.
 	IgnoreChromeDummy bool
-	// TrustRules are persistent config-defined rules for auto-approve/ignore.
+	// The persistent rules from the config that approve, deny or ignore requests.
 	TrustRules []TrustRule
 }
 
-// NewManager creates a new approval manager.
 func NewManager(cfg ManagerConfig) *Manager {
 	return &Manager{
 		pending:             make(map[RequestID]*pendingRequest),
@@ -422,7 +492,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 }
 
-// NewDisabledManager creates a manager that auto-approves all requests.
+// Returns a manager that approves every request without asking.
 func NewDisabledManager() *Manager {
 	return &Manager{
 		pending:             make(map[RequestID]*pendingRequest),
@@ -433,14 +503,14 @@ func NewDisabledManager() *Manager {
 	}
 }
 
-// Subscribe registers an observer to receive approval events.
+// Registers the given observer to receive the manager's events.
 func (m *Manager) Subscribe(o Observer) {
 	m.observersMu.Lock()
 	defer m.observersMu.Unlock()
 	m.observers[o] = struct{}{}
 }
 
-// Unsubscribe removes an observer from receiving approval events.
+// Stops sending the manager's events to the given observer.
 func (m *Manager) Unsubscribe(o Observer) {
 	m.observersMu.Lock()
 	defer m.observersMu.Unlock()
@@ -473,25 +543,25 @@ func (m *Manager) pushHistory(entry HistoryEntry) {
 	}
 }
 
-// History returns a copy of the history entries, newest first.
+// Returns a copy of the history entries, newest first.
 func (m *Manager) History() []HistoryEntry {
 	m.historyMu.RLock()
 	defer m.historyMu.RUnlock()
 	return append([]HistoryEntry{}, m.history...)
 }
 
-// GetHistoryEntry returns the history entry with the given request ID, or nil if not found.
-func (m *Manager) GetHistoryEntry(requestID RequestID) *HistoryEntry {
+// Returns the history entry with the given request ID.
+func (m *Manager) GetHistoryEntry(requestID RequestID) (HistoryEntry, bool) {
 	m.historyMu.RLock()
 	defer m.historyMu.RUnlock()
 	i := slices.IndexFunc(m.history, func(e HistoryEntry) bool { return e.Request.ID == requestID })
 	if i < 0 {
-		return nil
+		return HistoryEntry{}, false
 	}
-	return &m.history[i]
+	return m.history[i], true
 }
 
-// AddHistoryEntry adds an entry directly to history. For testing only.
+// Adds the given entry directly to History. For testing only.
 func (m *Manager) AddHistoryEntry(entry HistoryEntry) {
 	m.pushHistory(entry)
 }
@@ -513,13 +583,13 @@ func (m *Manager) RequireApproval(ctx context.Context, info RequestInfo) (prompt
 		return false, nil
 	}
 
-	if rule := m.CheckAutoApproveRules(info); rule != nil {
-		slog.Info("auto-approve rule matched", "rule", *rule)
+	if rule, ok := m.CheckAutoApproveRules(info); ok {
+		slog.Info("auto-approve rule matched", "rule", rule)
 		m.record(ResolutionAutoApproved, info)
 		return false, nil
 	}
 
-	if rule := m.CheckTrustRules(info); rule != nil {
+	if rule, ok := m.CheckTrustRules(info); ok {
 		return false, m.settleByRule(rule, info)
 	}
 
@@ -608,7 +678,7 @@ func (m *Manager) resolve(id RequestID, res Resolution, admit func(*Request) err
 }
 
 // Returns the requests that wait for the user and have not expired.
-func (m *Manager) List() []Pending {
+func (m *Manager) Pending() []Pending {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -637,16 +707,16 @@ func (m *Manager) Approve(id RequestID) error {
 // auto-approve rule for requests like it (ADR 0004). Errors with
 // ErrNotAutoApprovable, approving nothing, unless Request.AutoApprovable holds.
 func (m *Manager) ApproveAndAutoApprove(id RequestID) error {
-	var rule AutoApproveRule
+	var scope AutoApproveScope
 	req, err := m.resolve(id, ResolutionApproved, func(req *Request) (err error) {
-		rule, err = req.AutoApproveRule()
+		scope, err = req.AutoApproveScope()
 		return err
 	})
 	if err != nil {
 		return err
 	}
 	m.cacheApproval(req)
-	m.AddAutoApproveRule(rule)
+	m.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
 	return nil
 }
 
@@ -664,26 +734,27 @@ func (m *Manager) Cancel(id RequestID) error {
 	return err
 }
 
-// PendingCount returns the number of pending requests.
+// Returns the number of pending requests.
 func (m *Manager) PendingCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.pending)
 }
 
-// Timeout returns the configured timeout.
+// Returns how long a request waits for the user before it expires.
 func (m *Manager) Timeout() time.Duration {
 	return m.timeout
 }
 
-// GetPending returns the pending request with the given ID, or nil if not found.
-func (m *Manager) GetPending(id RequestID) *Request {
+// Returns the pending request with the given ID.
+func (m *Manager) GetPending(id RequestID) (Pending, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if p, ok := m.pending[id]; ok {
-		return p.Request
+	p, ok := m.pending[id]
+	if !ok {
+		return Pending{}, false
 	}
-	return nil
+	return p.Pending, true
 }
 
 // Approves a pending gpg_sign request with what gpg produced. A failed gpg run
@@ -782,26 +853,26 @@ func (m *Manager) AutoApproveDuration() time.Duration {
 	return m.autoApproveDuration
 }
 
-func (r AutoApproveRule) sameScope(o AutoApproveRule) bool {
-	return r.InvokerExe == o.InvokerExe &&
-		r.RequestType == o.RequestType &&
-		r.Collection == o.Collection &&
-		maps.Equal(r.Attributes, o.Attributes)
-}
+// Adds a rule with the given scope for the duration that
+// Manager.AutoApproveDuration returns, and returns its ID. When a rule with that
+// scope exists, extends that rule's expiry instead and returns its ID.
+func (m *Manager) AddAutoApproveRule(scope AutoApproveScope, invokerName string) AutoApproveRuleID {
+	expiresAt := time.Now().Add(m.AutoApproveDuration())
 
-// Adds the given rule for the duration that Manager.AutoApproveDuration
-// returns, and returns its ID. When a rule with the same scope exists, extends
-// that rule's expiry instead and returns its ID.
-func (m *Manager) AddAutoApproveRule(rule AutoApproveRule) string {
-	rule.ExpiresAt = time.Now().Add(m.AutoApproveDuration())
-
+	var rule AutoApproveRule
 	msg := "auto-approve rule added"
 	m.autoApproveMu.Lock()
-	if i := slices.IndexFunc(m.autoApproveRules, rule.sameScope); i >= 0 {
-		m.autoApproveRules[i].ExpiresAt = rule.ExpiresAt
+	if i := slices.IndexFunc(m.autoApproveRules, func(r AutoApproveRule) bool { return r.AutoApproveScope.Equal(scope) }); i >= 0 {
+		m.autoApproveRules[i].ExpiresAt = expiresAt
 		rule = m.autoApproveRules[i]
 		msg = "auto-approve rule refreshed"
 	} else {
+		rule = AutoApproveRule{
+			ID:               AutoApproveRuleID(uuid.New().String()),
+			InvokerName:      invokerName,
+			AutoApproveScope: scope,
+			ExpiresAt:        expiresAt,
+		}
 		m.autoApproveRules = append(m.autoApproveRules, rule)
 	}
 	m.autoApproveMu.Unlock()
@@ -811,19 +882,17 @@ func (m *Manager) AddAutoApproveRule(rule AutoApproveRule) string {
 	return rule.ID
 }
 
-// Returns a copy of the first active auto-approve rule that matches the
-// request, or nil.
-func (m *Manager) CheckAutoApproveRules(info RequestInfo) *AutoApproveRule {
+// Returns the first active auto-approve rule that matches the request.
+func (m *Manager) CheckAutoApproveRules(info RequestInfo) (AutoApproveRule, bool) {
 	m.autoApproveMu.Lock()
 	defer m.autoApproveMu.Unlock()
 
 	rules := m.activeRules()
 	i := slices.IndexFunc(rules, func(r AutoApproveRule) bool { return r.matches(info) })
 	if i < 0 {
-		return nil
+		return AutoApproveRule{}, false
 	}
-	match := rules[i]
-	return &match
+	return rules[i], true
 }
 
 // Drops the expired auto-approve rules and returns the ones still active. The
@@ -836,18 +905,7 @@ func (m *Manager) activeRules() []AutoApproveRule {
 	return m.autoApproveRules
 }
 
-// Checks whether the first map holds every key of the second with the same
-// value. A missing key reads as the empty string.
-func attributesContain(have, want map[string]string) bool {
-	for k, v := range want {
-		if have[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-// ListAutoApproveRules returns all active (non-expired) auto-approve rules.
+// Returns the auto-approve rules that have not expired.
 func (m *Manager) ListAutoApproveRules() []AutoApproveRule {
 	m.autoApproveMu.Lock()
 	defer m.autoApproveMu.Unlock()
@@ -855,13 +913,30 @@ func (m *Manager) ListAutoApproveRules() []AutoApproveRule {
 	return slices.Clone(m.activeRules())
 }
 
-// ListTrustedSigners returns the configured trusted signers.
+// Returns the configured trusted signers.
 func (m *Manager) ListTrustedSigners() []TrustedSigner {
 	return m.trustedSigners
 }
 
-// RemoveAutoApproveRule removes an auto-approve rule by ID.
-func (m *Manager) RemoveAutoApproveRule(id string) error {
+// Adds an auto-approve rule made from the cancelled request with the given ID.
+// Errors with ErrNotFound when no cancelled request has that ID, and as
+// Request.AutoApproveScope does otherwise.
+func (m *Manager) AddRuleFromCancelled(id RequestID) error {
+	entry, ok := m.GetHistoryEntry(id)
+	if !ok || entry.Resolution != ResolutionCancelled {
+		return ErrNotFound
+	}
+	scope, err := entry.Request.AutoApproveScope()
+	if err != nil {
+		return err
+	}
+	m.AddAutoApproveRule(scope, entry.Request.SenderInfo.InvokerName)
+	return nil
+}
+
+// Removes the auto-approve rule with the given ID. Errors with ErrNotFound when
+// there is none.
+func (m *Manager) RemoveAutoApproveRule(id AutoApproveRuleID) error {
 	m.autoApproveMu.Lock()
 	i := slices.IndexFunc(m.autoApproveRules, func(r AutoApproveRule) bool { return r.ID == id })
 	if i < 0 {
@@ -886,7 +961,7 @@ func (m *Manager) CheckTrustedSigner(info RequestInfo) bool {
 		return false
 	}
 	return slices.ContainsFunc(m.trustedSigners, func(ts TrustedSigner) bool {
-		return ts.matches(info.SenderInfo.ProcessChain, sign.RepoName, sign.Signed.Details)
+		return ts.matches(info.SenderInfo.ProcessChain, sign.RepoName, sign.Signed().Details)
 	})
 }
 
@@ -900,21 +975,21 @@ func (s SenderInfo) invokerExe() (procutil.Path, bool) {
 	return "", false
 }
 
-// Returns the first configured trust rule that matches the request, or nil.
-func (m *Manager) CheckTrustRules(info RequestInfo) *TrustRule {
+// Returns the first configured trust rule that matches the request.
+func (m *Manager) CheckTrustRules(info RequestInfo) (TrustRule, bool) {
 	i := slices.IndexFunc(m.trustRules, func(r TrustRule) bool { return r.matches(info) })
 	if i < 0 {
-		return nil
+		return TrustRule{}, false
 	}
-	return &m.trustRules[i]
+	return m.trustRules[i], true
 }
 
-// ListTrustRules returns the configured trust rules.
+// Returns the configured trust rules.
 func (m *Manager) ListTrustRules() []TrustRule {
 	return m.trustRules
 }
 
-// chromeDummySchema is the xdg:schema Chrome uses for dummy keyring-unlock probes.
+// The xdg:schema that Chrome uses for its dummy keyring-unlock probes.
 const chromeDummySchema = "_chrome_dummy_schema_for_unlocking"
 
 // Checks whether the manager drops the request as a Chrome dummy secret write.
@@ -931,7 +1006,7 @@ func (m *Manager) dropsChromeDummyWrite(info RequestInfo) bool {
 // decides it (ADR 0005). Errors with ErrDeniedByRule or ErrIgnored, wrapped with
 // the rule's name, when a deny or ignore rule matches.
 func (m *Manager) Passthrough(info RequestInfo) error {
-	if rule := m.CheckTrustRules(info); rule != nil {
+	if rule, ok := m.CheckTrustRules(info); ok {
 		return m.settleByRule(rule, info)
 	}
 	m.record(ResolutionAutoApproved, info)
@@ -940,7 +1015,7 @@ func (m *Manager) Passthrough(info RequestInfo) error {
 
 // Records the request as the given trust rule decides it, and returns the rule's
 // error wrapped with the rule's name.
-func (m *Manager) settleByRule(rule *TrustRule, info RequestInfo) error {
+func (m *Manager) settleByRule(rule TrustRule, info RequestInfo) error {
 	slog.Info("trust rule matched", "rule_name", rule.Name, "action", rule.Action)
 	res, err := rule.Action.outcome()
 	m.record(res, info)

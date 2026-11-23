@@ -108,7 +108,7 @@ func (t trial) announce() {
 	if listen, err := listenAddr(t.config); err != nil {
 		fmt.Printf("%s Web UI address unknown: %v\n", cWarn("WARNING:"), err)
 	} else {
-		fmt.Printf("%s Web UI: %s\n", cOK("✓"), cBold(listen.BaseURL()))
+		fmt.Printf("%s Web UI: %s\n", cOK("✓"), cBold(listen.BaseURL().String()))
 	}
 	fmt.Printf("%s See it work (requests ask for approval in the web UI unless a rule matches):\n", cInfo("→"))
 	fmt.Printf("    %s   %s\n", cBold("secret-tool store --label=demo service demo"), cDim("# then:"))

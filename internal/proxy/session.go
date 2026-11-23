@@ -1,8 +1,8 @@
 package proxy
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"maps"
 	"sync"
 	"sync/atomic"
@@ -12,25 +12,72 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/dhcrypto"
 )
 
-// sessionEntry records the upstream session backing a client session, plus the
-// negotiated cipher when the client opened an encrypted (DH) session.
+// The upstream session behind a client session, and how that client session
+// carries secrets.
 type sessionEntry struct {
-	local  dbus.ObjectPath   // upstream Secret Service session path
-	cipher *dhcrypto.Session // nil for "plain" sessions
+	upstream dbus.ObjectPath
+	codec    sessionCodec
+}
+
+// How a client session carries the secrets that the plain upstream session
+// holds.
+type sessionCodec interface {
+	// Returns the given upstream secret as the client session carries it.
+	forClient(secret dbustypes.Secret) (dbustypes.Secret, error)
+	// Returns the given client secret as the upstream session takes it.
+	forUpstream(secret dbustypes.Secret) (dbustypes.Secret, error)
+}
+
+// A "plain" client session, which carries secrets unchanged.
+type plainSession struct{}
+
+func (plainSession) forClient(secret dbustypes.Secret) (dbustypes.Secret, error) {
+	return secret, nil
+}
+
+func (plainSession) forUpstream(secret dbustypes.Secret) (dbustypes.Secret, error) {
+	return secret, nil
+}
+
+// An encrypted (DH) client session, which carries secrets under the cipher it
+// negotiated.
+type dhSession struct {
+	cipher *dhcrypto.Session
+}
+
+func (s dhSession) forClient(secret dbustypes.Secret) (dbustypes.Secret, error) {
+	ciphertext, iv, err := s.cipher.Encrypt(secret.Value)
+	if err != nil {
+		return dbustypes.Secret{}, err
+	}
+	secret.Value = ciphertext
+	secret.Parameters = iv
+	return secret, nil
+}
+
+func (s dhSession) forUpstream(secret dbustypes.Secret) (dbustypes.Secret, error) {
+	plaintext, err := s.cipher.Decrypt(secret.Parameters, secret.Value)
+	if err != nil {
+		return dbustypes.Secret{}, err
+	}
+	secret.Value = plaintext
+	secret.Parameters = nil
+	return secret, nil
 }
 
 // Maps the sessions that clients open to the plain backend sessions behind
 // them, terminating each client's session encryption itself (ADR 0001).
 type SessionManager struct {
-	mu       sync.RWMutex
-	sessions map[dbus.ObjectPath]sessionEntry // remote -> entry
-	counter  atomic.Uint64
+	backendConn *dbus.Conn
+	mu          sync.RWMutex
+	sessions    map[dbus.ObjectPath]sessionEntry
+	counter     atomic.Uint64
 }
 
-// NewSessionManager creates a new session manager.
-func NewSessionManager() *SessionManager {
+func NewSessionManager(backendConn *dbus.Conn) *SessionManager {
 	return &SessionManager{
-		sessions: make(map[dbus.ObjectPath]sessionEntry),
+		backendConn: backendConn,
+		sessions:    make(map[dbus.ObjectPath]sessionEntry),
 	}
 }
 
@@ -38,14 +85,13 @@ func NewSessionManager() *SessionManager {
 // session, and returns the algorithm's output and the client's session path.
 // Errors with the *dbus.Error to reply with when the algorithm or its input is
 // unusable.
-func (m *SessionManager) CreateSession(localConn *dbus.Conn, algorithm string, input dbus.Variant) (output dbus.Variant, remotePath dbus.ObjectPath, err error) {
-	var clientOutput dbus.Variant
-	var cipher *dhcrypto.Session
+func (m *SessionManager) CreateSession(algorithm string, input dbus.Variant) (output dbus.Variant, clientPath dbus.ObjectPath, err error) {
+	var codec sessionCodec
 
 	switch algorithm {
 	case dbustypes.AlgorithmPlain:
-		// For "plain" the output is an empty string and no cipher is used.
-		clientOutput = dbus.MakeVariant("")
+		codec = plainSession{}
+		output = dbus.MakeVariant("")
 	case dbustypes.AlgorithmDH:
 		clientPub, ok := input.Value().([]byte)
 		if !ok {
@@ -56,45 +102,44 @@ func (m *SessionManager) CreateSession(localConn *dbus.Conn, algorithm string, i
 		if err != nil {
 			return dbus.Variant{}, "", err
 		}
-		session, err := kp.Derive(clientPub)
+		cipher, err := kp.Derive(clientPub)
 		if err != nil {
 			return dbus.Variant{}, "", dbustypes.NotSupported.WithMessage(err.Error())
 		}
-		cipher = session
-		clientOutput = dbus.MakeVariant(kp.Public)
+		codec = dhSession{cipher: cipher}
+		output = dbus.MakeVariant(kp.Public)
 	default:
 		return dbus.Variant{}, "", dbustypes.ErrUnsupportedAlgorithm(algorithm)
 	}
 
-	obj := localConn.Object(dbustypes.BusName, dbustypes.ServicePath)
+	obj := m.backendConn.Object(dbustypes.BusName, dbustypes.ServicePath)
 	call := obj.Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, dbustypes.AlgorithmPlain, dbus.MakeVariant(""))
 	if call.Err != nil {
 		return dbus.Variant{}, "", call.Err
 	}
 
-	var localOutput dbus.Variant
-	var localPath dbus.ObjectPath
-	if err := call.Store(&localOutput, &localPath); err != nil {
+	var upstreamOutput dbus.Variant
+	var upstreamPath dbus.ObjectPath
+	if err := call.Store(&upstreamOutput, &upstreamPath); err != nil {
 		return dbus.Variant{}, "", err
 	}
 
-	// Generate remote session path
 	id := m.counter.Add(1)
-	remotePath = dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/secrets/session/%d", id))
+	clientPath = dbustypes.SessionPath(id)
 
 	m.mu.Lock()
-	m.sessions[remotePath] = sessionEntry{local: localPath, cipher: cipher}
+	m.sessions[clientPath] = sessionEntry{upstream: upstreamPath, codec: codec}
 	m.mu.Unlock()
 
-	return clientOutput, remotePath, nil
+	return output, clientPath, nil
 }
 
-// GetLocalSession returns the upstream session path for a remote session.
-func (m *SessionManager) GetLocalSession(remotePath dbus.ObjectPath) (dbus.ObjectPath, bool) {
+// Returns the upstream session behind the given client session.
+func (m *SessionManager) UpstreamSession(clientPath dbus.ObjectPath) (dbus.ObjectPath, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	entry, ok := m.sessions[remotePath]
-	return entry.local, ok
+	entry, ok := m.sessions[clientPath]
+	return entry.upstream, ok
 }
 
 var errUnknownSession = errors.New("no such client session")
@@ -102,24 +147,16 @@ var errUnknownSession = errors.New("no such client session")
 // Returns the backend's secret as the given client session carries it, encrypted
 // when that session is DH. Errors with errUnknownSession when no client session
 // has the given path.
-func (m *SessionManager) ForClient(remotePath dbus.ObjectPath, secret dbustypes.Secret) (dbustypes.Secret, error) {
+func (m *SessionManager) ForClient(clientPath dbus.ObjectPath, secret dbustypes.Secret) (dbustypes.Secret, error) {
 	m.mu.RLock()
-	entry, found := m.sessions[remotePath]
+	entry, found := m.sessions[clientPath]
 	m.mu.RUnlock()
 	if !found {
 		return dbustypes.Secret{}, errUnknownSession
 	}
 
-	secret.Session = remotePath
-	if entry.cipher != nil {
-		ciphertext, iv, err := entry.cipher.Encrypt(secret.Value)
-		if err != nil {
-			return dbustypes.Secret{}, err
-		}
-		secret.Value = ciphertext
-		secret.Parameters = iv
-	}
-	return secret, nil
+	secret.Session = clientPath
+	return entry.codec.forClient(secret)
 }
 
 // Returns the client's secret as the backend session takes it, decrypted when the
@@ -133,21 +170,8 @@ func (m *SessionManager) ForUpstream(secret dbustypes.Secret) (dbustypes.Secret,
 		return dbustypes.Secret{}, errUnknownSession
 	}
 
-	out := dbustypes.Secret{
-		Session:     entry.local,
-		Parameters:  secret.Parameters,
-		Value:       secret.Value,
-		ContentType: secret.ContentType,
-	}
-	if entry.cipher != nil {
-		plaintext, err := entry.cipher.Decrypt(secret.Parameters, secret.Value)
-		if err != nil {
-			return dbustypes.Secret{}, err
-		}
-		out.Value = plaintext
-		out.Parameters = nil
-	}
-	return out, nil
+	secret.Session = entry.upstream
+	return entry.codec.forUpstream(secret)
 }
 
 // Returns the D-Bus error for a secret that could not be carried across the
@@ -159,27 +183,27 @@ func sessionSecretError(session dbus.ObjectPath, err error) *dbus.Error {
 	return dbustypes.ErrFailed(err)
 }
 
-// CloseSession removes a session mapping and closes the local session.
-func (m *SessionManager) CloseSession(localConn *dbus.Conn, remotePath dbus.ObjectPath) error {
+// Forgets the given client session and closes the upstream session behind it.
+func (m *SessionManager) CloseSession(clientPath dbus.ObjectPath) error {
 	m.mu.Lock()
-	entry, ok := m.sessions[remotePath]
+	entry, ok := m.sessions[clientPath]
 	if ok {
-		delete(m.sessions, remotePath)
+		delete(m.sessions, clientPath)
 	}
 	m.mu.Unlock()
 
 	if !ok {
-		return dbustypes.ErrSessionNotFound(string(remotePath))
+		return dbustypes.ErrSessionNotFound(string(clientPath))
 	}
 
-	// Close the local session
-	obj := localConn.Object(dbustypes.BusName, entry.local)
+	obj := m.backendConn.Object(dbustypes.BusName, entry.upstream)
 	call := obj.Call(dbustypes.SessionInterface.Member("Close"), 0)
 	return call.Err
 }
 
-// CloseAll closes all sessions.
-func (m *SessionManager) CloseAll(localConn *dbus.Conn) {
+// Forgets every client session and closes the upstream sessions behind them,
+// giving up on calls that outlast the given context.
+func (m *SessionManager) CloseAll(ctx context.Context) {
 	m.mu.Lock()
 	sessions := make(map[dbus.ObjectPath]sessionEntry, len(m.sessions))
 	maps.Copy(sessions, m.sessions)
@@ -187,7 +211,19 @@ func (m *SessionManager) CloseAll(localConn *dbus.Conn) {
 	m.mu.Unlock()
 
 	for _, entry := range sessions {
-		obj := localConn.Object(dbustypes.BusName, entry.local)
-		obj.Call(dbustypes.SessionInterface.Member("Close"), 0)
+		obj := m.backendConn.Object(dbustypes.BusName, entry.upstream)
+		obj.CallWithContext(ctx, dbustypes.SessionInterface.Member("Close"), 0)
 	}
+}
+
+// Serves Close on the client sessions that its manager opened.
+type sessionHandler struct {
+	sessions *SessionManager
+}
+
+func (h sessionHandler) Close(msg dbus.Message) *dbus.Error {
+	if err := h.sessions.CloseSession(dbustypes.PathOf(msg)); err != nil {
+		return dbustypes.AsDBusError(err)
+	}
+	return nil
 }

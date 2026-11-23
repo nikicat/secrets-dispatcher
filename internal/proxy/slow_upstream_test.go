@@ -10,7 +10,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-// mockNotifier records calls to NotifySlowUpstream.
+// Counts its slow-upstream notifications and their dismissals.
 type mockNotifier struct {
 	notifyCalls  int
 	dismissCalls int

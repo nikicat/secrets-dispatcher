@@ -65,11 +65,10 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 		InvokerName: "test-proc",
 	}, new("example.com"), slog.Default())
 
-	// Pre-populate key cache (normally done by List())
-	keys, _ := upstream.List()
-	proxy.keysMu.Lock()
-	proxy.keys = keys
-	proxy.keysMu.Unlock()
+	keys, err := proxy.List()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	pubKey := keys[0]
 	data := []byte("test data to sign")
@@ -89,7 +88,7 @@ func TestProxyAgent_SignApproved(t *testing.T) {
 	var pending []approval.Pending
 	for range 50 {
 		time.Sleep(10 * time.Millisecond)
-		pending = mgr.List()
+		pending = mgr.Pending()
 		if len(pending) > 0 {
 			break
 		}
@@ -144,10 +143,10 @@ func TestProxyAgent_SignDenied(t *testing.T) {
 		InvokerName: "test-proc",
 	}, nil, slog.Default())
 
-	keys, _ := upstream.List()
-	proxy.keysMu.Lock()
-	proxy.keys = keys
-	proxy.keysMu.Unlock()
+	keys, err := proxy.List()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	pubKey := keys[0]
 	data := []byte("test data to sign")
@@ -166,7 +165,7 @@ func TestProxyAgent_SignDenied(t *testing.T) {
 	var pending []approval.Pending
 	for range 50 {
 		time.Sleep(10 * time.Millisecond)
-		pending = mgr.List()
+		pending = mgr.Pending()
 		if len(pending) > 0 {
 			break
 		}

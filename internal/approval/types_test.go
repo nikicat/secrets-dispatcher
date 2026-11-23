@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
 
@@ -96,8 +97,9 @@ func TestValidateRejectsNullAttributeGlob(t *testing.T) {
 }
 
 func TestRequestInfo_PayloadFollowsType(t *testing.T) {
-	sign := &GPGSignInfo{RepoName: "repo"}
-	attrs := map[string]string{"service": "gh"}
+	sign, err := NewGPGSignInfo(SignedObject(testCommitObject), "repo", "KEY", ListedFiles(nil))
+	require.NoError(t, err)
+	attrs := dbustypes.Attributes{"service": "gh"}
 
 	got, ok := RequestInfo{Type: RequestTypeGPGSign, Payload: sign}.GPGSign()
 	assert.True(t, ok)

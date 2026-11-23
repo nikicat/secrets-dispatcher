@@ -3,6 +3,7 @@ import {
   pendingRequest,
   PROJECT_ROOT,
   routeSnapshot,
+  secretItem,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -205,13 +206,7 @@ function makeHistory(): HistoryEntry[] {
     entries.push({
       request: pendingRequest({
         id: r.id,
-        items: [
-          {
-            path: `/org/freedesktop/secrets/collection/${r.collection}/1`,
-            label: r.label,
-            attributes: {},
-          },
-        ],
+        items: [secretItem(r.collection, r.label)],
         type: r.type,
         sender_info: {
           pid: 10000,
@@ -225,25 +220,27 @@ function makeHistory(): HistoryEntry[] {
   return entries;
 }
 
-/** Trust rules to show in sidebar. */
 const trustRules: TrustRule[] = [
   {
     name: "Firefox",
     action: "approve",
     request_types: ["get_secret"],
     process: { exe: "/usr/lib/firefox/firefox" },
+    client: "local",
   },
   {
     name: "Chrome probe",
     action: "ignore",
     request_types: ["write"],
     process: { exe: "*chrome*" },
+    client: "local",
   },
   {
     name: "Deploy scripts",
     action: "approve",
     request_types: ["get_secret"],
     process: { exe: "/usr/bin/ansible-playbook" },
+    client: "local",
     secret: { collection: "deploy" },
   },
 ];

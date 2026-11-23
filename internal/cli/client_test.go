@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/api"
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 )
 
@@ -34,7 +35,7 @@ func TestClient_Pending(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
 	})
-	result, err := client.Pending()
+	result, err := client.Pending(t.Context())
 	if err != nil {
 		t.Fatalf("Pending failed: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestClient_History(t *testing.T) {
 		}
 		json.NewEncoder(w).Encode(HistoryResponse{Entries: entries})
 	})
-	result, err := client.History()
+	result, err := client.History(t.Context())
 	if err != nil {
 		t.Fatalf("History failed: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestClient_Approve(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 	})
-	id, err := client.Resolve("abc-123-def", Approve{})
+	id, err := client.Resolve(t.Context(), "abc-123-def", Approve{})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestClient_Deny(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 	})
-	id, err := client.Resolve("xyz-789", Deny{})
+	id, err := client.Resolve(t.Context(), "xyz-789", Deny{})
 	if err != nil {
 		t.Fatalf("Resolve failed: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestClient_PartialID_ExactMatch(t *testing.T) {
 		}
 	})
 	// "abc" should match exactly, not be ambiguous with "abcdef"
-	id, err := client.Resolve("abc", Approve{})
+	id, err := client.Resolve(t.Context(), "abc", Approve{})
 	if err != nil {
 		t.Fatalf("Resolve with exact match failed: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestClient_PartialID_PrefixMatch(t *testing.T) {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 	})
-	id, err := client.Resolve("abc", Approve{})
+	id, err := client.Resolve(t.Context(), "abc", Approve{})
 	if err != nil {
 		t.Fatalf("Resolve with prefix failed: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestClient_PartialID_Ambiguous(t *testing.T) {
 			},
 		})
 	})
-	_, err := client.Resolve("abc", Approve{})
+	_, err := client.Resolve(t.Context(), "abc", Approve{})
 	if err == nil {
 		t.Fatal("expected error for ambiguous ID")
 	}
@@ -200,7 +201,7 @@ func TestClient_PartialID_NotFound(t *testing.T) {
 			Requests: []PendingEntry{{Request: RequestRecord{ID: "xyz-123"}}},
 		})
 	})
-	_, err := client.Resolve("abc", Approve{})
+	_, err := client.Resolve(t.Context(), "abc", Approve{})
 	if err == nil {
 		t.Fatal("expected error for not found")
 	}
@@ -224,7 +225,7 @@ func TestClient_Find_Pending(t *testing.T) {
 		}
 	})
 
-	result, err := client.Find("req-222")
+	result, err := client.Find(t.Context(), "req-222")
 	if err != nil {
 		t.Fatalf("Find failed: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestClient_Find_History(t *testing.T) {
 		}
 	})
 
-	result, err := client.Find("old-req")
+	result, err := client.Find(t.Context(), "old-req")
 	if err != nil {
 		t.Fatalf("Find failed: %v", err)
 	}
@@ -270,9 +271,9 @@ func TestClient_Find_History(t *testing.T) {
 func TestClient_Unauthorized(t *testing.T) {
 	client := newTestClient(t, "bad-token", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(ErrorResponse{Error: "unauthorized"})
+		json.NewEncoder(w).Encode(apiclient.ErrorResponse{Error: "unauthorized"})
 	})
-	_, err := client.Pending()
+	_, err := client.Pending(t.Context())
 	if err == nil {
 		t.Fatal("expected error for unauthorized")
 	}

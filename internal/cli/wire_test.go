@@ -11,6 +11,7 @@ import (
 
 	"github.com/nikicat/secrets-dispatcher/internal/api"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
@@ -43,7 +44,12 @@ func wireRecords(sign *approval.GPGSignInfo, want *GPGSignInfo) (api.RequestReco
 		InvokerName: "git",
 		SystemdUnit: "app.service",
 	}
-	items := []api.ItemInfo{{Path: "/org/freedesktop/secrets/collection/login/1", Label: "pw", Attributes: map[string]string{"service": "ssh"}}}
+	items := []api.ItemInfo{{
+		Path:       "/org/freedesktop/secrets/collection/login/1",
+		Label:      "pw",
+		Attributes: map[string]string{"service": "ssh"},
+		Collection: new(dbustypes.CollectionName("login")),
+	}}
 	return api.RequestRecord{
 		ID:               "req-1",
 		Client:           "local",
@@ -54,11 +60,11 @@ func wireRecords(sign *approval.GPGSignInfo, want *GPGSignInfo) (api.RequestReco
 		SearchAttributes: map[string]string{"service": "ssh"},
 		SenderInfo:       senderInfo,
 		GPGSignInfo:      sign,
-		AutoApprovable:   true,
+		AutoApproveScope: &approval.AutoApproveScope{InvokerExe: "/usr/bin/git", RequestType: approval.RequestTypeGPGSign},
 	}, RequestRecord{
 		ID:               "req-1",
 		Client:           "local",
-		Items:            []ItemInfo{{Path: items[0].Path, Label: items[0].Label, Attributes: items[0].Attributes}},
+		Items:            []ItemInfo{{Path: items[0].Path, Label: items[0].Label, Attributes: items[0].Attributes, Collection: items[0].Collection}},
 		Session:          "/org/freedesktop/secrets/session/s1",
 		CreatedAt:        wireCreated,
 		Type:             "gpg_sign",

@@ -2,43 +2,36 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
-// Client communicates with the secrets-dispatcher API.
 type Client struct {
-	baseURL    string
-	token      config.AuthToken
-	httpClient *http.Client
+	api apiclient.Client
 }
 
-// NewClient creates a new API client.
 func NewClient(serverAddr config.ListenAddr, token config.AuthToken) *Client {
-	return &Client{
-		baseURL: serverAddr.BaseURL(),
-		token:   token,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-	}
+	return &Client{api: apiclient.New(serverAddr.BaseURL(), token, &http.Client{Timeout: 10 * time.Second})}
 }
 
-// ItemInfo contains metadata about a secret item.
+// The metadata of a secret item.
 type ItemInfo struct {
-	Path       string            `json:"path"`
-	Label      string            `json:"label"`
-	Attributes map[string]string `json:"attributes"`
+	Path       string                    `json:"path"`
+	Label      string                    `json:"label"`
+	Attributes dbustypes.Attributes      `json:"attributes"`
+	Collection *dbustypes.CollectionName `json:"collection,omitempty"`
 }
 
 // Returns the item's label, or its path when it has no label.
@@ -70,7 +63,7 @@ type RequestRecord struct {
 	Session          dbus.ObjectPath      `json:"session"`
 	CreatedAt        time.Time            `json:"created_at"`
 	Type             approval.RequestType `json:"type"`
-	SearchAttributes map[string]string    `json:"search_attributes,omitempty"`
+	SearchAttributes dbustypes.Attributes `json:"search_attributes,omitempty"`
 	GPGSignInfo      *GPGSignInfo         `json:"gpg_sign_info,omitempty"`
 	SenderInfo       sender.Info          `json:"sender_info"`
 }
@@ -113,57 +106,26 @@ type Entry interface {
 func (e PendingEntry) Record() RequestRecord { return e.Request }
 func (e HistoryEntry) Record() RequestRecord { return e.Request }
 
-// PendingResponse is the response from the pending endpoint.
+// The answer of the pending endpoint.
 type PendingResponse struct {
 	Requests []PendingEntry `json:"requests"`
 }
 
-// HistoryResponse is the response from the history endpoint.
+// The answer of the history endpoint.
 type HistoryResponse struct {
 	Entries []HistoryEntry `json:"entries"`
 }
 
-// ErrorResponse is an error response from the API.
-type ErrorResponse struct {
-	Error string `json:"error"`
-}
-
 // Returns every pending request.
-func (c *Client) Pending() ([]PendingEntry, error) {
-	resp, err := c.do(http.MethodGet, "/api/v1/pending")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, c.parseError(resp)
-	}
-
-	var result PendingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return result.Requests, nil
+func (c *Client) Pending(ctx context.Context) ([]PendingEntry, error) {
+	result, err := apiclient.GetJSON[PendingResponse](ctx, c.api, "/api/v1/pending")
+	return result.Requests, err
 }
 
-// History returns resolved requests.
-func (c *Client) History() ([]HistoryEntry, error) {
-	resp, err := c.do(http.MethodGet, "/api/v1/log")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, c.parseError(resp)
-	}
-
-	var result HistoryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return result.Entries, nil
+// Returns the resolved requests.
+func (c *Client) History(ctx context.Context) ([]HistoryEntry, error) {
+	result, err := apiclient.GetJSON[HistoryResponse](ctx, c.api, "/api/v1/log")
+	return result.Entries, err
 }
 
 // A request ID as the user types it, whole or only its start.
@@ -171,13 +133,13 @@ type IDPrefix string
 
 // Returns the pending request or History entry that the given prefix names,
 // as matchID matches it.
-func (c *Client) Find(prefix IDPrefix) (Entry, error) {
-	requests, err := c.Pending()
+func (c *Client) Find(ctx context.Context, prefix IDPrefix) (Entry, error) {
+	requests, err := c.Pending(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	entries, err := c.History()
+	entries, err := c.History(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -195,8 +157,8 @@ func (c *Client) Find(prefix IDPrefix) (Entry, error) {
 
 // What the user decides about a pending request.
 type Decision interface {
-	// Returns the last segment of the request's route that makes the decision.
-	route() string
+	// Returns the action on the request that makes the decision.
+	action() apiclient.Action
 	resolution() approval.Resolution
 }
 
@@ -206,15 +168,15 @@ type Approve struct{}
 // Denies a pending request.
 type Deny struct{}
 
-func (Approve) route() string                   { return "approve" }
+func (Approve) action() apiclient.Action        { return "approve" }
 func (Approve) resolution() approval.Resolution { return approval.ResolutionApproved }
-func (Deny) route() string                      { return "deny" }
+func (Deny) action() apiclient.Action           { return "deny" }
 func (Deny) resolution() approval.Resolution    { return approval.ResolutionDenied }
 
 // Resolves the pending request that the given prefix names with the given
 // decision, and returns the request's ID. The prefix matches as matchID does.
-func (c *Client) Resolve(prefix IDPrefix, d Decision) (approval.RequestID, error) {
-	requests, err := c.Pending()
+func (c *Client) Resolve(ctx context.Context, prefix IDPrefix, d Decision) (approval.RequestID, error) {
+	requests, err := c.Pending(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -223,14 +185,8 @@ func (c *Client) Resolve(prefix IDPrefix, d Decision) (approval.RequestID, error
 		return "", err
 	}
 
-	resp, err := c.do(http.MethodPost, "/api/v1/pending/"+string(req.Request.ID)+"/"+d.route())
-	if err != nil {
+	if err := c.api.PostAction(ctx, req.Request.ID, d.action()); err != nil {
 		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", c.parseError(resp)
 	}
 	return req.Request.ID, nil
 }
@@ -258,22 +214,4 @@ func matchID[T Entry](want IDPrefix, entries []T) (T, error) {
 	default:
 		return zero, fmt.Errorf("ambiguous ID %q matches %d requests", want, len(matches))
 	}
-}
-
-func (c *Client) do(method, path string) (*http.Response, error) {
-	req, err := http.NewRequest(method, c.baseURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.token.Authorize(req.Header)
-	return c.httpClient.Do(req)
-}
-
-func (c *Client) parseError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
-	var errResp ErrorResponse
-	if json.Unmarshal(body, &errResp) == nil && errResp.Error != "" {
-		return fmt.Errorf("%s", errResp.Error)
-	}
-	return fmt.Errorf("request failed: %s", resp.Status)
 }

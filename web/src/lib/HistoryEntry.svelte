@@ -1,8 +1,10 @@
 <script lang="ts">
+  import type { ComponentProps } from "svelte";
   import type {
     HistoryEntry as HistoryEntryType,
     RequestRecord,
     AutoApproveRule,
+    AutoApproveScope,
   } from "./types";
   import ProcessChain from "./ProcessChain.svelte";
   import PropsTable from "./PropsTable.svelte";
@@ -84,52 +86,27 @@
     return request.items.map((i) => i.label || i.path).join(", ");
   }
 
-  function extractCollection(itemPath: string): string {
-    for (const prefix of [
-      "/org/freedesktop/secrets/collection/",
-      "/org/freedesktop/secrets/aliases/",
-    ]) {
-      if (itemPath.startsWith(prefix)) {
-        const rest = itemPath.slice(prefix.length);
-        const slash = rest.indexOf("/");
-        return slash >= 0 ? rest.slice(0, slash) : rest;
-      }
-    }
-    return "";
+  type Attributes = Record<string, string>;
+
+  const request = $derived(entry.request);
+  const firstItem = $derived(request.items.at(0));
+
+  function nonEmpty(attrs: Attributes | undefined): Attributes | undefined {
+    return attrs && Object.keys(attrs).length > 0 ? attrs : undefined;
   }
 
-  function historyEntryProps(req: RequestRecord): {
-    process?: string;
-    collection?: string;
-    attributes?: Record<string, string>;
-  } {
-    const process =
-      (req.sender_info && senderDisplayName(req.sender_info)) || undefined;
-    const collection =
-      req.items.length > 0
-        ? extractCollection(req.items[0].path) || undefined
-        : undefined;
-    let attributes: Record<string, string> | undefined;
-    if (
-      req.type === "search" &&
-      req.search_attributes &&
-      Object.keys(req.search_attributes).length > 0
-    ) {
-      attributes = req.search_attributes;
-    } else if (
-      req.type !== "gpg_sign" &&
-      req.items.length > 0 &&
-      req.items[0].attributes &&
-      Object.keys(req.items[0].attributes).length > 0
-    ) {
-      attributes = req.items[0].attributes;
-    }
-    return { process, collection, attributes };
-  }
+  const tableProps: ComponentProps<typeof PropsTable> = $derived({
+    process:
+      (request.sender_info && senderDisplayName(request.sender_info)) ||
+      undefined,
+    collection: firstItem?.collection,
+    attributes:
+      nonEmpty(request.search_attributes) ?? nonEmpty(firstItem?.attributes),
+  });
 
   function attributesEqual(
-    a: Record<string, string> | undefined,
-    b: Record<string, string> | undefined,
+    a: Attributes | undefined,
+    b: Attributes | undefined,
   ): boolean {
     const aa = a ?? {};
     const bb = b ?? {};
@@ -139,20 +116,21 @@
     return keysA.every((k) => aa[k] === bb[k]);
   }
 
-  function hasMatchingRule(entry: HistoryEntryType): boolean {
-    const req = entry.request;
-    const invoker = req.sender_info?.invoker_name ?? "";
-    const collection =
-      req.items.length > 0 ? extractCollection(req.items[0].path) : "";
-    const attrs = req.items.length > 0 ? req.items[0].attributes : undefined;
-    return autoApproveRules.some(
-      (r) =>
-        r.invoker_name === invoker &&
-        r.request_type === req.type &&
-        r.collection === collection &&
-        attributesEqual(r.attributes, attrs),
+  // Mirrors Go AutoApproveScope.Equal, which decides whether approving the
+  // request resets a rule's timer or adds a rule.
+  function scopeEqual(a: AutoApproveScope, b: AutoApproveScope): boolean {
+    return (
+      a.invoker_exe === b.invoker_exe &&
+      a.request_type === b.request_type &&
+      a.collection === b.collection &&
+      attributesEqual(a.attributes, b.attributes)
     );
   }
+
+  const hasMatchingRule = $derived.by(() => {
+    const scope = request.auto_approve_scope;
+    return !!scope && autoApproveRules.some((r) => scopeEqual(r, scope));
+  });
 </script>
 
 <li class="history-entry">
@@ -196,12 +174,12 @@
       fallbackText={formatSenderInfo(entry)}
     />
   </div>
-  <PropsTable {...historyEntryProps(entry.request)} />
-  {#if entry.resolution === "cancelled" && entry.request.auto_approvable}
+  <PropsTable {...tableProps} />
+  {#if entry.resolution === "cancelled" && request.auto_approve_scope}
     <button
       class="btn-auto-approve"
       onclick={() => onAutoApprove(entry.request.id)}
-      >{hasMatchingRule(entry)
+      >{hasMatchingRule
         ? "Reset auto-approve timer"
         : "Auto-approve similar"}</button
     >

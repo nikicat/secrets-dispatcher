@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/godbus/dbus/v5"
@@ -11,24 +12,13 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 )
 
-// Returns the unique D-Bus name of the sender of an incoming message.
-func senderOf(msg dbus.Message) sender.UniqueName {
-	return sender.UniqueName(msg.Headers[dbus.FieldSender].Value().(string))
-}
-
-// pathOf returns the object path an incoming message is addressed to.
-func pathOf(msg dbus.Message) dbus.ObjectPath {
-	return msg.Headers[dbus.FieldPath].Value().(dbus.ObjectPath)
-}
-
-// dbusClient abstracts D-Bus operations for testing.
+// The bus and systemd queries that resolve a sender.
 type dbusClient interface {
 	connectionPID(name sender.UniqueName) (procutil.PID, error)
 	connectionUser(name sender.UniqueName) (procutil.UID, error)
 	unitByPID(pid procutil.PID) (systemd.Unit, error)
 }
 
-// SenderInfoResolver resolves D-Bus sender information (PID, UID, systemd unit).
 type SenderInfoResolver struct {
 	client     dbusClient
 	clientName approval.ClientName // set as every resolved SenderInfo's Client
@@ -38,12 +28,11 @@ type SenderInfoResolver struct {
 	local *sender.ChainReader
 }
 
-// Returns a resolver that asks conn about senders and names them clientName.
 func newSenderInfoResolver(conn *dbus.Conn, clientName approval.ClientName, local *sender.ChainReader) *SenderInfoResolver {
 	return &SenderInfoResolver{client: realDBusClient{busDaemon{conn}}, clientName: clientName, local: local}
 }
 
-// newSenderInfoResolverWithClient creates a resolver with a custom client (for testing).
+// Returns a local resolver that asks the given client about senders.
 func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
 	return &SenderInfoResolver{client: client, local: &sender.ChainReader{}}
 }
@@ -99,7 +88,6 @@ func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo
 	return info
 }
 
-// realDBusClient implements dbusClient using a real D-Bus connection.
 type realDBusClient struct {
 	busDaemon
 }
@@ -116,8 +104,10 @@ func (c realDBusClient) unitByPID(pid procutil.PID) (systemd.Unit, error) {
 		return "", err
 	}
 
-	// Decode the unit path to get the unit name
-	unitName := DecodeUnitPath(string(unitPath))
+	unitName, ok := DecodeUnitPath(string(unitPath))
+	if !ok {
+		return "", fmt.Errorf("GetUnitByPID returned %q, which is not a unit path", unitPath)
+	}
 	slog.Debug("decoded unit path", "path", string(unitPath), "unit", unitName)
 	return unitName, nil
 }

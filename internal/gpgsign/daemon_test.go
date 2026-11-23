@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
@@ -17,13 +18,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// roundTripFunc is an adapter to allow the use of ordinary functions as http.RoundTripper.
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
-}
 
 func TestCancelSigningRequest_Success(t *testing.T) {
 	var gotPath string
@@ -67,17 +61,9 @@ func TestCancelSigningRequest_NotFound(t *testing.T) {
 
 const testToken config.AuthToken = "test-token"
 
-// newTestClient creates a DaemonClient that redirects requests to the given httptest server.
+// Returns a DaemonClient of the given httptest server.
 func newTestClient(srv *httptest.Server) *DaemonClient {
-	client := NewDaemonClient("", testToken)
-	client.api.http = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			req.URL.Scheme = "http"
-			req.URL.Host = strings.TrimPrefix(srv.URL, "http://")
-			return http.DefaultTransport.RoundTrip(req)
-		}),
-	}
-	return client
+	return &DaemonClient{api: apiclient.New(apiclient.BaseURL(srv.URL), testToken, srv.Client())}
 }
 
 // Returns the sign info of a commit in my-repo.
@@ -130,7 +116,7 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	if client, ok := rawBody["client"]; ok {
 		t.Errorf("body.client = %s, want none: the daemon names the client by its socket", client)
 	}
-	if got := gotBody.GPGSignInfo.Signed.Message; got != "feat: add tests" {
+	if got := gotBody.GPGSignInfo.Signed().Message; got != "feat: add tests" {
 		t.Errorf("body.gpg_sign_info.commit_msg = %q, want %q", got, "feat: add tests")
 	}
 }
@@ -193,15 +179,10 @@ func wsTestServer(t *testing.T, messages []any) *httptest.Server {
 	}))
 }
 
-func dialTestWS(t *testing.T, srvURL string) *websocket.Conn {
-	t.Helper()
-	wsURL := "ws" + strings.TrimPrefix(srvURL, "http")
-	conn, _, err := websocket.Dial(context.Background(), wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial websocket: %v", err)
-	}
-	conn.SetReadLimit(wsReadLimit)
-	return conn
+// A daemon WebSocket message as the WaitForResolution tests send it.
+type wsMsg struct {
+	wsmsg.Header
+	RequestEnd
 }
 
 // The request that the WaitForResolution tests wait for.
@@ -212,14 +193,23 @@ func waitForTestResolution(t *testing.T, ctx context.Context, msgs ...any) (Sign
 	t.Helper()
 	srv := wsTestServer(t, msgs)
 	defer srv.Close()
-	conn := dialTestWS(t, srv.URL)
+	conn, err := newTestClient(srv).DialWebSocket(t.Context())
+	require.NoError(t, err)
 	defer conn.CloseNow()
 	return WaitForResolution(ctx, conn, testRequestID)
 }
 
+// Returns the message of the given type that reports how the request with the
+// given ID ended.
+func ended(typ wsmsg.Type, id approval.RequestID, result approval.Resolution) wsMsg {
+	return wsMsg{wsmsg.Header{Type: typ}, RequestEnd{ID: id, Result: result}}
+}
+
 // Returns the request_resolved message for request testRequestID.
 func resolved(result approval.Resolution, out *approval.GPGResult) wsMsg {
-	return wsMsg{Type: wsmsg.RequestResolved, ID: testRequestID, Result: result, GPGResult: out}
+	msg := ended(wsmsg.RequestResolved, testRequestID, result)
+	msg.GPGResult = out
+	return msg
 }
 
 func TestWaitForResolution(t *testing.T) {
@@ -253,21 +243,21 @@ func TestWaitForResolution(t *testing.T) {
 		},
 		{
 			name: "expired",
-			msgs: []any{wsMsg{Type: wsmsg.RequestExpired, ID: testRequestID}},
+			msgs: []any{ended(wsmsg.RequestExpired, testRequestID, approval.ResolutionExpired)},
 			want: SignOutcome{Result: approval.ResolutionExpired},
 		},
 		{
 			name: "cancelled",
-			msgs: []any{wsMsg{Type: wsmsg.RequestCancelled, ID: testRequestID}},
+			msgs: []any{ended(wsmsg.RequestCancelled, testRequestID, approval.ResolutionCancelled)},
 			want: SignOutcome{Result: approval.ResolutionCancelled},
 		},
 		{
 			name: "skips other requests and message types",
 			msgs: []any{
-				wsMsg{Type: wsmsg.RequestResolved, ID: "other-req", Result: approval.ResolutionDenied},
-				wsMsg{Type: wsmsg.RequestExpired, ID: "other-req-2"},
-				wsMsg{Type: wsmsg.Snapshot, ID: testRequestID},
-				wsMsg{Type: wsmsg.RequestCancelled, ID: testRequestID},
+				ended(wsmsg.RequestResolved, "other-req", approval.ResolutionDenied),
+				ended(wsmsg.RequestExpired, "other-req-2", approval.ResolutionExpired),
+				ended(wsmsg.Snapshot, testRequestID, approval.ResolutionApproved),
+				ended(wsmsg.RequestCancelled, testRequestID, approval.ResolutionCancelled),
 			},
 			want: SignOutcome{Result: approval.ResolutionCancelled},
 		},
@@ -291,7 +281,7 @@ func TestWaitForResolution_BadSignature(t *testing.T) {
 func TestWaitForResolution_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := waitForTestResolution(t, ctx, wsMsg{Type: wsmsg.Snapshot, ID: testRequestID})
+	_, err := waitForTestResolution(t, ctx, ended(wsmsg.Snapshot, testRequestID, approval.ResolutionApproved))
 	assert.Error(t, err)
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
 )
@@ -28,12 +29,12 @@ type SignResponse struct {
 	RequestID approval.RequestID `json:"request_id"`
 }
 
-// Submits info through the remote socket and blocks until the request is
-// resolved. Cancelling ctx drops the connection, which cancels the request on
+// Submits the given sign info through the given remote socket and blocks until
+// the request is resolved. Cancelling the given context cancels the request on
 // the daemon. Errors when the socket approves the request without gpg's output.
 func SignRemote(ctx context.Context, socketPath unixsock.Path, info *approval.GPGSignInfo) (SignOutcome, error) {
-	remote := socketClient{http: UnixSocketClient(socketPath), credential: remoteSocketIdentity{}}
-	res, err := postSign[SignOutcome](ctx, remote, RemoteSignPath, SignRequest{GPGSignInfo: info})
+	remote := socketAPI(socketPath, remoteSocketIdentity{})
+	res, err := apiclient.PostJSON[SignRequest, SignOutcome](ctx, remote, RemoteSignPath, SignRequest{GPGSignInfo: info})
 	if err != nil {
 		return SignOutcome{}, fmt.Errorf("remote socket %s: %w", socketPath, err)
 	}

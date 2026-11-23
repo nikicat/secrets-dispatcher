@@ -9,60 +9,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Wire JSON of GPGSignInfo.
-var gpgSignInfoGolden = []struct {
-	name string
-	info GPGSignInfo
-	wire string
-}{
+// A GPGSignInfo and its wire JSON.
+type gpgSignInfoRow struct {
+	name   string
+	object SignedObject
+	staged ListedFiles
+	wire   string
+}
+
+// Returns the sign info of the row's object, in repo "repo" with key "KEY" as
+// the wire JSON has them.
+func (r gpgSignInfoRow) info(t *testing.T) *GPGSignInfo {
+	t.Helper()
+	info, err := NewGPGSignInfo(r.object, "repo", "KEY", r.staged)
+	require.NoError(t, err)
+	return info
+}
+
+var gpgSignInfoGolden = []gpgSignInfoRow{
 	{
-		name: "commit",
-		info: GPGSignInfo{
-			RepoName: "repo",
-			KeyID:    "KEY",
-			Signed: SignedPayload{
-				Message: "fix: thing",
-				Signer:  "Alice <a@x>",
-				Details: CommitDetails{Committer: "Bob <b@x>", ParentHash: "abc", ChangedFiles: []string{"a.go"}},
-			},
-			SignedObject: SignedObject("tree 0\nparent abc\nauthor Alice <a@x>\ncommitter Bob <b@x>\n\nfix: thing\n"),
-		},
-		wire: `{"repo_name":"repo","kind":"commit","commit_msg":"fix: thing","author":"Alice <a@x>","committer":"Bob <b@x>","key_id":"KEY","changed_files":["a.go"],"parent_hash":"abc","commit_object":"tree 0\nparent abc\nauthor Alice <a@x>\ncommitter Bob <b@x>\n\nfix: thing\n"}`,
+		name:   "commit",
+		object: SignedObject("tree 0\nparent abc\nauthor Alice <a@x>\ncommitter Bob <b@x>\n\nfix: thing\n"),
+		staged: ListedFiles{"a.go"},
+		wire:   `{"repo_name":"repo","kind":"commit","commit_msg":"fix: thing","author":"Alice <a@x>","committer":"Bob <b@x>","key_id":"KEY","changed_files":["a.go"],"parent_hash":"abc","commit_object":"tree 0\nparent abc\nauthor Alice <a@x>\ncommitter Bob <b@x>\n\nfix: thing\n"}`,
 	},
 	{
-		name: "tag",
-		info: GPGSignInfo{
-			RepoName: "repo",
-			KeyID:    "KEY",
-			Signed: SignedPayload{
-				Message: "v1",
-				Signer:  "Alice <a@x>",
-				Details: TagDetails{Name: "v1.0", Target: "def"},
-			},
-			SignedObject: SignedObject("object def\ntype commit\ntag v1.0\ntagger Alice <a@x>\n\nv1\n"),
-		},
-		wire: `{"repo_name":"repo","kind":"tag","commit_msg":"v1","author":"Alice <a@x>","committer":"","key_id":"KEY","changed_files":null,"tag_name":"v1.0","target":"def","commit_object":"object def\ntype commit\ntag v1.0\ntagger Alice <a@x>\n\nv1\n"}`,
+		name:   "tag",
+		object: SignedObject("object def\ntype commit\ntag v1.0\ntagger Alice <a@x>\n\nv1\n"),
+		wire:   `{"repo_name":"repo","kind":"tag","commit_msg":"v1","author":"Alice <a@x>","committer":"","key_id":"KEY","changed_files":null,"tag_name":"v1.0","target":"def","commit_object":"object def\ntype commit\ntag v1.0\ntagger Alice <a@x>\n\nv1\n"}`,
 	},
 	{
-		name: "push",
-		info: GPGSignInfo{
-			RepoName: "repo",
-			KeyID:    "KEY",
-			Signed: SignedPayload{
-				Message: "0 1 refs/heads/main",
-				Signer:  "Alice <a@x>",
-				Details: PushDetails{Pushee: "https://x/r.git"},
-			},
-			SignedObject: SignedObject("certificate version 0.1\npusher Alice <a@x>\npushee https://x/r.git\n\n0 1 refs/heads/main\n"),
-		},
-		wire: `{"repo_name":"repo","kind":"push","commit_msg":"0 1 refs/heads/main","author":"Alice <a@x>","committer":"","key_id":"KEY","changed_files":null,"pushee":"https://x/r.git","commit_object":"certificate version 0.1\npusher Alice <a@x>\npushee https://x/r.git\n\n0 1 refs/heads/main\n"}`,
+		name:   "push",
+		object: SignedObject("certificate version 0.1\npusher Alice <a@x>\npushee https://x/r.git\n\n0 1 refs/heads/main\n"),
+		wire:   `{"repo_name":"repo","kind":"push","commit_msg":"0 1 refs/heads/main","author":"Alice <a@x>","committer":"","key_id":"KEY","changed_files":null,"pushee":"https://x/r.git","commit_object":"certificate version 0.1\npusher Alice <a@x>\npushee https://x/r.git\n\n0 1 refs/heads/main\n"}`,
 	},
 }
 
 func TestGPGSignInfo_MarshalJSON(t *testing.T) {
 	for _, tt := range gpgSignInfoGolden {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := json.Marshal(tt.info)
+			got, err := json.Marshal(tt.info(t))
 			require.NoError(t, err)
 			assert.JSONEq(t, tt.wire, string(got))
 		})
@@ -74,7 +60,7 @@ func TestGPGSignInfo_UnmarshalJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var got GPGSignInfo
 			require.NoError(t, json.Unmarshal([]byte(tt.wire), &got))
-			assert.Equal(t, tt.info, got)
+			assert.Equal(t, tt.info(t), &got)
 		})
 	}
 }
@@ -82,7 +68,7 @@ func TestGPGSignInfo_UnmarshalJSON(t *testing.T) {
 func TestGPGSignInfo_UnmarshalJSON_IgnoresClientDisplayFields(t *testing.T) {
 	var got GPGSignInfo
 	require.NoError(t, json.Unmarshal([]byte(`{"kind":"push","commit_msg":"lie","author":"Mallory","tag_name":"v9","commit_object":"object def\ntag v1\n\nv1\n"}`), &got))
-	assert.Equal(t, SignedPayload{Message: "v1", Details: TagDetails{Name: "v1", Target: "def"}}, got.Signed)
+	assert.Equal(t, SignedPayload{Message: "v1", Details: TagDetails{Name: "v1", Target: "def"}}, got.Signed())
 }
 
 // Bytes that are not UTF-8, such as a Latin-1 commit message, are refused
@@ -105,9 +91,4 @@ func TestGPGSignInfo_UnmarshalJSON_Refuses(t *testing.T) {
 			assert.Error(t, json.Unmarshal([]byte(wire), &got))
 		})
 	}
-}
-
-func TestGPGSignInfo_MarshalJSON_RefusesMissingKind(t *testing.T) {
-	_, err := json.Marshal(GPGSignInfo{SignedObject: SignedObject("tree 0\n\nfix\n")})
-	assert.ErrorContains(t, err, "kind is not set")
 }

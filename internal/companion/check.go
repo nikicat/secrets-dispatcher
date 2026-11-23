@@ -8,10 +8,10 @@ import (
 	"slices"
 )
 
-// CheckResult holds the outcome of a single deployment validation check.
+// The outcome of one deployment check.
 type CheckResult struct {
 	Name    string // Short human-readable check name
-	Pass    bool   // true if the check passed
+	Pass    bool
 	Message string // On failure: actionable fix hint. On pass: brief confirmation.
 }
 
@@ -29,16 +29,10 @@ func AllPass(results []CheckResult) bool {
 	return !slices.ContainsFunc(results, func(r CheckResult) bool { return !r.Pass })
 }
 
-// Check validates the full companion user deployment and returns a slice of
-// CheckResult, one per component. All checks are read-only; Check does not
-// require root.
+// Returns one result for each check of the companion user's deployment. The
+// checks only read, so they need no root.
 func Check(cfg Config) []CheckResult {
 	cfg.defaults()
-
-	// Resolve desktop user from SUDO_USER if unset (non-fatal for check).
-	if cfg.DesktopUser == "" {
-		cfg.DesktopUser = os.Getenv("SUDO_USER")
-	}
 
 	companionUser := cfg.companionUsername()
 
@@ -164,7 +158,6 @@ func (c Config) provisionHint() string {
 	return fmt.Sprintf("run: sudo secrets-dispatcher provision --user %s", c.DesktopUser)
 }
 
-// fileExists returns true if path exists and is a regular file or symlink.
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil

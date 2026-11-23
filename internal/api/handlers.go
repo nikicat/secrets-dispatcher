@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
@@ -187,7 +188,7 @@ func (h *Handlers) HandleAutoApproveCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := h.resolver.AutoApprove(req.RequestID); err != nil {
+	if err := h.resolver.AddRuleFromCancelled(req.RequestID); err != nil {
 		if err == approval.ErrNotFound {
 			writeError(w, "cancelled request not found", http.StatusNotFound)
 			return
@@ -210,8 +211,8 @@ func (h *Handlers) HandleAutoApproveDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/auto-approve/")
-	if id == "" || strings.Contains(id, "/") {
+	id := approval.AutoApproveRuleID(strings.TrimPrefix(r.URL.Path, "/api/v1/auto-approve/"))
+	if id == "" || strings.Contains(string(id), "/") {
 		writeError(w, "invalid rule ID", http.StatusBadRequest)
 		return
 	}
@@ -268,7 +269,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func writeError(w http.ResponseWriter, message string, code int) {
-	respondJSON(w, code, ErrorResponse{Error: message})
+	respondJSON(w, code, apiclient.ErrorResponse{Error: message})
 }
 
 // Writes v as a JSON response with the given status code. Errors when v cannot

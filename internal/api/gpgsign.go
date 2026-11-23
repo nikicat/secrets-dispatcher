@@ -67,7 +67,7 @@ func (h *Handlers) HandleGPGSignRequest(w http.ResponseWriter, r *http.Request) 
 		h.signAndRecordAutoApproved(w, sign, request, "trusted signer")
 		return
 	}
-	if rule := h.resolver.Manager.CheckAutoApproveRules(request); rule != nil {
+	if rule, ok := h.resolver.Manager.CheckAutoApproveRules(request); ok {
 		h.signAndRecordAutoApproved(w, sign, request, fmt.Sprintf("auto-approve rule %s", rule.ID))
 		return
 	}
@@ -94,7 +94,7 @@ func decodeSignRequest(w http.ResponseWriter, r *http.Request) (*approval.GPGSig
 // Returns the log attributes that name a gpg_sign request's repo, invoker and
 // commit subject, as a group that log handlers inline.
 func signLogAttrs(sign *approval.GPGSignInfo, sender approval.SenderInfo) slog.Attr {
-	subject, _, _ := strings.Cut(sign.Signed.Message, "\n")
+	subject, _, _ := strings.Cut(sign.Signed().Message, "\n")
 	return slog.GroupAttrs("",
 		slog.String("repo", string(sign.RepoName)),
 		slog.String("process", sender.InvokerName),

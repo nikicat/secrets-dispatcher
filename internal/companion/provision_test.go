@@ -346,37 +346,10 @@ func TestProvision_RequiresRoot(t *testing.T) {
 	}
 }
 
-func TestProvision_DetectsSUDO_USER(t *testing.T) {
-	fakeSystem(t)
-
-	var detectedUser string
-	testutil.Swap(t, &userLookupFunc, func(username string) (*user.User, error) {
-		// Capture what companion username was derived.
-		if after, ok := strings.CutPrefix(username, "secrets-"); ok {
-			detectedUser = after
-		}
-		return &user.User{Username: username, Uid: "1001", Gid: "1001"}, nil
-	})
-
-	t.Setenv("SUDO_USER", "alice")
-
-	cfg := Config{} // empty DesktopUser — should fall back to SUDO_USER
-	if err := Provision(cfg); err != nil {
-		t.Fatalf("Provision() unexpected error: %v", err)
-	}
-
-	if detectedUser != "alice" {
-		t.Errorf("should have detected desktop user 'alice' from SUDO_USER; got %q", detectedUser)
-	}
-}
-
 func TestProvision_FailsWithoutUser(t *testing.T) {
 	fakeSystem(t)
 
-	// Ensure SUDO_USER is not set.
-	t.Setenv("SUDO_USER", "")
-
-	cfg := Config{} // empty DesktopUser, no SUDO_USER
+	cfg := Config{}
 	err := Provision(cfg)
 	if err == nil {
 		t.Fatal("Provision() should return error with no desktop user")

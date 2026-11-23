@@ -10,8 +10,7 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/logging"
 )
 
-// ItemHandler handles Item interface calls for item objects.
-// It is exported as a subtree handler for /org/freedesktop/secrets/collection/*/*.
+// Serves org.freedesktop.Secret.Item.
 type ItemHandler struct {
 	properties
 }
@@ -29,12 +28,13 @@ func (o itemObjects) object(msg dbus.Message, _ dbustypes.Interface) (dbus.Objec
 	return calledPathIn(o, msg)
 }
 
-// Delete deletes the item.
+// Deletes the item when the request is approved. Errors with AccessDenied when
+// it is denied or expires.
 // Signature: Delete() -> (prompt ObjectPath)
 func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	path, dbusErr := i.object(msg, dbustypes.ItemInterface)
 	if dbusErr != nil {
-		return "/", dbusErr
+		return dbustypes.NoObject, dbusErr
 	}
 
 	caller, release := i.startApprovalCaller(msg)
@@ -44,13 +44,13 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	upstreamCall, err := caller.requireApproval(info)
 	if err != nil {
 		i.logger.LogItemDelete(caller.ctx, path, logging.ResultDenied, err)
-		return "/", dbustypes.ErrAccessDenied(err.Error())
+		return dbustypes.NoObject, dbustypes.ErrAccessDenied(err.Error())
 	}
 
 	call := i.callUpstream(upstreamCall, path, dbustypes.ItemInterface.Member("Delete"))
 	var prompt dbus.ObjectPath
 	if err := call.Store(&prompt); err != nil {
-		return "/", dbustypes.ErrFailed(err)
+		return dbustypes.NoObject, dbustypes.ErrFailed(err)
 	}
 
 	i.logger.LogItemDelete(context.Background(), path, logging.ResultOK, nil)
@@ -58,7 +58,9 @@ func (i *ItemHandler) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
 	return prompt, nil
 }
 
-// GetSecret retrieves the secret for this item.
+// Returns the item's secret, encoded for the given session, when the request is
+// approved. Errors with AccessDenied when it is denied or expires, and with
+// NoSession when the given session is unknown.
 // Signature: GetSecret(session ObjectPath) -> (secret Secret)
 func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbustypes.Secret, *dbus.Error) {
 	path, dbusErr := i.object(msg, dbustypes.ItemInterface)
@@ -76,20 +78,19 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 		return dbustypes.Secret{}, dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	localSession, ok := i.sessions.GetLocalSession(session)
+	upstreamSession, ok := i.sessions.UpstreamSession(session)
 	if !ok {
 		i.logger.LogItemGetSecret(context.Background(), path, logging.ResultError, dbustypes.ErrSessionNotFound(string(session)))
 		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
 	}
 
-	call := i.callUpstream(upstreamCall, path, dbustypes.ItemInterface.Member("GetSecret"), localSession)
+	call := i.callUpstream(upstreamCall, path, dbustypes.ItemInterface.Member("GetSecret"), upstreamSession)
 	var secret dbustypes.Secret
 	if err := call.Store(&secret); err != nil {
 		i.logger.LogItemGetSecret(context.Background(), path, logging.ResultError, err)
 		return dbustypes.Secret{}, dbustypes.ErrFailed(err)
 	}
 
-	// Rewrite session path and, for DH sessions, encrypt the value for the client.
 	encoded, err := i.sessions.ForClient(session, secret)
 	if err != nil {
 		i.logger.LogItemGetSecret(context.Background(), path, logging.ResultError, err)
@@ -100,7 +101,9 @@ func (i *ItemHandler) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbus
 	return encoded, nil
 }
 
-// SetSecret sets the secret for this item.
+// Replaces the item's secret when the request is approved. An ignored write
+// (ADR 0005) succeeds and writes nothing. Errors with AccessDenied when the
+// request is denied or expires.
 // Signature: SetSecret(secret Secret)
 func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus.Error {
 	path, dbusErr := i.object(msg, dbustypes.ItemInterface)
@@ -122,15 +125,13 @@ func (i *ItemHandler) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus
 		return dbustypes.ErrAccessDenied(err.Error())
 	}
 
-	// Map the remote session to the upstream session, decrypting the value for
-	// DH sessions before forwarding it to the (plain) upstream service.
-	localSecret, err := i.sessions.ForUpstream(secret)
+	upstreamSecret, err := i.sessions.ForUpstream(secret)
 	if err != nil {
 		i.logger.LogItemSetSecret(caller.ctx, path, logging.ResultError, err)
 		return sessionSecretError(secret.Session, err)
 	}
 
-	call := i.callUpstream(upstreamCall, path, dbustypes.ItemInterface.Member("SetSecret"), localSecret)
+	call := i.callUpstream(upstreamCall, path, dbustypes.ItemInterface.Member("SetSecret"), upstreamSecret)
 	if call.Err != nil {
 		return dbustypes.ErrFailed(call.Err)
 	}

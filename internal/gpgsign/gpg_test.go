@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFindRealGPG(t *testing.T) {
@@ -11,20 +14,13 @@ func TestFindRealGPG(t *testing.T) {
 
 	t.Run("gpg exists and is not self", func(t *testing.T) {
 		dir := t.TempDir()
-		gpgPath := filepath.Join(dir, "gpg")
-		if err := os.WriteFile(gpgPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		gpgPath := fakeGPG(t, dir)
 
 		t.Setenv("PATH", dir+":"+origPath)
 
 		got, err := FindRealGPG()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != gpgPath {
-			t.Errorf("FindRealGPG() = %q, want %q", got, gpgPath)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, gpgPath, got)
 	})
 
 	t.Run("gpg not found at all", func(t *testing.T) {
@@ -32,75 +28,50 @@ func TestFindRealGPG(t *testing.T) {
 		t.Setenv("PATH", emptyDir)
 
 		_, err := FindRealGPG()
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
+		assert.Error(t, err)
 	})
 
 	t.Run("only self in PATH under gpg name", func(t *testing.T) {
-		// Copy the test executable to a temp dir as "gpg" so SameFile matches.
-		self, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		selfData, err := os.ReadFile(self)
-		if err != nil {
-			t.Fatal(err)
-		}
-
 		dir := t.TempDir()
-		fakeSelf := filepath.Join(dir, "gpg")
-		if err := os.WriteFile(fakeSelf, selfData, 0o755); err != nil {
-			t.Fatal(err)
-		}
-
-		// Create a hard link so os.SameFile returns true.
-		linkPath := filepath.Join(dir, "gpg")
-		// Remove what we wrote above; use a hard link to get inode equality.
-		if err := os.Remove(linkPath); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Link(self, linkPath); err != nil {
-			// Hard link may fail across filesystems; skip rather than fail.
-			t.Skip("hard link not supported across filesystems:", err)
-		}
+		selfAsGPG(t, dir)
 
 		t.Setenv("PATH", dir)
 
-		_, err = FindRealGPG()
-		if err == nil {
-			t.Fatal("expected error when only self is found, got nil")
-		}
+		_, err := FindRealGPG()
+		assert.Error(t, err, "only self is found")
 	})
 
 	t.Run("multiple gpg binaries first is self second is real", func(t *testing.T) {
-		self, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
-
 		dirSelf := t.TempDir()
-		linkPath := filepath.Join(dirSelf, "gpg")
-		if err := os.Link(self, linkPath); err != nil {
-			t.Skip("hard link not supported across filesystems:", err)
-		}
+		selfAsGPG(t, dirSelf)
 
 		dirReal := t.TempDir()
-		realGPG := filepath.Join(dirReal, "gpg")
-		if err := os.WriteFile(realGPG, []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		realGPG := fakeGPG(t, dirReal)
 
 		// Self is first in PATH; real gpg is second.
 		t.Setenv("PATH", dirSelf+":"+dirReal)
 
 		got, err := FindRealGPG()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != realGPG {
-			t.Errorf("FindRealGPG() = %q, want %q", got, realGPG)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, realGPG, got)
 	})
+}
+
+// Returns the path of a new executable script named gpg in the directory.
+func fakeGPG(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "gpg")
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755))
+	return path
+}
+
+// Hard-links the test binary as gpg in the directory, so os.SameFile matches
+// it, and skips the test where the filesystem refuses the link.
+func selfAsGPG(t *testing.T, dir string) {
+	t.Helper()
+	self, err := os.Executable()
+	require.NoError(t, err)
+	if err := os.Link(self, filepath.Join(dir, "gpg")); err != nil {
+		t.Skip("hard link not supported:", err)
+	}
 }

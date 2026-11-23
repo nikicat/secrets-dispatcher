@@ -2,6 +2,8 @@ package api
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestBuildVersionNonEmpty(t *testing.T) {
@@ -9,16 +11,10 @@ func TestBuildVersionNonEmpty(t *testing.T) {
 	if BuildVersion == "" {
 		t.Skip("No embedded assets (dev mode)")
 	}
-	if len(BuildVersion) != 12 {
-		t.Errorf("expected 12-char hash, got %d chars", len(BuildVersion))
-	}
+	assert.Len(t, BuildVersion, 12, "hash length")
 }
 
 func TestBuildVersionConsistent(t *testing.T) {
 	// Multiple calls should return same value
-	v1 := computeVersion()
-	v2 := computeVersion()
-	if v1 != v2 {
-		t.Errorf("version not consistent: %s != %s", v1, v2)
-	}
+	assert.Equal(t, computeVersion(), computeVersion())
 }

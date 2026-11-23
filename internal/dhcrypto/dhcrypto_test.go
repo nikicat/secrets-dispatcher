@@ -5,15 +5,16 @@ import (
 	"encoding/hex"
 	"math/big"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mustHex decodes a hex string or fails the test.
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
-	if err != nil {
-		t.Fatalf("decode hex: %v", err)
-	}
+	require.NoError(t, err)
 	return b
 }
 
@@ -22,9 +23,7 @@ func mustHex(t *testing.T, s string) []byte {
 func keyPairFromHex(t *testing.T, privHex string) *KeyPair {
 	t.Helper()
 	priv, ok := new(big.Int).SetString(privHex, 16)
-	if !ok {
-		t.Fatalf("parse priv hex %q", privHex)
-	}
+	require.True(t, ok, "parse priv hex %q", privHex)
 	return newKeyPair(priv)
 }
 
@@ -50,28 +49,30 @@ func TestGoldenVector(t *testing.T) {
 	client := keyPairFromHex(t, clientPrivHex)
 	server := keyPairFromHex(t, serverPrivHex)
 
-	if got := hex.EncodeToString(client.Public); got != clientPubHex {
-		t.Errorf("client public key:\n got %s\nwant %s", got, clientPubHex)
-	}
-	if got := hex.EncodeToString(server.Public); got != serverPubHex {
-		t.Errorf("server public key:\n got %s\nwant %s", got, serverPubHex)
-	}
+	assert.Equal(t, clientPubHex, hex.EncodeToString(client.Public), "client public key")
+	assert.Equal(t, serverPubHex, hex.EncodeToString(server.Public), "server public key")
 
 	wantKey := mustHex(t, aesKeyHex)
 	clientSession, err := client.Derive(server.Public)
-	if err != nil {
-		t.Fatalf("client derive: %v", err)
-	}
-	if !bytes.Equal(clientSession.key, wantKey) {
-		t.Errorf("client-derived key:\n got %x\nwant %x", clientSession.key, wantKey)
-	}
+	require.NoError(t, err, "client derive")
+	assert.Equal(t, wantKey, clientSession.key, "client-derived key")
 	serverSession, err := server.Derive(client.Public)
-	if err != nil {
-		t.Fatalf("server derive: %v", err)
-	}
-	if !bytes.Equal(serverSession.key, wantKey) {
-		t.Errorf("server-derived key:\n got %x\nwant %x", serverSession.key, wantKey)
-	}
+	require.NoError(t, err, "server derive")
+	assert.Equal(t, wantKey, serverSession.key, "server-derived key")
+}
+
+// Returns the two ends of a session between two fresh key pairs.
+func sessionPair(t *testing.T) (enc, dec *Session) {
+	t.Helper()
+	a, err := GenerateKeyPair()
+	require.NoError(t, err)
+	b, err := GenerateKeyPair()
+	require.NoError(t, err)
+	enc, err = a.Derive(b.Public)
+	require.NoError(t, err)
+	dec, err = b.Derive(a.Public)
+	require.NoError(t, err)
+	return enc, dec
 }
 
 // TestKeyAgreement checks that two freshly generated key pairs derive the same
@@ -79,46 +80,24 @@ func TestGoldenVector(t *testing.T) {
 // full modulus length.
 func TestKeyAgreement(t *testing.T) {
 	a, err := GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair a: %v", err)
-	}
+	require.NoError(t, err, "GenerateKeyPair a")
 	b, err := GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair b: %v", err)
-	}
-	if len(a.Public) != modulusLen || len(b.Public) != modulusLen {
-		t.Fatalf("public keys not padded to %d bytes: %d, %d", modulusLen, len(a.Public), len(b.Public))
-	}
+	require.NoError(t, err, "GenerateKeyPair b")
+	require.Len(t, a.Public, modulusLen, "public key a not padded")
+	require.Len(t, b.Public, modulusLen, "public key b not padded")
 
 	sa, err := a.Derive(b.Public)
-	if err != nil {
-		t.Fatalf("a.Derive: %v", err)
-	}
+	require.NoError(t, err, "a.Derive")
 	sb, err := b.Derive(a.Public)
-	if err != nil {
-		t.Fatalf("b.Derive: %v", err)
-	}
-	if !bytes.Equal(sa.key, sb.key) {
-		t.Errorf("session keys differ: %x vs %x", sa.key, sb.key)
-	}
-	if len(sa.key) != aesKeyLen {
-		t.Errorf("AES key length = %d, want %d", len(sa.key), aesKeyLen)
-	}
+	require.NoError(t, err, "b.Derive")
+	assert.Equal(t, sa.key, sb.key, "session keys differ")
+	assert.Len(t, sa.key, aesKeyLen)
 }
 
 // TestEncryptDecryptRoundTrip exercises encryption across a range of plaintext
 // lengths, including empty and block-aligned inputs (full padding block).
 func TestEncryptDecryptRoundTrip(t *testing.T) {
-	a, _ := GenerateKeyPair()
-	b, _ := GenerateKeyPair()
-	enc, err := a.Derive(b.Public)
-	if err != nil {
-		t.Fatalf("derive enc: %v", err)
-	}
-	dec, err := b.Derive(a.Public)
-	if err != nil {
-		t.Fatalf("derive dec: %v", err)
-	}
+	enc, dec := sessionPair(t)
 
 	cases := [][]byte{
 		nil,
@@ -132,46 +111,28 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 	for i, pt := range cases {
 		ct, iv, err := enc.Encrypt(pt)
-		if err != nil {
-			t.Fatalf("case %d: encrypt: %v", i, err)
-		}
-		if len(iv) != 16 {
-			t.Errorf("case %d: IV length = %d, want 16", i, len(iv))
-		}
-		if len(ct) == 0 || len(ct)%16 != 0 {
-			t.Errorf("case %d: ciphertext length = %d, want non-zero multiple of 16", i, len(ct))
-		}
-		if bytes.Equal(ct, pt) && len(pt) > 0 {
-			t.Errorf("case %d: ciphertext equals plaintext", i)
+		require.NoError(t, err, "case %d: encrypt", i)
+		assert.Len(t, iv, 16, "case %d: IV length", i)
+		assert.True(t, len(ct) > 0 && len(ct)%16 == 0,
+			"case %d: ciphertext length = %d, want non-zero multiple of 16", i, len(ct))
+		if len(pt) > 0 {
+			assert.NotEqual(t, pt, ct, "case %d: ciphertext equals plaintext", i)
 		}
 		got, err := dec.Decrypt(iv, ct)
-		if err != nil {
-			t.Fatalf("case %d: decrypt: %v", i, err)
-		}
-		if !bytes.Equal(got, pt) && !(len(got) == 0 && len(pt) == 0) {
-			t.Errorf("case %d: round-trip mismatch: got %q want %q", i, got, pt)
-		}
+		require.NoError(t, err, "case %d: decrypt", i)
+		assert.Equal(t, string(pt), string(got), "case %d: round-trip mismatch", i)
 	}
 }
 
 // TestEncryptFreshIV verifies each Encrypt call uses a fresh IV, so encrypting
 // the same plaintext twice yields different ciphertexts.
 func TestEncryptFreshIV(t *testing.T) {
-	a, _ := GenerateKeyPair()
-	b, _ := GenerateKeyPair()
-	s, err := a.Derive(b.Public)
-	if err != nil {
-		t.Fatalf("derive: %v", err)
-	}
+	s, _ := sessionPair(t)
 	pt := []byte("repeat me")
 	ct1, iv1, _ := s.Encrypt(pt)
 	ct2, iv2, _ := s.Encrypt(pt)
-	if bytes.Equal(iv1, iv2) {
-		t.Error("IV reused across Encrypt calls")
-	}
-	if bytes.Equal(ct1, ct2) {
-		t.Error("ciphertext identical across Encrypt calls (IV not applied)")
-	}
+	assert.NotEqual(t, iv1, iv2, "IV reused across Encrypt calls")
+	assert.NotEqual(t, ct1, ct2, "ciphertext identical across Encrypt calls (IV not applied)")
 }
 
 func TestDeriveRejectsBadPeerKey(t *testing.T) {
@@ -183,34 +144,24 @@ func TestDeriveRejectsBadPeerKey(t *testing.T) {
 		dhPrime.Bytes(), // p itself (>= p)
 	}
 	for i, pub := range bad {
-		if _, err := kp.Derive(pub); err == nil {
-			t.Errorf("case %d: expected error for degenerate peer key", i)
-		}
+		_, err := kp.Derive(pub)
+		assert.Error(t, err, "case %d: degenerate peer key", i)
 	}
 }
 
 func TestDecryptRejectsMalformedInput(t *testing.T) {
-	a, _ := GenerateKeyPair()
-	b, _ := GenerateKeyPair()
-	s, err := a.Derive(b.Public)
-	if err != nil {
-		t.Fatalf("derive: %v", err)
-	}
+	s, _ := sessionPair(t)
 	ct, iv, _ := s.Encrypt([]byte("secret"))
 
-	if _, err := s.Decrypt(iv[:8], ct); err == nil {
-		t.Error("expected error for short IV")
-	}
-	if _, err := s.Decrypt(iv, ct[:len(ct)-1]); err == nil {
-		t.Error("expected error for non-block-aligned ciphertext")
-	}
-	if _, err := s.Decrypt(iv, nil); err == nil {
-		t.Error("expected error for empty ciphertext")
-	}
+	_, err := s.Decrypt(iv[:8], ct)
+	assert.Error(t, err, "short IV")
+	_, err = s.Decrypt(iv, ct[:len(ct)-1])
+	assert.Error(t, err, "non-block-aligned ciphertext")
+	_, err = s.Decrypt(iv, nil)
+	assert.Error(t, err, "empty ciphertext")
 	// Corrupt the last block so the PKCS#7 padding is (almost certainly) invalid.
 	corrupt := bytes.Clone(ct)
 	corrupt[len(corrupt)-1] ^= 0xFF
-	if _, err := s.Decrypt(iv, corrupt); err == nil {
-		t.Error("expected padding error for corrupted ciphertext")
-	}
+	_, err = s.Decrypt(iv, corrupt)
+	assert.Error(t, err, "corrupted ciphertext padding")
 }

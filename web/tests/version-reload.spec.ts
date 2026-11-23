@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { startTestBackend } from "./fixtures/test-utils.mts";
+import { expectConnected, startTestBackend } from "./fixtures/test-utils.mts";
 
 // These tests verify the version mismatch auto-reload functionality and the
 // session behavior across daemon restarts.
@@ -17,8 +17,7 @@ test.describe("Sessions Across Restart", () => {
     const backend = await startTestBackend({ version: "version_aaa1" });
 
     try {
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
+      await backend.authenticate(page);
       await expect(page.getByText("No pending requests")).toBeVisible();
 
       let reloadCount = 0;
@@ -37,8 +36,7 @@ test.describe("Sessions Across Restart", () => {
       expect(reloadCount).toBe(0);
 
       // A fresh login URL (new JWT, same master token) recovers the session.
-      const freshLoginURL = await backend.generateLoginURL();
-      await page.goto(freshLoginURL);
+      await backend.authenticate(page);
       await expect(page.getByText("No pending requests")).toBeVisible();
     } finally {
       await backend.cleanup();
@@ -83,8 +81,7 @@ test.describe("Version Mismatch Auto-Reload", () => {
         });
       });
 
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
+      await backend.authenticate(page);
       await expect(page.getByText("No pending requests")).toBeVisible();
 
       let reloadCount = 0;
@@ -94,9 +91,7 @@ test.describe("Version Mismatch Auto-Reload", () => {
 
       // Force a reconnect with the SAME version — no reload expected.
       currentRoute!.close({ code: 1006, reason: "test-induced drop" });
-      await expect(page.getByText("client connected")).toBeVisible({
-        timeout: 15000,
-      });
+      await expectConnected(page, { timeout: 15000 });
       await page.waitForTimeout(1000);
       expect(reloadCount).toBe(0);
 
@@ -142,8 +137,7 @@ test.describe("Version Mismatch Auto-Reload", () => {
         };
       });
 
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
+      await backend.authenticate(page);
 
       // Wait for WebSocket connection and snapshot
       await expect(page.getByText("No pending requests")).toBeVisible();

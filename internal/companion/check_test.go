@@ -7,6 +7,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
@@ -32,35 +35,26 @@ func TestCheck_AllPass(t *testing.T) {
 	homeDir := filepath.Join(tmpDir, "testuser")
 
 	// Create all expected files/dirs.
-	must(t, os.MkdirAll(homeDir, 0700))
-	must(t, os.MkdirAll(filepath.Join(homeDir, ".config", "gopass"), 0700))
-	must(t, os.MkdirAll(filepath.Join(homeDir, ".gnupg"), 0700))
+	require.NoError(t, os.MkdirAll(homeDir, 0700))
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".config", "gopass"), 0700))
+	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".gnupg"), 0700))
 	unitDir := companionHome(homeDir).UnitDir()
 	// Create the unit file so the systemd unit check passes.
-	must(t, unitDir.UnitFile(daemonUnit).Write("[Unit]"))
+	require.NoError(t, unitDir.UnitFile(daemonUnit).Write("[Unit]"))
 
 	// D-Bus policy and PAM config live at absolute system paths; we can't redirect
 	// those in Check() (it uses os.Stat directly). Instead we only verify that the
 	// check infrastructure works end-to-end for the path-based checks we control.
 
-	results := Check(cfg)
-	if len(results) == 0 {
-		t.Fatal("Check() returned no results")
-	}
-
 	// The first check (user exists) and home-dir checks should pass.
-	checkMap := make(map[string]CheckResult, len(results))
-	for _, r := range results {
-		checkMap[r.Name] = r
-	}
-
-	assertPass(t, checkMap, "companion user exists")
-	assertPass(t, checkMap, "home directory exists")
-	assertPass(t, checkMap, "home directory mode 0700")
-	assertPass(t, checkMap, "home directory owned by companion user")
-	assertPass(t, checkMap, "gopass config directory exists")
-	assertPass(t, checkMap, "GPG home directory exists")
-	assertPass(t, checkMap, "systemd user unit file exists")
+	checks := byName(Check(cfg))
+	checks.pass(t, "companion user exists")
+	checks.pass(t, "home directory exists")
+	checks.pass(t, "home directory mode 0700")
+	checks.pass(t, "home directory owned by companion user")
+	checks.pass(t, "gopass config directory exists")
+	checks.pass(t, "GPG home directory exists")
+	checks.pass(t, "systemd user unit file exists")
 }
 
 func TestCheck_MissingUser(t *testing.T) {
@@ -69,23 +63,7 @@ func TestCheck_MissingUser(t *testing.T) {
 	})
 
 	cfg := Config{DesktopUser: "nouser", HomeBase: t.TempDir()}
-	results := Check(cfg)
-
-	checkMap := make(map[string]CheckResult, len(results))
-	for _, r := range results {
-		checkMap[r.Name] = r
-	}
-
-	r, ok := checkMap["companion user exists"]
-	if !ok {
-		t.Fatal("Check() missing 'companion user exists' result")
-	}
-	if r.Pass {
-		t.Error("'companion user exists' should FAIL when user does not exist")
-	}
-	if r.Message == "" {
-		t.Error("failed check should include a fix hint message")
-	}
+	byName(Check(cfg)).fail(t, "companion user exists")
 }
 
 func TestCheck_MissingFiles(t *testing.T) {
@@ -96,22 +74,17 @@ func TestCheck_MissingFiles(t *testing.T) {
 
 	cfg := Config{DesktopUser: "emptyuser", HomeBase: t.TempDir()}
 	// Don't create any files/dirs — everything should fail.
-	results := Check(cfg)
-
-	checkMap := make(map[string]CheckResult, len(results))
-	for _, r := range results {
-		checkMap[r.Name] = r
-	}
+	checks := byName(Check(cfg))
 
 	// User exists check should pass.
-	assertPass(t, checkMap, "companion user exists")
+	checks.pass(t, "companion user exists")
 
 	// Home directory checks should fail.
-	assertFail(t, checkMap, "home directory exists")
-	assertFail(t, checkMap, "home directory mode 0700")
-	assertFail(t, checkMap, "home directory owned by companion user")
-	assertFail(t, checkMap, "gopass config directory exists")
-	assertFail(t, checkMap, "GPG home directory exists")
+	checks.fail(t, "home directory exists")
+	checks.fail(t, "home directory mode 0700")
+	checks.fail(t, "home directory owned by companion user")
+	checks.fail(t, "gopass config directory exists")
+	checks.fail(t, "GPG home directory exists")
 }
 
 func TestCheck_LingerMissing(t *testing.T) {
@@ -120,24 +93,8 @@ func TestCheck_LingerMissing(t *testing.T) {
 	})
 
 	cfg := Config{DesktopUser: "lingertest", HomeBase: t.TempDir()}
-	results := Check(cfg)
-
-	checkMap := make(map[string]CheckResult, len(results))
-	for _, r := range results {
-		checkMap[r.Name] = r
-	}
-
 	// Linger check: /var/lib/systemd/linger/secrets-lingertest does not exist in test env.
-	r, ok := checkMap["systemd linger enabled"]
-	if !ok {
-		t.Fatal("Check() missing 'systemd linger enabled' result")
-	}
-	if r.Pass {
-		t.Error("'systemd linger enabled' should FAIL in test environment")
-	}
-	if r.Message == "" {
-		t.Error("failed linger check should include a fix hint")
-	}
+	byName(Check(cfg)).fail(t, "systemd linger enabled")
 }
 
 func TestCheck_ReturnsExpectedCheckCount(t *testing.T) {
@@ -146,101 +103,62 @@ func TestCheck_ReturnsExpectedCheckCount(t *testing.T) {
 	})
 
 	cfg := Config{DesktopUser: "counttest", HomeBase: t.TempDir()}
-	results := Check(cfg)
-
-	// There should be exactly 11 checks (documented in check.go): user,
-	// home-exists, home-mode, home-owned, gopass, gnupg, dbus, systemd-unit,
-	// pam, pam-include, linger.
-	const expectedChecks = 11
-	if len(results) != expectedChecks {
-		t.Errorf("Check() returned %d results, want %d; results: %v", len(results), expectedChecks, resultNames(results))
-	}
+	assert.Len(t, Check(cfg), 11)
 }
 
-// assertPass verifies a named check passed.
-func assertPass(t *testing.T, checkMap map[string]CheckResult, name string) {
+type checksByName map[string]CheckResult
+
+func byName(results []CheckResult) checksByName {
+	checks := make(checksByName, len(results))
+	for _, r := range results {
+		checks[r.Name] = r
+	}
+	return checks
+}
+
+func (c checksByName) pass(t *testing.T, name string) {
 	t.Helper()
-	r, ok := checkMap[name]
-	if !ok {
-		t.Errorf("check %q not found in results", name)
-		return
-	}
-	if !r.Pass {
-		t.Errorf("check %q should PASS but FAILED: %s", name, r.Message)
+	if r, ok := c[name]; assert.True(t, ok, "no check %q", name) {
+		assert.True(t, r.Pass, "check %q failed: %s", name, r.Message)
 	}
 }
 
-// assertFail verifies a named check failed.
-func assertFail(t *testing.T, checkMap map[string]CheckResult, name string) {
+// Fails the test unless the named check ran and failed with a fix hint.
+func (c checksByName) fail(t *testing.T, name string) {
 	t.Helper()
-	r, ok := checkMap[name]
-	if !ok {
-		t.Errorf("check %q not found in results", name)
-		return
+	if r, ok := c[name]; assert.True(t, ok, "no check %q", name) {
+		assert.False(t, r.Pass, "check %q passed: %s", name, r.Message)
+		assert.NotEmpty(t, r.Message, "check %q failed without a fix hint", name)
 	}
-	if r.Pass {
-		t.Errorf("check %q should FAIL but PASSED: %s", name, r.Message)
-	}
-}
-
-// must calls t.Fatal on error.
-func must(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-// resultNames extracts the Name field from a slice of CheckResult for error messages.
-func resultNames(results []CheckResult) []string {
-	names := make([]string, len(results))
-	for i, r := range results {
-		names[i] = r.Name
-	}
-	return names
 }
 
 func TestCheckPAMConfig(t *testing.T) {
-	nb := Config{DesktopUser: "nb"}
+	cfg := Config{DesktopUser: testDesktopUser}
 	other := Config{DesktopUser: "other"}
 	path := filepath.Join(t.TempDir(), "secrets-dispatcher")
-	content, err := pamConfig("secrets-nb")
-	must(t, err)
-	must(t, os.WriteFile(path, content, 0644))
+	content, err := pamConfig(testCompanionUser)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, content, 0644))
 
-	if r := nb.checkPAMConfig(path); !r.Pass {
-		t.Errorf("checkPAMConfig() failed on the provisioned file: %s", r.Message)
-	}
-	if r := other.checkPAMConfig(path); r.Pass {
-		t.Error("checkPAMConfig() passed a file written for another companion user")
-	}
+	r := cfg.checkPAMConfig(path)
+	assert.True(t, r.Pass, "checkPAMConfig() failed on the provisioned file: %s", r.Message)
+	assert.False(t, other.checkPAMConfig(path).Pass, "checkPAMConfig() passed a file written for another companion user")
 	stale := "session optional pam_exec.so quiet /usr/bin/systemctl start --no-block secrets-dispatcher-companion@%u.service\n"
-	must(t, os.WriteFile(path, []byte(stale), 0644))
-	if r := nb.checkPAMConfig(path); r.Pass {
-		t.Error("checkPAMConfig() passed a stale PAM config")
-	}
-	logoutToo := "session optional pam_exec.so quiet /usr/bin/systemctl --user --machine=secrets-nb@ start --no-block " + string(daemonUnit) + "\n"
-	must(t, os.WriteFile(path, []byte(logoutToo), 0644))
-	if r := nb.checkPAMConfig(path); r.Pass {
-		t.Error("checkPAMConfig() passed a hook that also runs at logout")
-	}
-	if r := nb.checkPAMConfig(filepath.Join(t.TempDir(), "missing")); r.Pass {
-		t.Error("checkPAMConfig() passed a missing file")
-	}
+	require.NoError(t, os.WriteFile(path, []byte(stale), 0644))
+	assert.False(t, cfg.checkPAMConfig(path).Pass, "checkPAMConfig() passed a stale PAM config")
+	logoutToo := "session optional pam_exec.so quiet /usr/bin/systemctl --user --machine=" + testCompanionUser + "@ start --no-block " + string(daemonUnit) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(logoutToo), 0644))
+	assert.False(t, cfg.checkPAMConfig(path).Pass, "checkPAMConfig() passed a hook that also runs at logout")
+	assert.False(t, cfg.checkPAMConfig(filepath.Join(t.TempDir(), "missing")).Pass, "checkPAMConfig() passed a missing file")
 }
 
 func TestCheckPAMInclude(t *testing.T) {
-	nb := Config{DesktopUser: "nb"}
+	cfg := Config{DesktopUser: testDesktopUser}
 	path := fakeSessionStack(t, debianCommonSession)
-	if r := nb.checkPAMInclude(); r.Pass {
-		t.Error("checkPAMInclude() passed a stack without the include line")
-	}
-	must(t, os.WriteFile(path, []byte(debianCommonSession+pamIncludeLine+"\n"), 0644))
-	if r := nb.checkPAMInclude(); !r.Pass {
-		t.Errorf("checkPAMInclude() failed on a stack with the include line: %s", r.Message)
-	}
+	assert.False(t, cfg.checkPAMInclude().Pass, "checkPAMInclude() passed a stack without the include line")
+	require.NoError(t, os.WriteFile(path, []byte(debianCommonSession+pamIncludeLine+"\n"), 0644))
+	r := cfg.checkPAMInclude()
+	assert.True(t, r.Pass, "checkPAMInclude() failed on a stack with the include line: %s", r.Message)
 	testutil.Swap(t, &sessionStacks, []string{filepath.Join(t.TempDir(), "missing")})
-	if r := nb.checkPAMInclude(); r.Pass {
-		t.Error("checkPAMInclude() passed without a session stack")
-	}
+	assert.False(t, cfg.checkPAMInclude().Pass, "checkPAMInclude() passed without a session stack")
 }

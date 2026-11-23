@@ -2,12 +2,13 @@ package proxy
 
 import (
 	"testing"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 const testCollectionPath = dbus.ObjectPath("/org/freedesktop/secrets/collection/default")
@@ -42,18 +43,9 @@ func (e *mockServiceEnv) startUnlock(t *testing.T) dbus.ObjectPath {
 
 func waitCompleted(t *testing.T, ch chan *dbus.Signal, promptPath dbus.ObjectPath) *dbus.Signal {
 	t.Helper()
-	for {
-		select {
-		case sig := <-ch:
-			if sig.Path != promptPath || sig.Name != dbustypes.PromptInterface.Member("Completed") {
-				continue
-			}
-			return sig
-		case <-time.After(5 * time.Second):
-			t.Fatal("timed out waiting for Prompt.Completed signal on the front bus")
-			return nil
-		}
-	}
+	return testutil.RecvMatching(t, ch, testutil.BusWait, func(sig *dbus.Signal) bool {
+		return sig.Path == promptPath && sig.Name == dbustypes.PromptInterface.Member("Completed")
+	}, "no Prompt.Completed signal on the front bus")
 }
 
 // Regression test for issue #1. A client calls Prompt, through the proxy, on

@@ -15,8 +15,7 @@ func TestSlowUpstreamNotifier_NotifiesAndDismisses(t *testing.T) {
 
 	dismiss := n.NotifySlowUpstream(approval.RequestInfo{Items: []approval.ItemInfo{{Label: "my-secret", Path: "/test/item"}}})
 
-	require.Equal(t, 1, mock.notifyCount())
-	assert.Equal(t, notifyCall{summary: "Waiting for keyring unlock", body: "my-secret", icon: "dialog-password"}, mock.lastNotify())
+	assert.Equal(t, notifyCall{summary: "Waiting for keyring unlock", body: "my-secret", icon: "dialog-password"}, mock.onlyNotify(t))
 
 	dismiss()
 

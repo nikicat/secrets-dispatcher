@@ -13,6 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func render(t *testing.T, format func(*Formatter) error) string {
+	t.Helper()
+	var buf strings.Builder
+	require.NoError(t, format(NewFormatter(&buf, false)))
+	return buf.String()
+}
+
 func TestRequestSummary_GPGSign(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -32,9 +39,7 @@ func TestRequestSummary_GPGSign(t *testing.T) {
 				GPGSignInfo: &GPGSignInfo{Kind: approval.GPGSignCommit, ChangedFiles: tt.files},
 			}
 			got := req.Summary()
-			if got != tt.want {
-				t.Errorf("Summary() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -70,9 +75,7 @@ func TestRequestSummary_GetSecret(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := tt.req.Summary()
-			if got != tt.want {
-				t.Errorf("Summary() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -89,37 +92,31 @@ func TestFormatEntry_GPGSign(t *testing.T) {
 		ParentHash:   "deadbeef",
 	}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatEntry(req); err != nil {
-		t.Fatalf("FormatEntry failed: %v", err)
-	}
-
-	out := buf.String()
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(req) })
 
 	// Primary fields
-	mustContain(t, out, "Repo:      myrepo")
-	mustContain(t, out, "Author:    Alice <alice@example.com>")
-	mustContain(t, out, "Key:       ABCD1234")
+	assert.Contains(t, out, "Repo:      myrepo")
+	assert.Contains(t, out, "Author:    Alice <alice@example.com>")
+	assert.Contains(t, out, "Key:       ABCD1234")
 
 	// Commit subject indented
-	mustContain(t, out, "    fix: correct typo")
+	assert.Contains(t, out, "    fix: correct typo")
 
 	// Commit body indented
-	mustContain(t, out, "    Longer description here.")
+	assert.Contains(t, out, "    Longer description here.")
 
 	// Changed files
-	mustContain(t, out, "Changed files (2):")
-	mustContain(t, out, "  main.go")
-	mustContain(t, out, "  go.sum")
+	assert.Contains(t, out, "Changed files (2):")
+	assert.Contains(t, out, "  main.go")
+	assert.Contains(t, out, "  go.sum")
 
 	// Secondary metadata (committer differs from author)
-	mustContain(t, out, "Committer: Bob <bob@example.com>")
-	mustContain(t, out, "Parent:    deadbeef")
+	assert.Contains(t, out, "Committer: Bob <bob@example.com>")
+	assert.Contains(t, out, "Parent:    deadbeef")
 
 	// Must NOT include Secret: or Query: lines
-	mustNotContain(t, out, "Secret:")
-	mustNotContain(t, out, "Query:")
+	assert.NotContains(t, out, "Secret:")
+	assert.NotContains(t, out, "Query:")
 }
 
 func TestFormatEntry_GPGSign_SameCommitter(t *testing.T) {
@@ -133,34 +130,22 @@ func TestFormatEntry_GPGSign_SameCommitter(t *testing.T) {
 		ChangedFiles: []string{"VERSION"},
 	}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatEntry(req); err != nil {
-		t.Fatalf("FormatEntry failed: %v", err)
-	}
-
-	out := buf.String()
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(req) })
 	// When committer == author, Committer line should be omitted
-	mustNotContain(t, out, "Committer:")
+	assert.NotContains(t, out, "Committer:")
 	// No ParentHash set, so Parent line should be omitted
-	mustNotContain(t, out, "Parent:")
+	assert.NotContains(t, out, "Parent:")
 }
 
 func TestFormatEntry_GetSecret_Unchanged(t *testing.T) {
 	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{Label: "DatabasePassword", Path: "/org/secrets/1"}}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatEntry(req); err != nil {
-		t.Fatalf("FormatEntry failed: %v", err)
-	}
-
-	out := buf.String()
-	mustContain(t, out, "Secret:    DatabasePassword")
-	mustContain(t, out, "Path:      /org/secrets/1")
-	mustNotContain(t, out, "Coll:")
-	mustNotContain(t, out, "Repo:")
-	mustNotContain(t, out, "Author:")
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(req) })
+	assert.Contains(t, out, "Secret:    DatabasePassword")
+	assert.Contains(t, out, "Path:      /org/secrets/1")
+	assert.NotContains(t, out, "Coll:")
+	assert.NotContains(t, out, "Repo:")
+	assert.NotContains(t, out, "Author:")
 }
 
 func TestFormatEntry_ShowsItemAttributes(t *testing.T) {
@@ -175,23 +160,17 @@ func TestFormatEntry_ShowsItemAttributes(t *testing.T) {
 		SystemdUnit: "myapp.service",
 	}, Session: "/org/freedesktop/secrets/session/s1"}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatEntry(req); err != nil {
-		t.Fatalf("FormatEntry failed: %v", err)
-	}
-
-	out := buf.String()
-	mustContain(t, out, "Secret:    MySecret")
-	mustContain(t, out, "Path:      /org/freedesktop/secrets/collection/login/42")
-	mustContain(t, out, "  Attrs:\n")
-	mustContain(t, out, "    service: ssh\n")
-	mustContain(t, out, "    user: alice\n")
-	mustContain(t, out, "Process:   myapp.service")
-	mustContain(t, out, "Sender:    :1.42")
-	mustContain(t, out, "Session:   /org/freedesktop/secrets/session/s1")
-	mustContain(t, out, "Expires:")
-	mustContain(t, out, "remaining)")
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(req) })
+	assert.Contains(t, out, "Secret:    MySecret")
+	assert.Contains(t, out, "Path:      /org/freedesktop/secrets/collection/login/42")
+	assert.Contains(t, out, "  Attrs:\n")
+	assert.Contains(t, out, "    service: ssh\n")
+	assert.Contains(t, out, "    user: alice\n")
+	assert.Contains(t, out, "Process:   myapp.service")
+	assert.Contains(t, out, "Sender:    :1.42")
+	assert.Contains(t, out, "Session:   /org/freedesktop/secrets/session/s1")
+	assert.Contains(t, out, "Expires:")
+	assert.Contains(t, out, "remaining)")
 }
 
 func TestFormatEntry_MultipleItemsShowAttributes(t *testing.T) {
@@ -200,30 +179,19 @@ func TestFormatEntry_MultipleItemsShowAttributes(t *testing.T) {
 		{Label: "Secret2", Path: "/org/secrets/2"},
 	}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatEntry(req); err != nil {
-		t.Fatalf("FormatEntry failed: %v", err)
-	}
-
-	out := buf.String()
-	mustContain(t, out, "Secrets:   2 items")
-	mustContain(t, out, "- Secret1  /org/secrets/1")
-	mustContain(t, out, "    Attrs:\n")
-	mustContain(t, out, "      service: foo\n")
-	mustContain(t, out, "- Secret2  /org/secrets/2")
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(req) })
+	assert.Contains(t, out, "Secrets:   2 items")
+	assert.Contains(t, out, "- Secret1  /org/secrets/1")
+	assert.Contains(t, out, "    Attrs:\n")
+	assert.Contains(t, out, "      service: foo\n")
+	assert.Contains(t, out, "- Secret2  /org/secrets/2")
 }
 
 func TestFormatEntry_ShowsCollection(t *testing.T) {
 	req := PendingEntry{Request: RequestRecord{ID: "xyz-456", Client: "myapp", Type: "get_secret", Items: []ItemInfo{{Label: "pw", Path: "/org/freedesktop/secrets/collection/work/99", Collection: new(dbustypes.CollectionName("work"))}}}, ExpiresAt: time.Now().Add(5 * time.Minute)}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatEntry(req); err != nil {
-		t.Fatalf("FormatEntry failed: %v", err)
-	}
-
-	mustContain(t, buf.String(), "Coll:      work")
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(req) })
+	assert.Contains(t, out, "Coll:      work")
 }
 
 func TestFormatPending_SummaryColumnHeader(t *testing.T) {
@@ -231,16 +199,10 @@ func TestFormatPending_SummaryColumnHeader(t *testing.T) {
 		{Request: RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X"}}}, ExpiresAt: time.Now().Add(time.Minute)},
 	}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatPending(reqs); err != nil {
-		t.Fatalf("FormatPending failed: %v", err)
-	}
-
-	out := buf.String()
-	mustContain(t, out, "SUMMARY")
-	mustContain(t, out, "COLLECTION")
-	mustNotContain(t, out, "SECRET")
+	out := render(t, func(f *Formatter) error { return f.FormatPending(reqs) })
+	assert.Contains(t, out, "SUMMARY")
+	assert.Contains(t, out, "COLLECTION")
+	assert.NotContains(t, out, "SECRET")
 }
 
 func TestFormatPending_CollectionColumn(t *testing.T) {
@@ -248,13 +210,8 @@ func TestFormatPending_CollectionColumn(t *testing.T) {
 		{Request: RequestRecord{ID: "abc", Items: []ItemInfo{{Label: "X", Path: "/org/freedesktop/secrets/collection/mykeys/1", Collection: new(dbustypes.CollectionName("mykeys"))}}}, ExpiresAt: time.Now().Add(time.Minute)},
 	}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatPending(reqs); err != nil {
-		t.Fatalf("FormatPending failed: %v", err)
-	}
-
-	mustContain(t, buf.String(), "mykeys")
+	out := render(t, func(f *Formatter) error { return f.FormatPending(reqs) })
+	assert.Contains(t, out, "mykeys")
 }
 
 func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
@@ -266,16 +223,10 @@ func TestFormatHistory_SummaryColumnHeader(t *testing.T) {
 		},
 	}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatHistory(entries); err != nil {
-		t.Fatalf("FormatHistory failed: %v", err)
-	}
-
-	out := buf.String()
-	mustContain(t, out, "SUMMARY")
-	mustContain(t, out, "COLLECTION")
-	mustNotContain(t, out, "SECRET")
+	out := render(t, func(f *Formatter) error { return f.FormatHistory(entries) })
+	assert.Contains(t, out, "SUMMARY")
+	assert.Contains(t, out, "COLLECTION")
+	assert.NotContains(t, out, "SECRET")
 }
 
 func TestFormatHistory_CollectionColumn(t *testing.T) {
@@ -287,13 +238,8 @@ func TestFormatHistory_CollectionColumn(t *testing.T) {
 		},
 	}
 
-	var buf strings.Builder
-	f := NewFormatter(&buf, false)
-	if err := f.FormatHistory(entries); err != nil {
-		t.Fatalf("FormatHistory failed: %v", err)
-	}
-
-	mustContain(t, buf.String(), "login")
+	out := render(t, func(f *Formatter) error { return f.FormatHistory(entries) })
+	assert.Contains(t, out, "login")
 }
 
 func TestCommitSubject(t *testing.T) {
@@ -308,9 +254,7 @@ func TestCommitSubject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := commitSubject(tt.msg)
-		if got != tt.want {
-			t.Errorf("commitSubject(%q) = %q, want %q", tt.msg, got, tt.want)
-		}
+		assert.Equal(t, tt.want, got, tt.msg)
 	}
 }
 
@@ -327,23 +271,7 @@ func TestCommitBody(t *testing.T) {
 	}
 	for _, tt := range tests {
 		got := commitBody(tt.msg)
-		if got != tt.want {
-			t.Errorf("commitBody(%q) = %q, want %q", tt.msg, got, tt.want)
-		}
-	}
-}
-
-func mustContain(t *testing.T, s, substr string) {
-	t.Helper()
-	if !strings.Contains(s, substr) {
-		t.Errorf("expected output to contain %q\nfull output:\n%s", substr, s)
-	}
-}
-
-func mustNotContain(t *testing.T, s, substr string) {
-	t.Helper()
-	if strings.Contains(s, substr) {
-		t.Errorf("expected output NOT to contain %q\nfull output:\n%s", substr, s)
+		assert.Equal(t, tt.want, got, tt.msg)
 	}
 }
 
@@ -357,21 +285,23 @@ func TestFormatTables_Layout(t *testing.T) {
 		Items:      []ItemInfo{{Label: "a label that is longer than the summary column", Path: "/org/freedesktop/secrets/collection/a-very-long-collection/1", Collection: new(dbustypes.CollectionName("a-very-long-collection"))}},
 		SenderInfo: sender.Info{PID: 4242, UID: &uid},
 	}
-	var pending strings.Builder
-	require.NoError(t, NewFormatter(&pending, false).FormatPending([]PendingEntry{{Request: req, ExpiresAt: time.Now().Add(-time.Minute)}}))
+	pending := render(t, func(f *Formatter) error {
+		return f.FormatPending([]PendingEntry{{Request: req, ExpiresAt: time.Now().Add(-time.Minute)}})
+	})
 	assert.Equal(t, ""+
 		"ID        CLIENT                    PID    UID  TYPE          COLLECTION       SUMMARY                    EXPIRES\n"+
 		"--------  --------------------  -------  -----  ------------  ---------------  -------------------------  -------\n"+
 		"0123456…  a-client-name-longe…     4242   1000  get_secret    a-very-long-co…  a label that is longer t…  expired\n",
-		pending.String())
+		pending)
 
-	var history strings.Builder
-	require.NoError(t, NewFormatter(&history, false).FormatHistory([]HistoryEntry{{Request: RequestRecord{ID: "abc"}, Resolution: "auto_approved", ResolvedAt: time.Now().Add(time.Hour)}}))
+	history := render(t, func(f *Formatter) error {
+		return f.FormatHistory([]HistoryEntry{{Request: RequestRecord{ID: "abc"}, Resolution: "auto_approved", ResolvedAt: time.Now().Add(time.Hour)}})
+	})
 	assert.Equal(t, ""+
 		"ID        CLIENT                    PID    UID  TYPE          COLLECTION       RESULT      SUMMARY               RESOLVED\n"+
 		"--------  --------------------  -------  -----  ------------  ---------------  ----------  --------------------  --------\n"+
 		"abc       -                           -      -  -             -                auto_appr…  -                     just now\n",
-		history.String())
+		history)
 
 	cyrillic := RequestRecord{
 		ID:         "abc",
@@ -380,13 +310,14 @@ func TestFormatTables_Layout(t *testing.T) {
 		Items:      []ItemInfo{{Label: "пароль от почты на работе и дома", Path: "/org/freedesktop/secrets/collection/login/1", Collection: new(dbustypes.CollectionName("login"))}},
 		SenderInfo: sender.Info{PID: 4242, UID: &uid},
 	}
-	var cut strings.Builder
-	require.NoError(t, NewFormatter(&cut, false).FormatPending([]PendingEntry{{Request: cyrillic, ExpiresAt: time.Now().Add(-time.Minute)}}))
+	cut := render(t, func(f *Formatter) error {
+		return f.FormatPending([]PendingEntry{{Request: cyrillic, ExpiresAt: time.Now().Add(-time.Minute)}})
+	})
 	assert.Equal(t, ""+
 		"ID        CLIENT                    PID    UID  TYPE          COLLECTION       SUMMARY                    EXPIRES\n"+
 		"--------  --------------------  -------  -----  ------------  ---------------  -------------------------  -------\n"+
 		"abc       клиент-с-длинным-им…     4242   1000  get_secret    login            пароль от почты на работ…  expired\n",
-		cut.String())
+		cut)
 }
 
 // Pins the text layout of a history entry. Every value sits in one column,
@@ -405,8 +336,7 @@ func TestFormatEntry_Layout(t *testing.T) {
 		Resolution: "approved",
 		ResolvedAt: future,
 	}
-	var out strings.Builder
-	require.NoError(t, NewFormatter(&out, false).FormatEntry(entry))
+	out := render(t, func(f *Formatter) error { return f.FormatEntry(entry) })
 	assert.Equal(t, ""+
 		"ID:        abc\n"+
 		"Client:    git\n"+
@@ -423,5 +353,5 @@ func TestFormatEntry_Layout(t *testing.T) {
 		"Created:   2026-11-22T10:00:00Z\n"+
 		"Result:    approved\n"+
 		"Resolved:  2999-01-01T00:00:00Z (just now)\n",
-		out.String())
+		out)
 }

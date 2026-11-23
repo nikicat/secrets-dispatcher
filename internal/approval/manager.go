@@ -53,6 +53,15 @@ type Observer interface {
 	RuleRemoved(AutoApproveRule)
 }
 
+// An Observer that ignores every event. An observer embeds it and overrides
+// the methods for the events it reads.
+type IgnoreEvents struct{}
+
+func (IgnoreEvents) RequestCreated(Pending)      {}
+func (IgnoreEvents) RequestEnded(HistoryEntry)   {}
+func (IgnoreEvents) RuleAdded(AutoApproveRule)   {}
+func (IgnoreEvents) RuleRemoved(AutoApproveRule) {}
+
 type ItemInfo struct {
 	Path       string
 	Label      string

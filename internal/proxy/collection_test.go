@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
@@ -40,9 +39,7 @@ func TestCollectionObjectsServes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
 			got := collectionObjects{}.serves(dbus.ObjectPath(tc.path))
-			if got != tc.want {
-				t.Errorf("collectionObjects.serves(%q) = %v, want %v", tc.path, got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "collectionObjects.serves(%q)", tc.path)
 		})
 	}
 }
@@ -67,9 +64,7 @@ func TestItemObjectsServes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
 			got := itemObjects{}.serves(dbus.ObjectPath(tc.path))
-			if got != tc.want {
-				t.Errorf("itemObjects.serves(%q) = %v, want %v", tc.path, got, tc.want)
-			}
+			assert.Equal(t, tc.want, got, "itemObjects.serves(%q)", tc.path)
 		})
 	}
 }
@@ -82,12 +77,8 @@ func TestSearchRequest(t *testing.T) {
 		Type:    approval.RequestTypeSearch,
 		Payload: approval.SearchPayload{Attributes: attributes},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("searchRequest = %+v, want %+v", got, want)
-	}
-	if got := searchRequest(nil); !reflect.DeepEqual(got.Items, []approval.ItemInfo{{}}) {
-		t.Errorf("searchRequest(nil).Items = %+v, want one unlabelled item", got.Items)
-	}
+	assert.Equal(t, want, got)
+	assert.Equal(t, []approval.ItemInfo{{}}, searchRequest(nil).Items, "searchRequest(nil) has one unlabelled item")
 }
 
 func TestItemInfoFromProperties(t *testing.T) {

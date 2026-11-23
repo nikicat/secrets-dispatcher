@@ -2,7 +2,6 @@ package approval
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,9 +10,9 @@ import (
 // An auto-approve rule scoped to one collection does not cover a batch that
 // also reads another collection.
 func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	sender := testSender("someapp", "/usr/bin/someapp")
+	sender := LocalSenderForTest("someapp", "/usr/bin/someapp")
 
 	// The user auto-approved a read scoped to the "public" collection.
 	mustAddRule(t, mgr, &Request{
@@ -42,12 +41,11 @@ func TestBatchGetSecrets_AutoApproveDoesNotCoverForeignItem(t *testing.T) {
 // A deny rule fires when any item of the batch is in its scope, even behind a
 // benign first item (ADR 0005).
 func TestBatchGetSecrets_DenyRuleFiresOnAnyItem(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	mgr.trustRules = []TrustRule{{
+	mgr := NewManagerForTest(ManagerConfig{TrustRules: []TrustRule{{
 		Name:   "deny-login",
-		Action: "deny",
+		Action: RuleDeny,
 		Secret: &SecretMatcher{Collection: MustGlob("login")},
-	}}
+	}}})
 
 	batch := []ItemInfo{
 		itemInCollection("public", "x"),
@@ -61,12 +59,11 @@ func TestBatchGetSecrets_DenyRuleFiresOnAnyItem(t *testing.T) {
 // An approve rule fires only when every item of the batch is in its scope
 // (ADR 0005).
 func TestBatchGetSecrets_ApproveRuleRequiresEveryItem(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	mgr.trustRules = []TrustRule{{
+	mgr := NewManagerForTest(ManagerConfig{TrustRules: []TrustRule{{
 		Name:   "approve-public",
-		Action: "approve",
+		Action: RuleApprove,
 		Secret: &SecretMatcher{Collection: MustGlob("public")},
-	}}
+	}}})
 
 	mixed := []ItemInfo{
 		itemInCollection("public", "x"),

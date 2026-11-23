@@ -2,43 +2,31 @@ package config
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewAuthToken(t *testing.T) {
 	token, err := NewAuthToken()
-	if err != nil {
-		t.Fatalf("NewAuthToken: %v", err)
-	}
+	require.NoError(t, err)
 	raw, err := hex.DecodeString(string(token))
-	if err != nil {
-		t.Fatalf("NewAuthToken() = %q, not hex: %v", string(token), err)
-	}
-	if len(raw) != 32 {
-		t.Errorf("NewAuthToken() holds %d bytes, want 32", len(raw))
-	}
+	require.NoError(t, err, "NewAuthToken() = %q, not hex", string(token))
+	assert.Len(t, raw, 32)
 }
 
 func TestAuthorizationRoundTrip(t *testing.T) {
 	token, err := NewAuthToken()
-	if err != nil {
-		t.Fatalf("NewAuthToken: %v", err)
-	}
+	require.NoError(t, err)
 	header := http.Header{}
 	token.Authorize(header)
-	if got, want := header.Get("Authorization"), "Bearer "+string(token); got != want {
-		t.Errorf("Authorize set Authorization to %q, want %q", got, want)
-	}
+	assert.Equal(t, "Bearer "+string(token), header.Get("Authorization"))
 	got, err := ParseAuthorization(header)
-	if err != nil {
-		t.Fatalf("ParseAuthorization(%v): %v", header, err)
-	}
-	if !got.Equal(token) {
-		t.Errorf("ParseAuthorization(%v) = %q, want %q", header, string(got), string(token))
-	}
+	require.NoError(t, err)
+	assert.Equal(t, token, got)
 }
 
 func TestParseAuthorization(t *testing.T) {
@@ -60,26 +48,18 @@ func TestParseAuthorization(t *testing.T) {
 			header.Set("Authorization", tc.value)
 		}
 		got, err := ParseAuthorization(header)
-		if !errors.Is(err, tc.wantErr) || got != tc.want {
-			t.Errorf("ParseAuthorization(%q) = %q, %v; want %q, %v",
-				tc.value, string(got), err, string(tc.want), tc.wantErr)
-		}
+		assert.ErrorIs(t, err, tc.wantErr, tc.value)
+		assert.Equal(t, tc.want, got, tc.value)
 	}
 }
 
 func TestAuthTokenEqual(t *testing.T) {
-	if !AuthToken("abc").Equal("abc") {
-		t.Error(`AuthToken("abc").Equal("abc") = false`)
-	}
+	assert.True(t, AuthToken("abc").Equal("abc"))
 	for _, other := range []AuthToken{"abd", "ab", ""} {
-		if AuthToken("abc").Equal(other) {
-			t.Errorf("AuthToken(%q).Equal(%q) = true", "abc", string(other))
-		}
+		assert.False(t, AuthToken("abc").Equal(other), "AuthToken(%q).Equal(%q)", "abc", string(other))
 	}
 }
 
 func TestAuthTokenRedacts(t *testing.T) {
-	if got := fmt.Sprintf("%v %s", AuthToken("secret"), AuthToken("secret")); got != "[redacted] [redacted]" {
-		t.Errorf("formatted token = %q, want it redacted", got)
-	}
+	assert.Equal(t, "[redacted] [redacted]", fmt.Sprintf("%v %s", AuthToken("secret"), AuthToken("secret")))
 }

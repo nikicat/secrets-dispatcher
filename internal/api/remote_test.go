@@ -14,8 +14,6 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/gpgsign"
 )
 
-const remoteCommit = "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A\ncommitter A\n\nfix: remote\n"
-
 // Pending-request timeout long enough that no test request expires on its own.
 const remoteTimeout = 5 * time.Second
 
@@ -40,7 +38,7 @@ func newRemoteHarness(t *testing.T) *remoteHarness {
 // Like newRemoteHarness, with pending requests expiring after timeout.
 func newRemoteHarnessExpiring(t *testing.T, timeout time.Duration) *remoteHarness {
 	t.Helper()
-	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = timeout })
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{Timeout: timeout})
 	h := testHandlers(t, mgr)
 	h.resolver.GPGRunner = &fakeGPGRunner{res: approval.GPGResult{Signature: []byte("SIG"), Status: []byte("[GNUPG:] SIG_CREATED\n")}}
 	server := &Server{handlers: h, httpServer: &http.Server{}}
@@ -54,8 +52,7 @@ func newRemoteHarnessExpiring(t *testing.T, timeout time.Duration) *remoteHarnes
 // Runs the thin client's remote call in the background.
 func (rh *remoteHarness) signAsync(t *testing.T, ctx context.Context) <-chan remoteSignOutcome {
 	t.Helper()
-	info, err := approval.NewGPGSignInfo(approval.SignedObject(remoteCommit), "repo", "ABCD", approval.ListedFiles(nil))
-	require.NoError(t, err)
+	info := approval.CommitSignInfoForTest("repo", "fix: remote")
 	out := make(chan remoteSignOutcome, 1)
 	go func() {
 		res, err := gpgsign.SignRemote(ctx, rh.remote.SocketPath, info)

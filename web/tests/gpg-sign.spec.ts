@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
   pendingRequest,
-  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -471,9 +470,7 @@ test.describe("GPG Sign Corner Cases", () => {
   }) => {
     // Intercept the WebSocket to inject a request_created message
     // with process_chain — tests the {#if hasProcessChain()} branch.
-    const sendToClient = await routeSnapshot(page);
-
-    await backend.authenticate(page);
+    const sendToClient = await backend.openWith(page);
 
     // Inject a fake request with process_chain via the intercepted WebSocket.
     sendToClient({
@@ -594,7 +591,7 @@ test.describe("GPG Sign Approval Flow", () => {
     await card.getByRole("button", { name: "Approve", exact: true }).click();
 
     // Card should disappear (either approved or gpg-failed, both resolve).
-    await expect(card).not.toBeVisible({ timeout: 10000 });
+    await expect(card).not.toBeVisible();
   });
 
   test("WebSocket delivers request_created for gpg_sign", async ({ page }) => {

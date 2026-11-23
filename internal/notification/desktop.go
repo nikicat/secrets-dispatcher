@@ -323,6 +323,9 @@ func (n *DBusNotifier) doClose(id NotificationID) error {
 
 // The desktop notification surface for approving requests (ADR 0007).
 type Handler struct {
+	// Rules show only in the web UI.
+	approval.IgnoreEvents
+
 	notifier   Notifier
 	approver   Approver
 	listenAddr config.ListenAddr
@@ -460,12 +463,6 @@ func (h *Handler) RequestEnded(entry approval.HistoryEntry) {
 	}
 	h.handleResolved(entry.Request.ID)
 }
-
-// Rules show only in the web UI.
-func (h *Handler) RuleAdded(approval.AutoApproveRule) {}
-
-// Rules show only in the web UI.
-func (h *Handler) RuleRemoved(approval.AutoApproveRule) {}
 
 func (h *Handler) notificationMeta(req *approval.Request) (summary, icon string) {
 	switch req.Type {

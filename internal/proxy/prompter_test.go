@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"testing"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/assert"
@@ -110,11 +109,7 @@ func TestPrompterBridge(t *testing.T) {
 	require.NoError(t, bridgeFront.Call(prompterCallbackInterface.Member("PromptReady"), 0, "yes", map[string]dbus.Variant{}, "exchange-c").Err)
 	assert.Equal(t, "yes", recvReply(t, cb.ready))
 	require.NoError(t, bridgeFront.Call(prompterCallbackInterface.Member("PromptDone"), 0).Err)
-	select {
-	case <-cb.done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("PromptDone was not forwarded to the keyring callback")
-	}
+	testutil.Recv(t, cb.done, testutil.BusWait, "PromptDone was not forwarded to the keyring callback")
 
 	// keyring -> shell: StopPrompting ends the exchange.
 	require.NoError(t, prompter.Call(prompterInterface.Member("StopPrompting"), 0, callbackPath).Err)
@@ -172,22 +167,10 @@ func TestPrompterBridgeLeavesSessionBusBackendAlone(t *testing.T) {
 
 func recvCall(t *testing.T, ch chan promptCall, what string) promptCall {
 	t.Helper()
-	select {
-	case c := <-ch:
-		return c
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for %s to reach the shell prompter", what)
-		return promptCall{}
-	}
+	return testutil.Recv(t, ch, testutil.BusWait, "waiting for %s to reach the shell prompter", what)
 }
 
 func recvReply(t *testing.T, ch chan string) string {
 	t.Helper()
-	select {
-	case r := <-ch:
-		return r
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for PromptReady to reach the keyring callback")
-		return ""
-	}
+	return testutil.Recv(t, ch, testutil.BusWait, "PromptReady did not reach the keyring callback")
 }

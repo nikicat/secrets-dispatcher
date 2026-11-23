@@ -132,10 +132,7 @@ func TestUnitFileChangeReadsAsSystemctl(t *testing.T) {
 }
 
 func TestInstallFailsWithoutUserManager(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tmpDir := tempXDG(t)
 	mockUnitsUnreachable(t)
 
 	require.ErrorContains(t, Install(t.Context(), Options{Mode: ModeRemote}), "user systemd manager")

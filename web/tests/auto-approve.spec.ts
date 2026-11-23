@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
   pendingRequest,
-  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -45,15 +44,12 @@ test.describe("Auto-Approve Rules WebSocket", () => {
   test("snapshot includes auto_approve_rules field", async ({ page }) => {
     let snapshotMsg: WSSnapshotMessage | null = null;
 
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => {
         snapshotMsg = s;
         return s;
       },
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
     await expect(page.getByText("No pending requests")).toBeVisible();
 
     expect(snapshotMsg).not.toBeNull();
@@ -65,7 +61,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     // Intercept real server snapshot and inject rules into it
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         auto_approve_rules: [
@@ -81,12 +77,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.getByText("Auto-Approve Rules")).toBeVisible();
     await expect(page.getByText("test-invoker")).toBeVisible();
     await expect(page.getByText("Secret", { exact: true })).toBeVisible();
     await expect(page.getByText("default")).toBeVisible();
@@ -96,7 +87,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
     // Forward real WS but inject a rule_added message after snapshot
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       after: [
         {
           type: "auto_approve_rule_added",
@@ -112,12 +103,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
       ],
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    await expect(page.getByText("Auto-Approve Rules")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.getByText("Auto-Approve Rules")).toBeVisible();
     await expect(page.getByText("ws-invoker")).toBeVisible();
     await expect(page.getByText("Search")).toBeVisible();
     await expect(page.getByText("login")).toBeVisible();
@@ -128,7 +114,7 @@ test.describe("Auto-Approve Rules WebSocket", () => {
   }) => {
     const expiresAt = new Date(Date.now() + 120_000).toISOString();
 
-    const sendToPage = await routeSnapshot(page, {
+    const sendToPage = await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         auto_approve_rules: [
@@ -144,11 +130,8 @@ test.describe("Auto-Approve Rules WebSocket", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
     // Rule should be visible
-    await expect(page.getByText("remove-me")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("remove-me")).toBeVisible();
 
     // Send rule_removed
     sendToPage({
@@ -169,7 +152,7 @@ test.describe("Auto-Approve Rule Reset", () => {
     const initialExpiry = new Date(Date.now() + 30_000).toISOString();
     const resetExpiry = new Date(Date.now() + 120_000).toISOString();
 
-    const sendToPage = await routeSnapshot(page, {
+    const sendToPage = await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         auto_approve_rules: [
@@ -185,12 +168,7 @@ test.describe("Auto-Approve Rule Reset", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    await expect(page.getByText("reset-invoker")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.getByText("reset-invoker")).toBeVisible();
 
     // Should show ~30s remaining
     const timerEl = page.locator(".rule-expiry");
@@ -221,7 +199,7 @@ test.describe("Auto-Approve Rule Reset", () => {
     const initialExpiry = new Date(Date.now() + 10_000).toISOString();
     const resetExpiry = new Date(Date.now() + 65_000).toISOString();
 
-    const sendToPage = await routeSnapshot(page, {
+    const sendToPage = await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         auto_approve_rules: [
@@ -236,12 +214,7 @@ test.describe("Auto-Approve Rule Reset", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    await expect(page.getByText("tick-invoker")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.getByText("tick-invoker")).toBeVisible();
 
     // Reset the timer with a longer expiry
     sendToPage({
@@ -273,7 +246,7 @@ test.describe("Auto-Approve Rule Timer", () => {
   test("rule expiry timer ticks down", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 65_000).toISOString();
 
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         auto_approve_rules: [
@@ -288,10 +261,7 @@ test.describe("Auto-Approve Rule Timer", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    await expect(page.getByText("timer-test")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("timer-test")).toBeVisible();
 
     const timerEl = page.locator(".rule-expiry");
     const initialText = await timerEl.textContent();
@@ -308,7 +278,7 @@ test.describe("Auto-Approve Rule Timer", () => {
   test("expired rules are cleaned up automatically", async ({ page }) => {
     const expiresAt = new Date(Date.now() + 2_000).toISOString();
 
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         auto_approve_rules: [
@@ -323,17 +293,10 @@ test.describe("Auto-Approve Rule Timer", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    await expect(page.getByText("expiring-test")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.getByText("expiring-test")).toBeVisible();
 
     // Wait for expiry cleanup (rule expires in ~2s, cleanup runs every 1s)
-    await expect(page.getByText("expiring-test")).not.toBeVisible({
-      timeout: 5000,
-    });
+    await expect(page.getByText("expiring-test")).not.toBeVisible();
   });
 });
 
@@ -344,23 +307,18 @@ test.describe("Approve and auto-approve", () => {
   ];
 
   test("is offered only on a request a rule could match", async ({ page }) => {
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         requests: localAndRemote(),
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
     const card = (id: string) =>
       page
         .locator(".card")
         .filter({ has: page.locator(`.request-id[title="${id}"]`) });
-    await expect(card("local-req").locator(".btn-approve-auto")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(card("local-req").locator(".btn-approve-auto")).toBeVisible();
     const remote = card("remote-req");
     await expect(remote.locator(".btn-approve")).toBeVisible();
     await expect(remote.locator(".btn-approve-auto")).toHaveCount(0);
@@ -374,23 +332,18 @@ test.describe("Approve and auto-approve", () => {
       resolution: "cancelled",
       resolved_at: new Date().toISOString(),
     });
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         history: localAndRemote().map(cancelled),
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
     const entry = (id: string) =>
       page
         .locator(".history-entry")
         .filter({ has: page.locator(`.history-request-id[title="${id}"]`) });
-    await expect(entry("local-req").locator(".btn-auto-approve")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(entry("local-req").locator(".btn-auto-approve")).toBeVisible();
     const remote = entry("remote-req");
     await expect(remote.locator(".history-resolution")).toBeVisible();
     await expect(remote.locator(".btn-auto-approve")).toHaveCount(0);
@@ -410,7 +363,7 @@ test.describe("Approve and auto-approve", () => {
       resolution: "cancelled",
       resolved_at: new Date().toISOString(),
     });
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         history: [
@@ -430,17 +383,12 @@ test.describe("Approve and auto-approve", () => {
       }),
     });
 
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
     const button = (id: string) =>
       page
         .locator(".history-entry")
         .filter({ has: page.locator(`.history-request-id[title="${id}"]`) })
         .locator(".btn-auto-approve");
-    await expect(button("same-exe")).toHaveText("Reset auto-approve timer", {
-      timeout: 10000,
-    });
+    await expect(button("same-exe")).toHaveText("Reset auto-approve timer");
     await expect(button("other-exe")).toHaveText("Auto-approve similar");
   });
 });

@@ -10,49 +10,31 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestJWTGenerateAndValidate(t *testing.T) {
 	auth := newTestAuth(t)
 
-	// Generate a JWT
+	before := time.Now()
 	token, err := auth.GenerateJWT()
-	if err != nil {
-		t.Fatalf("GenerateJWT failed: %v", err)
-	}
+	require.NoError(t, err, "GenerateJWT")
 
-	// Token should have 3 parts
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		t.Errorf("JWT should have 3 parts, got %d", len(parts))
-	}
+	assert.Len(t, strings.Split(token, "."), 3)
 
-	// Validate the token
 	claims, err := auth.ValidateJWT(token)
-	if err != nil {
-		t.Fatalf("ValidateJWT failed: %v", err)
-	}
+	require.NoError(t, err, "ValidateJWT")
 
-	// Check claims
-	now := time.Now().Unix()
-	if claims.Iat > now || claims.Iat < now-1 {
-		t.Errorf("iat claim should be approximately now")
-	}
-
-	expectedExp := now + int64(LoginLinkLifetime.Seconds())
-	if claims.Exp > expectedExp || claims.Exp < expectedExp-1 {
-		t.Errorf("exp claim should be approximately %d, got %d", expectedExp, claims.Exp)
-	}
+	assert.WithinRange(t, time.Unix(claims.Iat, 0), before.Truncate(time.Second), time.Now(), "iat")
+	assert.Equal(t, LoginLinkLifetime, time.Duration(claims.Exp-claims.Iat)*time.Second, "exp - iat")
 }
 
 func TestJWTInvalidSignature(t *testing.T) {
 	auth := newTestAuth(t)
 
 	token, err := auth.GenerateJWT()
-	if err != nil {
-		t.Fatalf("GenerateJWT failed: %v", err)
-	}
+	require.NoError(t, err, "GenerateJWT")
 
 	// Tamper with the signature
 	parts := strings.Split(token, ".")
@@ -60,12 +42,7 @@ func TestJWTInvalidSignature(t *testing.T) {
 	tamperedToken := strings.Join(parts, ".")
 
 	_, err = auth.ValidateJWT(tamperedToken)
-	if err == nil {
-		t.Error("ValidateJWT should fail with invalid signature")
-	}
-	if !strings.Contains(err.Error(), "invalid signature") {
-		t.Errorf("error should mention invalid signature, got: %v", err)
-	}
+	assert.ErrorContains(t, err, "invalid signature")
 }
 
 func TestJWTExpired(t *testing.T) {
@@ -103,9 +80,7 @@ func TestJWTInvalidFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := auth.ValidateJWT(tt.token)
-			if err == nil {
-				t.Errorf("ValidateJWT(%q) should fail", tt.token)
-			}
+			assert.Error(t, err)
 		})
 	}
 }
@@ -117,40 +92,27 @@ func TestJWTDifferentSecrets(t *testing.T) {
 
 	// Generate token with auth1
 	token, err := auth1.GenerateJWT()
-	if err != nil {
-		t.Fatalf("GenerateJWT failed: %v", err)
-	}
+	require.NoError(t, err, "GenerateJWT")
 
 	// Should validate with auth1
 	_, err = auth1.ValidateJWT(token)
-	if err != nil {
-		t.Errorf("Token should validate with same auth: %v", err)
-	}
+	assert.NoError(t, err, "same auth")
 
 	// Should NOT validate with auth2
 	_, err = auth2.ValidateJWT(token)
-	if err == nil {
-		t.Error("Token should not validate with different auth")
-	}
+	assert.Error(t, err, "different auth")
 }
 
 func TestGenerateLoginURL(t *testing.T) {
 	auth := newTestAuth(t)
 
 	loginURL, err := auth.GenerateLoginURL("127.0.0.1:8484")
-	if err != nil {
-		t.Fatalf("GenerateLoginURL failed: %v", err)
-	}
+	require.NoError(t, err, "GenerateLoginURL")
 
 	u, err := url.Parse(loginURL)
-	if err != nil {
-		t.Fatalf("login URL does not parse: %v", err)
-	}
-	token := u.Query().Get("token")
-	_, err = auth.ValidateJWT(token)
-	if err != nil {
-		t.Errorf("Token from login URL should be valid: %v", err)
-	}
+	require.NoError(t, err, "parse login URL")
+	_, err = auth.ValidateJWT(u.Query().Get("token"))
+	assert.NoError(t, err, "token from login URL")
 }
 
 func TestLoadAuth(t *testing.T) {
@@ -158,31 +120,20 @@ func TestLoadAuth(t *testing.T) {
 
 	// Create initial auth
 	auth1, err := NewAuth(dir)
-	if err != nil {
-		t.Fatalf("NewAuth failed: %v", err)
-	}
+	require.NoError(t, err, "NewAuth")
 
 	// Load auth from same directory
 	auth2, err := LoadAuth(dir)
-	if err != nil {
-		t.Fatalf("LoadAuth failed: %v", err)
-	}
+	require.NoError(t, err, "LoadAuth")
 
-	// Tokens should match
-	if auth1.token != auth2.token {
-		t.Error("Loaded auth should have same token")
-	}
+	assert.Equal(t, auth1.token, auth2.token, "loaded token")
 
 	// Generate token with auth1, validate with auth2
 	token, err := auth1.GenerateJWT()
-	if err != nil {
-		t.Fatalf("GenerateJWT failed: %v", err)
-	}
+	require.NoError(t, err, "GenerateJWT")
 
 	_, err = auth2.ValidateJWT(token)
-	if err != nil {
-		t.Errorf("Token should validate with loaded auth: %v", err)
-	}
+	assert.NoError(t, err, "loaded auth")
 }
 
 func TestLoadAuthNotExists(t *testing.T) {

@@ -2,13 +2,12 @@ package notification
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
-	"slices"
-	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -74,13 +73,13 @@ func (m *mockNotifier) closeCount() int {
 	return len(m.closed)
 }
 
-func (m *mockNotifier) lastNotify() notifyCall {
+// Returns the one Notify call made, and fails the test unless exactly one was.
+func (m *mockNotifier) onlyNotify(t *testing.T) notifyCall {
+	t.Helper()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.notified) == 0 {
-		return notifyCall{}
-	}
-	return m.notified[len(m.notified)-1]
+	require.Len(t, m.notified, 1, "Notify calls")
+	return m.notified[0]
 }
 
 func (m *mockNotifier) lastClosed() NotificationID {
@@ -123,12 +122,58 @@ func (a *mockApprover) Deny(id approval.RequestID) error               { return 
 func (a *mockApprover) AddRuleFromCancelled(approval.RequestID) error  { return a.fail() }
 func (a *mockApprover) ApproveAndAutoApprove(approval.RequestID) error { return a.fail() }
 
+// Returns a handler whose notifications fire immediately.
 func newTestHandler() (*Handler, *mockNotifier, *mockApprover) {
+	return newTestHandlerWithDelay(0)
+}
+
+const testNotificationDelay = 100 * time.Millisecond
+
+// Advances the bubble's clock to testNotificationDelay and waits until the
+// goroutines it wakes block again.
+func passDelay() {
+	time.Sleep(testNotificationDelay)
+	synctest.Wait()
+}
+
+func newTestHandlerWithDelay(delay time.Duration) (*Handler, *mockNotifier, *mockApprover) {
 	mock := &mockNotifier{}
 	approver := &mockApprover{}
-	// Zero delay for existing tests — notifications fire immediately.
-	h := NewHandler(mock, approver, "127.0.0.1:8484", false, 2*time.Minute, 0)
+	h := NewHandler(mock, approver, "127.0.0.1:8484", false, 2*time.Minute, delay)
 	return h, mock, approver
+}
+
+// Sends one action with the given key on the notification of the given request
+// through Handler.ListenActions, and returns once it is handled.
+func runAction(h *Handler, requestID approval.RequestID, key actionKey) {
+	nID, _ := notificationOf(h, requestID)
+
+	actions := make(chan Action, 1)
+	actions <- Action{NotificationID: nID, ActionKey: key}
+	close(actions)
+	h.ListenActions(context.Background(), actions)
+}
+
+func notificationOf(h *Handler, requestID approval.RequestID) (NotificationID, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	nID, ok := h.notifications[requestID]
+	return nID, ok
+}
+
+func requestOf(h *Handler, nID NotificationID) (approval.RequestID, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	reqID, ok := h.requests[nID]
+	return reqID, ok
+}
+
+// Returns the one notification that a new handler shows for the given request.
+func shownNotification(t *testing.T, req *approval.Request) notifyCall {
+	t.Helper()
+	h, mock, _ := newTestHandler()
+	h.RequestCreated(approval.Pending{Request: req})
+	return mock.onlyNotify(t)
 }
 
 // Returns a GetSecret request for one item labelled "Secret", with no sender.
@@ -141,8 +186,6 @@ func secretRequest(id approval.RequestID) *approval.Request {
 }
 
 func TestHandler_RequestCreated(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:   "test-123",
 		Type: approval.RequestTypeGetSecret,
@@ -158,35 +201,11 @@ func TestHandler_RequestCreated(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	if mock.notifyCount() != 1 {
-		t.Errorf("expected 1 notification, got %d", mock.notifyCount())
-	}
-
-	call := mock.lastNotify()
-	if call.summary != "Secret requested" {
-		t.Errorf("unexpected summary: %s", call.summary)
-	}
-	if !strings.Contains(call.body, "<b>ssh-agent.service</b>@user@remote[1234]") {
-		t.Errorf("body should contain proc@client[pid] header: %s", call.body)
-	}
-	if !strings.Contains(call.body, "<i>GitHub Token</i>") {
-		t.Errorf("body should contain italic secret label: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Equal(t, "Secret requested", call.summary)
+	assert.Contains(t, call.body, "<b>ssh-agent.service</b>@user@remote[1234]", "body should contain proc@client[pid] header")
+	assert.Contains(t, call.body, "<i>GitHub Token</i>", "body should contain italic secret label")
 }
-
-// A sender whose invoker has an executable, so Request.AutoApprovable accepts
-// its requests.
-var localSender = approval.SenderInfo{
-	PID:          4242,
-	InvokerName:  "gh",
-	ProcessChain: []procutil.Process{{Name: "gh", PID: 4242, Exe: new(procutil.Path("/usr/bin/gh"))}},
-}
-
-// A sender with no process chain. A remote client's requests carry one like it
-// (ADR 0011), and Request.AutoApprovable rejects them.
-var remoteSender = approval.SenderInfo{InvokerName: "gh"}
 
 // Checks that the notification offers "Approve 2m" only for a request that
 // Request.AutoApprovable accepts.
@@ -196,27 +215,17 @@ func TestHandler_RequestCreated_Actions(t *testing.T) {
 		sender      approval.SenderInfo
 		wantButtons []Button
 	}{
-		{"local", localSender,
+		{"local", approval.LocalSenderForTest("gh", "/usr/bin/gh"),
 			[]Button{{"default", ""}, {"approve", "Approve"}, {"approve_and_auto_approve", "Approve 2m"}, {"deny", "Deny"}}},
-		{"remote", remoteSender,
+		{"remote", approval.RemoteSenderForTest("gh"),
 			[]Button{{"default", ""}, {"approve", "Approve"}, {"deny", "Deny"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h, mock, _ := newTestHandler()
+			req := secretRequest("test-actions")
+			req.SenderInfo = tt.sender
 
-			req := &approval.Request{
-				ID:         "test-actions",
-				Type:       approval.RequestTypeGetSecret,
-				Items:      []approval.ItemInfo{{Label: "Secret"}},
-				SenderInfo: tt.sender,
-			}
-
-			h.RequestCreated(approval.Pending{Request: req})
-
-			if got := mock.lastNotify().buttons; !slices.Equal(got, tt.wantButtons) {
-				t.Errorf("buttons = %q, want %q", got, tt.wantButtons)
-			}
+			assert.Equal(t, tt.wantButtons, shownNotification(t, req).buttons)
 		})
 	}
 }
@@ -229,22 +238,13 @@ func TestHandler_RequestResolved_ClosesNotification(t *testing.T) {
 	// Create notification
 	h.RequestCreated(approval.Pending{Request: req})
 
-	if mock.notifyCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
-	}
+	require.Equal(t, 1, mock.notifyCount())
 
 	// Approve should close it
 	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
-	// Give async handler time to complete
-	time.Sleep(10 * time.Millisecond)
-
-	if mock.closeCount() != 1 {
-		t.Errorf("expected 1 close call, got %d", mock.closeCount())
-	}
-	if mock.lastClosed() != 1 {
-		t.Errorf("expected to close notification ID 1, got %d", mock.lastClosed())
-	}
+	assert.Equal(t, 1, mock.closeCount())
+	assert.Equal(t, NotificationID(1), mock.lastClosed())
 }
 
 func TestHandler_AllResolutionTypes(t *testing.T) {
@@ -266,11 +266,7 @@ func TestHandler_AllResolutionTypes(t *testing.T) {
 			h.RequestCreated(approval.Pending{Request: req})
 			h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: resolution})
 
-			time.Sleep(10 * time.Millisecond)
-
-			if mock.closeCount() != 1 {
-				t.Errorf("expected notification to be closed for %v", resolution)
-			}
+			assert.Equal(t, 1, mock.closeCount(), "notification should be closed for %v", resolution)
 		})
 	}
 }
@@ -283,14 +279,10 @@ func TestHandler_ResolveWithoutCreate(t *testing.T) {
 	// Should not panic or call close
 	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
-	if mock.closeCount() != 0 {
-		t.Errorf("should not close unknown notification")
-	}
+	assert.Zero(t, mock.closeCount(), "should not close unknown notification")
 }
 
 func TestHandler_FormatBody_Search(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:   "search-1",
 		Type: approval.RequestTypeSearch,
@@ -299,20 +291,12 @@ func TestHandler_FormatBody_Search(t *testing.T) {
 		}},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	call := mock.lastNotify()
-	if call.summary != "Secrets searched" {
-		t.Errorf("expected summary 'Secrets searched', got %q", call.summary)
-	}
-	if !strings.Contains(call.body, "<i>service=github</i>") {
-		t.Errorf("body should contain italic search attributes: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Equal(t, "Secrets searched", call.summary)
+	assert.Contains(t, call.body, "<i>service=github</i>", "body should contain italic search attributes")
 }
 
 func TestHandler_FormatBody_MultipleItems(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:   "multi-1",
 		Type: approval.RequestTypeGetSecret,
@@ -323,17 +307,11 @@ func TestHandler_FormatBody_MultipleItems(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	call := mock.lastNotify()
-	if !strings.Contains(call.body, "<i>3 items</i>") {
-		t.Errorf("body should show italic item count: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Contains(t, call.body, "<i>3 items</i>", "body should show italic item count")
 }
 
 func TestHandler_FormatBody_PIDOnly(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:    "pid-1",
 		Type:  approval.RequestTypeGetSecret,
@@ -347,12 +325,8 @@ func TestHandler_FormatBody_PIDOnly(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	call := mock.lastNotify()
-	if !strings.Contains(call.body, "<b>user@host</b>[5678]") {
-		t.Errorf("body should show client[pid]: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Contains(t, call.body, "<b>user@host</b>[5678]", "body should show client[pid]")
 }
 
 func TestHandler_FormatBody_SenderHeader(t *testing.T) {
@@ -380,33 +354,18 @@ func TestHandler_FormatBody_SenderHeader(t *testing.T) {
 	h, _, _ := newTestHandler()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := &approval.Request{
-				Type:       approval.RequestTypeGetSecret,
-				Items:      []approval.ItemInfo{{Label: "Secret"}},
-				SenderInfo: tt.sender,
-			}
+			req := secretRequest("sender-header-1")
+			req.SenderInfo = tt.sender
 			assert.Equal(t, tt.want+"<i>Secret</i>", h.formatBody(req))
 		})
 	}
 }
 
-// Returns the sign info of a commit with the given message and staged files in
-// the given repo.
-func commitSignInfo(t *testing.T, repo approval.RepoName, message string, staged ...string) *approval.GPGSignInfo {
-	t.Helper()
-	object := approval.SignedObject("tree 0\nauthor John <j@x> 1 +0000\n\n" + message + "\n")
-	info, err := approval.NewGPGSignInfo(object, repo, "ABCD1234", approval.ListedFiles(staged))
-	require.NoError(t, err)
-	return info
-}
-
 func TestHandler_GPGSignRequest(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:      "gpg-1",
 		Type:    approval.RequestTypeGPGSign,
-		Payload: commitSignInfo(t, "my-project", "Add feature\n\nSome body text", "a.go", "b.go"),
+		Payload: approval.CommitSignInfoForTest("my-project", "Add feature\n\nSome body text", "a.go", "b.go"),
 		SenderInfo: approval.SenderInfo{
 			Info: sender.Info{
 				PID:         1234,
@@ -415,37 +374,19 @@ func TestHandler_GPGSignRequest(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	if mock.notifyCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
-	}
-
-	call := mock.lastNotify()
-	if call.summary != "Sign commit" {
-		t.Errorf("expected summary 'Sign commit', got %q", call.summary)
-	}
-	if call.icon != "emblem-important" {
-		t.Errorf("expected icon 'emblem-important', got %q", call.icon)
-	}
-	if !strings.Contains(call.body, "<b>my-project</b>: ") {
-		t.Errorf("body should contain bold repo: %s", call.body)
-	}
-	if !strings.Contains(call.body, "<i>Add feature</i>") {
-		t.Errorf("body should contain italic commit subject: %s", call.body)
-	}
-	if strings.Contains(call.body, "Some body text") {
-		t.Errorf("body should NOT contain commit body text: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Equal(t, "Sign commit", call.summary)
+	assert.Equal(t, "emblem-important", call.icon)
+	assert.Contains(t, call.body, "<b>my-project</b>: ", "body should contain bold repo")
+	assert.Contains(t, call.body, "<i>Add feature</i>", "body should contain italic commit subject")
+	assert.NotContains(t, call.body, "Some body text", "body should NOT contain commit body text")
 }
 
 func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:      "gpg-pid-1",
 		Type:    approval.RequestTypeGPGSign,
-		Payload: commitSignInfo(t, "my-project", "Fix bug"),
+		Payload: approval.CommitSignInfoForTest("my-project", "Fix bug"),
 		SenderInfo: approval.SenderInfo{
 			Info: sender.Info{
 				PID: 5678,
@@ -453,28 +394,20 @@ func TestHandler_FormatBody_GPGSign_PIDOnly(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	call := mock.lastNotify()
-	if !strings.Contains(call.body, "<b>my-project</b>: ") {
-		t.Errorf("body should contain bold repo without process name: %s", call.body)
-	}
-	if !strings.Contains(call.body, "<i>Fix bug</i>") {
-		t.Errorf("body should contain italic commit subject: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Contains(t, call.body, "<b>my-project</b>: ", "body should contain bold repo without process name")
+	assert.Contains(t, call.body, "<i>Fix bug</i>", "body should contain italic commit subject")
 }
 
 // Guards that sender-controlled values reach the markup body escaped, so they
 // cannot forge markup on the consent surface (ADR 0007).
 func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	// A crafted commit message that tries to close the <i> and inject a bold
 	// "Verified" reassurance, plus a process comm that injects markup too.
 	req := &approval.Request{
 		ID:      "inject-1",
 		Type:    approval.RequestTypeGPGSign,
-		Payload: commitSignInfo(t, "repo<script>", "docs: typo</i> <b>Verified · GNOME Keyring</b>"),
+		Payload: approval.CommitSignInfoForTest("repo<script>", "docs: typo</i> <b>Verified · GNOME Keyring</b>"),
 		SenderInfo: approval.SenderInfo{
 			Info: sender.Info{
 				ProcessChain: []procutil.Process{{Name: "evil</b><b>git", PID: 9}},
@@ -482,8 +415,7 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-	body := mock.lastNotify().body
+	body := shownNotification(t, req).body
 
 	// No raw attacker-supplied tags survive.
 	assert.NotContains(t, body, "<b>Verified", "injected bold reassurance must be escaped")
@@ -502,17 +434,14 @@ func TestHandler_FormatBody_EscapesInjectedMarkup(t *testing.T) {
 // Guards against over-escaping: quotes in the markup body stay as they are
 // (ADR 0007).
 func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:         "quotes-1",
 		Type:       approval.RequestTypeGPGSign,
-		Payload:    commitSignInfo(t, "my-project", `fix: don't say "hello" to <script> & friends`),
+		Payload:    approval.CommitSignInfoForTest("my-project", `fix: don't say "hello" to <script> & friends`),
 		SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 5678}},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-	body := mock.lastNotify().body
+	body := shownNotification(t, req).body
 
 	assert.Contains(t, body, `don't say "hello"`, "quotes must pass through verbatim")
 	assert.NotContains(t, body, "&#39;", "apostrophe must not be numerically escaped")
@@ -521,8 +450,6 @@ func TestHandler_FormatBody_QuotesNotEscaped(t *testing.T) {
 }
 
 func TestHandler_DeleteRequest(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:   "delete-1",
 		Type: approval.RequestTypeDelete,
@@ -537,27 +464,13 @@ func TestHandler_DeleteRequest(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	if mock.notifyCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
-	}
-
-	call := mock.lastNotify()
-	if call.summary != "Deletion requested" {
-		t.Errorf("expected summary 'Deletion requested', got %q", call.summary)
-	}
-	if call.icon != "dialog-warning" {
-		t.Errorf("expected icon 'dialog-warning', got %q", call.icon)
-	}
-	if !strings.Contains(call.body, "GitHub Token") {
-		t.Errorf("body should contain item label: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Equal(t, "Deletion requested", call.summary)
+	assert.Equal(t, "dialog-warning", call.icon)
+	assert.Contains(t, call.body, "GitHub Token", "body should contain item label")
 }
 
 func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:   "delete-chain-1",
 		Type: approval.RequestTypeDelete,
@@ -574,15 +487,9 @@ func TestHandler_FormatBody_DeleteWithProcessChain(t *testing.T) {
 		},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	call := mock.lastNotify()
-	if !strings.Contains(call.body, "<b>My Secret</b>") {
-		t.Errorf("body should contain bold item label: %s", call.body)
-	}
-	if !strings.Contains(call.body, "secret-tool") {
-		t.Errorf("body should contain process chain: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Contains(t, call.body, "<b>My Secret</b>", "body should contain bold item label")
+	assert.Contains(t, call.body, "secret-tool", "body should contain process chain")
 }
 
 func TestHandler_FormatBody_ProcessChainExact(t *testing.T) {
@@ -613,8 +520,6 @@ func TestHandler_FormatBody_ProcessChainExact(t *testing.T) {
 }
 
 func TestHandler_WriteRequest(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
 	req := &approval.Request{
 		ID:   "write-1",
 		Type: approval.RequestTypeWrite,
@@ -624,111 +529,34 @@ func TestHandler_WriteRequest(t *testing.T) {
 		SenderInfo: approval.SenderInfo{Info: sender.Info{PID: 1234}},
 	}
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	call := mock.lastNotify()
-	if call.summary != "Secret write requested" {
-		t.Errorf("expected summary 'Secret write requested', got %q", call.summary)
-	}
-	if call.icon != "dialog-warning" {
-		t.Errorf("expected icon 'dialog-warning', got %q", call.icon)
-	}
-	if !strings.Contains(call.body, "New Secret") {
-		t.Errorf("body should contain item label: %s", call.body)
-	}
+	call := shownNotification(t, req)
+	assert.Equal(t, "Secret write requested", call.summary)
+	assert.Equal(t, "dialog-warning", call.icon)
+	assert.Contains(t, call.body, "New Secret", "body should contain item label")
 }
 
 func TestHandler_GetSecretIcon(t *testing.T) {
-	h, mock, _ := newTestHandler()
-
-	req := &approval.Request{
-		ID:    "secret-icon-1",
-		Type:  approval.RequestTypeGetSecret,
-		Items: []approval.ItemInfo{{Label: "MySecret"}},
-	}
-
-	h.RequestCreated(approval.Pending{Request: req})
-
-	if mock.notifyCount() != 1 {
-		t.Fatalf("expected 1 notification, got %d", mock.notifyCount())
-	}
-
-	call := mock.lastNotify()
-	if call.summary != "Secret requested" {
-		t.Errorf("expected summary 'Secret requested', got %q", call.summary)
-	}
-	if call.icon != "dialog-password" {
-		t.Errorf("expected icon 'dialog-password', got %q", call.icon)
-	}
+	call := shownNotification(t, secretRequest("secret-icon-1"))
+	assert.Equal(t, "Secret requested", call.summary)
+	assert.Equal(t, "dialog-password", call.icon)
 }
 
 func TestHandler_ListenActions_Approve(t *testing.T) {
-	h, mock, approver := newTestHandler()
+	h, _, approver := newTestHandler()
 
-	req := secretRequest("action-approve-1")
+	h.RequestCreated(approval.Pending{Request: secretRequest("action-approve-1")})
+	runAction(h, "action-approve-1", actionApprove)
 
-	h.RequestCreated(approval.Pending{Request: req})
-	notifID := mock.lastNotify() // get the notification ID
-	_ = notifID
-
-	// Get actual notification ID from the handler's map
-	h.mu.Lock()
-	nID := h.notifications["action-approve-1"]
-	h.mu.Unlock()
-
-	actions := make(chan Action, 1)
-	actions <- Action{NotificationID: nID, ActionKey: "approve"}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		h.ListenActions(ctx, actions)
-		close(done)
-	}()
-
-	// Wait for the action to be processed
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-
-	approver.mu.Lock()
-	defer approver.mu.Unlock()
-	if len(approver.approved) != 1 || approver.approved[0] != "action-approve-1" {
-		t.Errorf("expected approve for 'action-approve-1', got %v", approver.approved)
-	}
+	assert.Equal(t, []approval.RequestID{"action-approve-1"}, approver.approved)
 }
 
 func TestHandler_ListenActions_Deny(t *testing.T) {
-	h, mock, approver := newTestHandler()
+	h, _, approver := newTestHandler()
 
-	req := secretRequest("action-deny-1")
+	h.RequestCreated(approval.Pending{Request: secretRequest("action-deny-1")})
+	runAction(h, "action-deny-1", actionDeny)
 
-	h.RequestCreated(approval.Pending{Request: req})
-	_ = mock
-
-	h.mu.Lock()
-	nID := h.notifications["action-deny-1"]
-	h.mu.Unlock()
-
-	actions := make(chan Action, 1)
-	actions <- Action{NotificationID: nID, ActionKey: "deny"}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		h.ListenActions(ctx, actions)
-		close(done)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-
-	approver.mu.Lock()
-	defer approver.mu.Unlock()
-	if len(approver.denied) != 1 || approver.denied[0] != "action-deny-1" {
-		t.Errorf("expected deny for 'action-deny-1', got %v", approver.denied)
-	}
+	assert.Equal(t, []approval.RequestID{"action-deny-1"}, approver.denied)
 }
 
 func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
@@ -737,89 +565,33 @@ func TestHandler_ListenActions_DefaultOpensURL(t *testing.T) {
 	var opened string
 	h.openURL = func(u string) error { opened = u; return nil }
 
-	req := secretRequest("action-default-1")
+	h.RequestCreated(approval.Pending{Request: secretRequest("action-default-1")})
+	runAction(h, "action-default-1", actionDefault)
 
-	h.RequestCreated(approval.Pending{Request: req})
-
-	h.mu.Lock()
-	nID := h.notifications["action-default-1"]
-	h.mu.Unlock()
-
-	actions := make(chan Action, 1)
-	actions <- Action{NotificationID: nID, ActionKey: "default"}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		h.ListenActions(ctx, actions)
-		close(done)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-
-	if opened != "http://127.0.0.1:8484/?request=action-default-1" {
-		t.Errorf("expected openURL called with request URL, got %q", opened)
-	}
-
-	approver.mu.Lock()
-	defer approver.mu.Unlock()
-	if len(approver.approved) != 0 || len(approver.denied) != 0 {
-		t.Errorf("default action should not call approve/deny")
-	}
+	assert.Equal(t, "http://127.0.0.1:8484/?request=action-default-1", opened)
+	assert.Empty(t, approver.approved, "default action should not approve")
+	assert.Empty(t, approver.denied, "default action should not deny")
 }
 
 func TestHandler_ListenActions_UnknownNotification(t *testing.T) {
 	h, _, approver := newTestHandler()
 
-	actions := make(chan Action, 1)
-	actions <- Action{NotificationID: 9999, ActionKey: "approve"}
+	runAction(h, "unknown", actionApprove)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		h.ListenActions(ctx, actions)
-		close(done)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-
-	approver.mu.Lock()
-	defer approver.mu.Unlock()
-	if len(approver.approved) != 0 {
-		t.Errorf("should not approve unknown notification, got %v", approver.approved)
-	}
+	assert.Empty(t, approver.approved, "should not approve unknown notification")
 }
 
+// Checks that an approver error is logged, not propagated.
 func TestHandler_ListenActions_ApproverError(t *testing.T) {
+	logs := testutil.CaptureLogs(t, slog.LevelError)
+
 	h, _, approver := newTestHandler()
 	approver.err = fmt.Errorf("not found")
 
-	req := secretRequest("err-1")
-	h.RequestCreated(approval.Pending{Request: req})
+	h.RequestCreated(approval.Pending{Request: secretRequest("err-1")})
+	runAction(h, "err-1", actionApprove)
 
-	h.mu.Lock()
-	nID := h.notifications["err-1"]
-	h.mu.Unlock()
-
-	actions := make(chan Action, 1)
-	actions <- Action{NotificationID: nID, ActionKey: "approve"}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		h.ListenActions(ctx, actions)
-		close(done)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-
-	// Should not panic — error is logged but not propagated
+	assert.Contains(t, logs.String(), "request_id=err-1")
 }
 
 func TestHandler_ReverseMapCleanup(t *testing.T) {
@@ -829,122 +601,85 @@ func TestHandler_ReverseMapCleanup(t *testing.T) {
 
 	h.RequestCreated(approval.Pending{Request: req})
 
-	h.mu.Lock()
-	nID := h.notifications["cleanup-1"]
-	_, hasReverse := h.requests[nID]
-	h.mu.Unlock()
+	nID, _ := notificationOf(h, "cleanup-1")
+	_, hasReverse := requestOf(h, nID)
 
-	if !hasReverse {
-		t.Fatal("reverse map should contain entry after creation")
-	}
+	require.True(t, hasReverse, "reverse map should contain entry after creation")
 
 	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
-	h.mu.Lock()
-	_, hasNotif := h.notifications["cleanup-1"]
-	_, hasReverse = h.requests[nID]
-	h.mu.Unlock()
+	_, hasNotif := notificationOf(h, "cleanup-1")
+	_, hasReverse = requestOf(h, nID)
 
-	if hasNotif {
-		t.Error("notifications map should be cleaned up after resolve")
-	}
-	if hasReverse {
-		t.Error("reverse map should be cleaned up after resolve")
-	}
-}
-
-func newTestHandlerWithDelay(delay time.Duration) (*Handler, *mockNotifier, *mockApprover) {
-	mock := &mockNotifier{}
-	approver := &mockApprover{}
-	h := NewHandler(mock, approver, "127.0.0.1:8484", false, 2*time.Minute, delay)
-	return h, mock, approver
+	assert.False(t, hasNotif, "notifications map should be cleaned up after resolve")
+	assert.False(t, hasReverse, "reverse map should be cleaned up after resolve")
 }
 
 func TestHandler_DelayedNotification_SuppressesQuickCancel(t *testing.T) {
-	h, mock, _ := newTestHandlerWithDelay(200 * time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		h, mock, _ := newTestHandlerWithDelay(testNotificationDelay)
 
-	req := secretRequest("quick-cancel-1")
+		req := secretRequest("quick-cancel-1")
 
-	h.RequestCreated(approval.Pending{Request: req})
+		h.RequestCreated(approval.Pending{Request: req})
 
-	// No notification should be sent yet (still in delay window).
-	if mock.notifyCount() != 0 {
-		t.Fatalf("expected 0 notifications during delay, got %d", mock.notifyCount())
-	}
+		require.Zero(t, mock.notifyCount(), "notifications during delay")
 
-	// Cancel before delay expires.
-	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
+		h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
 
-	// Wait past the delay to verify no notification fires.
-	time.Sleep(300 * time.Millisecond)
+		passDelay()
 
-	if mock.notifyCount() != 0 {
-		t.Errorf("expected 0 notifications after quick cancel, got %d", mock.notifyCount())
-	}
-	if mock.closeCount() != 0 {
-		t.Errorf("expected 0 close calls (nothing to close), got %d", mock.closeCount())
-	}
+		assert.Zero(t, mock.notifyCount(), "notifications after quick cancel")
+		assert.Zero(t, mock.closeCount(), "close calls (nothing to close)")
+	})
 }
 
 func TestHandler_DelayedNotification_FiresAfterDelay(t *testing.T) {
-	h, mock, _ := newTestHandlerWithDelay(50 * time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		h, mock, _ := newTestHandlerWithDelay(testNotificationDelay)
 
-	req := secretRequest("delayed-fire-1")
+		req := secretRequest("delayed-fire-1")
 
-	h.RequestCreated(approval.Pending{Request: req})
+		h.RequestCreated(approval.Pending{Request: req})
 
-	// Wait for delay to expire.
-	time.Sleep(100 * time.Millisecond)
+		passDelay()
 
-	if mock.notifyCount() != 1 {
-		t.Errorf("expected 1 notification after delay, got %d", mock.notifyCount())
-	}
+		assert.Equal(t, 1, mock.notifyCount(), "notifications after delay")
+	})
 }
 
 func TestHandler_DelayedNotification_ResolvedDuringDelay(t *testing.T) {
-	h, mock, _ := newTestHandlerWithDelay(200 * time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		h, mock, _ := newTestHandlerWithDelay(testNotificationDelay)
 
-	req := secretRequest("resolve-during-delay-1")
+		req := secretRequest("resolve-during-delay-1")
 
-	h.RequestCreated(approval.Pending{Request: req})
-	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
+		h.RequestCreated(approval.Pending{Request: req})
+		h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionApproved})
 
-	// Wait past delay to verify nothing fires.
-	time.Sleep(300 * time.Millisecond)
+		passDelay()
 
-	if mock.notifyCount() != 0 {
-		t.Errorf("expected 0 notifications when resolved during delay, got %d", mock.notifyCount())
-	}
+		assert.Zero(t, mock.notifyCount(), "notifications when resolved during delay")
+	})
 }
 
 func TestHandler_DelayedNotification_CancelledAfterShown(t *testing.T) {
-	h, mock, _ := newTestHandlerWithDelay(20 * time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		h, mock, _ := newTestHandlerWithDelay(testNotificationDelay)
 
-	req := &approval.Request{
-		ID:         "cancel-after-shown-1",
-		Type:       approval.RequestTypeGetSecret,
-		Items:      []approval.ItemInfo{{Label: "Secret"}},
-		SenderInfo: localSender,
-	}
+		req := secretRequest("cancel-after-shown-1")
+		req.SenderInfo = approval.LocalSenderForTest("gh", "/usr/bin/gh")
 
-	h.RequestCreated(approval.Pending{Request: req})
+		h.RequestCreated(approval.Pending{Request: req})
 
-	// Wait for notification to actually appear.
-	time.Sleep(50 * time.Millisecond)
-	if mock.notifyCount() != 1 {
-		t.Fatalf("expected 1 notification after delay, got %d", mock.notifyCount())
-	}
+		passDelay()
+		require.Equal(t, 1, mock.notifyCount(), "notifications after delay")
 
-	// Cancel after notification was shown — should close + show follow-up.
-	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
+		h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
 
-	// Original closed (1 close) + follow-up sent (2 notifies total).
-	if mock.notifyCount() != 2 {
-		t.Errorf("expected 2 notifications (original + follow-up), got %d", mock.notifyCount())
-	}
-	if mock.closeCount() != 1 {
-		t.Errorf("expected 1 close call for original notification, got %d", mock.closeCount())
-	}
+		assert.Equal(t, 2, mock.notifyCount(), "notifications (original + follow-up)")
+		assert.Equal(t, 1, mock.closeCount(), "close calls for original notification")
+	})
 }
 
 // Points DBUS_SESSION_BUS_ADDRESS at a private bus for the test.
@@ -964,9 +699,7 @@ func newTestDBusNotifier(t *testing.T) *DBusNotifier {
 	useTestSessionBus(t)
 
 	conn, err := dbus.ConnectSessionBus()
-	if err != nil {
-		t.Fatalf("connect to test bus: %v", err)
-	}
+	require.NoError(t, err, "connect to test bus")
 
 	n := &DBusNotifier{
 		conn:    conn,
@@ -975,13 +708,14 @@ func newTestDBusNotifier(t *testing.T) *DBusNotifier {
 		done:    make(chan struct{}),
 	}
 
-	if err := conn.AddMatchSignal(
+	err = conn.AddMatchSignal(
 		dbus.WithMatchInterface(string(notifyInterface)),
 		dbus.WithMatchMember("ActionInvoked"),
-	); err != nil {
+	)
+	if err != nil {
 		conn.Close()
-		t.Fatalf("subscribe to ActionInvoked: %v", err)
 	}
+	require.NoError(t, err, "subscribe to ActionInvoked")
 
 	conn.Signal(n.signals)
 	go n.processSignals(n.signals)
@@ -998,9 +732,7 @@ func TestDBusNotifier_NotifyReconnectsOnClosedConn(t *testing.T) {
 	// Notify should reconnect. It will fail because there's no notification
 	// daemon on the test bus, but it must NOT fail with ErrClosed.
 	_, err := n.Notify("test", "after reconnect", "", nil)
-	if errors.Is(err, dbus.ErrClosed) {
-		t.Errorf("Notify should have reconnected, but got ErrClosed: %v", err)
-	}
+	assert.NotErrorIs(t, err, dbus.ErrClosed, "Notify should have reconnected")
 }
 
 func TestDBusNotifier_CloseReconnectsOnClosedConn(t *testing.T) {
@@ -1012,9 +744,7 @@ func TestDBusNotifier_CloseReconnectsOnClosedConn(t *testing.T) {
 	// Close should reconnect. The notification ID is bogus, but we only
 	// verify it doesn't return a connection-closed error.
 	err := n.Close(999)
-	if errors.Is(err, dbus.ErrClosed) {
-		t.Errorf("Close should have reconnected, but got ErrClosed: %v", err)
-	}
+	assert.NotErrorIs(t, err, dbus.ErrClosed, "Close should have reconnected")
 }
 
 // Checks that a cancelled request that Request.AutoApprovable rejects closes
@@ -1022,22 +752,14 @@ func TestDBusNotifier_CloseReconnectsOnClosedConn(t *testing.T) {
 func TestHandler_CancelledRemoteRequest_NoFollowUp(t *testing.T) {
 	h, mock, _ := newTestHandler()
 
-	req := &approval.Request{
-		ID:         "cancel-remote-1",
-		Type:       approval.RequestTypeGetSecret,
-		Items:      []approval.ItemInfo{{Label: "Secret"}},
-		SenderInfo: remoteSender,
-	}
+	req := secretRequest("cancel-remote-1")
+	req.SenderInfo = approval.RemoteSenderForTest("gh")
 
 	h.RequestCreated(approval.Pending{Request: req})
 	h.RequestEnded(approval.HistoryEntry{Request: req, Resolution: approval.ResolutionCancelled})
 
-	if mock.notifyCount() != 1 {
-		t.Errorf("notifications = %d, want 1 (no follow-up)", mock.notifyCount())
-	}
-	if mock.closeCount() != 1 {
-		t.Errorf("closes = %d, want 1", mock.closeCount())
-	}
+	assert.Equal(t, 1, mock.notifyCount(), "notifications (no follow-up)")
+	assert.Equal(t, 1, mock.closeCount(), "closes")
 }
 
 func TestFormatDurationShort(t *testing.T) {

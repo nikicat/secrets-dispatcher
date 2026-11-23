@@ -32,10 +32,7 @@ func changeRows(changes []Change) []string {
 }
 
 func TestPlanLocalGnomeKeyringTakeoverOrder(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tmpDir := tempXDG(t)
 
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 4242)
@@ -73,10 +70,7 @@ func TestPlanLocalGnomeKeyringTakeoverOrder(t *testing.T) {
 }
 
 func TestPlanSurfacesResolvedBackend(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 4242)
@@ -91,10 +85,7 @@ func TestPlanSurfacesResolvedBackend(t *testing.T) {
 }
 
 func TestPlanRemoteMinimal(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockSession(t, 0)
 
@@ -111,7 +102,6 @@ func TestPlanRemoteMinimal(t *testing.T) {
 
 func TestPlanRemoteReversesTakeoverState(t *testing.T) {
 	files := tempTakeoverFiles(t)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockSession(t, 0)
 
@@ -131,10 +121,7 @@ func TestPlanRemoteReversesTakeoverState(t *testing.T) {
 }
 
 func TestPlannedWritesLandOnDisk(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 4242)
@@ -158,7 +145,6 @@ func TestPlannedWritesLandOnDisk(t *testing.T) {
 // The dry run lists the takeover files' changes, in Install's order.
 func TestPlanTakeoverFileChanges(t *testing.T) {
 	files := tempTakeoverFiles(t)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 4242)
 	mockExePath(t, "/usr/bin/gnome-keyring-daemon")
@@ -214,7 +200,6 @@ func TestInstallStopsDisplacedOwner(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tempTakeoverFiles(t)
-			t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 			mockLookPath(t, defaultLookPath)
 			mockUnits(t)
 			bus := mockSession(t, 4242)

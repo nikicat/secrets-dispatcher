@@ -12,6 +12,7 @@ import type { AddressInfo } from "node:net";
 import { preview, type PreviewServer } from "vite";
 import { expect, type Page, type WebSocketRoute } from "@playwright/test";
 import type {
+  HistoryEntry,
   ItemInfo,
   PendingRequest,
   SenderInfo,
@@ -39,6 +40,16 @@ export interface TestBackend {
   /** Logs the page in and resolves once it shows the connected client. */
   authenticate: (page: Page) => Promise<void>;
   /**
+   * Logs the page in, with its snapshot changed as the given edit says.
+   * Resolves to a function that sends further messages to the page.
+   */
+  openWith: (page: Page, edit?: SnapshotEdit) => Promise<SendToPage>;
+  /**
+   * Opens the app logged in, with the given entries as its history. Resolves
+   * once the app shows them, to a function that sends the page more messages.
+   */
+  openWithHistory: (page: Page, history: HistoryEntry[]) => Promise<SendToPage>;
+  /**
    * Posts a GPG sign request for the given commit from the given client, and
    * returns its request ID.
    */
@@ -54,12 +65,7 @@ export interface BackendOptions {
   version?: string;
 }
 
-/**
- * Generate a JWT token for testing.
- * Matches the format expected by the backend. Exported so specs never
- * hand-roll their own (a drifted copy is how the missing-jti breakage
- * slipped past the suite).
- */
+/** Returns a login JWT signed with the given secret, as the backend expects. */
 export function generateJWT(secret: string): string {
   const header = Buffer.from(
     JSON.stringify({ alg: "HS256", typ: "JWT" }),
@@ -82,6 +88,14 @@ export function generateJWT(secret: string): string {
     .digest("base64url");
 
   return `${signingInput}.${signature}`;
+}
+
+/** Resolves once the page shows its connected client. */
+export async function expectConnected(
+  page: Page,
+  options?: { timeout?: number },
+): Promise<void> {
+  await expect(page.getByText("client connected")).toBeVisible(options);
 }
 
 /**
@@ -192,7 +206,7 @@ export type SendToPage = (message: WSMessage) => void;
  * by `rewrite` and followed by `after`. Every other message passes unchanged.
  * Resolves to a function that sends further messages to the page.
  */
-export async function routeSnapshot(
+async function routeSnapshot(
   page: Page,
   { rewrite = (snapshot) => snapshot, after = [] }: SnapshotEdit = {},
 ): Promise<SendToPage> {
@@ -248,9 +262,8 @@ function startFrontend(backendUrl: URL): Promise<PreviewServer> {
 }
 
 /**
- * Writes a minimal config that isolates tests from the user's real config and
- * returns its path. The session_bus downstream creates a staticProvider, so
- * the WS snapshot includes a "client connected" entry that many tests expect.
+ * Writes a config that isolates the backend from the user's own, with one
+ * session-bus client, and returns its path.
  */
 async function writeTestConfig(stateDir: string): Promise<string> {
   const configPath = join(stateDir, "config.yaml");
@@ -447,13 +460,32 @@ export async function startTestBackend(
   const generateLoginURL = async (): Promise<string> =>
     `${url}/?token=${generateJWT(await getAuthToken())}`;
 
+  const authenticate = async (page: Page): Promise<void> => {
+    await page.goto(await generateLoginURL());
+    await expectConnected(page);
+  };
+
+  const openWith = async (
+    page: Page,
+    edit?: SnapshotEdit,
+  ): Promise<SendToPage> => {
+    const sendToPage = await routeSnapshot(page, edit);
+    await authenticate(page);
+    return sendToPage;
+  };
+
   return {
     url,
     getAuthToken,
     generateLoginURL,
-    authenticate: async (page) => {
-      await page.goto(await generateLoginURL());
-      await expect(page.getByText("client connected")).toBeVisible();
+    authenticate,
+    openWith,
+    openWithHistory: async (page, history) => {
+      const sendToPage = await openWith(page, {
+        rewrite: (snapshot) => ({ ...snapshot, history }),
+      });
+      await expect(page.getByText("Recent Activity")).toBeVisible();
+      return sendToPage;
     },
     createGPGSignRequest: async (commit, client = "test-repo") => {
       const res = await fetch(`${url}/api/v1/gpg-sign/request`, {

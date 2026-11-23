@@ -6,211 +6,114 @@ import (
 	"crypto/rand"
 	"log/slog"
 	"testing"
-	"time"
+	"testing/synctest"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
-func newTestKey(t *testing.T) agent.AddedKey {
+const testKeyComment = "test-key@localhost"
+
+// Returns a keyring holding one fresh key with comment testKeyComment.
+func newUpstream(t *testing.T) agent.Agent {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return agent.AddedKey{
-		PrivateKey: key,
-		Comment:    "test-key@localhost",
-	}
+	require.NoError(t, err)
+	upstream := agent.NewKeyring()
+	require.NoError(t, upstream.Add(agent.AddedKey{PrivateKey: key, Comment: testKeyComment}))
+	return upstream
+}
+
+type signResult struct {
+	sig *ssh.Signature
+	err error
+}
+
+// A Sign call blocked on its approval request.
+type pendingSign struct {
+	mgr    *approval.Manager
+	req    approval.Pending
+	result <-chan signResult
+}
+
+// Starts a Sign through a proxy whose manager asks for approval, and waits in
+// the synctest bubble until its request is pending.
+func startSign(t *testing.T, destination *string) pendingSign {
+	t.Helper()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
+	proxy := newProxyAgent(newUpstream(t), mgr, approval.SenderInfo{
+		InvokerName: "test-proc",
+	}, destination, slog.Default())
+
+	keys, err := proxy.List()
+	require.NoError(t, err)
+
+	result := make(chan signResult, 1)
+	go func() {
+		sig, err := proxy.Sign(keys[0], []byte("test data to sign"))
+		result <- signResult{sig, err}
+	}()
+
+	synctest.Wait()
+	pending := mgr.Pending()
+	require.Len(t, pending, 1, "no pending request appeared")
+	return pendingSign{mgr: mgr, req: pending[0], result: result}
 }
 
 func TestProxyAgent_ListPassthrough(t *testing.T) {
-	upstream := agent.NewKeyring()
-	testKey := newTestKey(t)
-	if err := upstream.Add(testKey); err != nil {
-		t.Fatal(err)
-	}
-
 	mgr := approval.NewDisabledManager()
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, nil, slog.Default())
+	proxy := newProxyAgent(newUpstream(t), mgr, approval.SenderInfo{}, nil, slog.Default())
 
 	keys, err := proxy.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys) != 1 {
-		t.Fatalf("expected 1 key, got %d", len(keys))
-	}
-	if keys[0].Comment != "test-key@localhost" {
-		t.Errorf("expected comment %q, got %q", "test-key@localhost", keys[0].Comment)
-	}
+	require.NoError(t, err)
+	require.Len(t, keys, 1)
+	assert.Equal(t, testKeyComment, keys[0].Comment)
 }
 
 func TestProxyAgent_SignApproved(t *testing.T) {
-	upstream := agent.NewKeyring()
-	testKey := newTestKey(t)
-	if err := upstream.Add(testKey); err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		sign := startSign(t, new("example.com"))
 
-	// Use a real manager with short timeout — we'll approve from another goroutine
-	mgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+		assert.Equal(t, approval.RequestTypeSSHSign, sign.req.Type)
+		require.Len(t, sign.req.Items, 1)
+		assert.Equal(t, testKeyComment, sign.req.Items[0].Label)
+		assert.Equal(t, "example.com", sign.req.Items[0].SSHDestination())
+
+		require.NoError(t, sign.mgr.Approve(sign.req.ID))
+
+		result := <-sign.result
+		require.NoError(t, result.err, "sign after approval failed")
+		require.NotNil(t, result.sig)
 	})
-
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{
-		InvokerName: "test-proc",
-	}, new("example.com"), slog.Default())
-
-	keys, err := proxy.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pubKey := keys[0]
-	data := []byte("test data to sign")
-
-	// Start signing in a goroutine — it will block on approval
-	type signResult struct {
-		sig *ssh.Signature
-		err error
-	}
-	ch := make(chan signResult, 1)
-	go func() {
-		sig, err := proxy.Sign(pubKey, data)
-		ch <- signResult{sig, err}
-	}()
-
-	// Wait for the pending request to appear
-	var pending []approval.Pending
-	for range 50 {
-		time.Sleep(10 * time.Millisecond)
-		pending = mgr.Pending()
-		if len(pending) > 0 {
-			break
-		}
-	}
-	if len(pending) == 0 {
-		t.Fatal("no pending request appeared")
-	}
-
-	// Verify request metadata
-	req := pending[0]
-	if req.Type != approval.RequestTypeSSHSign {
-		t.Errorf("expected type %q, got %q", approval.RequestTypeSSHSign, req.Type)
-	}
-	if len(req.Items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(req.Items))
-	}
-	if req.Items[0].Label != "test-key@localhost" {
-		t.Errorf("expected label %q, got %q", "test-key@localhost", req.Items[0].Label)
-	}
-	if got := req.Items[0].SSHDestination(); got != "example.com" {
-		t.Errorf("expected destination %q, got %q", "example.com", got)
-	}
-
-	// Approve
-	if err := mgr.Approve(req.ID); err != nil {
-		t.Fatal(err)
-	}
-
-	// Check the sign result
-	result := <-ch
-	if result.err != nil {
-		t.Fatalf("sign after approval failed: %v", result.err)
-	}
-	if result.sig == nil {
-		t.Fatal("expected non-nil signature")
-	}
 }
 
 func TestProxyAgent_SignDenied(t *testing.T) {
-	upstream := agent.NewKeyring()
-	testKey := newTestKey(t)
-	if err := upstream.Add(testKey); err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		sign := startSign(t, nil)
 
-	mgr := approval.NewManager(approval.ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+		require.NoError(t, sign.mgr.Deny(sign.req.ID))
+
+		result := <-sign.result
+		require.Error(t, result.err, "expected error after denial")
+		assert.Nil(t, result.sig, "expected nil signature after denial")
 	})
-
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{
-		InvokerName: "test-proc",
-	}, nil, slog.Default())
-
-	keys, err := proxy.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	pubKey := keys[0]
-	data := []byte("test data to sign")
-
-	type signResult struct {
-		sig *ssh.Signature
-		err error
-	}
-	ch := make(chan signResult, 1)
-	go func() {
-		sig, err := proxy.Sign(pubKey, data)
-		ch <- signResult{sig, err}
-	}()
-
-	// Wait for the pending request
-	var pending []approval.Pending
-	for range 50 {
-		time.Sleep(10 * time.Millisecond)
-		pending = mgr.Pending()
-		if len(pending) > 0 {
-			break
-		}
-	}
-	if len(pending) == 0 {
-		t.Fatal("no pending request appeared")
-	}
-
-	// Deny
-	if err := mgr.Deny(pending[0].ID); err != nil {
-		t.Fatal(err)
-	}
-
-	result := <-ch
-	if result.err == nil {
-		t.Fatal("expected error after denial, got nil")
-	}
-	if result.sig != nil {
-		t.Error("expected nil signature after denial")
-	}
 }
 
 func TestProxyAgent_SignDisabledManager(t *testing.T) {
 	// With a disabled manager, sign should pass through immediately
-	upstream := agent.NewKeyring()
-	testKey := newTestKey(t)
-	if err := upstream.Add(testKey); err != nil {
-		t.Fatal(err)
-	}
-
 	mgr := approval.NewDisabledManager()
-	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, nil, slog.Default())
+	proxy := newProxyAgent(newUpstream(t), mgr, approval.SenderInfo{}, nil, slog.Default())
 
 	keys, _ := proxy.List()
-	if len(keys) == 0 {
-		t.Fatal("no keys")
-	}
+	require.NotEmpty(t, keys, "no keys")
 
 	sig, err := proxy.Sign(keys[0], []byte("data"))
-	if err != nil {
-		t.Fatalf("sign with disabled manager failed: %v", err)
-	}
-	if sig == nil {
-		t.Fatal("expected non-nil signature")
-	}
+	require.NoError(t, err, "sign with disabled manager failed")
+	require.NotNil(t, sig)
 }
 
 func TestProxyAgent_ExtensionPassthrough(t *testing.T) {
@@ -218,9 +121,6 @@ func TestProxyAgent_ExtensionPassthrough(t *testing.T) {
 	mgr := approval.NewDisabledManager()
 	proxy := newProxyAgent(upstream, mgr, approval.SenderInfo{}, nil, slog.Default())
 
-	// Keyring doesn't support extensions, so we expect agent.ErrExtensionUnsupported
 	_, err := proxy.Extension("session-bind@openssh.com", []byte{})
-	if err == nil {
-		t.Fatal("expected error from keyring extension, got nil")
-	}
+	assert.ErrorIs(t, err, agent.ErrExtensionUnsupported)
 }

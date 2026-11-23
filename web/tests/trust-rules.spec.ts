@@ -1,14 +1,24 @@
-import { expect, test } from "@playwright/test";
-import {
-  routeSnapshot,
-  startTestBackend,
-  type TestBackend,
-} from "./fixtures/test-utils.mts";
+import { expect, type Page, test } from "@playwright/test";
+import { startTestBackend, type TestBackend } from "./fixtures/test-utils.mts";
 import type { WSSnapshotMessage } from "../src/lib/types.ts";
 
 // These tests verify trust rules (config-defined persistent rules) display in the WebUI.
 
 let backend: TestBackend;
+
+/**
+ * Opens the app logged in, with the given fields merged into its snapshot, and
+ * expands the Trust Rules section, which starts collapsed.
+ */
+async function openTrustRules(
+  page: Page,
+  fields: Partial<WSSnapshotMessage>,
+): Promise<void> {
+  await backend.openWith(page, {
+    rewrite: (snapshot) => ({ ...snapshot, ...fields }),
+  });
+  await page.getByText("Trust Rules").click();
+}
 
 test.beforeAll(async () => {
   backend = await startTestBackend();
@@ -22,15 +32,12 @@ test.describe("Trust Rules WebSocket", () => {
   test("snapshot includes trust_rules field", async ({ page }) => {
     let snapshotMsg: WSSnapshotMessage | null = null;
 
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => {
         snapshotMsg = s;
         return s;
       },
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
     await expect(page.getByText("No pending requests")).toBeVisible();
 
     expect(snapshotMsg).not.toBeNull();
@@ -39,29 +46,18 @@ test.describe("Trust Rules WebSocket", () => {
   });
 
   test("trust rules from snapshot appear in main content", async ({ page }) => {
-    await routeSnapshot(page, {
-      rewrite: (s) => ({
-        ...s,
-        trust_rules: [
-          {
-            name: "Allow GitHub CLI",
-            action: "approve",
-            request_types: ["search", "get_secret"],
-            process: { name: "gh" },
-            client: "laptop",
-            secret: { collection: "default" },
-          },
-        ],
-      }),
+    await openTrustRules(page, {
+      trust_rules: [
+        {
+          name: "Allow GitHub CLI",
+          action: "approve",
+          request_types: ["search", "get_secret"],
+          process: { name: "gh" },
+          client: "laptop",
+          secret: { collection: "default" },
+        },
+      ],
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    // Section heading visible but collapsed by default
-    const toggle = page.getByText("Trust Rules");
-    await expect(toggle).toBeVisible({ timeout: 10000 });
-    await toggle.click();
 
     await expect(page.getByText("Allow GitHub CLI")).toBeVisible();
     await expect(page.getByText("config")).toBeVisible();
@@ -72,31 +68,21 @@ test.describe("Trust Rules WebSocket", () => {
   });
 
   test("ignore action trust rule displays correctly", async ({ page }) => {
-    await routeSnapshot(page, {
-      rewrite: (s) => ({
-        ...s,
-        trust_rules: [
-          {
-            name: "Ignore Chrome dummy",
-            action: "ignore",
-            client: "local",
-            request_types: ["write"],
-            secret: {
-              attributes: {
-                "xdg:schema": "_chrome_dummy_schema_for_unlocking",
-              },
+    await openTrustRules(page, {
+      trust_rules: [
+        {
+          name: "Ignore Chrome dummy",
+          action: "ignore",
+          client: "local",
+          request_types: ["write"],
+          secret: {
+            attributes: {
+              "xdg:schema": "_chrome_dummy_schema_for_unlocking",
             },
           },
-        ],
-      }),
+        },
+      ],
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    const toggle = page.getByText("Trust Rules");
-    await expect(toggle).toBeVisible({ timeout: 10000 });
-    await toggle.click();
 
     await expect(page.getByText("Ignore Chrome dummy")).toBeVisible();
     // Should show "Ignore Write" for ignore action with write request type
@@ -104,38 +90,28 @@ test.describe("Trust Rules WebSocket", () => {
   });
 
   test("each trust rule shows its own action", async ({ page }) => {
-    await routeSnapshot(page, {
-      rewrite: (s) => ({
-        ...s,
-        trust_rules: [
-          {
-            name: "Approve gh",
-            action: "approve",
-            client: "local",
-            request_types: ["search"],
-          },
-          {
-            name: "Ignore Chrome",
-            action: "ignore",
-            client: "local",
-            request_types: ["write"],
-          },
-          {
-            name: "Deny everyone",
-            action: "deny",
-            client: "*",
-            request_types: ["delete"],
-          },
-        ],
-      }),
+    await openTrustRules(page, {
+      trust_rules: [
+        {
+          name: "Approve gh",
+          action: "approve",
+          client: "local",
+          request_types: ["search"],
+        },
+        {
+          name: "Ignore Chrome",
+          action: "ignore",
+          client: "local",
+          request_types: ["write"],
+        },
+        {
+          name: "Deny everyone",
+          action: "deny",
+          client: "*",
+          request_types: ["delete"],
+        },
+      ],
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    const toggle = page.getByText("Trust Rules");
-    await expect(toggle).toBeVisible({ timeout: 10000 });
-    await toggle.click();
 
     const badge = (name: string) =>
       page.locator(".rule-entry", { hasText: name }).locator(".history-type");
@@ -146,41 +122,31 @@ test.describe("Trust Rules WebSocket", () => {
   });
 
   test("multiple trust rules render in order", async ({ page }) => {
-    await routeSnapshot(page, {
-      rewrite: (s) => ({
-        ...s,
-        trust_rules: [
-          {
-            name: "Rule One",
-            action: "approve",
-            client: "local",
-            request_types: ["search"],
-            process: { name: "gh" },
-          },
-          {
-            name: "Rule Two",
-            action: "ignore",
-            client: "local",
-            request_types: ["write"],
-            process: { exe: "/opt/google/chrome/chrome" },
-          },
-        ],
-      }),
+    await openTrustRules(page, {
+      trust_rules: [
+        {
+          name: "Rule One",
+          action: "approve",
+          client: "local",
+          request_types: ["search"],
+          process: { name: "gh" },
+        },
+        {
+          name: "Rule Two",
+          action: "ignore",
+          client: "local",
+          request_types: ["write"],
+          process: { exe: "/opt/google/chrome/chrome" },
+        },
+      ],
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    const toggle = page.getByText("Trust Rules");
-    await expect(toggle).toBeVisible({ timeout: 10000 });
-    await toggle.click();
 
     await expect(page.getByText("Rule One")).toBeVisible();
     await expect(page.getByText("Rule Two")).toBeVisible();
   });
 
   test("trust rules section hidden when no rules", async ({ page }) => {
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (s) => ({
         ...s,
         trust_rules: [],
@@ -188,9 +154,6 @@ test.describe("Trust Rules WebSocket", () => {
         trusted_signers: [],
       }),
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
 
     await expect(page.getByText("No pending requests")).toBeVisible();
     await expect(page.getByText("Trust Rules")).not.toBeVisible();
@@ -201,39 +164,28 @@ test.describe("Trust Rules WebSocket", () => {
   }) => {
     const expiresAt = new Date(Date.now() + 90_000).toISOString();
 
-    await routeSnapshot(page, {
-      rewrite: (s) => ({
-        ...s,
-        trust_rules: [
-          {
-            name: "Config rule",
-            action: "approve",
-            client: "local",
-            request_types: ["search"],
-            process: { name: "gh" },
-          },
-        ],
-        auto_approve_rules: [
-          {
-            id: "temp-rule-1",
-            invoker_name: "temp-invoker",
-            invoker_exe: "/usr/bin/temp-invoker",
-            request_type: "get_secret",
-            collection: "default",
-            expires_at: expiresAt,
-          },
-        ],
-        trusted_signers: [],
-      }),
+    await openTrustRules(page, {
+      trust_rules: [
+        {
+          name: "Config rule",
+          action: "approve",
+          client: "local",
+          request_types: ["search"],
+          process: { name: "gh" },
+        },
+      ],
+      auto_approve_rules: [
+        {
+          id: "temp-rule-1",
+          invoker_name: "temp-invoker",
+          invoker_exe: "/usr/bin/temp-invoker",
+          request_type: "get_secret",
+          collection: "default",
+          expires_at: expiresAt,
+        },
+      ],
+      trusted_signers: [],
     });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    // Trust rules section in main content (collapsed by default)
-    const toggle = page.getByText("Trust Rules");
-    await expect(toggle).toBeVisible({ timeout: 10000 });
-    await toggle.click();
     await expect(page.getByText("Config rule")).toBeVisible();
 
     // Auto-approve rules in sidebar

@@ -5,17 +5,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
-	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
-	"gopkg.in/yaml.v3"
 )
 
 // --- test helpers ---
@@ -32,81 +28,46 @@ func defaultLookPath(name string) (string, error) {
 // --- remote mode ---
 
 func TestInstallRemoteWritesProxyUnit(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	mockUnits(t)
 
-	if err := Install(t.Context(), Options{Mode: ModeRemote}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
-
-	dir := systemd.UserUnitDir(tmpDir)
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
 
 	// Proxy unit should exist.
 	content, err := dir.UnitFile(proxyServiceUnit).Read()
-	if err != nil {
-		t.Fatalf("read proxy unit: %v", err)
-	}
-	if !strings.Contains(content, "ExecStart=") || !strings.Contains(content, "serve --config") {
-		t.Error("proxy unit missing ExecStart with serve --config")
-	}
-	if !strings.Contains(content, "WantedBy=graphical-session.target") {
-		t.Error("proxy unit missing WantedBy=graphical-session.target")
-	}
+	require.NoError(t, err, "read proxy unit")
+	assert.Contains(t, content, "ExecStart=")
+	assert.Contains(t, content, "serve --config")
+	assert.Contains(t, content, "WantedBy=graphical-session.target", "proxy unit missing WantedBy=graphical-session.target")
 	// Remote mode: no Requires on backend.
-	if strings.Contains(content, "Requires=") {
-		t.Error("remote proxy unit should not have Requires=")
-	}
+	assert.NotContains(t, content, "Requires=", "remote proxy unit should not have Requires=")
 
 	// Private-bus units should NOT exist.
-	for _, name := range []systemd.Unit{busSocketUnit, busServiceUnit, backendServiceUnit} {
-		if dir.UnitFile(name).Exists() {
-			t.Errorf("stale unit %s should not exist in remote mode", name)
-		}
+	for _, name := range privateBusUnits {
+		assert.False(t, dir.UnitFile(name).Exists(), "stale unit %s should not exist in remote mode", name)
 	}
 }
 
 func TestInstallRemoteConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockUnits(t)
 
-	if err := Install(t.Context(), Options{Mode: ModeRemote}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
 
-	configPath := filepath.Join(tmpDir, "secrets-dispatcher", "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("unmarshal config: %v", err)
-	}
+	cfg := installedConfig(t)
 
 	assert.Equal(t, config.UpstreamConfig{Bus: config.SessionBus{}}, cfg.Serve.Upstream)
-	assert.Equal(t, []config.BusConfig{{Bus: config.Sockets{Dir: "/run/user/1000/secrets-dispatcher/sockets"}}}, cfg.Serve.Downstream)
+	assert.Equal(t, []config.BusConfig{{Bus: config.Sockets{Dir: fakeRuntimeDir + "/secrets-dispatcher/sockets"}}}, cfg.Serve.Downstream)
 }
 
 func TestInstallRemoteUnitCalls(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	units := mockUnits(t)
 
-	if err := Install(t.Context(), Options{Mode: ModeRemote}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -116,16 +77,11 @@ func TestInstallRemoteUnitCalls(t *testing.T) {
 }
 
 func TestInstallRemoteWithStart(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	units := mockUnits(t)
 
-	if err := Install(t.Context(), Options{Mode: ModeRemote, Start: true}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote, Start: true}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -136,133 +92,81 @@ func TestInstallRemoteWithStart(t *testing.T) {
 }
 
 func TestInstallCustomConfigPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	mockUnits(t)
 
-	customConfig := filepath.Join(tmpDir, "custom", "config.yaml")
-	if err := Install(t.Context(), Options{Mode: ModeRemote, ConfigPath: config.Path(customConfig)}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	customConfig := filepath.Join(t.TempDir(), "custom", "config.yaml")
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote, ConfigPath: config.Path(customConfig)}))
 
 	// Config should be written to custom path.
-	if _, err := os.Stat(customConfig); err != nil {
-		t.Fatalf("custom config not written: %v", err)
-	}
+	require.FileExists(t, customConfig, "custom config not written")
 
 	// ExecStart should reference the custom path.
-	unit := systemd.UserUnitDir(tmpDir).UnitFile(proxyServiceUnit)
+	unit := dir.UnitFile(proxyServiceUnit)
 	content, _ := unit.Read()
-	if !strings.Contains(content, "--config "+customConfig) {
-		t.Error("ExecStart should reference custom config path")
-	}
+	assert.Contains(t, content, "--config "+customConfig, "ExecStart should reference custom config path")
 }
 
 // --- local mode ---
 
 func TestInstallLocalWritesAllUnits(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	if err := Install(t.Context(), Options{Mode: ModeLocal}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
 
-	dir := systemd.UserUnitDir(tmpDir)
 	for _, name := range allUnitNames {
-		if !dir.UnitFile(name).Exists() {
-			t.Errorf("unit file %s not found", name)
-		}
+		assert.True(t, dir.UnitFile(name).Exists(), "unit file %s not found", name)
 	}
 
 	// Socket unit.
 	content, _ := dir.UnitFile(busSocketUnit).Read()
-	if !strings.Contains(content, "ListenStream=%t/secrets-dispatcher/backend-bus.sock") {
-		t.Errorf("socket unit wrong ListenStream, got:\n%s", content)
-	}
-	if !strings.Contains(content, "WantedBy=sockets.target") {
-		t.Error("socket unit missing WantedBy=sockets.target")
-	}
+	assert.Contains(t, content, "ListenStream=%t/secrets-dispatcher/backend-bus.sock", "socket unit wrong ListenStream")
+	assert.Contains(t, content, "WantedBy=sockets.target", "socket unit missing WantedBy=sockets.target")
 
 	// Bus service.
 	content, _ = dir.UnitFile(busServiceUnit).Read()
-	if !strings.Contains(content, "/usr/bin/dbus-daemon --session --nofork --nopidfile --address=systemd:") {
-		t.Error("bus service wrong ExecStart")
-	}
+	assert.Contains(t, content, "/usr/bin/dbus-daemon --session --nofork --nopidfile --address=systemd:", "bus service wrong ExecStart")
 
 	// Backend service.
 	content, _ = dir.UnitFile(backendServiceUnit).Read()
-	if !strings.Contains(content, "ExecStart=/usr/bin/gopass-secret service --bus-address") {
-		t.Error("backend service wrong ExecStart")
-	}
-	if !strings.Contains(content, "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/secrets-dispatcher/backend-bus.sock") {
-		t.Error("backend service missing DBUS_SESSION_BUS_ADDRESS")
-	}
-	if !strings.Contains(content, "Requires=secrets-dispatcher-bus.socket") {
-		t.Error("backend service missing Requires")
-	}
+	assert.Contains(t, content, "ExecStart=/usr/bin/gopass-secret service --bus-address", "backend service wrong ExecStart")
+	assert.Contains(t, content, "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/secrets-dispatcher/backend-bus.sock", "backend service missing DBUS_SESSION_BUS_ADDRESS")
+	assert.Contains(t, content, "Requires=secrets-dispatcher-bus.socket", "backend service missing Requires")
 
 	// Proxy service (local variant).
 	content, _ = dir.UnitFile(proxyServiceUnit).Read()
-	if !strings.Contains(content, "serve --config") {
-		t.Error("proxy service missing 'serve --config'")
-	}
-	if !strings.Contains(content, "Requires=secrets-dispatcher-backend.service") {
-		t.Error("proxy service missing Requires=backend")
-	}
+	assert.Contains(t, content, "serve --config", "proxy service missing 'serve --config'")
+	assert.Contains(t, content, "Requires=secrets-dispatcher-backend.service", "proxy service missing Requires=backend")
 }
 
 func TestInstallLocalConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	if err := Install(t.Context(), Options{Mode: ModeLocal}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
 
-	configPath := filepath.Join(tmpDir, "secrets-dispatcher", "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
+	cfg := installedConfig(t)
 
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("unmarshal config: %v", err)
-	}
-
-	assert.Equal(t, config.UpstreamConfig{Bus: config.Socket{Path: "/run/user/1000/secrets-dispatcher/backend-bus.sock"}}, cfg.Serve.Upstream)
+	assert.Equal(t, config.UpstreamConfig{Bus: config.Socket{Path: fakeRuntimeDir + "/secrets-dispatcher/backend-bus.sock"}}, cfg.Serve.Upstream)
 	assert.Equal(t, []config.BusConfig{{Bus: config.SessionBus{}}}, cfg.Serve.Downstream)
 }
 
 func TestInstallLocalUnitCalls(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	units := mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	if err := Install(t.Context(), Options{Mode: ModeLocal}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -273,19 +177,14 @@ func TestInstallLocalUnitCalls(t *testing.T) {
 }
 
 func TestInstallLocalWithStart(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	units := mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 	shortOwnerWait(t)
 
-	if err := Install(t.Context(), Options{Mode: ModeLocal, Start: true}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal, Start: true}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -300,75 +199,47 @@ func TestInstallLocalWithStart(t *testing.T) {
 // --- full mode ---
 
 func TestInstallFullConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	if err := Install(t.Context(), Options{Mode: ModeFull}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeFull}))
 
-	configPath := filepath.Join(tmpDir, "secrets-dispatcher", "config.yaml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
+	cfg := installedConfig(t)
 
-	var cfg config.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("unmarshal config: %v", err)
-	}
-
-	assert.Equal(t, config.UpstreamConfig{Bus: config.Socket{Path: "/run/user/1000/secrets-dispatcher/backend-bus.sock"}}, cfg.Serve.Upstream)
+	assert.Equal(t, config.UpstreamConfig{Bus: config.Socket{Path: fakeRuntimeDir + "/secrets-dispatcher/backend-bus.sock"}}, cfg.Serve.Upstream)
 	assert.Equal(t, []config.BusConfig{
 		{Bus: config.SessionBus{}},
-		{Bus: config.Sockets{Dir: "/run/user/1000/secrets-dispatcher/sockets"}},
+		{Bus: config.Sockets{Dir: fakeRuntimeDir + "/secrets-dispatcher/sockets"}},
 	}, cfg.Serve.Downstream)
 }
 
 func TestInstallFullWritesAllUnits(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	if err := Install(t.Context(), Options{Mode: ModeFull}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeFull}))
 
-	dir := systemd.UserUnitDir(tmpDir)
 	for _, name := range allUnitNames {
-		if !dir.UnitFile(name).Exists() {
-			t.Errorf("unit file %s not found", name)
-		}
+		assert.True(t, dir.UnitFile(name).Exists(), "unit file %s not found", name)
 	}
 }
 
 // --- config preservation ---
 
 func TestInstallPreservesExistingConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
 	// Pre-write a config with custom settings.
-	configDir := filepath.Join(tmpDir, "secrets-dispatcher")
-	os.MkdirAll(configDir, 0755)
-	configPath := filepath.Join(configDir, "config.yaml")
 	initial := config.Config{
 		Listen:   "0.0.0.0:9999",
 		StateDir: "/custom/state",
@@ -376,83 +247,54 @@ func TestInstallPreservesExistingConfig(t *testing.T) {
 			LogLevel: "debug",
 		},
 	}
-	data, _ := yaml.Marshal(initial)
-	os.WriteFile(configPath, data, 0644)
+	require.NoError(t, defaultConfigFile(t).Save(&initial))
 
 	// Install in local mode.
-	if err := Install(t.Context(), Options{Mode: ModeLocal}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
 
-	// Re-read config.
-	data, _ = os.ReadFile(configPath)
-	var cfg config.Config
-	yaml.Unmarshal(data, &cfg)
+	cfg := installedConfig(t)
 
 	// Topology should be updated.
 	assert.IsType(t, config.Socket{}, cfg.Serve.Upstream.Bus, "upstream")
 
 	// Other settings should be preserved.
-	if cfg.Listen != "0.0.0.0:9999" {
-		t.Errorf("listen = %q, want preserved 0.0.0.0:9999", cfg.Listen)
-	}
-	if cfg.StateDir != "/custom/state" {
-		t.Errorf("state_dir = %q, want preserved /custom/state", cfg.StateDir)
-	}
-	if cfg.Serve.LogLevel != "debug" {
-		t.Errorf("log_level = %q, want preserved debug", cfg.Serve.LogLevel)
-	}
+	assert.Equal(t, config.ListenAddr("0.0.0.0:9999"), cfg.Listen)
+	assert.Equal(t, config.StateDir("/custom/state"), cfg.StateDir)
+	assert.Equal(t, config.LogLevel("debug"), cfg.Serve.LogLevel)
 }
 
 // --- mode switching ---
 
 func TestInstallSwitchLocalToRemoteRemovesStaleUnits(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	units := mockUnits(t)
 
 	// Pre-create all 4 unit files (simulating previous local install).
-	dir := systemd.UserUnitDir(tmpDir)
 	for _, name := range allUnitNames {
 		dir.UnitFile(name).Write("previous")
 	}
 
 	// Switch to remote.
-	if err := Install(t.Context(), Options{Mode: ModeRemote}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
 
 	// Only proxy unit should remain.
-	if !dir.UnitFile(proxyServiceUnit).Exists() {
-		t.Error("proxy unit should exist")
-	}
-	for _, name := range []systemd.Unit{busSocketUnit, busServiceUnit, backendServiceUnit} {
-		if dir.UnitFile(name).Exists() {
-			t.Errorf("stale unit %s should have been removed", name)
-		}
+	assert.True(t, dir.UnitFile(proxyServiceUnit).Exists(), "proxy unit should exist")
+	for _, name := range privateBusUnits {
+		assert.False(t, dir.UnitFile(name).Exists(), "stale unit %s should have been removed", name)
 	}
 
 	// Verify stop+disable were called for stale units.
-	for _, name := range []systemd.Unit{busSocketUnit, busServiceUnit, backendServiceUnit} {
-		if !slices.Contains(units.calls, unitCall{opStop, name}) {
-			t.Errorf("missing stop call for %s", name)
-		}
-		if !slices.Contains(units.calls, unitCall{opDisable, name}) {
-			t.Errorf("missing disable call for %s", name)
-		}
+	for _, name := range privateBusUnits {
+		assert.Contains(t, units.calls, unitCall{opStop, name}, "missing stop call for %s", name)
+		assert.Contains(t, units.calls, unitCall{opDisable, name}, "missing disable call for %s", name)
 	}
 }
 
 // --- backend resolution ---
 
 func TestInstallLocalAutoDetectsBackend(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	mockUnits(t)
 	mockSession(t, 0)
@@ -467,45 +309,29 @@ func TestInstallLocalAutoDetectsBackend(t *testing.T) {
 		}
 	})
 
-	if err := Install(t.Context(), Options{Mode: ModeLocal}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
 
-	dir := systemd.UserUnitDir(tmpDir)
 	content, _ := dir.UnitFile(backendServiceUnit).Read()
-	if !strings.Contains(content, "ExecStart=/opt/bin/gopass-secret service") {
-		t.Error("should use auto-detected backend path")
-	}
+	assert.Contains(t, content, "ExecStart=/opt/bin/gopass-secret service", "should use auto-detected backend path")
 }
 
 func TestInstallLocalBackendCommand(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	dir := tempLayout(t).unitDir
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	if err := Install(t.Context(), Options{Mode: ModeLocal, Backend: &Backend{backendCommand("/custom/backend")}}); err != nil {
-		t.Fatalf("Install() error: %v", err)
-	}
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal, Backend: &Backend{backendCommand("/custom/backend")}}))
 
-	dir := systemd.UserUnitDir(tmpDir)
 	content, _ := dir.UnitFile(backendServiceUnit).Read()
-	if !strings.Contains(content, "ExecStart=/custom/backend") {
-		t.Error("should use explicit backend path")
-	}
+	assert.Contains(t, content, "ExecStart=/custom/backend", "should use explicit backend path")
 }
 
 // --- error cases ---
 
 func TestInstallBackendNotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockUnits(t)
 	mockSession(t, 0)
@@ -517,19 +343,11 @@ func TestInstallBackendNotFound(t *testing.T) {
 	})
 
 	err := Install(t.Context(), Options{Mode: ModeLocal})
-	if err == nil {
-		t.Fatal("expected error when backend not found")
-	}
-	if !strings.Contains(err.Error(), "gopass-secret") {
-		t.Errorf("error should mention gopass-secret, got: %v", err)
-	}
+	require.ErrorContains(t, err, "gopass-secret")
 }
 
 func TestInstallDbusDaemonNotFound(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 
 	mockUnits(t)
 	mockSession(t, 0)
@@ -538,18 +356,11 @@ func TestInstallDbusDaemonNotFound(t *testing.T) {
 	})
 
 	err := Install(t.Context(), Options{Mode: ModeLocal})
-	if err == nil {
-		t.Fatal("expected error when dbus-daemon not found")
-	}
-	if !strings.Contains(err.Error(), "dbus-daemon") {
-		t.Errorf("error should mention dbus-daemon, got: %v", err)
-	}
+	require.ErrorContains(t, err, "dbus-daemon")
 }
 
 func TestInstallMissingRuntimeDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "")
+	tempXDGWithoutRuntime(t)
 
 	mockUnits(t)
 
@@ -560,13 +371,9 @@ func TestInstallMissingRuntimeDir(t *testing.T) {
 func TestInstallRejectsModeNotNamed(t *testing.T) {
 	for _, mode := range []Mode{"", "bogus"} {
 		t.Run(string(mode), func(t *testing.T) {
-			tmpDir := t.TempDir()
-			t.Setenv("XDG_CONFIG_HOME", tmpDir)
-			t.Setenv("XDG_DATA_HOME", tmpDir)
-			t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+			unitDir := tempLayout(t).unitDir
 			units := mockUnits(t)
 
-			unitDir := systemd.UserUnitDir(tmpDir)
 			installed := unitDir.UnitFile(proxyServiceUnit)
 			require.NoError(t, installed.Write("installed"))
 
@@ -586,10 +393,7 @@ func TestInstallRejectsModeNotNamed(t *testing.T) {
 }
 
 func TestInstallRejectsBackendForRemote(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tmpDir := tempXDG(t)
 	units := mockUnits(t)
 	opts := Options{Mode: ModeRemote, Backend: new(BackendGopass)}
 
@@ -605,24 +409,17 @@ func TestInstallRejectsBackendForRemote(t *testing.T) {
 // --- uninstall ---
 
 func TestUninstall(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
+	dir := tempLayout(t).unitDir
 
 	// Create a single unit file (remote mode).
-	dir := systemd.UserUnitDir(tmpDir)
 	unit := dir.UnitFile(proxyServiceUnit)
 	unit.Write("fake")
 
 	units := mockUnits(t)
 
-	if err := Uninstall(t.Context(), NarrateMilestones); err != nil {
-		t.Fatalf("Uninstall() error: %v", err)
-	}
+	require.NoError(t, Uninstall(t.Context(), NarrateMilestones))
 
-	if unit.Exists() {
-		t.Error("unit file should have been removed")
-	}
+	assert.False(t, unit.Exists(), "unit file should have been removed")
 
 	var expected []unitCall
 	for _, name := range allUnitNames {
@@ -633,25 +430,18 @@ func TestUninstall(t *testing.T) {
 }
 
 func TestUninstallAllUnits(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
+	dir := tempLayout(t).unitDir
 
-	dir := systemd.UserUnitDir(tmpDir)
 	for _, name := range allUnitNames {
 		dir.UnitFile(name).Write("fake")
 	}
 
 	mockUnits(t)
 
-	if err := Uninstall(t.Context(), NarrateMilestones); err != nil {
-		t.Fatalf("Uninstall() error: %v", err)
-	}
+	require.NoError(t, Uninstall(t.Context(), NarrateMilestones))
 
 	for _, name := range allUnitNames {
-		if dir.UnitFile(name).Exists() {
-			t.Errorf("unit file %s should have been removed", name)
-		}
+		assert.False(t, dir.UnitFile(name).Exists(), "unit file %s should have been removed", name)
 	}
 }
 
@@ -659,7 +449,6 @@ func TestUninstallAllUnits(t *testing.T) {
 
 func TestInstallLocalMasksDBusActivation(t *testing.T) {
 	mask := tempTakeoverFiles(t).mask
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
@@ -677,7 +466,6 @@ func TestInstallLocalMasksDBusActivation(t *testing.T) {
 
 func TestInstallLocalMaskIdempotent(t *testing.T) {
 	mask := tempTakeoverFiles(t).mask
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockUnits(t)
 	mockLookPath(t, defaultLookPath)
@@ -696,7 +484,6 @@ func TestInstallLocalMaskIdempotent(t *testing.T) {
 
 func TestInstallRemoteUnmasks(t *testing.T) {
 	mask := tempTakeoverFiles(t).mask
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockUnits(t)
 
@@ -764,10 +551,7 @@ func captureStdout(t *testing.T, fn func()) string {
 }
 
 func TestInstallQuietByDefault(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 	mockUnits(t)
 
 	out := captureStdout(t, func() {
@@ -781,10 +565,7 @@ func TestInstallQuietByDefault(t *testing.T) {
 }
 
 func TestInstallVerboseNarratesChanges(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 	units := mockUnits(t)
 
 	out := captureStdout(t, func() {
@@ -799,10 +580,7 @@ func TestInstallVerboseNarratesChanges(t *testing.T) {
 }
 
 func TestUninstallQuietByDefault(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	tempXDG(t)
 	mockUnits(t)
 	mockSession(t, 0)
 	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))

@@ -1,7 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   pendingRequest,
-  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -81,12 +80,11 @@ async function openWithRequests(
   requests: PendingRequest[],
 ) {
   await installNotificationSpy(page, spy);
-  await routeSnapshot(page, {
+  await backend.openWith(page, {
     // With no delay, the app decides on each notification as the request arrives.
     rewrite: (s) => ({ ...s, notification_delay_ms: 0 }),
     after: requests.map((request) => ({ type: "request_created", request })),
   });
-  await page.goto(await backend.generateLoginURL());
   await expect(page.locator(".card-header")).toHaveCount(requests.length);
 }
 
@@ -108,7 +106,7 @@ test.describe("Browser Notifications", () => {
   }) => {
     await installNotificationSpy(page, { permission: "denied", hidden: false });
 
-    await page.goto(await backend.generateLoginURL());
+    await backend.authenticate(page);
 
     // App should still work without notifications
     await expect(page.getByText("No pending requests")).toBeVisible();
@@ -204,20 +202,16 @@ test.describe("Browser Notifications", () => {
     test("app loads successfully with notification permission granted", async ({
       page,
     }) => {
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
+      await backend.authenticate(page);
 
       // App should work normally with notifications enabled
       await expect(page.getByText("No pending requests")).toBeVisible();
-      await expect(page.getByText("client connected")).toBeVisible();
     });
 
     test("notification toggle button is visible and defaults to enabled", async ({
       page,
     }) => {
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
-      await expect(page.getByText("No pending requests")).toBeVisible();
+      await backend.authenticate(page);
 
       const toggle = page.getByRole("button", { name: "Toggle notifications" });
       await expect(toggle).toBeVisible();
@@ -227,9 +221,7 @@ test.describe("Browser Notifications", () => {
     test("notification toggle disables and persists in localStorage", async ({
       page,
     }) => {
-      const loginURL = await backend.generateLoginURL();
-      await page.goto(loginURL);
-      await expect(page.getByText("No pending requests")).toBeVisible();
+      await backend.authenticate(page);
 
       const toggle = page.getByRole("button", { name: "Toggle notifications" });
 

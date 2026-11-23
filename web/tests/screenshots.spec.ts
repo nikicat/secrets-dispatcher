@@ -2,7 +2,6 @@ import { expect, test } from "@playwright/test";
 import {
   pendingRequest,
   PROJECT_ROOT,
-  routeSnapshot,
   secretItem,
   startTestBackend,
   type TestBackend,
@@ -251,8 +250,10 @@ test.describe("Screenshots", () => {
   test("webui-overview: pending requests with history and trust rules", async ({
     page,
   }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+
     // Intercept WebSocket to inject rich state.
-    await routeSnapshot(page, {
+    await backend.openWith(page, {
       rewrite: (snapshot) => ({
         ...snapshot,
         history: makeHistory(),
@@ -261,13 +262,8 @@ test.describe("Screenshots", () => {
       after: [secretRequest, gpgSignRequest],
     });
 
-    await page.setViewportSize({ width: 1280, height: 900 });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
     // Wait for both pending cards to appear.
-    await expect(page.locator(".card")).toHaveCount(2, { timeout: 10_000 });
+    await expect(page.locator(".card")).toHaveCount(2);
 
     // Wait for history to render.
     await expect(page.getByText("Recent Activity")).toBeVisible();

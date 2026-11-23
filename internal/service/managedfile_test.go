@@ -9,18 +9,16 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/textfile"
 )
 
-// Returns the layout under a temporary XDG config and data home.
+// Returns the layout under the XDG homes that tempXDG sets.
 func tempLayout(t *testing.T) layout {
 	t.Helper()
-	tmp := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmp)
-	t.Setenv("XDG_DATA_HOME", tmp)
+	tempXDG(t)
 	l, err := locateLayout()
 	require.NoError(t, err)
 	return l
 }
 
-// Returns the takeover files under a temporary XDG config and data home.
+// Returns the takeover files under the XDG homes that tempXDG sets.
 func tempTakeoverFiles(t *testing.T) takeoverFiles {
 	t.Helper()
 	return tempLayout(t).files

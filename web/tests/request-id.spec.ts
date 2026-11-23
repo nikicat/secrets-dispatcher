@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import {
   pendingRequest,
-  routeSnapshot,
   startTestBackend,
   type TestBackend,
 } from "./fixtures/test-utils.mts";
@@ -54,27 +53,13 @@ test.describe("Request ID on History Cards", () => {
     const resolvedAt = new Date().toISOString();
     const fakeId = "abcd1234-5678-9abc-def0-123456789abc";
 
-    // Intercept WebSocket to inject a history entry with a known ID
-    await routeSnapshot(page, {
-      rewrite: (s) => ({
-        ...s,
-        history: [
-          {
-            request: pendingRequest({ id: fakeId }),
-            resolution: "approved",
-            resolved_at: resolvedAt,
-          },
-        ],
-      }),
-    });
-
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    // Wait for history to appear
-    await expect(page.getByText("Recent Activity")).toBeVisible({
-      timeout: 10000,
-    });
+    await backend.openWithHistory(page, [
+      {
+        request: pendingRequest({ id: fakeId }),
+        resolution: "approved",
+        resolved_at: resolvedAt,
+      },
+    ]);
 
     // History entry should show truncated request ID
     const idEl = page.locator(".history-request-id");

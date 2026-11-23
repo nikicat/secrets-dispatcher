@@ -83,7 +83,7 @@ func (h *Handlers) HandleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "approved"})
+	writeJSON(w, ActionResponse{Status: ActionApproved})
 }
 
 // HandleApproveAndAutoApprove handles POST /api/v1/pending/{id}/approve-and-auto-approve.
@@ -112,7 +112,7 @@ func (h *Handlers) HandleApproveAndAutoApprove(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "approved"})
+	writeJSON(w, ActionResponse{Status: ActionApproved})
 }
 
 // HandleDeny handles POST /api/v1/pending/{id}/deny.
@@ -137,7 +137,7 @@ func (h *Handlers) HandleDeny(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "denied"})
+	writeJSON(w, ActionResponse{Status: ActionDenied})
 }
 
 // HandleCancel handles POST /api/v1/pending/{id}/cancel.
@@ -162,7 +162,7 @@ func (h *Handlers) HandleCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "cancelled"})
+	writeJSON(w, ActionResponse{Status: ActionCancelled})
 }
 
 // HandleAutoApproveList handles GET /api/v1/auto-approve.
@@ -201,7 +201,7 @@ func (h *Handlers) HandleAutoApproveCreate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "created"})
+	writeJSON(w, ActionResponse{Status: ActionCreated})
 }
 
 // HandleAutoApproveDelete handles DELETE /api/v1/auto-approve/{id}.
@@ -226,7 +226,7 @@ func (h *Handlers) HandleAutoApproveDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "deleted"})
+	writeJSON(w, ActionResponse{Status: ActionDeleted})
 }
 
 // HandleLog handles GET /api/v1/log.
@@ -328,7 +328,7 @@ func (h *Handlers) HandleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, ActionResponse{Status: "authenticated"})
+	writeJSON(w, ActionResponse{Status: ActionAuthenticated})
 }
 
 // HandleTestInjectHistory handles POST /api/v1/test/history for injecting test history entries.
@@ -370,5 +370,5 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 
 	h.resolver.Manager.AddHistoryEntry(approvalEntry)
 
-	writeJSON(w, ActionResponse{Status: "created"})
+	writeJSON(w, ActionResponse{Status: ActionCreated})
 }

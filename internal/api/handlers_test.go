@@ -9,12 +9,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
-	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 	"github.com/nikicat/secrets-dispatcher/internal/proxy"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
+	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+// The proxy client, its socket and the D-Bus session that the fixtures report.
+const (
+	testClient  approval.ClientName = "test-client"
+	testSocket  unixsock.Path       = "/path/to/socket"
+	testSession dbus.ObjectPath     = "/session/1"
 )
 
 // Mints a live browser session on auth and returns its "session=<id>" Cookie
@@ -22,32 +32,33 @@ import (
 func mintSession(t *testing.T, auth *Auth) string {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	if err := auth.SetSessionCookie(rr); err != nil {
-		t.Fatalf("failed to mint session: %v", err)
-	}
+	require.NoError(t, auth.SetSessionCookie(rr), "mint session")
 	cookies := rr.Result().Cookies()
-	if len(cookies) == 0 {
-		t.Fatal("SetSessionCookie set no cookie")
-	}
+	require.NotEmpty(t, cookies, "SetSessionCookie set no cookie")
 	return cookies[0].Name + "=" + cookies[0].Value
+}
+
+// Fails the test unless the response has the given status, and prints the body
+// when it does not.
+func requireStatus(t *testing.T, rr *httptest.ResponseRecorder, want int) {
+	t.Helper()
+	require.Equalf(t, want, rr.Code, "body: %s", rr.Body.String())
+}
+
+// Fails the test as requireStatus does, and returns the JSON body decoded as T.
+func decodeResponse[T any](t *testing.T, rr *httptest.ResponseRecorder, wantStatus int) T {
+	t.Helper()
+	requireStatus(t, rr, wantStatus)
+	var body T
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body), "decode response")
+	return body
 }
 
 // testHandlers creates handlers with a test auth for use in tests.
 func testHandlers(t *testing.T, mgr *approval.Manager) *Handlers {
 	t.Helper()
 	auth := newTestAuth(t)
-	return NewHandlers(ServerConfig{Resolver: NewResolver(mgr, proxy.SlowUpstream{}), Auth: auth}, oneClient("test-client", "/path/to/socket"))
-}
-
-// Builds the approval manager the api tests share. Its requests wait five
-// minutes, so none expires mid-test. Each edit adjusts the config before the
-// manager is built.
-func newTestManager(edits ...func(*approval.ManagerConfig)) *approval.Manager {
-	cfg := approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100}
-	for _, edit := range edits {
-		edit(&cfg)
-	}
-	return approval.NewManager(cfg)
+	return NewHandlers(ServerConfig{Resolver: NewResolver(mgr, proxy.SlowUpstream{}), Auth: auth}, oneClient(testClient, testSocket))
 }
 
 func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) approval.AutoApproveRuleID {
@@ -57,37 +68,25 @@ func mustAddRule(t *testing.T, mgr *approval.Manager, req *approval.Request) app
 	return mgr.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
 }
 
-func signableGPGSignInfo() *approval.GPGSignInfo {
-	info, err := approval.NewGPGSignInfo(approval.SignedObject("tree 0\n"), "", "ABCD", approval.ListedFiles(nil))
-	if err != nil {
-		panic(err)
-	}
-	return info
-}
-
-func localSender(comm string, exe procutil.Path) approval.SenderInfo {
-	const pid = 4242
-	return approval.SenderInfo{
-		PID:          pid,
-		InvokerName:  comm,
-		ProcessChain: []procutil.Process{{Name: comm, PID: pid, Exe: &exe}},
-	}
-}
-
 // A get_secret request that a test started and that its manager holds pending.
 type pendingRequest struct {
-	ID approval.RequestID
-	// Done receives RequireApproval's error once the request is resolved.
-	Done <-chan error
+	ID   approval.RequestID
+	done <-chan error
 }
 
-// Starts a get_secret request from "test-client" for items on session
-// "/session/1" in the background, and returns the channel that receives
-// RequireApproval's error.
+// Returns RequireApproval's error once the request is resolved, and fails the
+// test when that takes over a second.
+func (p pendingRequest) wait(t *testing.T) error {
+	t.Helper()
+	return testutil.Recv(t, p.done, time.Second, "RequireApproval did not unblock")
+}
+
+// Starts a get_secret request from testClient for items on testSession in the
+// background, and returns the channel that receives RequireApproval's error.
 func startRequest(ctx context.Context, mgr *approval.Manager, items ...approval.ItemInfo) <-chan error {
 	done := make(chan error, 1)
 	go func() {
-		_, err := mgr.RequireApproval(ctx, approval.RequestInfo{Items: items, Session: "/session/1", Type: approval.RequestTypeGetSecret, SenderInfo: approval.SenderInfo{Client: "test-client"}})
+		_, err := mgr.RequireApproval(ctx, approval.RequestInfo{Items: items, Session: testSession, Type: approval.RequestTypeGetSecret, SenderInfo: approval.SenderInfo{Client: testClient}})
 		done <- err
 	}()
 	return done
@@ -105,80 +104,52 @@ func startPending(t *testing.T, mgr *approval.Manager, items ...approval.ItemInf
 		}
 		return id != ""
 	}, time.Second, 10*time.Millisecond, "request did not appear")
-	return pendingRequest{ID: id, Done: done}
+	return pendingRequest{ID: id, done: done}
 }
 
 func TestHandleStatus(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleStatus(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[StatusResponse](t, rr, http.StatusOK)
 
-	var resp StatusResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if !resp.Running {
-		t.Error("expected running=true")
-	}
-	if resp.PendingCount != 0 {
-		t.Errorf("expected pending_count=0, got %d", resp.PendingCount)
-	}
-	if len(resp.Clients) != 1 {
-		t.Fatalf("expected 1 client, got %d", len(resp.Clients))
-	}
-	if resp.Clients[0].Name != "test-client" {
-		t.Errorf("expected client name 'test-client', got '%s'", resp.Clients[0].Name)
-	}
-	if resp.Clients[0].SocketPath != "/path/to/socket" {
-		t.Errorf("expected socket_path '/path/to/socket', got '%s'", resp.Clients[0].SocketPath)
-	}
+	assert.True(t, resp.Running)
+	assert.Zero(t, resp.PendingCount)
+	require.Len(t, resp.Clients, 1)
+	assert.Equal(t, testClient, resp.Clients[0].Name)
+	assert.Equal(t, testSocket, resp.Clients[0].SocketPath)
 }
 
 func TestHandleStatus_WrongMethod(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleStatus(rr, req)
 
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("expected status 405, got %d", rr.Code)
-	}
+	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
 
 func TestHandlePendingList_Empty(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandlePendingList(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[PendingListResponse](t, rr, http.StatusOK)
 
-	var resp PendingListResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if len(resp.Requests) != 0 {
-		t.Errorf("expected empty requests, got %d", len(resp.Requests))
-	}
+	assert.Empty(t, resp.Requests)
 }
 
 func TestHandlePendingList_WithRequests(t *testing.T) {
-	mgr := newTestManager()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
 	handlers := testHandlers(t, mgr)
 
 	startPending(t, mgr, approval.ItemInfo{Path: "/test/item1"}, approval.ItemInfo{Path: "/test/item2"})
@@ -188,33 +159,18 @@ func TestHandlePendingList_WithRequests(t *testing.T) {
 
 	handlers.HandlePendingList(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[PendingListResponse](t, rr, http.StatusOK)
 
-	var resp PendingListResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if len(resp.Requests) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(resp.Requests))
-	}
+	require.Len(t, resp.Requests, 1)
 
 	r := resp.Requests[0]
-	if r.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", r.Client)
-	}
-	if len(r.Items) != 2 {
-		t.Errorf("expected 2 items, got %d", len(r.Items))
-	}
-	if r.Session != "/session/1" {
-		t.Errorf("expected session '/session/1', got '%s'", r.Session)
-	}
+	assert.Equal(t, testClient, r.Client)
+	assert.Len(t, r.Items, 2)
+	assert.Equal(t, testSession, r.Session)
 }
 
 func TestHandleApprove_Success(t *testing.T) {
-	mgr := newTestManager()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
 	handlers := testHandlers(t, mgr)
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
@@ -224,67 +180,37 @@ func TestHandleApprove_Success(t *testing.T) {
 
 	handlers.HandleApprove(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[ActionResponse](t, rr, http.StatusOK)
 
-	var resp ActionResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
+	assert.Equal(t, ActionApproved, resp.Status)
 
-	if resp.Status != "approved" {
-		t.Errorf("expected status 'approved', got '%s'", resp.Status)
-	}
-
-	// Verify the approval unblocked the request
-	select {
-	case err := <-pending.Done:
-		if err != nil {
-			t.Errorf("RequireApproval should return nil on approve, got: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Error("RequireApproval did not unblock")
-	}
+	assert.NoError(t, pending.wait(t), "RequireApproval on approve")
 }
 
 func TestHandleApprove_NotFound(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/approve", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleApprove(rr, req)
 
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", rr.Code)
-	}
-
-	var resp apiclient.ErrorResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if resp.Error != "request not found or expired" {
-		t.Errorf("unexpected error message: %s", resp.Error)
-	}
+	assertErrorBody(t, rr, http.StatusNotFound, "request not found or expired")
 }
 
 func TestHandleApprove_WrongMethod(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/approve", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleApprove(rr, req)
 
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("expected status 405, got %d", rr.Code)
-	}
+	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
 
 func TestHandleDeny_Success(t *testing.T) {
-	mgr := newTestManager()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
 	handlers := testHandlers(t, mgr)
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
@@ -294,32 +220,15 @@ func TestHandleDeny_Success(t *testing.T) {
 
 	handlers.HandleDeny(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[ActionResponse](t, rr, http.StatusOK)
 
-	var resp ActionResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
+	assert.Equal(t, ActionDenied, resp.Status)
 
-	if resp.Status != "denied" {
-		t.Errorf("expected status 'denied', got '%s'", resp.Status)
-	}
-
-	// Verify the denial unblocked the request
-	select {
-	case err := <-pending.Done:
-		if err != approval.ErrDenied {
-			t.Errorf("RequireApproval should return ErrDenied, got: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Error("RequireApproval did not unblock")
-	}
+	assert.Equal(t, approval.ErrDenied, pending.wait(t), "RequireApproval on deny")
 }
 
 func TestHandleCancel_Success(t *testing.T) {
-	mgr := newTestManager()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
 	handlers := testHandlers(t, mgr)
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item"})
@@ -329,110 +238,69 @@ func TestHandleCancel_Success(t *testing.T) {
 
 	handlers.HandleCancel(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[ActionResponse](t, rr, http.StatusOK)
 
-	var resp ActionResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if resp.Status != "cancelled" {
-		t.Errorf("expected status 'cancelled', got '%s'", resp.Status)
-	}
+	assert.Equal(t, ActionCancelled, resp.Status)
 }
 
 func TestHandleCancel_NotFound(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/pending/nonexistent-id/cancel", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleCancel(rr, req)
 
-	if rr.Code != http.StatusNotFound {
-		t.Errorf("expected status 404, got %d", rr.Code)
-	}
+	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 func TestHandleCancel_WrongMethod(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/pending/some-id/cancel", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleCancel(rr, req)
 
-	if rr.Code != http.StatusMethodNotAllowed {
-		t.Errorf("expected status 405, got %d", rr.Code)
-	}
+	assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
 }
 
 func TestHandleLog_Empty(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleLog(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[HistoryResponse](t, rr, http.StatusOK)
 
-	var resp HistoryResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	// No history yet, should return empty
-	if len(resp.Entries) != 0 {
-		t.Errorf("expected empty entries, got %d", len(resp.Entries))
-	}
+	assert.Empty(t, resp.Entries, "no history yet")
 }
 
 func TestHandleLog_WithHistory(t *testing.T) {
-	mgr := newTestManager()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
 	handlers := testHandlers(t, mgr)
 
 	pending := startPending(t, mgr, approval.ItemInfo{Path: "/test/item", Label: "Test Item"})
 
 	// Approve the request
-	mgr.Approve(pending.ID)
-	<-pending.Done
-
-	// Give time for history to be recorded
-	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, mgr.Approve(pending.ID))
+	require.NoError(t, pending.wait(t))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/log", nil)
 	rr := httptest.NewRecorder()
 
 	handlers.HandleLog(rr, req)
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	resp := decodeResponse[HistoryResponse](t, rr, http.StatusOK)
 
-	var resp HistoryResponse
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if len(resp.Entries) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(resp.Entries))
-	}
+	require.Len(t, resp.Entries, 1)
 
 	entry := resp.Entries[0]
-	if entry.Resolution != "approved" {
-		t.Errorf("expected resolution 'approved', got '%s'", entry.Resolution)
-	}
-	if entry.Request.ID != pending.ID {
-		t.Errorf("expected request ID %s, got %s", pending.ID, entry.Request.ID)
-	}
-	if entry.Request.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", entry.Request.Client)
-	}
+	assert.Equal(t, approval.ResolutionApproved, entry.Resolution)
+	assert.Equal(t, pending.ID, entry.Request.ID)
+	assert.Equal(t, testClient, entry.Request.Client)
 }
 
 func TestExtractRequestID(t *testing.T) {
@@ -453,11 +321,7 @@ func TestExtractRequestID(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {
-			result := extractRequestID(tc.path, tc.prefix, tc.suffix)
-			if result != tc.expected {
-				t.Errorf("extractRequestID(%q, %q, %q) = %q, want %q",
-					tc.path, tc.prefix, tc.suffix, result, tc.expected)
-			}
+			assert.Equal(t, tc.expected, extractRequestID(tc.path, tc.prefix, tc.suffix))
 		})
 	}
 }
@@ -465,17 +329,11 @@ func TestExtractRequestID(t *testing.T) {
 func TestWriteJSON(t *testing.T) {
 	rr := httptest.NewRecorder()
 
-	writeJSON(rr, ActionResponse{Status: "approved"})
+	writeJSON(rr, ActionResponse{Status: ActionApproved})
 
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
-	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("expected Content-Type application/json, got %q", ct)
-	}
-	if body := rr.Body.String(); body != `{"status":"approved"}`+"\n" {
-		t.Errorf("unexpected body %q", body)
-	}
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	assert.Equal(t, `{"status":"approved"}`+"\n", rr.Body.String())
 }
 
 func TestWriteJSON_Unencodable(t *testing.T) {
@@ -483,21 +341,15 @@ func TestWriteJSON_Unencodable(t *testing.T) {
 
 	writeJSON(rr, make(chan int))
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Errorf("expected status 500, got %d", rr.Code)
-	}
-	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("expected Content-Type application/json, got %q", ct)
-	}
-	if body := rr.Body.String(); body != `{"error":"failed to encode response"}`+"\n" {
-		t.Errorf("unexpected body %q", body)
-	}
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+	assert.Equal(t, `{"error":"failed to encode response"}`+"\n", rr.Body.String())
 }
 
 // POST /api/v1/test/history refuses an entry whose resolution is not one of the
 // approval.Resolution constants, and History stays empty.
 func TestHandleTestInjectHistory_UnknownResolution(t *testing.T) {
-	mgr := newTestManager()
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{})
 	h := testHandlers(t, mgr)
 	h.testMode = true
 	body := `{"request":{"id":"r1","items":[],"type":"get_secret"},"resolution":"bogus","resolved_at":"2026-11-21T00:00:00Z"}`

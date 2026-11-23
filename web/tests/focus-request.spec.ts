@@ -162,9 +162,7 @@ test.describe("Focus Mode — Auto-close on Resolve", () => {
 
     await page.getByRole("button", { name: "Deny" }).click();
 
-    await expect
-      .poll(() => wasWindowCloseCalled(page), { timeout: 5000 })
-      .toBe(true);
+    await expect.poll(() => wasWindowCloseCalled(page)).toBe(true);
   });
 
   test("approve in UI calls window.close()", async ({ page }) => {
@@ -178,9 +176,7 @@ test.describe("Focus Mode — Auto-close on Resolve", () => {
 
     await page.getByRole("button", { name: "Approve", exact: true }).click();
 
-    await expect
-      .poll(() => wasWindowCloseCalled(page), { timeout: 10000 })
-      .toBe(true);
+    await expect.poll(() => wasWindowCloseCalled(page)).toBe(true);
   });
 
   test("deny via external API calls window.close()", async ({ page }) => {
@@ -195,9 +191,7 @@ test.describe("Focus Mode — Auto-close on Resolve", () => {
     // Deny from outside (simulates another tab or notification button)
     await denyRequest(reqId);
 
-    await expect
-      .poll(() => wasWindowCloseCalled(page), { timeout: 5000 })
-      .toBe(true);
+    await expect.poll(() => wasWindowCloseCalled(page)).toBe(true);
   });
 });
 
@@ -286,9 +280,7 @@ test.describe("Focus Mode — Request Expiration", () => {
     });
 
     // Wait for expiration (2s timeout + buffer)
-    await expect(page.getByText("Request is no longer pending")).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.getByText("Request is no longer pending")).toBeVisible();
 
     // Should NOT auto-close on expiration
     expect(await page.evaluate(() => window.__closeCalled)).toBe(false);

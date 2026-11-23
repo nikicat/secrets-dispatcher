@@ -1,4 +1,5 @@
 import {
+  expectConnected,
   generateJWT,
   startTestBackend,
   type TestBackend,
@@ -35,17 +36,10 @@ test.describe("Authentication", () => {
   test("login with valid JWT sets cookie and shows connected status", async ({
     page,
   }) => {
-    // Generate a valid login URL
-    const loginURL = await backend.generateLoginURL();
-
-    // Navigate to the login URL
-    await page.goto(loginURL);
+    await backend.authenticate(page);
 
     // Should redirect to / without token in URL
     await expect(page).toHaveURL(backend.url + "/");
-
-    // Should show connected status
-    await expect(page.getByText("client connected")).toBeVisible();
 
     // Should show empty state (no pending requests in API-only mode)
     await expect(page.getByText("No pending requests")).toBeVisible();
@@ -63,18 +57,13 @@ test.describe("Authentication", () => {
   test("session persists after page reload when authenticated", async ({
     page,
   }) => {
-    // First, authenticate
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-
-    // Verify authenticated
-    await expect(page.getByText("client connected")).toBeVisible();
+    await backend.authenticate(page);
 
     // Reload the page
     await page.reload();
 
     // Should still show connected status (cookie persists)
-    await expect(page.getByText("client connected")).toBeVisible();
+    await expectConnected(page);
   });
 
   test("API calls return 401 when not authenticated", async ({ request }) => {

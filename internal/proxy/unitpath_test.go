@@ -117,9 +117,7 @@ func TestDecodeDBusPath(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := decodeDBusPath(tt.input)
-			if got != tt.want {
-				t.Errorf("decodeDBusPath(%q) = %q, want %q", tt.input, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "decodeDBusPath(%q)", tt.input)
 		})
 	}
 }

@@ -4,145 +4,97 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
-	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"log/slog"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
-// Returns a sender whose invoker has the given comm and exe, as the daemon
-// resolves a live caller. Auto-approve rules match only on the exe.
-func testSender(comm string, exe procutil.Path) SenderInfo {
-	const pid = 4242
-	return SenderInfo{
-		PID:          pid,
-		InvokerName:  comm,
-		ProcessChain: []procutil.Process{{Name: comm, PID: pid, Exe: &exe}},
-	}
-}
-
-// Returns the Secret Service path of the named item in the named collection.
-func itemPath(collection, name string) string {
-	return "/org/freedesktop/secrets/collection/" + collection + "/" + name
-}
-
-// Returns an ItemInfo whose path places it in the named collection.
-func itemInCollection(collection, name string) ItemInfo {
-	return ItemInfo{Path: itemPath(collection, name)}
-}
-
-// Adds an auto-approve rule made from req and returns its ID. Fails the test
-// when req is not AutoApprovable.
-func mustAddRule(t *testing.T, mgr *Manager, req *Request) AutoApproveRuleID {
+// Returns the auto-approve scope of the given request, failing the test when
+// Request.AutoApprovable rejects it.
+func mustScope(t *testing.T, req *Request) AutoApproveScope {
 	t.Helper()
 	scope, err := req.AutoApproveScope()
-	if err != nil {
-		t.Fatalf("AutoApproveScope: %v", err)
-	}
-	return mgr.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
+	require.NoError(t, err, "AutoApproveScope")
+	return scope
 }
 
-func newRuleManager() *Manager {
-	return NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-}
-
-func waitPendingID(t *testing.T, mgr *Manager) RequestID {
+// Adds an auto-approve rule made from the given request and returns its ID,
+// failing the test as mustScope does.
+func mustAddRule(t *testing.T, mgr *Manager, req *Request) AutoApproveRuleID {
 	t.Helper()
-	var id RequestID
-	require.Eventually(t, func() bool {
-		if reqs := mgr.Pending(); len(reqs) > 0 {
-			id = reqs[0].ID
-		}
-		return id != ""
-	}, time.Second, 10*time.Millisecond, "request did not appear in pending list")
-	return id
+	return mgr.AddAutoApproveRule(mustScope(t, req), req.SenderInfo.InvokerName)
 }
 
 func TestRequestAutoApproveScope_RefusesRequestWithoutExe(t *testing.T) {
 	req := &Request{
 		ID:         "remote-1",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: SenderInfo{Client: "remote:laptop", Info: sender.Info{InvokerName: "gh"}},
+		SenderInfo: RemoteSenderForTest("gh"),
 	}
 
 	_, err := req.AutoApproveScope()
-	if !errors.Is(err, ErrNotAutoApprovable) {
-		t.Fatalf("err = %v, want ErrNotAutoApprovable", err)
-	}
+	assert.ErrorIs(t, err, ErrNotAutoApprovable)
 }
 
 func TestApproveAndAutoApprove_LeavesRequestWithoutExePending(t *testing.T) {
-	mgr := newRuleManager()
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	var approvalErr error
-	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{
+		call := startApproval(context.Background(), mgr, RequestInfo{
 			Session:    "session",
 			Type:       RequestTypeGetSecret,
-			SenderInfo: SenderInfo{InvokerName: "gh"},
+			SenderInfo: RemoteSenderForTest("gh"),
 		})
+
+		id := waitPendingID(t, mgr)
+
+		require.ErrorIs(t, mgr.ApproveAndAutoApprove(id), ErrNotAutoApprovable)
+		_, ok := mgr.GetPending(id)
+		require.True(t, ok, "request was resolved, want it still pending")
+		assert.Empty(t, mgr.ListAutoApproveRules())
+
+		require.NoError(t, mgr.Approve(id))
+		_, err := call.wait()
+		assert.NoError(t, err, "RequireApproval")
 	})
-
-	id := waitPendingID(t, mgr)
-
-	if err := mgr.ApproveAndAutoApprove(id); !errors.Is(err, ErrNotAutoApprovable) {
-		t.Fatalf("err = %v, want ErrNotAutoApprovable", err)
-	}
-	if _, ok := mgr.GetPending(id); !ok {
-		t.Fatal("request was resolved, want it still pending")
-	}
-	if rules := mgr.ListAutoApproveRules(); len(rules) != 0 {
-		t.Errorf("rules = %v, want none", rules)
-	}
-
-	if err := mgr.Approve(id); err != nil {
-		t.Fatalf("Approve: %v", err)
-	}
-	wg.Wait()
-	if approvalErr != nil {
-		t.Errorf("RequireApproval = %v, want nil", approvalErr)
-	}
 }
 
 func TestAddRuleFromCancelled_OnlyCancelledRequestsEarnARule(t *testing.T) {
-	mgr := newRuleManager()
-	end := func(resolve func(RequestID) error) RequestID {
-		var wg sync.WaitGroup
-		wg.Go(func() {
-			_, _ = mgr.RequireApproval(context.Background(), RequestInfo{
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
+		end := func(resolve func(RequestID) error) RequestID {
+			call := startApproval(context.Background(), mgr, RequestInfo{
 				Session:    "session",
 				Type:       RequestTypeGetSecret,
-				SenderInfo: testSender("gh", "/usr/bin/gh"),
+				SenderInfo: ghSender,
 			})
-		})
-		id := waitPendingID(t, mgr)
-		require.NoError(t, resolve(id))
-		wg.Wait()
-		return id
-	}
+			id := waitPendingID(t, mgr)
+			require.NoError(t, resolve(id))
+			call.wait()
+			return id
+		}
 
-	denied := end(mgr.Deny)
-	assert.ErrorIs(t, mgr.AddRuleFromCancelled(denied), ErrNotFound)
-	assert.ErrorIs(t, mgr.AddRuleFromCancelled("unknown"), ErrNotFound)
-	assert.Empty(t, mgr.ListAutoApproveRules())
+		denied := end(mgr.Deny)
+		assert.ErrorIs(t, mgr.AddRuleFromCancelled(denied), ErrNotFound)
+		assert.ErrorIs(t, mgr.AddRuleFromCancelled("unknown"), ErrNotFound)
+		assert.Empty(t, mgr.ListAutoApproveRules())
 
-	cancelled := end(mgr.Cancel)
-	require.NoError(t, mgr.AddRuleFromCancelled(cancelled))
-	rules := mgr.ListAutoApproveRules()
-	require.Len(t, rules, 1)
-	assert.Equal(t, RequestTypeGetSecret, rules[0].RequestType)
+		cancelled := end(mgr.Cancel)
+		require.NoError(t, mgr.AddRuleFromCancelled(cancelled))
+		rules := mgr.ListAutoApproveRules()
+		require.Len(t, rules, 1)
+		assert.Equal(t, RequestTypeGetSecret, rules[0].RequestType)
+	})
 }
 
 func TestAutoApproveRule_MatchesRetry(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	// Simulate a cancelled request
 	req := &Request{
 		ID:   "req-1",
 		Type: RequestTypeWrite,
@@ -151,7 +103,7 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 			Label:      "gh:github.com",
 			Attributes: map[string]string{"service": "gh:github.com"},
 		}},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 	mustAddRule(t, mgr, req)
 
@@ -162,11 +114,9 @@ func TestAutoApproveRule_MatchesRetry(t *testing.T) {
 			Attributes: map[string]string{"service": "gh:github.com", "extra": "val"},
 		}},
 		Type:       RequestTypeWrite,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	})
-	if !ok {
-		t.Fatal("expected auto-approve rule to match retry request")
-	}
+	assert.True(t, ok, "expected auto-approve rule to match retry request")
 }
 
 // A process that sets its comm to a trusted app's name but runs another binary
@@ -190,14 +140,14 @@ func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-			genuine := RequestInfo{Type: tt.typ, Items: tt.items, SenderInfo: testSender(tt.comm, tt.exe)}
+			mgr := NewManagerForTest(ManagerConfig{})
+			genuine := RequestInfo{Type: tt.typ, Items: tt.items, SenderInfo: LocalSenderForTest(tt.comm, tt.exe)}
 			// The user chose "always allow" for the real binary.
 			mustAddRule(t, mgr, &Request{RequestInfo: genuine})
 
 			// Malware sets its comm to the trusted name but runs /tmp/malware.
 			spoofed := genuine
-			spoofed.SenderInfo = testSender(tt.comm, "/tmp/malware")
+			spoofed.SenderInfo = LocalSenderForTest(tt.comm, "/tmp/malware")
 			_, ok := mgr.CheckAutoApproveRules(spoofed)
 			assert.False(t, ok, "comm-spoofed caller with a different exe must not match the auto-approve rule")
 
@@ -208,107 +158,89 @@ func TestAutoApproveRule_CommSpoofDoesNotMatch(t *testing.T) {
 }
 
 func TestAutoApproveRule_DifferentInvokerNoMatch(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
 	req := &Request{
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{itemInCollection("default", "i1")},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 	mustAddRule(t, mgr, req)
 
 	_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 		Items:      []ItemInfo{itemInCollection("default", "i1")},
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("seahorse", "/usr/bin/seahorse"),
+		SenderInfo: LocalSenderForTest("seahorse", "/usr/bin/seahorse"),
 	})
-	if ok {
-		t.Fatal("expected no match for different invoker")
-	}
+	assert.False(t, ok, "expected no match for different invoker")
 }
 
 func TestAutoApproveRule_Expiry(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, AutoApproveDuration: 50 * time.Millisecond})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{AutoApproveDuration: 50 * time.Millisecond})
 
-	req := &Request{
-		ID:         "req-1",
-		Type:       RequestTypeGetSecret,
-		Items:      []ItemInfo{itemInCollection("default", "i1")},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
-	}
-	mustAddRule(t, mgr, req)
+		req := &Request{
+			ID:         "req-1",
+			Type:       RequestTypeGetSecret,
+			Items:      []ItemInfo{itemInCollection("default", "i1")},
+			SenderInfo: ghSender,
+		}
+		mustAddRule(t, mgr, req)
 
-	time.Sleep(60 * time.Millisecond)
+		time.Sleep(60 * time.Millisecond)
 
-	_, ok := mgr.CheckAutoApproveRules(RequestInfo{
-		Items:      []ItemInfo{itemInCollection("default", "i1")},
-		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		_, ok := mgr.CheckAutoApproveRules(RequestInfo{
+			Items:      []ItemInfo{itemInCollection("default", "i1")},
+			Type:       RequestTypeGetSecret,
+			SenderInfo: ghSender,
+		})
+		require.False(t, ok, "expected expired rule not to match")
+
+		assert.Empty(t, mgr.ListAutoApproveRules(), "expected expired rules to be cleaned up")
 	})
-	if ok {
-		t.Fatal("expected expired rule not to match")
-	}
-
-	// Expired rules should be cleaned up
-	if len(mgr.ListAutoApproveRules()) != 0 {
-		t.Fatal("expected expired rules to be cleaned up")
-	}
 }
 
 func TestAutoApproveRule_IntegrationWithRequireApproval(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	// Add a rule
 	req := &Request{
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: itemPath("default", "i1"), Attributes: map[string]string{"service": "gh:github.com"}}},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 	mustAddRule(t, mgr, req)
 
-	// RequireApproval should return nil immediately (auto-approved)
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Items:      []ItemInfo{{Path: itemPath("default", "i99"), Attributes: map[string]string{"service": "gh:github.com"}}},
 		Session:    "session",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	})
-	if err != nil {
-		t.Fatalf("expected auto-approved, got: %v", err)
-	}
+	assert.NoError(t, err, "expected auto-approved")
 }
 
 func TestAutoApproveRule_ListAndRemove(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
 	req := &Request{
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 	ruleID := mustAddRule(t, mgr, req)
 
-	rules := mgr.ListAutoApproveRules()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule, got %d", len(rules))
-	}
+	require.Len(t, mgr.ListAutoApproveRules(), 1)
 
-	if err := mgr.RemoveAutoApproveRule(ruleID); err != nil {
-		t.Fatalf("RemoveAutoApproveRule failed: %v", err)
-	}
+	require.NoError(t, mgr.RemoveAutoApproveRule(ruleID))
 
-	rules = mgr.ListAutoApproveRules()
-	if len(rules) != 0 {
-		t.Fatalf("expected 0 rules after removal, got %d", len(rules))
-	}
+	assert.Empty(t, mgr.ListAutoApproveRules(), "rules after removal")
 }
 
 func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	// Rule has specific attributes
 	req := &Request{
 		ID:   "req-1",
 		Type: RequestTypeGetSecret,
@@ -316,7 +248,7 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 			Path:       itemPath("default", "i1"),
 			Attributes: map[string]string{"service": "gh:github.com"},
 		}},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 	mustAddRule(t, mgr, req)
 
@@ -327,11 +259,9 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 			Attributes: map[string]string{"service": "gh:github.com", "user": "nb"},
 		}},
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	})
-	if !ok {
-		t.Fatal("expected subset attribute match")
-	}
+	assert.True(t, ok, "expected subset attribute match")
 
 	// A request with a different attribute value does not match.
 	_, ok = mgr.CheckAutoApproveRules(RequestInfo{
@@ -340,27 +270,25 @@ func TestAutoApproveRule_AttributeSubsetMatch(t *testing.T) {
 			Attributes: map[string]string{"service": "other:example.com"},
 		}},
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	})
-	if ok {
-		t.Fatal("expected no match for different attribute value")
-	}
+	assert.False(t, ok, "expected no match for different attribute value")
 }
 
 func TestAutoApproveRule_AttributeValuesAreLiteral(t *testing.T) {
 	path := itemPath("default", "i1")
 	covers := func(made, asked string) bool {
-		mgr := newRuleManager()
+		mgr := NewManagerForTest(ManagerConfig{})
 		mustAddRule(t, mgr, &Request{
 			ID:         "req-1",
 			Type:       RequestTypeGetSecret,
 			Items:      []ItemInfo{{Path: path, Attributes: map[string]string{"service": made}}},
-			SenderInfo: testSender("gh", "/usr/bin/gh"),
+			SenderInfo: ghSender,
 		})
 		_, ok := mgr.CheckAutoApproveRules(RequestInfo{
 			Items:      []ItemInfo{{Path: path, Attributes: map[string]string{"service": asked}}},
 			Type:       RequestTypeGetSecret,
-			SenderInfo: testSender("gh", "/usr/bin/gh"),
+			SenderInfo: ghSender,
 		})
 		return ok
 	}
@@ -374,42 +302,35 @@ func TestAutoApproveRule_AttributeValuesAreLiteral(t *testing.T) {
 }
 
 func TestAutoApproveRule_DedupRefreshesExpiry(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	req := &Request{
-		ID:         "req-1",
-		Type:       RequestTypeGetSecret,
-		Items:      []ItemInfo{itemInCollection("default", "i1")},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
-	}
+		req := &Request{
+			ID:         "req-1",
+			Type:       RequestTypeGetSecret,
+			Items:      []ItemInfo{itemInCollection("default", "i1")},
+			SenderInfo: ghSender,
+		}
 
-	id1 := mustAddRule(t, mgr, req)
+		id1 := mustAddRule(t, mgr, req)
 
-	rules := mgr.ListAutoApproveRules()
-	if len(rules) != 1 {
-		t.Fatalf("expected 1 rule, got %d", len(rules))
-	}
-	expiry1 := rules[0].ExpiresAt
+		rules := mgr.ListAutoApproveRules()
+		require.Len(t, rules, 1)
+		expiry1 := rules[0].ExpiresAt
 
-	// Adding the same rule again should dedup
-	time.Sleep(10 * time.Millisecond)
-	id2 := mustAddRule(t, mgr, req)
+		time.Sleep(10 * time.Millisecond)
+		id2 := mustAddRule(t, mgr, req)
 
-	if id1 != id2 {
-		t.Errorf("expected same rule ID %s, got %s", id1, id2)
-	}
+		assert.Equal(t, id1, id2, "expected same rule ID")
 
-	rules = mgr.ListAutoApproveRules()
-	if len(rules) != 1 {
-		t.Fatalf("expected still 1 rule after dedup, got %d", len(rules))
-	}
-	if !rules[0].ExpiresAt.After(expiry1) {
-		t.Error("expected expiry to be refreshed")
-	}
+		rules = mgr.ListAutoApproveRules()
+		require.Len(t, rules, 1, "rules after dedup")
+		assert.True(t, rules[0].ExpiresAt.After(expiry1), "expected expiry to be refreshed")
+	})
 }
 
 func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
 	req1 := &Request{
 		ID:   "req-1",
@@ -418,7 +339,7 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 			Path:       itemPath("default", "i1"),
 			Attributes: map[string]string{"service": "gh:github.com", "username": "nikicat"},
 		}},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 	req2 := &Request{
 		ID:   "req-2",
@@ -427,67 +348,48 @@ func TestAutoApproveRule_DifferentAttributesNotDeduped(t *testing.T) {
 			Path:       itemPath("default", "i2"),
 			Attributes: map[string]string{"service": "gh:github.com", "username": ""},
 		}},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
 
 	id1 := mustAddRule(t, mgr, req1)
 	id2 := mustAddRule(t, mgr, req2)
 
-	if id1 == id2 {
-		t.Error("expected different rule IDs for different attributes")
-	}
-
-	rules := mgr.ListAutoApproveRules()
-	if len(rules) != 2 {
-		t.Fatalf("expected 2 rules, got %d", len(rules))
-	}
+	assert.NotEqual(t, id1, id2, "expected different rule IDs for different attributes")
+	assert.Len(t, mgr.ListAutoApproveRules(), 2)
 }
 
 // Attribute maps of the same size but different keys are different scopes,
 // even when the missing key of one would read as the other's empty value.
 func TestAutoApproveRule_DifferentAttributeKeysNotDeduped(t *testing.T) {
-	mgr := newRuleManager()
+	mgr := NewManagerForTest(ManagerConfig{})
 
 	writeRequest := func(id RequestID, attrs map[string]string) *Request {
 		return &Request{
 			ID:         id,
 			Type:       RequestTypeWrite,
 			Items:      []ItemInfo{{Path: itemPath("default", string(id)), Attributes: attrs}},
-			SenderInfo: testSender("gh", "/usr/bin/gh"),
+			SenderInfo: ghSender,
 		}
 	}
-	scope1, err := writeRequest("i1", map[string]string{"a": ""}).AutoApproveScope()
-	if err != nil {
-		t.Fatalf("AutoApproveScope: %v", err)
-	}
-	scope2, err := writeRequest("i2", map[string]string{"b": "x"}).AutoApproveScope()
-	if err != nil {
-		t.Fatalf("AutoApproveScope: %v", err)
-	}
+	scope1 := mustScope(t, writeRequest("i1", map[string]string{"a": ""}))
+	scope2 := mustScope(t, writeRequest("i2", map[string]string{"b": "x"}))
 
-	if scope1.Equal(scope2) {
-		t.Error("scopes with attributes {a: \"\"} and {b: x} are equal")
-	}
+	assert.False(t, scope1.Equal(scope2), "scopes with attributes {a: \"\"} and {b: x} are equal")
 	mgr.AddAutoApproveRule(scope1, "gh")
 	mgr.AddAutoApproveRule(scope2, "gh")
-	if rules := mgr.ListAutoApproveRules(); len(rules) != 2 {
-		t.Fatalf("expected 2 rules, got %d", len(rules))
-	}
+	assert.Len(t, mgr.ListAutoApproveRules(), 2)
 }
 
 // AddAutoApproveRule refreshing a rule and CheckAutoApproveRules share the
 // rule list without a race. Run with -race.
 func TestAutoApproveRule_RefreshRacesCheck(t *testing.T) {
-	mgr := newRuleManager()
+	mgr := NewManagerForTest(ManagerConfig{})
 	req := &Request{
 		ID:         "req-1",
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	}
-	scope, err := req.AutoApproveScope()
-	if err != nil {
-		t.Fatalf("AutoApproveScope: %v", err)
-	}
+	scope := mustScope(t, req)
 	mgr.AddAutoApproveRule(scope, "gh")
 
 	var wg sync.WaitGroup
@@ -498,7 +400,7 @@ func TestAutoApproveRule_RefreshRacesCheck(t *testing.T) {
 	})
 	wg.Go(func() {
 		for range 200 {
-			mgr.CheckAutoApproveRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: testSender("gh", "/usr/bin/gh")})
+			mgr.CheckAutoApproveRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: ghSender})
 		}
 	})
 	wg.Wait()

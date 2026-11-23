@@ -36,12 +36,7 @@ func mockOwnerByInstallState(t *testing.T, unitsDir systemd.UnitDir) {
 }
 
 func TestTryRefusesWhenInstalled(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
-
-	unitsDir := systemd.UserUnitDir(tmpDir)
+	unitsDir := tempLayout(t).unitDir
 	require.NoError(t, unitsDir.UnitFile(proxyServiceUnit).Write("x"))
 
 	err := Try(t.Context(), TryOptions{})
@@ -49,20 +44,14 @@ func TestTryRefusesWhenInstalled(t *testing.T) {
 }
 
 func TestTryMissingRuntimeDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", "")
+	tempXDGWithoutRuntime(t)
 
 	err := Try(t.Context(), TryOptions{})
 	require.ErrorIs(t, err, config.ErrNoRuntimeDir)
 }
 
 func TestTryDryRunWritesNothing(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+	tmpDir := tempXDGWithRuntime(t)
 
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 4242)
@@ -76,10 +65,7 @@ func TestTryDryRunWritesNothing(t *testing.T) {
 }
 
 func TestTryInstallsThenRestoresEverything(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+	tempXDGWithRuntime(t)
 
 	l, err := locateLayout()
 	require.NoError(t, err)
@@ -126,10 +112,7 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 }
 
 func TestTryRestoresAfterFailedInstall(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", tmpDir)
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-	t.Setenv("XDG_RUNTIME_DIR", tmpDir)
+	tmpDir := tempXDGWithRuntime(t)
 
 	mockLookPath(t, defaultLookPath)
 	mockUnits(t)

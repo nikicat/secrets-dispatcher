@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
@@ -16,135 +18,68 @@ import (
 
 func connectSessionBus() (*dbus.Conn, error) { return dbus.ConnectSessionBus() }
 
-func TestNewManager(t *testing.T) {
-	tempDir := unixsock.Dir(t.TempDir())
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-
-	mgr, err := NewManager(tempDir, NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
-	defer mgr.watcher.Close()
-
-	if mgr.socketsDir != tempDir {
-		t.Errorf("expected socketsDir %q, got %q", tempDir, mgr.socketsDir)
-	}
-
-	if mgr.factory.approval != approvalMgr {
-		t.Error("approval manager not set correctly")
-	}
+func newTestManager(t *testing.T, dir unixsock.Dir, connect Connector) (*Manager, *approval.Manager) {
+	t.Helper()
+	approvalMgr := approval.NewManagerForTest(approval.ManagerConfig{})
+	mgr, err := NewManager(dir, NewFactory(connect, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
+	require.NoError(t, err, "NewManager")
+	t.Cleanup(func() { mgr.watcher.Close() })
+	return mgr, approvalMgr
 }
 
-func TestManager_ClientsEmpty(t *testing.T) {
+func TestNewManager(t *testing.T) {
 	tempDir := unixsock.Dir(t.TempDir())
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
+	mgr, approvalMgr := newTestManager(t, tempDir, connectSessionBus)
 
-	mgr, err := NewManager(tempDir, NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
-	defer mgr.watcher.Close()
-
-	clients := mgr.Clients()
-	if len(clients) != 0 {
-		t.Errorf("expected 0 clients, got %d", len(clients))
-	}
+	assert.Equal(t, tempDir, mgr.socketsDir)
+	assert.Same(t, approvalMgr, mgr.factory.approval, "approval manager not set correctly")
 }
 
 func TestManager_ScanExistingSockets_NoSockets(t *testing.T) {
 	tempDir := t.TempDir()
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-
-	mgr, err := NewManager(unixsock.Dir(tempDir), NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
-	defer mgr.watcher.Close()
+	mgr, _ := newTestManager(t, unixsock.Dir(tempDir), connectSessionBus)
 
 	// Create a non-socket file
-	if err := os.WriteFile(filepath.Join(tempDir, "notasocket.txt"), []byte("test"), 0644); err != nil {
-		t.Fatalf("failed to create test file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "notasocket.txt"), []byte("test"), 0644))
 
 	// Create a directory
-	if err := os.Mkdir(filepath.Join(tempDir, "subdir"), 0755); err != nil {
-		t.Fatalf("failed to create test dir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(tempDir, "subdir"), 0755))
 
-	// This should not fail and should not try to connect to non-socket files
-	// We can't fully test actual proxy connections without a mock D-Bus,
-	// but we can verify the manager doesn't crash on non-socket files
-	clients := mgr.Clients()
-	if len(clients) != 0 {
-		t.Errorf("expected 0 clients, got %d", len(clients))
-	}
-}
-
-func TestClientInfo(t *testing.T) {
-	info := ClientInfo{
-		Name:       "testclient",
-		SocketPath: "/path/to/socket.sock",
-	}
-
-	if info.Name != "testclient" {
-		t.Errorf("expected name 'testclient', got '%s'", info.Name)
-	}
-	if info.SocketPath != "/path/to/socket.sock" {
-		t.Errorf("expected socket_path '/path/to/socket.sock', got '%s'", info.SocketPath)
-	}
+	require.NoError(t, mgr.scanExistingSockets(t.Context()))
+	assert.Empty(t, mgr.Clients())
 }
 
 func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
 	tempDir := unixsock.Dir(t.TempDir())
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	mgr, err := NewManager(tempDir, NewFactory(tempDir.Socket("no-upstream").ConnectDBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
-	defer mgr.watcher.Close()
+	mgr, approvalMgr := newTestManager(t, tempDir, tempDir.Socket("no-upstream").ConnectDBus)
 	socketPath := tempDir.Socket("vm")
 
 	// Another bus holds "vm", so the socket is skipped and the name stays with its holder.
 	approvalMgr.ClaimClient("vm")
 	mgr.startProxy(t.Context(), socketPath)
-	if approvalMgr.ClaimClient("vm") {
-		t.Fatal("skipped socket released a name another bus holds")
-	}
+	require.False(t, approvalMgr.ClaimClient("vm"), "skipped socket released a name another bus holds")
 
 	// A proxy that fails to start gives its name back.
 	approvalMgr.ReleaseClient("vm")
 	mgr.startProxy(t.Context(), socketPath)
-	if !approvalMgr.ClaimClient("vm") {
-		t.Fatal("failed proxy kept its client name")
-	}
+	require.True(t, approvalMgr.ClaimClient("vm"), "failed proxy kept its client name")
 }
 
 func TestManager_StopProxy_WaitsForName(t *testing.T) {
 	tempDir := unixsock.Dir(t.TempDir())
-	approvalMgr := approval.NewManager(approval.ManagerConfig{Timeout: 5 * time.Minute, HistoryMax: 100})
-	mgr, err := NewManager(tempDir, NewFactory(connectSessionBus, approvalMgr, SlowUpstream{}, sender.ChainReader{}))
-	if err != nil {
-		t.Fatalf("NewManager failed: %v", err)
-	}
-	defer mgr.watcher.Close()
+	mgr, approvalMgr := newTestManager(t, tempDir, connectSessionBus)
 	socketPath := tempDir.Socket("vm")
 
 	// A proxy whose downstream stays open runs until it is stopped.
 	p := startTestProxy(t, testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t))
 	claim, err := mgr.factory.Claim("vm")
-	if err != nil {
-		t.Fatalf("Claim failed: %v", err)
-	}
+	require.NoError(t, err, "Claim")
 	ctx, cancel := context.WithCancel(t.Context())
 	inst := &proxyInstance{proxy: p, claim: claim, cancel: cancel, done: make(chan struct{})}
 	mgr.proxies.add(socketPath, inst)
 	go mgr.serve(ctx, socketPath, inst)
 
 	mgr.stopProxy(socketPath)
-	if !approvalMgr.ClaimClient("vm") {
-		t.Fatal("stopProxy returned before the client name was free")
-	}
-	if len(mgr.Clients()) != 0 {
-		t.Fatal("stopped proxy is still listed")
-	}
+	require.True(t, approvalMgr.ClaimClient("vm"), "stopProxy returned before the client name was free")
+	require.Empty(t, mgr.Clients(), "stopped proxy is still listed")
 }

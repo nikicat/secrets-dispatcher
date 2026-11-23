@@ -8,6 +8,8 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 // notifyArgs records one org.freedesktop.Notifications.Notify call as the
@@ -142,13 +144,9 @@ func TestActionDeliverySurvivesUndrainedClosedBuffer(t *testing.T) {
 
 	require.NoError(t, stub.conn.Emit(notifyPath, notifyInterface.Member("ActionInvoked"), uint32(999), "approve"))
 
-	select {
-	case a := <-n.Actions():
-		assert.Equal(t, NotificationID(999), a.NotificationID)
-		assert.Equal(t, actionKey("approve"), a.ActionKey)
-	case <-time.After(5 * time.Second):
-		t.Fatal("ActionInvoked was not delivered — processSignals wedged on the undrained closed buffer")
-	}
+	a := testutil.Recv(t, n.Actions(), testutil.BusWait, "ActionInvoked was not delivered — processSignals wedged on the undrained closed buffer")
+	assert.Equal(t, NotificationID(999), a.NotificationID)
+	assert.Equal(t, actionKey("approve"), a.ActionKey)
 }
 
 func TestClosedEventsDeliversNotificationClosed(t *testing.T) {
@@ -162,11 +160,7 @@ func TestClosedEventsDeliversNotificationClosed(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, n.Close(id))
 
-	select {
-	case c := <-n.ClosedEvents():
-		assert.Equal(t, id, c.NotificationID)
-		assert.Equal(t, uint32(3), c.Reason)
-	case <-time.After(5 * time.Second):
-		t.Fatal("no Closed event within 5s")
-	}
+	c := testutil.Recv(t, n.ClosedEvents(), testutil.BusWait, "no Closed event")
+	assert.Equal(t, id, c.NotificationID)
+	assert.Equal(t, uint32(3), c.Reason)
 }

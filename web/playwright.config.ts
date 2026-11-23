@@ -15,6 +15,8 @@ export default defineConfig({
       : []),
   ],
   fullyParallel: true,
+  // The first snapshot after a page load can take this long on a busy machine.
+  expect: { timeout: 10_000 },
   use: {},
   // Don't start web server - tests start the Go binary directly
 });

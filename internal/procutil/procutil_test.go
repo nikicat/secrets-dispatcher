@@ -19,48 +19,27 @@ var self = PID(os.Getpid())
 const absent PID = 1 << 30
 
 func TestComm_Self(t *testing.T) {
-	comm := self.Comm()
-	if comm == "" {
-		t.Fatal("Comm on self returned empty string")
-	}
-	t.Logf("self comm = %q", comm)
+	assert.NotEmpty(t, self.Comm())
 }
 
 func TestComm_InvalidPID(t *testing.T) {
-	comm := absent.Comm()
-	if comm != "" {
-		t.Errorf("expected empty string for invalid PID, got %q", comm)
-	}
+	assert.Empty(t, absent.Comm())
 }
 
 func TestParent_Self(t *testing.T) {
-	ppid := self.Parent()
-	if ppid == 0 {
-		t.Fatal("Parent on self returned 0")
-	}
-	expected := PID(os.Getppid())
-	if ppid != expected {
-		t.Errorf("expected ppid %d, got %d", expected, ppid)
-	}
+	assert.Equal(t, PID(os.Getppid()), self.Parent())
 }
 
 func TestParent_InvalidPID(t *testing.T) {
-	ppid := absent.Parent()
-	if ppid != 0 {
-		t.Errorf("expected 0 for invalid PID, got %d", ppid)
-	}
+	assert.Zero(t, absent.Parent())
 }
 
 func TestIsShell(t *testing.T) {
 	for _, name := range []string{"sh", "bash", "zsh", "fish", "dash", "csh", "tcsh", "ksh"} {
-		if !IsShell(name) {
-			t.Errorf("expected %q to be a shell", name)
-		}
+		assert.True(t, IsShell(name), name)
 	}
 	for _, name := range []string{"chrome", "firefox", "git", "code", ""} {
-		if IsShell(name) {
-			t.Errorf("expected %q to NOT be a shell", name)
-		}
+		assert.False(t, IsShell(name), name)
 	}
 }
 
@@ -89,40 +68,23 @@ func TestChain_TrimIncludesSessionLeader(t *testing.T) {
 	// With ChainToSessionStarter, the chain should include processes up to the leader
 	// plus one more entry (the parent of the session leader).
 	chain := pid.Chain(ChainToSessionStarter)
-	if len(chain) == 0 {
-		t.Fatal("Chain(ChainToSessionStarter) returned empty chain")
-	}
+	require.NotEmpty(t, chain)
 
 	// Session leader should be second-to-last (last is its parent).
 	leaderParent := leaderPID.Parent()
 	if leaderParent > 1 {
-		if len(chain) < 2 {
-			t.Fatal("expected at least 2 entries (session leader + parent)")
-		}
-		secondToLast := chain[len(chain)-2]
-		if secondToLast.PID != leaderPID {
-			t.Errorf("second-to-last PID = %d, want session leader %d", secondToLast.PID, leaderPID)
-		}
-		last := chain[len(chain)-1]
-		if last.PID != leaderParent {
-			t.Errorf("last PID = %d, want session leader parent %d", last.PID, leaderParent)
-		}
+		require.GreaterOrEqual(t, len(chain), 2, "session leader and its parent")
+		assert.Equal(t, leaderPID, chain[len(chain)-2].PID)
+		assert.Equal(t, leaderParent, chain[len(chain)-1].PID)
 	} else {
 		// Session leader's parent is PID 1, so leader is last.
-		last := chain[len(chain)-1]
-		if last.PID != leaderPID {
-			t.Errorf("last entry PID = %d, want session leader %d", last.PID, leaderPID)
-		}
+		assert.Equal(t, leaderPID, chain[len(chain)-1].PID)
 	}
 
 	// Also verify: starting directly at the session leader should return it plus parent.
 	leaderChain := leaderPID.Chain(ChainToSessionStarter)
-	if len(leaderChain) == 0 {
-		t.Fatal("Chain starting at session leader returned empty chain")
-	}
-	if leaderChain[0].PID != leaderPID {
-		t.Errorf("chain[0].PID = %d, want %d", leaderChain[0].PID, leaderPID)
-	}
+	require.NotEmpty(t, leaderChain)
+	assert.Equal(t, leaderPID, leaderChain[0].PID)
 }
 
 func TestExe_Self(t *testing.T) {
@@ -151,22 +113,14 @@ func TestCWD_InvalidPID(t *testing.T) {
 
 func TestChain_PopulatesAllFields(t *testing.T) {
 	chain := self.Chain(ChainToInit)
-	if len(chain) == 0 {
-		t.Fatal("Chain returned empty chain")
-	}
+	require.NotEmpty(t, chain)
 	entry := chain[0] // our own process
-	if entry.Name == "" {
-		t.Error("expected non-empty Name")
-	}
-	if _, ok := entry.ExePath(); !ok {
-		t.Error("expected an Exe")
-	}
-	if _, ok := entry.CWDPath(); !ok {
-		t.Error("expected a CWD")
-	}
-	if len(entry.Args) == 0 {
-		t.Error("expected non-empty Args")
-	}
+	assert.NotEmpty(t, entry.Name)
+	_, ok := entry.ExePath()
+	assert.True(t, ok, "an Exe")
+	_, ok = entry.CWDPath()
+	assert.True(t, ok, "a CWD")
+	assert.NotEmpty(t, entry.Args)
 }
 
 func TestInvoker_InvalidPID(t *testing.T) {

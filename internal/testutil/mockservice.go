@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -19,7 +20,8 @@ type MockSecretService struct {
 	mu           sync.RWMutex
 	items        map[dbus.ObjectPath]*MockItem
 	sessions     map[dbus.ObjectPath]bool
-	locked       bool // the default collection (and all its items) is locked
+	prompts      map[dbus.ObjectPath][]dbus.ObjectPath // the objects each prompt unlocks
+	locked       bool                                  // the default collection (and all its items) is locked
 	lastWindowID string
 	sessionCtr   atomic.Uint64
 	itemCtr      atomic.Uint64
@@ -40,6 +42,7 @@ func NewMockSecretService() *MockSecretService {
 	return &MockSecretService{
 		items:    make(map[dbus.ObjectPath]*MockItem),
 		sessions: make(map[dbus.ObjectPath]bool),
+		prompts:  make(map[dbus.ObjectPath][]dbus.ObjectPath),
 	}
 }
 
@@ -50,7 +53,9 @@ const DefaultCollectionPath dbus.ObjectPath = dbustypes.CollectionsPath + "/defa
 // The path of the mock's default alias.
 const DefaultAliasPath dbus.ObjectPath = dbustypes.AliasesPath + "/default"
 
-// Register exports the mock service on the given connection.
+// Exports the mock's service, collections, items, sessions and prompts on the
+// given connection. Objects that calls create are served by subtrees, because an
+// Export from inside a call races godbus's object table under go test -race (2026-11-22).
 func (m *MockSecretService) Register(conn *dbus.Conn) error {
 	m.conn = conn
 
@@ -67,6 +72,9 @@ func (m *MockSecretService) Register(conn *dbus.Conn) error {
 	if err := conn.ExportSubtree(mockSessions{m}, dbustypes.SessionsPath, string(dbustypes.SessionInterface)); err != nil {
 		return fmt.Errorf("export sessions: %w", err)
 	}
+	if err := conn.ExportSubtree(mockPrompts{m}, dbustypes.PromptsPath, string(dbustypes.PromptInterface)); err != nil {
+		return fmt.Errorf("export prompts: %w", err)
+	}
 
 	// Export Introspectable
 	if err := conn.Export(introspectable{m.Introspect}, dbustypes.ServicePath, string(dbustypes.IntrospectableInterface)); err != nil {
@@ -81,8 +89,11 @@ func (m *MockSecretService) Register(conn *dbus.Conn) error {
 		if err := conn.Export(coll, collPath, string(dbustypes.CollectionInterface)); err != nil {
 			return fmt.Errorf("export Collection at %s: %w", collPath, err)
 		}
-		if err := conn.Export(coll, collPath, string(dbustypes.PropertiesInterface)); err != nil {
-			return fmt.Errorf("export Collection Properties at %s: %w", collPath, err)
+		if err := conn.ExportSubtree(mockItems{m}, collPath, string(dbustypes.ItemInterface)); err != nil {
+			return fmt.Errorf("export items under %s: %w", collPath, err)
+		}
+		if err := conn.ExportSubtree(collectionTree{coll}, collPath, string(dbustypes.PropertiesInterface)); err != nil {
+			return fmt.Errorf("export Properties under %s: %w", collPath, err)
 		}
 	}
 
@@ -115,9 +126,7 @@ func (m *MockSecretService) OpenSession(algorithm string, input dbus.Variant) (d
 	return dbus.MakeVariant(""), path, nil
 }
 
-// The sessions that OpenSession opened, served as one subtree exported at
-// Register: an Export from inside a call raced godbus's object table under
-// go test -race (2026-11-22).
+// The sessions that OpenSession opened.
 type mockSessions struct {
 	service *MockSecretService
 }
@@ -317,12 +326,6 @@ func (m *MockSecretService) AddItem(label string, attributes map[string]string, 
 	m.mu.Lock()
 	m.items[path] = item
 	m.mu.Unlock()
-
-	// Export item interface
-	itemHandler := &mockItem{service: m, path: path}
-	m.conn.Export(itemHandler, path, string(dbustypes.ItemInterface))
-	m.conn.Export(itemHandler, path, string(dbustypes.PropertiesInterface))
-
 	return path
 }
 
@@ -354,42 +357,57 @@ func (m *MockSecretService) LastWindowID() string {
 	return m.lastWindowID
 }
 
-// newPrompt exports a prompt object that will unlock the given objects when
-// prompted, and returns its path.
+// Returns the path of a new prompt that will unlock the given objects when
+// prompted.
 func (m *MockSecretService) newPrompt(objects []dbus.ObjectPath) dbus.ObjectPath {
-	id := m.promptCtr.Add(1)
-	path := dbustypes.PromptPath(fmt.Sprintf("p%d", id))
-
-	prompt := &mockPrompt{service: m, path: path, objects: objects}
-	m.conn.Export(prompt, path, string(dbustypes.PromptInterface))
-
+	path := dbustypes.PromptPath(fmt.Sprintf("p%d", m.promptCtr.Add(1)))
+	m.mu.Lock()
+	m.prompts[path] = objects
+	m.mu.Unlock()
 	return path
 }
 
-// mockPrompt implements org.freedesktop.Secret.Prompt. Prompting unlocks the
-// collection and emits Completed with the unlocked objects; dismissing leaves
-// it locked and emits Completed(dismissed=true).
-type mockPrompt struct {
+// The prompts that newPrompt made. Prompting unlocks the collection and emits
+// Completed with the unlocked objects; dismissing leaves it locked and emits
+// Completed(dismissed=true).
+type mockPrompts struct {
 	service *MockSecretService
-	path    dbus.ObjectPath
-	objects []dbus.ObjectPath
 }
 
-func (p *mockPrompt) Prompt(windowID string) *dbus.Error {
+func (p mockPrompts) Prompt(msg dbus.Message, windowID string) *dbus.Error {
+	path := dbustypes.PathOf(msg)
+	objects, dbusErr := p.objects(path)
+	if dbusErr != nil {
+		return dbusErr
+	}
 	p.service.mu.Lock()
 	p.service.locked = false
 	p.service.lastWindowID = windowID
 	p.service.mu.Unlock()
-
-	return p.completed(false, dbus.MakeVariant(p.objects))
+	return p.completed(path, false, dbus.MakeVariant(objects))
 }
 
-func (p *mockPrompt) Dismiss() *dbus.Error {
-	return p.completed(true, dbus.MakeVariant(""))
+func (p mockPrompts) Dismiss(msg dbus.Message) *dbus.Error {
+	path := dbustypes.PathOf(msg)
+	if _, dbusErr := p.objects(path); dbusErr != nil {
+		return dbusErr
+	}
+	return p.completed(path, true, dbus.MakeVariant(""))
 }
 
-func (p *mockPrompt) completed(dismissed bool, result dbus.Variant) *dbus.Error {
-	if err := p.service.conn.Emit(p.path, dbustypes.PromptInterface.Member("Completed"), dismissed, result); err != nil {
+// Returns the objects that the prompt at path unlocks.
+func (p mockPrompts) objects(path dbus.ObjectPath) ([]dbus.ObjectPath, *dbus.Error) {
+	p.service.mu.RLock()
+	defer p.service.mu.RUnlock()
+	objects, ok := p.service.prompts[path]
+	if !ok {
+		return nil, dbustypes.ErrObjectNotFound(string(path))
+	}
+	return objects, nil
+}
+
+func (p mockPrompts) completed(path dbus.ObjectPath, dismissed bool, result dbus.Variant) *dbus.Error {
+	if err := p.service.conn.Emit(path, dbustypes.PromptInterface.Member("Completed"), dismissed, result); err != nil {
 		return dbustypes.ErrFailed(err)
 	}
 	return nil
@@ -438,98 +456,25 @@ func (c *mockCollection) CreateItem(properties map[string]dbus.Variant, secret d
 	return path, dbustypes.NoObject, nil
 }
 
-func (c *mockCollection) Get(iface, property string) (dbus.Variant, *dbus.Error) {
-	switch property {
-	case "Label":
-		return dbus.MakeVariant("Default"), nil
-	case "Locked":
-		return dbus.MakeVariant(c.service.Locked()), nil
-	case "Items":
-		c.service.mu.RLock()
-		items := make([]dbus.ObjectPath, 0, len(c.service.items))
-		for path := range c.service.items {
-			items = append(items, path)
-		}
-		c.service.mu.RUnlock()
-		return dbus.MakeVariant(items), nil
-	}
-	return dbus.Variant{}, &dbus.Error{Name: "org.freedesktop.DBus.Error.UnknownProperty"}
-}
-
-func (c *mockCollection) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+func (c *mockCollection) properties() map[string]dbus.Variant {
 	c.service.mu.RLock()
-	items := make([]dbus.ObjectPath, 0, len(c.service.items))
-	for path := range c.service.items {
-		items = append(items, path)
-	}
-	locked := c.service.locked
-	c.service.mu.RUnlock()
-
+	defer c.service.mu.RUnlock()
 	return map[string]dbus.Variant{
 		"Label":  dbus.MakeVariant("Default"),
-		"Locked": dbus.MakeVariant(locked),
-		"Items":  dbus.MakeVariant(items),
-	}, nil
-}
-
-func (c *mockCollection) Set(iface, property string, value dbus.Variant) *dbus.Error {
-	return nil
-}
-
-// mockItem implements Item interface.
-type mockItem struct {
-	service *MockSecretService
-	path    dbus.ObjectPath
-}
-
-func (i *mockItem) Delete() (dbus.ObjectPath, *dbus.Error) {
-	i.service.mu.Lock()
-	delete(i.service.items, i.path)
-	i.service.mu.Unlock()
-	return dbustypes.NoObject, nil
-}
-
-func (i *mockItem) GetSecret(session dbus.ObjectPath) (dbustypes.Secret, *dbus.Error) {
-	i.service.mu.RLock()
-	defer i.service.mu.RUnlock()
-
-	if !i.service.sessions[session] {
-		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
+		"Locked": dbus.MakeVariant(c.service.locked),
+		"Items":  dbus.MakeVariant(slices.Collect(maps.Keys(c.service.items))),
 	}
-
-	if i.service.locked {
-		return dbustypes.Secret{}, dbustypes.ErrLocked(string(i.path))
-	}
-
-	item, ok := i.service.items[i.path]
-	if !ok {
-		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(i.path))
-	}
-
-	return dbustypes.Secret{
-		Session:     session,
-		Parameters:  nil,
-		Value:       item.Secret,
-		ContentType: item.ContentType,
-	}, nil
 }
 
-func (i *mockItem) SetSecret(secret dbustypes.Secret) *dbus.Error {
-	i.service.mu.Lock()
-	defer i.service.mu.Unlock()
-
-	item, ok := i.service.items[i.path]
-	if !ok {
-		return dbustypes.ErrObjectNotFound(string(i.path))
-	}
-
-	item.Secret = secret.Value
-	item.ContentType = secret.ContentType
-	return nil
+// Serves the Properties of a collection and of the items under it. The items'
+// subtree is exported at the collection's path, and godbus holds one handler
+// per path and interface.
+type collectionTree struct {
+	coll *mockCollection
 }
 
-func (i *mockItem) Get(iface, property string) (dbus.Variant, *dbus.Error) {
-	props, dbusErr := i.GetAll(iface)
+func (t collectionTree) Get(msg dbus.Message, iface, property string) (dbus.Variant, *dbus.Error) {
+	props, dbusErr := t.GetAll(msg, iface)
 	if dbusErr != nil {
 		return dbus.Variant{}, dbusErr
 	}
@@ -540,13 +485,78 @@ func (i *mockItem) Get(iface, property string) (dbus.Variant, *dbus.Error) {
 	return v, nil
 }
 
-func (i *mockItem) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+func (t collectionTree) GetAll(msg dbus.Message, iface string) (map[string]dbus.Variant, *dbus.Error) {
+	path := dbustypes.PathOf(msg)
+	if path == t.coll.path {
+		return t.coll.properties(), nil
+	}
+	return mockItems{t.coll.service}.properties(path)
+}
+
+func (collectionTree) Set(iface, property string, value dbus.Variant) *dbus.Error {
+	return nil
+}
+
+// The items that AddItem added, each at its own path under a collection.
+type mockItems struct {
+	service *MockSecretService
+}
+
+func (i mockItems) Delete(msg dbus.Message) (dbus.ObjectPath, *dbus.Error) {
+	i.service.mu.Lock()
+	delete(i.service.items, dbustypes.PathOf(msg))
+	i.service.mu.Unlock()
+	return dbustypes.NoObject, nil
+}
+
+func (i mockItems) GetSecret(msg dbus.Message, session dbus.ObjectPath) (dbustypes.Secret, *dbus.Error) {
+	path := dbustypes.PathOf(msg)
 	i.service.mu.RLock()
 	defer i.service.mu.RUnlock()
 
-	item, ok := i.service.items[i.path]
+	if !i.service.sessions[session] {
+		return dbustypes.Secret{}, dbustypes.ErrSessionNotFound(string(session))
+	}
+
+	if i.service.locked {
+		return dbustypes.Secret{}, dbustypes.ErrLocked(string(path))
+	}
+
+	item, ok := i.service.items[path]
 	if !ok {
-		return nil, dbustypes.ErrObjectNotFound(string(i.path))
+		return dbustypes.Secret{}, dbustypes.ErrObjectNotFound(string(path))
+	}
+
+	return dbustypes.Secret{
+		Session:     session,
+		Parameters:  nil,
+		Value:       item.Secret,
+		ContentType: item.ContentType,
+	}, nil
+}
+
+func (i mockItems) SetSecret(msg dbus.Message, secret dbustypes.Secret) *dbus.Error {
+	path := dbustypes.PathOf(msg)
+	i.service.mu.Lock()
+	defer i.service.mu.Unlock()
+
+	item, ok := i.service.items[path]
+	if !ok {
+		return dbustypes.ErrObjectNotFound(string(path))
+	}
+
+	item.Secret = secret.Value
+	item.ContentType = secret.ContentType
+	return nil
+}
+
+func (i mockItems) properties(path dbus.ObjectPath) (map[string]dbus.Variant, *dbus.Error) {
+	i.service.mu.RLock()
+	defer i.service.mu.RUnlock()
+
+	item, ok := i.service.items[path]
+	if !ok {
+		return nil, dbustypes.ErrObjectNotFound(string(path))
 	}
 
 	return map[string]dbus.Variant{
@@ -554,10 +564,6 @@ func (i *mockItem) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 		"Attributes": dbus.MakeVariant(item.Attributes),
 		"Locked":     dbus.MakeVariant(i.service.locked),
 	}, nil
-}
-
-func (i *mockItem) Set(iface, property string, value dbus.Variant) *dbus.Error {
-	return nil
 }
 
 type introspectable struct {

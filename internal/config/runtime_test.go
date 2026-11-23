@@ -1,16 +1,16 @@
 package config
 
 import (
-	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLookupRuntimeDir(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	dir, err := LookupRuntimeDir()
-	if err != nil {
-		t.Fatalf("LookupRuntimeDir: %v", err)
-	}
+	require.NoError(t, err)
 	for _, tc := range []struct{ name, got, want string }{
 		{"APISocket", string(dir.APISocket()), "/run/user/1000/secrets-dispatcher/api.sock"},
 		{"SSHAgentSocket", string(dir.SSHAgentSocket()), "/run/user/1000/secrets-dispatcher/ssh-agent.sock"},
@@ -19,24 +19,20 @@ func TestLookupRuntimeDir(t *testing.T) {
 		{"BackendBusSocket", string(dir.BackendBusSocket()), "/run/user/1000/secrets-dispatcher/backend-bus.sock"},
 		{"TrialConfig", dir.TrialConfig().String(), "/run/user/1000/secrets-dispatcher/try-config.yaml"},
 	} {
-		if tc.got != tc.want {
-			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
-		}
+		assert.Equal(t, tc.want, tc.got, tc.name)
 	}
 }
 
 func TestLookupRuntimeDirUnset(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	if _, err := LookupRuntimeDir(); !errors.Is(err, ErrNoRuntimeDir) {
-		t.Fatalf("LookupRuntimeDir() error = %v, want ErrNoRuntimeDir", err)
-	}
+	_, err := LookupRuntimeDir()
+	assert.ErrorIs(t, err, ErrNoRuntimeDir)
 }
 
 func TestLookupRuntimeDirRelative(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "run/user/1000")
-	if _, err := LookupRuntimeDir(); !errors.Is(err, ErrNoRuntimeDir) {
-		t.Fatalf("LookupRuntimeDir() error = %v, want ErrNoRuntimeDir", err)
-	}
+	_, err := LookupRuntimeDir()
+	assert.ErrorIs(t, err, ErrNoRuntimeDir)
 }
 
 func TestSystemdRuntimeDir(t *testing.T) {
@@ -44,8 +40,6 @@ func TestSystemdRuntimeDir(t *testing.T) {
 		{"BackendBusSocket", string(SystemdRuntimeDir.BackendBusSocket()), "%t/secrets-dispatcher/backend-bus.sock"},
 		{"KeyringControlDir", SystemdRuntimeDir.KeyringControlDir().String(), "%t/secrets-dispatcher/keyring"},
 	} {
-		if tc.got != tc.want {
-			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
-		}
+		assert.Equal(t, tc.want, tc.got, tc.name)
 	}
 }

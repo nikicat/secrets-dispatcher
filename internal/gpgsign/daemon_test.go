@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -32,16 +31,10 @@ func TestCancelSigningRequest_Success(t *testing.T) {
 	client := newTestClient(srv)
 
 	err := client.CancelSigningRequest(context.Background(), "test-request-id")
-	if err != nil {
-		t.Fatalf("CancelSigningRequest failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if gotMethod != http.MethodPost {
-		t.Errorf("expected POST, got %s", gotMethod)
-	}
-	if gotPath != "/api/v1/pending/test-request-id/cancel" {
-		t.Errorf("expected /api/v1/pending/test-request-id/cancel, got %s", gotPath)
-	}
+	assert.Equal(t, http.MethodPost, gotMethod)
+	assert.Equal(t, "/api/v1/pending/test-request-id/cancel", gotPath)
 }
 
 func TestCancelSigningRequest_NotFound(t *testing.T) {
@@ -54,9 +47,7 @@ func TestCancelSigningRequest_NotFound(t *testing.T) {
 	client := newTestClient(srv)
 
 	err := client.CancelSigningRequest(context.Background(), "nonexistent-id")
-	if err == nil {
-		t.Fatal("expected error for 404 response, got nil")
-	}
+	assert.Error(t, err, "404 response")
 }
 
 const testToken config.AuthToken = "test-token"
@@ -66,13 +57,10 @@ func newTestClient(srv *httptest.Server) *DaemonClient {
 	return &DaemonClient{api: apiclient.New(apiclient.BaseURL(srv.URL), testToken, srv.Client())}
 }
 
-// Returns the sign info of a commit in my-repo.
-func testSignInfo(t *testing.T) *approval.GPGSignInfo {
-	t.Helper()
-	object := approval.SignedObject("tree 0\nauthor Alice <alice@example.com>\n\nfeat: add tests\n")
-	info, err := approval.NewGPGSignInfo(object, "my-repo", "ABCD1234", approval.ListedFiles(nil))
-	require.NoError(t, err)
-	return info
+const testCommitMessage = "feat: add tests"
+
+func testSignInfo() *approval.GPGSignInfo {
+	return approval.CommitSignInfoForTest("my-repo", testCommitMessage)
 }
 
 func TestPostSigningRequest_Success(t *testing.T) {
@@ -94,31 +82,15 @@ func TestPostSigningRequest_Success(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	reqID, err := client.PostSigningRequest(context.Background(), testSignInfo(t))
-	if err != nil {
-		t.Fatalf("PostSigningRequest failed: %v", err)
-	}
-	if reqID != "req-abc-123" {
-		t.Errorf("request_id = %q, want %q", reqID, "req-abc-123")
-	}
-	if gotMethod != http.MethodPost {
-		t.Errorf("method = %q, want POST", gotMethod)
-	}
-	if gotPath != "/api/v1/gpg-sign/request" {
-		t.Errorf("path = %q, want /api/v1/gpg-sign/request", gotPath)
-	}
-	if gotContentType != "application/json" {
-		t.Errorf("content-type = %q, want application/json", gotContentType)
-	}
-	if gotAuth != testToken {
-		t.Errorf("Bearer token = %q, want %q", string(gotAuth), string(testToken))
-	}
-	if client, ok := rawBody["client"]; ok {
-		t.Errorf("body.client = %s, want none: the daemon names the client by its socket", client)
-	}
-	if got := gotBody.GPGSignInfo.Signed().Message; got != "feat: add tests" {
-		t.Errorf("body.gpg_sign_info.commit_msg = %q, want %q", got, "feat: add tests")
-	}
+	reqID, err := client.PostSigningRequest(context.Background(), testSignInfo())
+	require.NoError(t, err)
+	assert.Equal(t, approval.RequestID("req-abc-123"), reqID)
+	assert.Equal(t, http.MethodPost, gotMethod)
+	assert.Equal(t, "/api/v1/gpg-sign/request", gotPath)
+	assert.Equal(t, "application/json", gotContentType)
+	assert.Equal(t, testToken, gotAuth, "Bearer token")
+	assert.NotContains(t, rawBody, "client", "the daemon names the client by its socket")
+	assert.Equal(t, testCommitMessage, gotBody.GPGSignInfo.Signed().Message)
 }
 
 func TestPostSigningRequest_ServerError(t *testing.T) {
@@ -128,13 +100,8 @@ func TestPostSigningRequest_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	_, err := client.PostSigningRequest(context.Background(), testSignInfo(t))
-	if err == nil {
-		t.Fatal("expected error for 500 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error = %q, want to contain '500'", err.Error())
-	}
+	_, err := client.PostSigningRequest(context.Background(), testSignInfo())
+	assert.ErrorContains(t, err, "500")
 }
 
 func TestPostSigningRequest_EmptyRequestID(t *testing.T) {
@@ -144,13 +111,8 @@ func TestPostSigningRequest_EmptyRequestID(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(srv)
-	_, err := client.PostSigningRequest(context.Background(), testSignInfo(t))
-	if err == nil {
-		t.Fatal("expected error for empty request_id, got nil")
-	}
-	if !strings.Contains(err.Error(), "empty request_id") {
-		t.Errorf("error = %q, want to contain 'empty request_id'", err.Error())
-	}
+	_, err := client.PostSigningRequest(context.Background(), testSignInfo())
+	assert.ErrorContains(t, err, "empty request_id")
 }
 
 // wsTestServer creates an httptest server that upgrades to WebSocket
@@ -159,16 +121,14 @@ func wsTestServer(t *testing.T, messages []any) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			t.Errorf("websocket accept: %v", err)
+		if !assert.NoError(t, err, "websocket accept") {
 			return
 		}
 		defer conn.CloseNow()
 
 		for _, msg := range messages {
 			data, err := json.Marshal(msg)
-			if err != nil {
-				t.Errorf("marshal message: %v", err)
+			if !assert.NoError(t, err, "marshal message") {
 				return
 			}
 			if err := conn.Write(r.Context(), websocket.MessageText, data); err != nil {
@@ -296,6 +256,6 @@ func TestSignRemote_ApprovedWithoutOutput(t *testing.T) {
 	srv.Start()
 	defer srv.Close()
 
-	_, err = SignRemote(context.Background(), socket, testSignInfo(t))
+	_, err = SignRemote(context.Background(), socket, testSignInfo())
 	assert.ErrorContains(t, err, "without gpg output")
 }

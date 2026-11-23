@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,90 +37,41 @@ func TestNewAuth(t *testing.T) {
 	require.Equal(t, auth.Token(), again.Token(), "a second NewAuth reuses the stored token")
 }
 
-// Checks that rr holds the JSON error response with message want.
-func assertErrorBody(t *testing.T, rr *httptest.ResponseRecorder, want string) {
+// Fails the test as requireStatus does, and checks the message in the JSON error
+// body.
+func assertErrorBody(t *testing.T, rr *httptest.ResponseRecorder, wantStatus int, want string) {
 	t.Helper()
-	var body apiclient.ErrorResponse
-	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
-	assert.Equal(t, want, body.Error)
+	assert.Equal(t, want, decodeResponse[apiclient.ErrorResponse](t, rr, wantStatus).Error)
+}
+
+// Serves a GET through the middleware with the given Authorization header and
+// reports whether the wrapped handler ran.
+func serveThroughMiddleware(auth *Auth, header string) (called bool, rr *httptest.ResponseRecorder) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	if header != "" {
+		req.Header.Set("Authorization", header)
+	}
+	rr = httptest.NewRecorder()
+	auth.Middleware(handler).ServeHTTP(rr, req)
+	return called, rr
 }
 
 func TestAuth_Middleware_ValidToken(t *testing.T) {
 	auth := newTestAuth(t)
 
-	called := false
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		w.WriteHeader(http.StatusOK)
-	})
+	header := http.Header{}
+	auth.Token().Authorize(header)
+	called, rr := serveThroughMiddleware(auth, header.Get("Authorization"))
 
-	wrapped := auth.Middleware(handler)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	auth.Token().Authorize(req.Header)
-
-	rr := httptest.NewRecorder()
-	wrapped.ServeHTTP(rr, req)
-
-	if !called {
-		t.Error("handler was not called")
-	}
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
+	assert.True(t, called, "handler was not called")
+	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
-func TestAuth_Middleware_InvalidToken(t *testing.T) {
-	auth := newTestAuth(t)
-
-	called := false
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-	})
-
-	wrapped := auth.Middleware(handler)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	config.AuthToken("wrong-token").Authorize(req.Header)
-
-	rr := httptest.NewRecorder()
-	wrapped.ServeHTTP(rr, req)
-
-	if called {
-		t.Error("handler should not be called with invalid token")
-	}
-	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("expected status 401, got %d", rr.Code)
-	}
-	assertErrorBody(t, rr, "invalid token")
-}
-
-func TestAuth_Middleware_MissingHeader(t *testing.T) {
-	auth := newTestAuth(t)
-
-	called := false
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
-	})
-
-	wrapped := auth.Middleware(handler)
-
-	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	// No Authorization header
-
-	rr := httptest.NewRecorder()
-	wrapped.ServeHTTP(rr, req)
-
-	if called {
-		t.Error("handler should not be called without auth header")
-	}
-	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("expected status 401, got %d", rr.Code)
-	}
-	assertErrorBody(t, rr, "unauthorized")
-}
-
-func TestAuth_Middleware_MalformedHeader(t *testing.T) {
+func TestAuth_Middleware_Rejects(t *testing.T) {
 	auth := newTestAuth(t)
 
 	tests := []struct {
@@ -128,6 +79,8 @@ func TestAuth_Middleware_MalformedHeader(t *testing.T) {
 		header  string
 		wantErr string
 	}{
+		{"no header", "", "unauthorized"},
+		{"wrong token", "Bearer wrong-token", "invalid token"},
 		{"no scheme", string(auth.Token()), "invalid Authorization header format"},
 		{"wrong scheme", "Basic " + string(auth.Token()), "invalid Authorization header format"},
 		{"empty bearer", "Bearer ", "invalid token"},
@@ -136,26 +89,10 @@ func TestAuth_Middleware_MalformedHeader(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			called := false
-			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				called = true
-			})
+			called, rr := serveThroughMiddleware(auth, tc.header)
 
-			wrapped := auth.Middleware(handler)
-
-			req := httptest.NewRequest(http.MethodGet, "/test", nil)
-			req.Header.Set("Authorization", tc.header)
-
-			rr := httptest.NewRecorder()
-			wrapped.ServeHTTP(rr, req)
-
-			if called {
-				t.Error("handler should not be called with malformed header")
-			}
-			if rr.Code != http.StatusUnauthorized {
-				t.Errorf("expected status 401, got %d", rr.Code)
-			}
-			assertErrorBody(t, rr, tc.wantErr)
+			assert.False(t, called, "handler should not be called")
+			assertErrorBody(t, rr, http.StatusUnauthorized, tc.wantErr)
 		})
 	}
 }
@@ -231,7 +168,7 @@ func TestValidateJWTRejectsMissingJti(t *testing.T) {
 // TestHandleAuthRejectsReplayedToken exercises single use through the HTTP handler:
 // the same login token cannot be exchanged for a session cookie twice.
 func TestHandleAuthRejectsReplayedToken(t *testing.T) {
-	handlers := testHandlers(t, newTestManager())
+	handlers := testHandlers(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	token, err := handlers.auth.GenerateJWT()
 	require.NoError(t, err)

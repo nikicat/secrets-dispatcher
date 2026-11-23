@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/nikicat/secrets-dispatcher/internal/api"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nikicat/secrets-dispatcher/internal/apiclient"
+	"github.com/nikicat/secrets-dispatcher/internal/approval"
 	"github.com/nikicat/secrets-dispatcher/internal/config"
+	"github.com/nikicat/secrets-dispatcher/internal/procutil"
 )
 
 // Closes the server when the test ends.
@@ -26,188 +29,106 @@ func TestClient_Pending(t *testing.T) {
 		{Request: RequestRecord{ID: "req-123", Client: "user@host", Items: []ItemInfo{{Label: "Secret1", Path: "/org/secrets/1"}}, CreatedAt: time.Now(), Type: "get_secret"}, ExpiresAt: time.Now().Add(5 * time.Minute)},
 	}
 
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/pending" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if token, err := config.ParseAuthorization(r.Header); err != nil || token != "test-token" {
-			t.Errorf("missing or invalid auth header")
-		}
+	const token config.AuthToken = "test-token"
+	client := newTestClient(t, token, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/pending", r.URL.Path)
+		got, err := config.ParseAuthorization(r.Header)
+		assert.NoError(t, err)
+		assert.Equal(t, token, got)
 		json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
 	})
 	result, err := client.Pending(t.Context())
-	if err != nil {
-		t.Fatalf("Pending failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(result))
-	}
-	if result[0].Request.ID != "req-123" {
-		t.Errorf("unexpected ID: %s", result[0].Request.ID)
-	}
+	require.Len(t, result, 1)
+	assert.Equal(t, approval.RequestID("req-123"), result[0].Request.ID)
 }
 
 func TestClient_History(t *testing.T) {
 	entries := []HistoryEntry{
 		{
 			Request:    RequestRecord{ID: "req-456", Client: "user@host"},
-			Resolution: "approved",
+			Resolution: approval.ResolutionApproved,
 			ResolvedAt: time.Now(),
 		},
 	}
 
 	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/log" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
+		assert.Equal(t, "/api/v1/log", r.URL.Path)
 		json.NewEncoder(w).Encode(HistoryResponse{Entries: entries})
 	})
 	result, err := client.History(t.Context())
-	if err != nil {
-		t.Fatalf("History failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(result))
-	}
-	if result[0].Resolution != "approved" {
-		t.Errorf("unexpected resolution: %s", result[0].Resolution)
-	}
+	require.Len(t, result, 1)
+	assert.Equal(t, approval.ResolutionApproved, result[0].Resolution)
+}
+
+// Fakes the API with these requests pending; it accepts only the decision POSTed
+// for the resolved request and fails on any other path.
+type pendingAPI struct {
+	ids      []approval.RequestID
+	resolved approval.RequestID
+	decision Decision
+}
+
+func (p pendingAPI) client(t *testing.T) *Client {
+	t.Helper()
+	return newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/pending":
+			requests := make([]PendingEntry, len(p.ids))
+			for i, id := range p.ids {
+				requests[i].Request.ID = id
+			}
+			json.NewEncoder(w).Encode(PendingResponse{Requests: requests})
+		case p.decision != nil && r.URL.Path == "/api/v1/pending/"+string(p.resolved)+"/"+string(p.decision.action()):
+			assert.Equal(t, http.MethodPost, r.Method)
+		default:
+			assert.Fail(t, "unexpected path", r.URL.Path)
+		}
+	})
 }
 
 func TestClient_Approve(t *testing.T) {
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/pending":
-			json.NewEncoder(w).Encode(PendingResponse{
-				Requests: []PendingEntry{{Request: RequestRecord{ID: "abc-123-def"}}},
-			})
-		case "/api/v1/pending/abc-123-def/approve":
-			if r.Method != http.MethodPost {
-				t.Errorf("expected POST, got %s", r.Method)
-			}
-			json.NewEncoder(w).Encode(api.ActionResponse{Status: "approved"})
-		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-	})
+	client := pendingAPI{ids: []approval.RequestID{"abc-123-def"}, resolved: "abc-123-def", decision: Approve{}}.client(t)
 	id, err := client.Resolve(t.Context(), "abc-123-def", Approve{})
-	if err != nil {
-		t.Fatalf("Resolve failed: %v", err)
-	}
-	if id != "abc-123-def" {
-		t.Errorf("Resolve returned %q, want %q", id, "abc-123-def")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, approval.RequestID("abc-123-def"), id)
 }
 
 func TestClient_Deny(t *testing.T) {
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/pending":
-			json.NewEncoder(w).Encode(PendingResponse{
-				Requests: []PendingEntry{{Request: RequestRecord{ID: "xyz-789"}}},
-			})
-		case "/api/v1/pending/xyz-789/deny":
-			if r.Method != http.MethodPost {
-				t.Errorf("expected POST, got %s", r.Method)
-			}
-			json.NewEncoder(w).Encode(api.ActionResponse{Status: "denied"})
-		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-	})
+	client := pendingAPI{ids: []approval.RequestID{"xyz-789"}, resolved: "xyz-789", decision: Deny{}}.client(t)
 	id, err := client.Resolve(t.Context(), "xyz-789", Deny{})
-	if err != nil {
-		t.Fatalf("Resolve failed: %v", err)
-	}
-	if id != "xyz-789" {
-		t.Errorf("Resolve returned %q, want %q", id, "xyz-789")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, approval.RequestID("xyz-789"), id)
 }
 
 func TestClient_PartialID_ExactMatch(t *testing.T) {
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/pending":
-			json.NewEncoder(w).Encode(PendingResponse{
-				Requests: []PendingEntry{
-					{Request: RequestRecord{ID: "abc"}},
-					{Request: RequestRecord{ID: "abcdef"}},
-				},
-			})
-		case "/api/v1/pending/abc/approve":
-			json.NewEncoder(w).Encode(api.ActionResponse{Status: "approved"})
-		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-	})
+	client := pendingAPI{ids: []approval.RequestID{"abc", "abcdef"}, resolved: "abc", decision: Approve{}}.client(t)
 	// "abc" should match exactly, not be ambiguous with "abcdef"
 	id, err := client.Resolve(t.Context(), "abc", Approve{})
-	if err != nil {
-		t.Fatalf("Resolve with exact match failed: %v", err)
-	}
-	if id != "abc" {
-		t.Errorf("Resolve with exact match returned %q, want %q", id, "abc")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, approval.RequestID("abc"), id)
 }
 
 func TestClient_PartialID_PrefixMatch(t *testing.T) {
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/pending":
-			json.NewEncoder(w).Encode(PendingResponse{
-				Requests: []PendingEntry{
-					{Request: RequestRecord{ID: "abc-123-456"}},
-					{Request: RequestRecord{ID: "def-789"}},
-				},
-			})
-		case "/api/v1/pending/abc-123-456/approve":
-			json.NewEncoder(w).Encode(api.ActionResponse{Status: "approved"})
-		default:
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-	})
+	client := pendingAPI{ids: []approval.RequestID{"abc-123-456", "def-789"}, resolved: "abc-123-456", decision: Approve{}}.client(t)
 	id, err := client.Resolve(t.Context(), "abc", Approve{})
-	if err != nil {
-		t.Fatalf("Resolve with prefix failed: %v", err)
-	}
-	if id != "abc-123-456" {
-		t.Errorf("Resolve with prefix returned %q, want %q", id, "abc-123-456")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, approval.RequestID("abc-123-456"), id)
 }
 
 func TestClient_PartialID_Ambiguous(t *testing.T) {
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(PendingResponse{
-			Requests: []PendingEntry{
-				{Request: RequestRecord{ID: "abc-123"}},
-				{Request: RequestRecord{ID: "abc-456"}},
-			},
-		})
-	})
+	client := pendingAPI{ids: []approval.RequestID{"abc-123", "abc-456"}}.client(t)
 	_, err := client.Resolve(t.Context(), "abc", Approve{})
-	if err == nil {
-		t.Fatal("expected error for ambiguous ID")
-	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("expected ambiguous error, got: %v", err)
-	}
+	assert.ErrorContains(t, err, "ambiguous")
 }
 
 func TestClient_PartialID_NotFound(t *testing.T) {
-	client := newTestClient(t, "test-token", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(PendingResponse{
-			Requests: []PendingEntry{{Request: RequestRecord{ID: "xyz-123"}}},
-		})
-	})
+	client := pendingAPI{ids: []approval.RequestID{"xyz-123"}}.client(t)
 	_, err := client.Resolve(t.Context(), "abc", Approve{})
-	if err == nil {
-		t.Fatal("expected error for not found")
-	}
-	if !strings.Contains(err.Error(), "no request found") {
-		t.Errorf("expected not found error, got: %v", err)
-	}
+	assert.ErrorContains(t, err, "no request found")
 }
 
 func TestClient_Find_Pending(t *testing.T) {
@@ -226,16 +147,10 @@ func TestClient_Find_Pending(t *testing.T) {
 	})
 
 	result, err := client.Find(t.Context(), "req-222")
-	if err != nil {
-		t.Fatalf("Find failed: %v", err)
-	}
+	require.NoError(t, err)
 	pending, ok := result.(PendingEntry)
-	if !ok {
-		t.Fatalf("expected a pending request, got %+v", result)
-	}
-	if pending.Request.Client != "client2" {
-		t.Errorf("unexpected client: %s", pending.Request.Client)
-	}
+	require.True(t, ok, "expected a pending request, got %+v", result)
+	assert.Equal(t, approval.ClientName("client2"), pending.Request.Client)
 }
 
 func TestClient_Find_History(t *testing.T) {
@@ -247,25 +162,17 @@ func TestClient_Find_History(t *testing.T) {
 			json.NewEncoder(w).Encode(PendingResponse{})
 		case "/api/v1/log":
 			json.NewEncoder(w).Encode(HistoryResponse{Entries: []HistoryEntry{
-				{Request: RequestRecord{ID: "old-req", Client: "client3"}, Resolution: "approved", ResolvedAt: resolvedAt},
+				{Request: RequestRecord{ID: "old-req", Client: "client3"}, Resolution: approval.ResolutionApproved, ResolvedAt: resolvedAt},
 			}})
 		}
 	})
 
 	result, err := client.Find(t.Context(), "old-req")
-	if err != nil {
-		t.Fatalf("Find failed: %v", err)
-	}
+	require.NoError(t, err)
 	entry, ok := result.(HistoryEntry)
-	if !ok {
-		t.Fatalf("expected a History entry, got %+v", result)
-	}
-	if entry.Request.Client != "client3" {
-		t.Errorf("unexpected client: %s", entry.Request.Client)
-	}
-	if entry.Resolution != "approved" {
-		t.Errorf("expected approved resolution, got: %s", entry.Resolution)
-	}
+	require.True(t, ok, "expected a History entry, got %+v", result)
+	assert.Equal(t, approval.ClientName("client3"), entry.Request.Client)
+	assert.Equal(t, approval.ResolutionApproved, entry.Resolution)
 }
 
 func TestClient_Unauthorized(t *testing.T) {
@@ -274,21 +181,13 @@ func TestClient_Unauthorized(t *testing.T) {
 		json.NewEncoder(w).Encode(apiclient.ErrorResponse{Error: "unauthorized"})
 	})
 	_, err := client.Pending(t.Context())
-	if err == nil {
-		t.Fatal("expected error for unauthorized")
-	}
-	if !strings.Contains(err.Error(), "unauthorized") {
-		t.Errorf("expected unauthorized error, got: %v", err)
-	}
+	assert.ErrorContains(t, err, "unauthorized")
 }
 
 // The CLI reads the invoker under the JSON key that the API writes.
 func TestPendingEntryDecodesInvokerName(t *testing.T) {
 	var req PendingEntry
-	if err := json.Unmarshal([]byte(`{"sender_info":{"pid":42,"invoker_name":"gh"}}`), &req); err != nil {
-		t.Fatal(err)
-	}
-	if req.Request.SenderInfo.InvokerName != "gh" || req.Request.SenderInfo.PID != 42 {
-		t.Errorf("sender_info = %+v, want invoker gh with pid 42", req.Request.SenderInfo)
-	}
+	require.NoError(t, json.Unmarshal([]byte(`{"sender_info":{"pid":42,"invoker_name":"gh"}}`), &req))
+	assert.Equal(t, "gh", req.Request.SenderInfo.InvokerName)
+	assert.Equal(t, procutil.PID(42), req.Request.SenderInfo.PID)
 }

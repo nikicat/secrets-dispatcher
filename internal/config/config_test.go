@@ -1,11 +1,9 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -37,33 +35,17 @@ serve:
 `), 0o644)
 
 	cfg, err := File{path}.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	require.NoError(t, err)
 
-	if cfg.StateDir != "/tmp/state" {
-		t.Errorf("StateDir = %q, want /tmp/state", cfg.StateDir)
-	}
-	if cfg.Listen != "0.0.0.0:9090" {
-		t.Errorf("Listen = %q, want 0.0.0.0:9090", cfg.Listen)
-	}
+	assert.Equal(t, StateDir("/tmp/state"), cfg.StateDir)
+	assert.Equal(t, ListenAddr("0.0.0.0:9090"), cfg.Listen)
 	assert.Equal(t, UpstreamConfig{Bus: Socket{Path: "/run/upstream.sock"}}, cfg.Serve.Upstream)
 	assert.Equal(t, []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}}, cfg.Serve.Downstream)
-	if cfg.Serve.LogLevel != "debug" {
-		t.Errorf("LogLevel = %q, want debug", cfg.Serve.LogLevel)
-	}
-	if cfg.Serve.LogFormat != "json" {
-		t.Errorf("LogFormat = %q, want json", cfg.Serve.LogFormat)
-	}
-	if time.Duration(cfg.Serve.Timeout) != 10*time.Minute {
-		t.Errorf("Timeout = %v, want 10m", time.Duration(cfg.Serve.Timeout))
-	}
-	if cfg.Serve.HistoryLimit != 50 {
-		t.Errorf("HistoryLimit = %d, want 50", cfg.Serve.HistoryLimit)
-	}
-	if cfg.Serve.Notifications == nil || *cfg.Serve.Notifications != false {
-		t.Errorf("Notifications = %v, want ptr to false", cfg.Serve.Notifications)
-	}
+	assert.Equal(t, LogLevel("debug"), cfg.Serve.LogLevel)
+	assert.Equal(t, LogFormat("json"), cfg.Serve.LogFormat)
+	assert.Equal(t, 10*time.Minute, time.Duration(cfg.Serve.Timeout))
+	assert.Equal(t, 50, cfg.Serve.HistoryLimit)
+	assert.Equal(t, new(false), cfg.Serve.Notifications)
 }
 
 func TestLoadPartialConfig(t *testing.T) {
@@ -76,32 +58,16 @@ serve:
 `), 0o644)
 
 	cfg, err := File{path}.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	require.NoError(t, err)
 
-	if cfg.Listen != "127.0.0.1:5555" {
-		t.Errorf("Listen = %q, want 127.0.0.1:5555", cfg.Listen)
-	}
-	if cfg.Serve.LogLevel != "warn" {
-		t.Errorf("LogLevel = %q, want warn", cfg.Serve.LogLevel)
-	}
+	assert.Equal(t, ListenAddr("127.0.0.1:5555"), cfg.Listen)
+	assert.Equal(t, LogLevel("warn"), cfg.Serve.LogLevel)
 	// Unset fields should be zero values
-	if cfg.StateDir != "" {
-		t.Errorf("StateDir = %q, want empty", cfg.StateDir)
-	}
-	if cfg.Serve.Notifications != nil {
-		t.Errorf("Notifications = %v, want nil", cfg.Serve.Notifications)
-	}
-	if cfg.Serve.HistoryLimit != 0 {
-		t.Errorf("HistoryLimit = %d, want 0", cfg.Serve.HistoryLimit)
-	}
-	if cfg.Serve.Upstream.Bus != nil {
-		t.Errorf("Upstream.Bus = %v, want nil", cfg.Serve.Upstream.Bus)
-	}
-	if len(cfg.Serve.Downstream) != 0 {
-		t.Errorf("Downstream len = %d, want 0", len(cfg.Serve.Downstream))
-	}
+	assert.Empty(t, cfg.StateDir)
+	assert.Nil(t, cfg.Serve.Notifications)
+	assert.Zero(t, cfg.Serve.HistoryLimit)
+	assert.Nil(t, cfg.Serve.Upstream.Bus)
+	assert.Empty(t, cfg.Serve.Downstream)
 }
 
 func TestLoadInvalidYAML(t *testing.T) {
@@ -110,9 +76,7 @@ func TestLoadInvalidYAML(t *testing.T) {
 	os.WriteFile(path, []byte(`{{{not yaml`), 0o644)
 
 	_, err := File{path}.Load()
-	if err == nil {
-		t.Fatal("expected error for invalid YAML")
-	}
+	assert.Error(t, err)
 }
 
 func TestLoadInvalidDuration(t *testing.T) {
@@ -124,9 +88,7 @@ serve:
 `), 0o644)
 
 	_, err := File{path}.Load()
-	if err == nil {
-		t.Fatal("expected error for invalid duration")
-	}
+	assert.Error(t, err)
 }
 
 // A negative auto_approve_duration would expire every rule as it is added.
@@ -194,9 +156,7 @@ serve:
 `), 0o644)
 
 	_, err := File{path}.Load()
-	if err == nil || !strings.Contains(err.Error(), `invalid remote name "../api"`) {
-		t.Fatalf("expected invalid remote name error, got %v", err)
-	}
+	assert.ErrorContains(t, err, `invalid remote name "../api"`)
 }
 
 // A relative exe_path could never match, since /proc reports every executable
@@ -335,9 +295,7 @@ serve:
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			os.WriteFile(path, []byte(tc.yaml), 0o644)
 			_, err := File{path}.Load()
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("Load() error = %v, want it to contain %q", err, tc.wantErr)
-			}
+			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
@@ -354,58 +312,13 @@ serve:
       action: ""
 `), 0o644)
 	cfg, err := File{path}.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
+	require.NoError(t, err)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	out, err := cfg.WithDefaults()
-	if err != nil {
-		t.Fatalf("WithDefaults: %v", err)
-	}
+	require.NoError(t, err)
 	for i, r := range out.Serve.Rules {
-		if r.Action != approval.RuleApprove {
-			t.Fatalf("rules[%d].Action = %q, want %q", i, r.Action, approval.RuleApprove)
-		}
-		if cfg.Serve.Rules[i].Action != "" {
-			t.Fatalf("WithDefaults changed the loaded config's rules[%d] in place", i)
-		}
-	}
-}
-
-func TestNotificationsFalseVsUnset(t *testing.T) {
-	dir := t.TempDir()
-
-	// notifications: false (explicitly set)
-	pathFalse := filepath.Join(dir, "false.yaml")
-	os.WriteFile(pathFalse, []byte(`
-serve:
-  notifications: false
-`), 0o644)
-
-	cfgFalse, err := File{pathFalse}.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfgFalse.Serve.Notifications == nil {
-		t.Fatal("notifications: false should produce non-nil pointer")
-	}
-	if *cfgFalse.Serve.Notifications != false {
-		t.Errorf("notifications = %v, want false", *cfgFalse.Serve.Notifications)
-	}
-
-	// notifications not set
-	pathUnset := filepath.Join(dir, "unset.yaml")
-	os.WriteFile(pathUnset, []byte(`
-serve:
-  log_level: info
-`), 0o644)
-
-	cfgUnset, err := File{pathUnset}.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfgUnset.Serve.Notifications != nil {
-		t.Errorf("unset notifications should be nil, got %v", *cfgUnset.Serve.Notifications)
+		assert.Equal(t, approval.RuleApprove, r.Action, "rules[%d]", i)
+		assert.Empty(t, cfg.Serve.Rules[i].Action, "WithDefaults changed the loaded config's rules[%d] in place", i)
 	}
 }
 
@@ -414,16 +327,10 @@ func TestWithDefaults(t *testing.T) {
 
 	cfg := &Config{}
 	out, err := cfg.WithDefaults()
-	if err != nil {
-		t.Fatalf("WithDefaults: %v", err)
-	}
+	require.NoError(t, err)
 
-	if out.Listen != DefaultListenAddr {
-		t.Errorf("Listen = %q, want %q", out.Listen, DefaultListenAddr)
-	}
-	if out.Serve.LogLevel != DefaultLogLevel {
-		t.Errorf("LogLevel = %q, want %q", out.Serve.LogLevel, DefaultLogLevel)
-	}
+	assert.Equal(t, DefaultListenAddr, out.Listen)
+	assert.Equal(t, DefaultLogLevel, out.Serve.LogLevel)
 	assert.Equal(t, UpstreamConfig{Bus: SessionBus{}}, out.Serve.Upstream)
 	assert.Equal(t, []BusConfig{{Bus: Sockets{Dir: "/run/user/1000/secrets-dispatcher/sockets"}}}, out.Serve.Downstream)
 }
@@ -434,19 +341,13 @@ func TestWithDefaultsSSH(t *testing.T) {
 		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
 		cfg := &Config{SSH: &SSHConfig{}}
 		out, err := cfg.WithDefaults()
-		if err != nil {
-			t.Fatalf("WithDefaults: %v", err)
-		}
+		require.NoError(t, err)
 		want := SSHConfig{
 			Upstream: "/tmp/real-agent.sock",
 			Listen:   "/run/user/1000/secrets-dispatcher/ssh-agent.sock",
 		}
-		if *out.SSH != want {
-			t.Errorf("SSH = %+v, want %+v", *out.SSH, want)
-		}
-		if *cfg.SSH != (SSHConfig{}) {
-			t.Errorf("WithDefaults changed the input's SSH section in place")
-		}
+		assert.Equal(t, want, *out.SSH)
+		assert.Equal(t, SSHConfig{}, *cfg.SSH, "WithDefaults changed the input's SSH section in place")
 	})
 	t.Run("fields set", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", "")
@@ -457,22 +358,14 @@ func TestWithDefaultsSSH(t *testing.T) {
 			SSH:   &want,
 		}
 		out, err := cfg.WithDefaults()
-		if err != nil {
-			t.Fatalf("WithDefaults: %v", err)
-		}
-		if *out.SSH != want {
-			t.Errorf("SSH = %+v, want %+v", *out.SSH, want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, want, *out.SSH)
 	})
 	t.Run("no section", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 		out, err := (&Config{}).WithDefaults()
-		if err != nil {
-			t.Fatalf("WithDefaults: %v", err)
-		}
-		if out.SSH != nil {
-			t.Errorf("SSH = %+v, want nil", *out.SSH)
-		}
+		require.NoError(t, err)
+		assert.Nil(t, out.SSH)
 	})
 	t.Run("listen without runtime dir", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", "")
@@ -480,17 +373,15 @@ func TestWithDefaultsSSH(t *testing.T) {
 			Serve: ServeConfig{Downstream: []BusConfig{{Bus: Socket{Path: "/tmp/bus.sock"}}}},
 			SSH:   &SSHConfig{Upstream: "/tmp/up.sock"},
 		}
-		if _, err := cfg.WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
-			t.Errorf("WithDefaults() error = %v, want ErrNoRuntimeDir", err)
-		}
+		_, err := cfg.WithDefaults()
+		assert.ErrorIs(t, err, ErrNoRuntimeDir)
 	})
 }
 
 func TestWithDefaultsDownstreamWithoutRuntimeDir(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
-	if _, err := (&Config{}).WithDefaults(); !errors.Is(err, ErrNoRuntimeDir) {
-		t.Errorf("WithDefaults() error = %v, want ErrNoRuntimeDir", err)
-	}
+	_, err := (&Config{}).WithDefaults()
+	assert.ErrorIs(t, err, ErrNoRuntimeDir)
 }
 
 func TestResolveValidates(t *testing.T) {
@@ -613,16 +504,9 @@ func TestResolveValidates(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.cfg.Resolve()
 			if tc.wantErr == "" {
-				if err != nil {
-					t.Errorf("Resolve() = %v, want nil", err)
-				}
+				assert.NoError(t, err)
 			} else {
-				if err == nil {
-					t.Fatalf("Resolve() = nil, want error containing %q", tc.wantErr)
-				}
-				if !strings.Contains(err.Error(), tc.wantErr) {
-					t.Errorf("Resolve() = %q, want containing %q", err, tc.wantErr)
-				}
+				assert.ErrorContains(t, err, tc.wantErr)
 			}
 		})
 	}

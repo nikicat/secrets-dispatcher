@@ -5,6 +5,9 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestScheduleRunsAfterDelay(t *testing.T) {
@@ -14,17 +17,11 @@ func TestScheduleRunsAfterDelay(t *testing.T) {
 		g.Schedule("a", time.Second, func() { ran.Store(true) })
 		time.Sleep(time.Second - time.Nanosecond)
 		synctest.Wait()
-		if ran.Load() {
-			t.Fatal("callback ran before the delay")
-		}
+		require.False(t, ran.Load(), "callback ran before the delay")
 		time.Sleep(time.Nanosecond)
 		synctest.Wait()
-		if !ran.Load() {
-			t.Fatal("callback did not run after the delay")
-		}
-		if g.Cancel("a") {
-			t.Error("Cancel after the callback ran reported true")
-		}
+		require.True(t, ran.Load(), "callback did not run after the delay")
+		assert.False(t, g.Cancel("a"), "Cancel after the callback ran reported true")
 	})
 }
 
@@ -33,17 +30,11 @@ func TestCancelSuppresses(t *testing.T) {
 		g := New[string]()
 		var ran atomic.Bool
 		g.Schedule("a", time.Second, func() { ran.Store(true) })
-		if !g.Cancel("a") {
-			t.Error("Cancel of a waiting callback reported false")
-		}
-		if g.Cancel("a") {
-			t.Error("second Cancel reported true")
-		}
+		assert.True(t, g.Cancel("a"), "Cancel of a waiting callback reported false")
+		assert.False(t, g.Cancel("a"), "second Cancel reported true")
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		if ran.Load() {
-			t.Error("cancelled callback ran")
-		}
+		assert.False(t, ran.Load(), "cancelled callback ran")
 	})
 }
 
@@ -55,9 +46,8 @@ func TestScheduleReplaces(t *testing.T) {
 		g.Schedule("a", 2*time.Second, func() { newRan.Store(true) })
 		time.Sleep(3 * time.Second)
 		synctest.Wait()
-		if oldRan.Load() || !newRan.Load() {
-			t.Errorf("old ran %v, new ran %v; want only the new callback", oldRan.Load(), newRan.Load())
-		}
+		assert.False(t, oldRan.Load(), "replaced callback ran")
+		assert.True(t, newRan.Load(), "replacing callback did not run")
 	})
 }
 
@@ -70,8 +60,7 @@ func TestKeysAreIndependent(t *testing.T) {
 		g.Cancel(1)
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		if ran1.Load() || !ran2.Load() {
-			t.Errorf("key 1 ran %v, key 2 ran %v; want only key 2", ran1.Load(), ran2.Load())
-		}
+		assert.False(t, ran1.Load(), "cancelled key 1 ran")
+		assert.True(t, ran2.Load(), "key 2 did not run")
 	})
 }

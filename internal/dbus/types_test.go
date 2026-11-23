@@ -27,9 +27,7 @@ func TestCollectionOf(t *testing.T) {
 	}
 	for _, tt := range tests {
 		ref, ok := CollectionOf(tt.path)
-		if got := (parsed{ref, ok}); got != tt.want {
-			t.Errorf("CollectionOf(%q) = %+v, want %+v", tt.path, got, tt.want)
-		}
+		assert.Equal(t, tt.want, parsed{ref, ok}, tt.path)
 	}
 }
 
@@ -57,13 +55,9 @@ func TestParseCollectionAndItemPath(t *testing.T) {
 	for _, tt := range tests {
 		path := dbus.ObjectPath(tt.path)
 		ref, ok := ParseCollectionPath(path)
-		if got := (parsed{ref, ok}); got != tt.collection {
-			t.Errorf("ParseCollectionPath(%q) = %+v, want %+v", tt.path, got, tt.collection)
-		}
+		assert.Equal(t, tt.collection, parsed{ref, ok}, "ParseCollectionPath(%q)", tt.path)
 		ref, ok = ParseItemPath(path)
-		if got := (parsed{ref, ok}); got != tt.item {
-			t.Errorf("ParseItemPath(%q) = %+v, want %+v", tt.path, got, tt.item)
-		}
+		assert.Equal(t, tt.item, parsed{ref, ok}, "ParseItemPath(%q)", tt.path)
 	}
 }
 

@@ -4,393 +4,184 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/nikicat/secrets-dispatcher/internal/poll"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
-	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestManager_RequireApproval_Approved(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	var approvalErr error
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
 
-	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		_, err := call.wait()
+		assert.NoError(t, err, "RequireApproval")
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear in pending list")
-	}
-
-	// Approve the request
-	if err := mgr.Approve(reqID); err != nil {
-		t.Fatalf("Approve failed: %v", err)
-	}
-
-	wg.Wait()
-
-	if approvalErr != nil {
-		t.Errorf("RequireApproval returned error: %v", approvalErr)
-	}
 }
 
 func TestManager_RequireApproval_Denied(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	var approvalErr error
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Deny(waitPendingID(t, mgr)))
 
-	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		_, err := call.wait()
+		assert.Equal(t, ErrDenied, err)
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear in pending list")
-	}
-
-	// Deny the request
-	if err := mgr.Deny(reqID); err != nil {
-		t.Fatalf("Deny failed: %v", err)
-	}
-
-	wg.Wait()
-
-	if approvalErr != ErrDenied {
-		t.Errorf("expected ErrDenied, got: %v", approvalErr)
-	}
-}
-
-func TestManager_RequireApproval_Timeout(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: 100})
-
-	_, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-
-	if err != ErrTimeout {
-		t.Errorf("expected ErrTimeout, got: %v", err)
-	}
 }
 
 func TestManager_RequireApproval_ContextCanceled(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		call := startApproval(ctx, mgr, getSecretRequest())
+		waitPending(t, mgr, 1)
+		cancel()
 
-	var wg sync.WaitGroup
-	var approvalErr error
-
-	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		_, err := call.wait()
+		assert.Equal(t, context.Canceled, err)
 	})
-
-	// Wait for request to appear
-	for range 100 {
-		if mgr.PendingCount() > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Cancel context
-	cancel()
-
-	wg.Wait()
-
-	if approvalErr != context.Canceled {
-		t.Errorf("expected context.Canceled, got: %v", approvalErr)
-	}
 }
 
 func TestManager_Pending(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	// Start multiple approval requests
-	var wg sync.WaitGroup
-	for i := range 3 {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
-			_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-		}(i)
-	}
-
-	// Wait for requests to appear
-	for range 100 {
-		if mgr.PendingCount() >= 3 {
-			break
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		var calls []*approvalCall
+		for range 3 {
+			calls = append(calls, startApproval(ctx, mgr, getSecretRequest()))
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
-	reqs := mgr.Pending()
-	if len(reqs) != 3 {
-		t.Errorf("expected 3 pending requests, got %d", len(reqs))
-	}
+		waitPending(t, mgr, 3)
 
-	wg.Wait()
+		for _, call := range calls {
+			call.wait()
+		}
+	})
 }
 
 func TestManager_Cancel_Success(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	var approvalErr error
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Cancel(waitPendingID(t, mgr)))
 
-	wg.Go(func() {
-		_, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		_, err := call.wait()
+		// Cancel resolves the request as cancelled, which RequireApproval reports as ErrDenied.
+		assert.Equal(t, ErrDenied, err, "after cancel")
+
+		assert.Zero(t, mgr.PendingCount(), "request should be cleaned up after cancel")
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear in pending list")
-	}
-
-	// Cancel the request
-	if err := mgr.Cancel(reqID); err != nil {
-		t.Fatalf("Cancel failed: %v", err)
-	}
-
-	wg.Wait()
-
-	// Cancel resolves the request as cancelled, which RequireApproval reports as ErrDenied.
-	if approvalErr != ErrDenied {
-		t.Errorf("expected ErrDenied after cancel, got: %v", approvalErr)
-	}
-
-	// Verify request is cleaned up
-	if mgr.PendingCount() != 0 {
-		t.Error("request should be cleaned up after cancel")
-	}
 }
 
 func TestManager_Cancel_NotFound(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	err := mgr.Cancel("nonexistent-id")
-	if err != ErrNotFound {
-		t.Errorf("expected ErrNotFound, got: %v", err)
-	}
+	assert.Equal(t, ErrNotFound, mgr.Cancel("nonexistent-id"))
 }
 
 func TestManager_Approve_NotFound(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	err := mgr.Approve("nonexistent-id")
-	if err != ErrNotFound {
-		t.Errorf("expected ErrNotFound, got: %v", err)
-	}
+	assert.Equal(t, ErrNotFound, mgr.Approve("nonexistent-id"))
 }
 
 func TestManager_Deny_NotFound(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
-	err := mgr.Deny("nonexistent-id")
-	if err != ErrNotFound {
-		t.Errorf("expected ErrNotFound, got: %v", err)
-	}
+	assert.Equal(t, ErrNotFound, mgr.Deny("nonexistent-id"))
 }
 
 func TestManager_Concurrent(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	const numRequests = 10
-	var wg sync.WaitGroup
-
-	// Track results
-	results := make([]error, numRequests)
-
-	// Start approval requests
-	for i := range numRequests {
-		wg.Add(1)
-		go func(n int) {
-			defer wg.Done()
-			_, results[n] = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-		}(i)
-	}
-
-	// Wait for requests to appear
-	for range 100 {
-		if mgr.PendingCount() >= numRequests {
-			break
+		const numRequests = 10
+		var calls []*approvalCall
+		for range numRequests {
+			calls = append(calls, startApproval(context.Background(), mgr, getSecretRequest()))
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
 
-	// Approve half, deny half
-	reqs := mgr.Pending()
-	for i, req := range reqs {
-		if i%2 == 0 {
-			mgr.Approve(req.ID)
-		} else {
-			mgr.Deny(req.ID)
+		for i, req := range waitPending(t, mgr, numRequests) {
+			if i%2 == 0 {
+				require.NoError(t, mgr.Approve(req.ID))
+			} else {
+				require.NoError(t, mgr.Deny(req.ID))
+			}
 		}
-	}
 
-	wg.Wait()
-
-	// Verify all requests completed
-	var approved, denied int
-	for _, err := range results {
-		if err == nil {
-			approved++
-		} else if err == ErrDenied {
-			denied++
-		} else {
-			t.Errorf("unexpected error: %v", err)
+		var approved, denied int
+		for _, call := range calls {
+			switch _, err := call.wait(); err {
+			case nil:
+				approved++
+			case ErrDenied:
+				denied++
+			default:
+				assert.Failf(t, "unexpected error", "%v", err)
+			}
 		}
-	}
 
-	if approved+denied != numRequests {
-		t.Errorf("expected %d total results, got %d approved + %d denied", numRequests, approved, denied)
-	}
+		assert.Equal(t, numRequests, approved+denied, "%d approved + %d denied", approved, denied)
+	})
 }
 
 func TestManager_Disabled(t *testing.T) {
 	mgr := NewDisabledManager()
 
 	// Should auto-approve immediately
-	_, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-	if err != nil {
-		t.Errorf("disabled manager should auto-approve, got: %v", err)
-	}
+	_, err := mgr.RequireApproval(context.Background(), getSecretRequest())
+	assert.NoError(t, err, "disabled manager should auto-approve")
 
-	// No pending requests
-	if mgr.PendingCount() != 0 {
-		t.Error("disabled manager should have no pending requests")
-	}
+	assert.Zero(t, mgr.PendingCount(), "disabled manager should have no pending requests")
 }
 
 func TestManager_RequestFields(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, Session: "/session/42", Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Client: "test-client"}})
+		call := startApproval(ctx, mgr, RequestInfo{Items: []ItemInfo{{Path: "/test/item1"}, {Path: "/test/item2"}}, Session: "/session/42", Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Client: "test-client"}})
+
+		req := waitPending(t, mgr, 1)[0]
+		assert.Equal(t, ClientName("test-client"), req.SenderInfo.Client)
+		assert.Len(t, req.Items, 2)
+		assert.Equal(t, "/session/42", string(req.Session))
+		assert.NotEmpty(t, req.ID)
+		assert.False(t, req.CreatedAt.IsZero(), "expected non-zero CreatedAt")
+		assert.False(t, req.ExpiresAt.IsZero(), "expected non-zero ExpiresAt")
+		assert.False(t, req.ExpiresAt.Before(req.CreatedAt), "ExpiresAt should be after CreatedAt")
+
+		call.wait()
 	})
-
-	// Wait for request to appear
-	for range 100 {
-		if mgr.PendingCount() > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	reqs := mgr.Pending()
-	if len(reqs) != 1 {
-		t.Fatalf("expected 1 request, got %d", len(reqs))
-	}
-
-	req := reqs[0]
-	if req.SenderInfo.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", req.SenderInfo.Client)
-	}
-	if len(req.Items) != 2 {
-		t.Errorf("expected 2 items, got %d", len(req.Items))
-	}
-	if req.Session != "/session/42" {
-		t.Errorf("expected session '/session/42', got '%s'", req.Session)
-	}
-	if req.ID == "" {
-		t.Error("expected non-empty ID")
-	}
-	if req.CreatedAt.IsZero() {
-		t.Error("expected non-zero CreatedAt")
-	}
-	if req.ExpiresAt.IsZero() {
-		t.Error("expected non-zero ExpiresAt")
-	}
-	if req.ExpiresAt.Before(req.CreatedAt) {
-		t.Error("ExpiresAt should be after CreatedAt")
-	}
-
-	wg.Wait()
 }
 
 func TestManager_CleanupAfterApproval(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		reqID := waitPendingID(t, mgr)
+		require.NoError(t, mgr.Approve(reqID))
+		call.wait()
+
+		assert.Zero(t, mgr.PendingCount(), "request should be cleaned up after approval")
+
+		assert.Equal(t, ErrNotFound, mgr.Approve(reqID), "second approval")
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Approve
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Verify request is cleaned up
-	if mgr.PendingCount() != 0 {
-		t.Error("request should be cleaned up after approval")
-	}
-
-	// Trying to approve again should fail
-	if err := mgr.Approve(reqID); err != ErrNotFound {
-		t.Errorf("second approval should return ErrNotFound, got: %v", err)
-	}
 }
-
-// Ignores every event. A test observer embeds it and overrides the methods for
-// the events it reads.
-type ignoreEvents struct{}
-
-func (ignoreEvents) RequestCreated(Pending)      {}
-func (ignoreEvents) RequestEnded(HistoryEntry)   {}
-func (ignoreEvents) RuleAdded(AutoApproveRule)   {}
-func (ignoreEvents) RuleRemoved(AutoApproveRule) {}
 
 // The kind of request event that testObserver received: created, or ended
 // with the resolution of the same name.
@@ -413,7 +204,7 @@ type testEvent struct {
 
 // Keeps the request events it receives, in order.
 type testObserver struct {
-	ignoreEvents
+	IgnoreEvents
 	mu     sync.Mutex
 	events []testEvent
 }
@@ -438,834 +229,417 @@ func (o *testObserver) Events() []testEvent {
 	return append([]testEvent{}, o.events...)
 }
 
-func (o *testObserver) WaitForEvents(ctx context.Context, count int, timeout time.Duration) []testEvent {
-	poll.Until(ctx, timeout, 10*time.Millisecond, func() bool { return len(o.Events()) >= count })
-	return o.Events()
+// Returns the kinds of the events received so far, in order.
+func (o *testObserver) Kinds() []eventKind {
+	var kinds []eventKind
+	for _, e := range o.Events() {
+		kinds = append(kinds, e.Type)
+	}
+	return kinds
 }
 
 func TestManager_Observer_Created(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(ctx, mgr, getSecretRequest())
+
+		synctest.Wait()
+		events := obs.Events()
+		require.NotEmpty(t, events)
+		assert.Equal(t, evCreated, events[0].Type)
+		assert.NotNil(t, events[0].Request, "expected request in event")
+
+		call.wait()
 	})
-
-	// Wait for created event
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) < 1 {
-		t.Fatal("expected at least 1 event")
-	}
-	if events[0].Type != evCreated {
-		t.Errorf("expected evCreated, got %v", events[0].Type)
-	}
-	if events[0].Request == nil {
-		t.Error("expected request in event")
-	}
-
-	wg.Wait()
-	mgr.Unsubscribe(obs)
 }
 
 func TestManager_Observer_Approved(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		assert.Equal(t, []eventKind{evCreated, evApproved}, obs.Kinds())
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-
-	// Approve
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Wait for events
-	events := obs.WaitForEvents(t.Context(), 2, time.Second)
-	if len(events) < 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-
-	if events[0].Type != evCreated {
-		t.Errorf("expected first event to be Created, got %v", events[0].Type)
-	}
-	if events[1].Type != evApproved {
-		t.Errorf("expected second event to be Approved, got %v", events[1].Type)
-	}
-
-	mgr.Unsubscribe(obs)
 }
 
 func TestManager_Observer_Denied(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Deny(waitPendingID(t, mgr)))
+		call.wait()
+
+		assert.Equal(t, []eventKind{evCreated, evDenied}, obs.Kinds())
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Deny
-	mgr.Deny(reqID)
-	wg.Wait()
-
-	// Wait for events
-	events := obs.WaitForEvents(t.Context(), 2, time.Second)
-	if len(events) < 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-
-	if events[1].Type != evDenied {
-		t.Errorf("expected second event to be Denied, got %v", events[1].Type)
-	}
-
-	mgr.Unsubscribe(obs)
 }
 
 func TestManager_Observer_Expired(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{Timeout: 100 * time.Millisecond})
 
-	// This will timeout
-	_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		_, _ = mgr.RequireApproval(context.Background(), getSecretRequest())
 
-	// Wait for events
-	events := obs.WaitForEvents(t.Context(), 2, time.Second)
-	if len(events) < 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-
-	if events[0].Type != evCreated {
-		t.Errorf("expected first event to be Created, got %v", events[0].Type)
-	}
-	if events[1].Type != evExpired {
-		t.Errorf("expected second event to be Expired, got %v", events[1].Type)
-	}
-
-	mgr.Unsubscribe(obs)
+		synctest.Wait()
+		assert.Equal(t, []eventKind{evCreated, evExpired}, obs.Kinds())
+	})
 }
 
 func TestManager_Observer_CancelMethod(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Cancel(waitPendingID(t, mgr)))
+		call.wait()
+
+		assert.Equal(t, []eventKind{evCreated, evCancelled}, obs.Kinds())
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-
-	// Cancel via Cancel() method
-	mgr.Cancel(reqID)
-	wg.Wait()
-
-	// Wait for events
-	events := obs.WaitForEvents(t.Context(), 2, time.Second)
-	if len(events) < 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-
-	if events[0].Type != evCreated {
-		t.Errorf("expected first event to be Created, got %v", events[0].Type)
-	}
-	if events[1].Type != evCancelled {
-		t.Errorf("expected second event to be Cancelled, got %v", events[1].Type)
-	}
-
-	mgr.Unsubscribe(obs)
 }
 
 func TestManager_Observer_Cancelled(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{})
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		call := startApproval(ctx, mgr, getSecretRequest())
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-		if err != context.Canceled {
-			t.Errorf("expected context.Canceled, got %v", err)
-		}
+		synctest.Wait()
+		require.NotEmpty(t, obs.Events(), "expected the created event")
+
+		cancel()
+		_, err := call.wait()
+		assert.Equal(t, context.Canceled, err)
+
+		assert.Equal(t, []eventKind{evCreated, evCancelled}, obs.Kinds())
 	})
-
-	// Wait for created event
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) < 1 {
-		t.Fatal("expected at least 1 event (created)")
-	}
-
-	// Cancel the context
-	cancel()
-	wg.Wait()
-
-	// Wait for cancelled event
-	events = obs.WaitForEvents(t.Context(), 2, time.Second)
-	if len(events) < 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-
-	if events[0].Type != evCreated {
-		t.Errorf("expected first event to be Created, got %v", events[0].Type)
-	}
-	if events[1].Type != evCancelled {
-		t.Errorf("expected second event to be Cancelled, got %v", events[1].Type)
-	}
-
-	mgr.Unsubscribe(obs)
 }
 
 func TestManager_Observer_Unsubscribe(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
-	mgr.Unsubscribe(obs)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs := newObservedManager(ManagerConfig{})
+		mgr.Unsubscribe(obs)
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		startApproval(ctx, mgr, getSecretRequest()).wait()
+
+		assert.Empty(t, obs.Events(), "events after unsubscribe")
 	})
-
-	wg.Wait()
-
-	// Should receive no events after unsubscribe
-	events := obs.Events()
-	if len(events) != 0 {
-		t.Errorf("expected 0 events after unsubscribe, got %d", len(events))
-	}
 }
 
 func TestManager_Observer_MultipleObservers(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	obs1 := &testObserver{}
-	obs2 := &testObserver{}
-	mgr.Subscribe(obs1)
-	mgr.Subscribe(obs2)
+	synctest.Test(t, func(t *testing.T) {
+		mgr, obs1 := newObservedManager(ManagerConfig{})
+		obs2 := &testObserver{}
+		mgr.Subscribe(obs2)
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
-		_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(ctx, mgr, getSecretRequest())
+
+		synctest.Wait()
+		assert.NotEmpty(t, obs1.Events(), "observer 1 should receive events")
+		assert.NotEmpty(t, obs2.Events(), "observer 2 should receive events")
+
+		call.wait()
 	})
-
-	// Wait for created event on both observers
-	events1 := obs1.WaitForEvents(t.Context(), 1, time.Second)
-	events2 := obs2.WaitForEvents(t.Context(), 1, time.Second)
-
-	if len(events1) < 1 {
-		t.Error("observer 1 should receive events")
-	}
-	if len(events2) < 1 {
-		t.Error("observer 2 should receive events")
-	}
-
-	wg.Wait()
-	mgr.Unsubscribe(obs1)
-	mgr.Unsubscribe(obs2)
 }
 
 func TestManager_Observer_ConcurrentSubscribe(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 
+	observers := make([]*testObserver, 10)
 	var wg sync.WaitGroup
-	var subscribed atomic.Int32
-
-	// Subscribe concurrently
-	for range 10 {
-		wg.Go(func() {
-			obs := &testObserver{}
-			mgr.Subscribe(obs)
-			subscribed.Add(1)
-		})
+	for i := range observers {
+		observers[i] = &testObserver{}
+		wg.Go(func() { mgr.Subscribe(observers[i]) })
 	}
-
 	wg.Wait()
 
-	if subscribed.Load() != 10 {
-		t.Errorf("expected 10 subscribed, got %d", subscribed.Load())
+	require.NoError(t, mgr.Passthrough(getSecretRequest()))
+	for i, obs := range observers {
+		assert.Equal(t, []eventKind{evAutoApproved}, obs.Kinds(), "observer %d", i)
 	}
 }
 
 func TestHistory_RecordsApproved(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		reqID := waitPendingID(t, mgr)
+		require.NoError(t, mgr.Approve(reqID))
+		call.wait()
+
+		history := mgr.History()
+		require.Len(t, history, 1)
+		assert.Equal(t, ResolutionApproved, history[0].Resolution)
+		assert.Equal(t, reqID, history[0].Request.ID)
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-
-	// Approve
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Give time for history to be recorded
-	time.Sleep(50 * time.Millisecond)
-
-	// Check history
-	history := mgr.History()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Resolution != ResolutionApproved {
-		t.Errorf("expected resolution 'approved', got '%s'", history[0].Resolution)
-	}
-	if history[0].Request.ID != reqID {
-		t.Errorf("expected request ID %s, got %s", reqID, history[0].Request.ID)
-	}
 }
 
 func TestHistory_RecordsDenied(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Deny(waitPendingID(t, mgr)))
+		call.wait()
+
+		assert.Equal(t, []Resolution{ResolutionDenied}, historyResolutions(mgr))
 	})
-
-	// Wait for request to appear
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Deny
-	mgr.Deny(reqID)
-	wg.Wait()
-
-	// Give time for history to be recorded
-	time.Sleep(50 * time.Millisecond)
-
-	// Check history
-	history := mgr.History()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Resolution != ResolutionDenied {
-		t.Errorf("expected resolution 'denied', got '%s'", history[0].Resolution)
-	}
-}
-
-func TestHistory_RecordsExpired(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: 100})
-
-	// This will timeout
-	_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-
-	// Give time for history to be recorded
-	time.Sleep(50 * time.Millisecond)
-
-	// Check history
-	history := mgr.History()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Resolution != ResolutionExpired {
-		t.Errorf("expected resolution 'expired', got '%s'", history[0].Resolution)
-	}
 }
 
 func TestHistory_RecordsCancelled(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		call := startApproval(ctx, mgr, getSecretRequest())
+		waitPending(t, mgr, 1)
+		cancel()
+		call.wait()
 
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
+		assert.Equal(t, []Resolution{ResolutionCancelled}, historyResolutions(mgr))
 	})
-
-	// Wait for request to appear
-	for range 100 {
-		if mgr.PendingCount() > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Cancel the context
-	cancel()
-	wg.Wait()
-
-	// Give time for history to be recorded
-	time.Sleep(50 * time.Millisecond)
-
-	// Check history
-	history := mgr.History()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Resolution != ResolutionCancelled {
-		t.Errorf("expected resolution 'cancelled', got '%s'", history[0].Resolution)
-	}
 }
 
 func TestHistory_LimitEnforced(t *testing.T) {
-	historyMax := 5
-	mgr := NewManager(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: historyMax})
+	synctest.Test(t, func(t *testing.T) {
+		historyMax := 5
+		mgr := NewManagerForTest(ManagerConfig{Timeout: 100 * time.Millisecond, HistoryMax: historyMax})
 
-	// Create more requests than the history limit
-	for i := 0; i < historyMax+3; i++ {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-	}
+		for i := 0; i < historyMax+3; i++ {
+			_, _ = mgr.RequireApproval(context.Background(), getSecretRequest())
+		}
+		synctest.Wait()
 
-	// Check history is limited
-	history := mgr.History()
-	if len(history) != historyMax {
-		t.Errorf("expected %d history entries (limit), got %d", historyMax, len(history))
-	}
+		assert.Len(t, mgr.History(), historyMax)
+	})
 }
 
 func TestHistory_NewestFirst(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	// Create and resolve 3 requests in sequence
-	for range 3 {
-		var wg sync.WaitGroup
-		wg.Go(func() {
-			_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/session/1", Type: RequestTypeGetSecret})
-		})
+		for range 3 {
+			call := startApproval(context.Background(), mgr, getSecretRequest())
+			require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+			call.wait()
 
-		// Wait for request to appear
-		var reqID RequestID
-		for range 100 {
-			reqs := mgr.Pending()
-			if len(reqs) > 0 {
-				reqID = reqs[0].ID
-				break
-			}
+			// Small delay to ensure different timestamps
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		mgr.Approve(reqID)
-		wg.Wait()
+		history := mgr.History()
+		require.Len(t, history, 3)
 
-		// Small delay to ensure different timestamps
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Give time for history to be recorded
-	time.Sleep(50 * time.Millisecond)
-
-	// Check history is in reverse chronological order (newest first)
-	history := mgr.History()
-	if len(history) != 3 {
-		t.Fatalf("expected 3 history entries, got %d", len(history))
-	}
-
-	for i := 0; i < len(history)-1; i++ {
-		if history[i].ResolvedAt.Before(history[i+1].ResolvedAt) {
-			t.Errorf("history entry %d resolved before entry %d, but should be after (newest first)", i, i+1)
+		for i := 0; i < len(history)-1; i++ {
+			assert.False(t, history[i].ResolvedAt.Before(history[i+1].ResolvedAt), "history entry %d resolved before entry %d, but should be after (newest first)", i, i+1)
 		}
-	}
+	})
 }
 
 func TestApprovalCache_SameSenderItemAutoApproved(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
+		info := getSecretRequest()
+		info.SenderInfo = busSender(":1.100")
 
-	// First request: must be manually approved
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
+		call := startApproval(context.Background(), mgr, info)
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		// A second request from the same sender for the same item, within the window,
+		// is approved without going pending.
+		_, err := mgr.RequireApproval(context.Background(), info)
+		require.NoError(t, err, "expected auto-approval from cache")
+		assert.Zero(t, mgr.PendingCount(), "cached approval should not create a pending request")
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("first request did not appear")
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// A second request from the same sender for the same item, within the window,
-	// is approved without going pending.
-	_, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err != nil {
-		t.Fatalf("expected auto-approval from cache, got: %v", err)
-	}
-	if mgr.PendingCount() != 0 {
-		t.Error("cached approval should not create a pending request")
-	}
 }
 
 func TestApprovalCache_Expired(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: 50 * time.Millisecond})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: 50 * time.Millisecond})
 
-	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
+		info := getSecretRequest()
+		info.SenderInfo = busSender(":1.100")
 
-	// Approve first request
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
+		call := startApproval(context.Background(), mgr, info)
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		time.Sleep(60 * time.Millisecond)
+
+		requirePrompts(t, mgr, info)
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Wait for cache to expire
-	time.Sleep(60 * time.Millisecond)
-
-	// Second request should NOT be auto-approved
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err == nil {
-		t.Fatal("expected approval to be required after cache expiry")
-	}
 }
 
 func TestApprovalCache_DifferentSender(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	items := []ItemInfo{{Path: "/test/item1"}}
+		info := getSecretRequest()
+		info.SenderInfo = busSender(":1.100")
 
-	// Approve for sender1
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Sender: new(sender.UniqueName(":1.100"))}})
+		call := startApproval(context.Background(), mgr, info)
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		info.SenderInfo = busSender(":1.999")
+		requirePrompts(t, mgr, info)
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Different sender should NOT be auto-approved
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Sender: new(sender.UniqueName(":1.999"))}})
-	if err == nil {
-		t.Fatal("different sender should not be auto-approved from cache")
-	}
 }
 
 func TestApprovalCache_DeleteBypassesCache(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
+		info := getSecretRequest()
+		info.SenderInfo = busSender(":1.100")
 
-	// Approving a GetSecret request first fills the cache.
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
+		// Approving a GetSecret request first fills the cache.
+		call := startApproval(context.Background(), mgr, info)
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		_, err := mgr.RequireApproval(context.Background(), info)
+		require.NoError(t, err, "GetSecret should be auto-approved from cache")
+
+		// A delete request does not use the cache, so it goes pending.
+		info.Type = RequestTypeDelete
+		requirePrompts(t, mgr, info)
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("first request did not appear")
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Verify GetSecret is cached (auto-approved)
-	_, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err != nil {
-		t.Fatalf("GetSecret should be auto-approved from cache, got: %v", err)
-	}
-
-	// A delete request does not use the cache, so it goes pending.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err = mgr.RequireApproval(ctx, RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeDelete, SenderInfo: sender})
-	if err == nil {
-		t.Fatal("Delete should not be auto-approved from cache")
-	}
 }
 
 func TestApprovalCache_WriteBypassesCache(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	items := []ItemInfo{{Path: "/test/item1"}}
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
+		info := getSecretRequest()
+		info.SenderInfo = busSender(":1.100")
 
-	// Approving a GetSecret request first fills the cache.
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
+		// Approving a GetSecret request first fills the cache.
+		call := startApproval(context.Background(), mgr, info)
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		info.Type = RequestTypeWrite
+		requirePrompts(t, mgr, info)
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("first request did not appear")
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Write should NOT use cache
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: items, Session: "/s/1", Type: RequestTypeWrite, SenderInfo: sender})
-	if err == nil {
-		t.Fatal("Write should not be auto-approved from cache")
-	}
 }
 
 func TestCacheItemForSender_AutoApprovesRead(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.200"))}
-	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+		caller := busSender(":1.200")
+		item := itemInCollection("default", "i123")
 
-	// Manually cache the item (simulates post-CreateItem caching)
-	mgr.CacheItemForSender(sender, itemPath)
+		mgr.CacheItemForSender(caller, item.Path)
 
-	// GetSecret for the same item should be auto-approved
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: itemPath}}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err != nil {
-		t.Fatalf("GetSecret should be auto-approved after CacheItemForSender, got: %v", err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: caller})
+		assert.NoError(t, err, "GetSecret should be auto-approved after CacheItemForSender")
+	})
 }
 
 func TestCacheItemForSender_DifferentSenderNotCached(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	itemPath := "/org/freedesktop/secrets/collection/default/i123"
+		item := itemInCollection("default", "i123")
+		mgr.CacheItemForSender(busSender(":1.200"), item.Path)
 
-	// Cache for sender :1.200
-	mgr.CacheItemForSender(SenderInfo{Sender: new(sender.UniqueName(":1.200"))}, itemPath)
-
-	// Different sender should NOT be auto-approved
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: itemPath}}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Sender: new(sender.UniqueName(":1.300"))}})
-	if err == nil {
-		t.Fatal("different sender should not be auto-approved")
-	}
+		requirePrompts(t, mgr, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: busSender(":1.300")})
+	})
 }
 
 // An approval cached on one client does not cover the same unique name on
 // another.
 func TestCacheItemForSender_DifferentClientNotCached(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	itemPath := "/org/freedesktop/secrets/collection/default/i123"
-	mgr.CacheItemForSender(SenderInfo{Client: "a", Sender: new(sender.UniqueName(":1.200"))}, itemPath)
+		item := itemInCollection("default", "i123")
+		caller := busSender(":1.200")
+		caller.Client = "a"
+		mgr.CacheItemForSender(caller, item.Path)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: itemPath}}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: SenderInfo{Client: "b", Sender: new(sender.UniqueName(":1.200"))}})
-	if err == nil {
-		t.Fatal("the same sender name on another client should not be auto-approved")
-	}
+		caller.Client = "b"
+		requirePrompts(t, mgr, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: caller})
+	})
 }
 
 // A request that did not come over D-Bus has no sender to tie an approval to,
 // so another process could reuse it.
 func TestCacheItemForSender_NoSenderNotCached(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	itemPath := "/org/freedesktop/secrets/collection/default/i123"
-	mgr.CacheItemForSender(SenderInfo{}, itemPath)
+		item := itemInCollection("default", "i123")
+		mgr.CacheItemForSender(SenderInfo{}, item.Path)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: itemPath}}, Session: "/s/1", Type: RequestTypeGetSecret})
-	if err == nil {
-		t.Fatal("a request without a sender should not be auto-approved")
-	}
+		requirePrompts(t, mgr, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret})
+	})
 }
 
 // An approval cached before a client name is released does not cover the same
 // unique name once the name is claimed again.
 func TestReleaseClient_DropsCachedApprovals(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Minute})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Minute})
 
-	itemPath := "/org/freedesktop/secrets/collection/default/i123"
-	sender := SenderInfo{Client: "vm", Sender: new(sender.UniqueName(":1.5"))}
-	if !mgr.ClaimClient("vm") {
-		t.Fatal("first claim of vm failed")
-	}
-	if mgr.ClaimClient("vm") {
-		t.Fatal("vm claimed twice")
-	}
-	mgr.CacheItemForSender(sender, itemPath)
-	mgr.ReleaseClient("vm")
-	if !mgr.ClaimClient("vm") {
-		t.Fatal("released name could not be claimed again")
-	}
+		item := itemInCollection("default", "i123")
+		caller := busSender(":1.5")
+		caller.Client = "vm"
+		require.True(t, mgr.ClaimClient("vm"), "first claim of vm failed")
+		require.False(t, mgr.ClaimClient("vm"), "vm claimed twice")
+		mgr.CacheItemForSender(caller, item.Path)
+		mgr.ReleaseClient("vm")
+		require.True(t, mgr.ClaimClient("vm"), "released name could not be claimed again")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: itemPath}}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err == nil {
-		t.Fatal("an approval cached for the released bus approved the new one")
-	}
+		requirePrompts(t, mgr, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: caller})
+	})
 }
 
 func TestApprovalCache_DifferentItem(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.100"))}
+		info := getSecretRequest()
+		info.SenderInfo = busSender(":1.100")
 
-	// Approve for item1
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		_, _ = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item1"}}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
+		call := startApproval(context.Background(), mgr, info)
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+		call.wait()
+
+		info.Items = []ItemInfo{{Path: "/test/item2"}}
+		requirePrompts(t, mgr, info)
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	// Different item should NOT be auto-approved
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, err := mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item2"}}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err == nil {
-		t.Fatal("different item should not be auto-approved from cache")
-	}
 }
 
 func TestManager_EventOrder_CancelledContext(t *testing.T) {
 	// The created event must reach observers before the cancelled one, even
 	// when the context is already cancelled.
 	for i := range 100 {
-		mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-		obs := &testObserver{}
-		mgr.Subscribe(obs)
+		mgr, obs := newObservedManager(ManagerConfig{})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // pre-cancel so select fires ctx.Done() immediately
 
-		_, _ = mgr.RequireApproval(ctx, RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Session: "/s/1", Type: RequestTypeGetSecret})
+		_, _ = mgr.RequireApproval(ctx, getSecretRequest())
 
-		events := obs.WaitForEvents(t.Context(), 2, time.Second)
-		if len(events) < 2 {
-			t.Fatalf("iteration %d: expected 2 events, got %d", i, len(events))
-		}
-		if events[0].Type != evCreated {
-			t.Fatalf("iteration %d: expected evCreated first, got %v then %v", i, events[0].Type, events[1].Type)
-		}
-		if events[1].Type != evCancelled {
-			t.Fatalf("iteration %d: expected evCancelled second, got %v then %v", i, events[0].Type, events[1].Type)
-		}
-
-		mgr.Unsubscribe(obs)
+		require.Equal(t, []eventKind{evCreated, evCancelled}, obs.Kinds(), "iteration %d", i)
 	}
 }
 
@@ -1282,35 +656,25 @@ func TestDropsChromeDummyWrite(t *testing.T) {
 	}}
 
 	t.Run("enabled + write + matching schema", func(t *testing.T) {
-		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
-		if !mgr.dropsChromeDummyWrite(RequestInfo{Items: chromeItems, Type: RequestTypeWrite}) {
-			t.Error("expected true")
-		}
+		mgr := NewManagerForTest(ManagerConfig{IgnoreChromeDummy: true})
+		assert.True(t, mgr.dropsChromeDummyWrite(RequestInfo{Items: chromeItems, Type: RequestTypeWrite}))
 	})
 	t.Run("enabled + read + matching schema", func(t *testing.T) {
-		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
-		if mgr.dropsChromeDummyWrite(RequestInfo{Items: chromeItems, Type: RequestTypeGetSecret}) {
-			t.Error("expected false for non-write")
-		}
+		mgr := NewManagerForTest(ManagerConfig{IgnoreChromeDummy: true})
+		assert.False(t, mgr.dropsChromeDummyWrite(RequestInfo{Items: chromeItems, Type: RequestTypeGetSecret}), "expected false for non-write")
 	})
 	t.Run("enabled + write + different schema", func(t *testing.T) {
-		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
-		if mgr.dropsChromeDummyWrite(RequestInfo{Items: normalItems, Type: RequestTypeWrite}) {
-			t.Error("expected false for non-chrome schema")
-		}
+		mgr := NewManagerForTest(ManagerConfig{IgnoreChromeDummy: true})
+		assert.False(t, mgr.dropsChromeDummyWrite(RequestInfo{Items: normalItems, Type: RequestTypeWrite}), "expected false for non-chrome schema")
 	})
 	t.Run("disabled + write + matching schema", func(t *testing.T) {
-		mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: false})
-		if mgr.dropsChromeDummyWrite(RequestInfo{Items: chromeItems, Type: RequestTypeWrite}) {
-			t.Error("expected false when disabled")
-		}
+		mgr := NewManagerForTest(ManagerConfig{IgnoreChromeDummy: false})
+		assert.False(t, mgr.dropsChromeDummyWrite(RequestInfo{Items: chromeItems, Type: RequestTypeWrite}), "expected false when disabled")
 	})
 }
 
 func TestRequireApproval_ChromeDummyWriteIgnored(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10, IgnoreChromeDummy: true})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	mgr, obs := newObservedManager(ManagerConfig{IgnoreChromeDummy: true})
 
 	items := []ItemInfo{{
 		Path:       "/org/freedesktop/secrets/collection/default/123",
@@ -1322,63 +686,25 @@ func TestRequireApproval_ChromeDummyWriteIgnored(t *testing.T) {
 	require.ErrorIs(t, err, ErrIgnored)
 	assert.False(t, prompted)
 
-	// Check event fired
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Type != evIgnored {
-		t.Errorf("expected evIgnored, got %v", events[0].Type)
-	}
+	assert.Equal(t, []eventKind{evIgnored}, obs.Kinds())
 
-	// Check history entry
 	history := mgr.History()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Resolution != ResolutionIgnored {
-		t.Errorf("expected resolution 'ignored', got '%s'", history[0].Resolution)
-	}
-	if history[0].Request.SenderInfo.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.SenderInfo.Client)
-	}
+	require.Len(t, history, 1)
+	assert.Equal(t, ResolutionIgnored, history[0].Resolution)
+	assert.Equal(t, ClientName("test-client"), history[0].Request.SenderInfo.Client)
 
-	// No pending requests
-	if mgr.PendingCount() != 0 {
-		t.Error("ignored request should not be pending")
-	}
-
-	mgr.Unsubscribe(obs)
+	assert.Zero(t, mgr.PendingCount(), "ignored request should not be pending")
 }
 
-// Objects of each kind that git signs.
-const (
-	testCommitObject = "tree 0\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nfix\n"
-	testTagObject    = "object def\ntype commit\ntag v1\ntagger A <a@x> 1 +0000\n\nv1\n"
-	testPushObject   = "certificate version 0.1\npusher A <a@x> 1 +0000\npushee https://x/r.git\n\n0 1 refs/heads/main\n"
+// Non-commit objects that git signs.
+var (
+	testTagObject  = SignedObject("object def\ntype commit\ntag v1\ntagger A <a@x> 1 +0000\n\nv1\n")
+	testPushObject = SignedObject("certificate version 0.1\npusher A <a@x> 1 +0000\npushee https://x/r.git\n\n0 1 refs/heads/main\n")
 )
-
-// Returns a gpg_sign request from the given sender to sign a commit in the given
-// repo, with the given files staged.
-func signRequest(sender SenderInfo, repo RepoName, files []string) RequestInfo {
-	return signRequestOf(sender, repo, testCommitObject, files)
-}
-
-// Returns a gpg_sign request from the given sender to sign the given object in
-// the given repo, with the given files staged.
-func signRequestOf(sender SenderInfo, repo RepoName, object string, files []string) RequestInfo {
-	info, err := NewGPGSignInfo(SignedObject(object), repo, "KEY", ListedFiles(files))
-	if err != nil {
-		panic(err)
-	}
-	return info.RequestInfo(sender)
-}
 
 func TestCheckTrustedSigner(t *testing.T) {
 	const nvimExe = "/usr/bin/nvim"
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustedSigners: []TrustedSigner{
 			{ExePath: nvimExe, RepoName: "my-repo"},
 		},
@@ -1397,60 +723,53 @@ func TestCheckTrustedSigner(t *testing.T) {
 	}
 
 	t.Run("trusted ancestor via helper", func(t *testing.T) {
-		assert.True(t, mgr.CheckTrustedSigner(signRequest(viaHelper, "my-repo", nil)))
+		assert.True(t, mgr.CheckTrustedSigner(CommitSignRequestForTest(viaHelper, "my-repo")))
 	})
 
 	t.Run("wrong repo", func(t *testing.T) {
-		assert.False(t, mgr.CheckTrustedSigner(signRequest(viaHelper, "other-repo", nil)))
+		assert.False(t, mgr.CheckTrustedSigner(CommitSignRequestForTest(viaHelper, "other-repo")))
 	})
 
 	t.Run("empty chain", func(t *testing.T) {
-		assert.False(t, mgr.CheckTrustedSigner(signRequest(SenderInfo{PeerTrusted: true}, "my-repo", nil)))
+		assert.False(t, mgr.CheckTrustedSigner(CommitSignRequestForTest(SenderInfo{PeerTrusted: true}, "my-repo")))
 	})
 
 	t.Run("empty repo matches any", func(t *testing.T) {
-		m := NewManager(ManagerConfig{
-			Timeout:        5 * time.Second,
-			HistoryMax:     100,
+		m := NewManagerForTest(ManagerConfig{
 			TrustedSigners: []TrustedSigner{{ExePath: nvimExe}},
 		})
-		assert.True(t, m.CheckTrustedSigner(signRequest(viaHelper, "any-repo", nil)))
+		assert.True(t, m.CheckTrustedSigner(CommitSignRequestForTest(viaHelper, "any-repo")))
 	})
 
 	t.Run("file prefix match and reject", func(t *testing.T) {
-		m := NewManager(ManagerConfig{
-			Timeout:        5 * time.Second,
-			HistoryMax:     100,
+		m := NewManagerForTest(ManagerConfig{
 			TrustedSigners: []TrustedSigner{{ExePath: nvimExe, FilePrefix: "secret-service/"}},
 		})
-		assert.True(t, m.CheckTrustedSigner(signRequest(viaHelper, "any", []string{"secret-service/default/i1.age", "secret-service/login/i2.age"})))
-		assert.False(t, m.CheckTrustedSigner(signRequest(viaHelper, "any", []string{"secret-service/default/i1.age", "other/sneaky.gpg"})))
+		assert.True(t, m.CheckTrustedSigner(CommitSignRequestForTest(viaHelper, "any", "secret-service/default/i1.age", "secret-service/login/i2.age")))
+		assert.False(t, m.CheckTrustedSigner(CommitSignRequestForTest(viaHelper, "any", "secret-service/default/i1.age", "other/sneaky.gpg")))
 	})
 
 	t.Run("file prefix matches only commits", func(t *testing.T) {
-		m := NewManager(ManagerConfig{
-			Timeout:        5 * time.Second,
-			HistoryMax:     100,
+		m := NewManagerForTest(ManagerConfig{
 			TrustedSigners: []TrustedSigner{{ExePath: nvimExe, FilePrefix: "secret-service/"}},
 		})
-		assert.False(t, m.CheckTrustedSigner(signRequestOf(viaHelper, "any", testTagObject, []string{"secret-service/x"})))
-		assert.False(t, m.CheckTrustedSigner(signRequestOf(viaHelper, "any", testPushObject, []string{"secret-service/x"})))
+		assert.False(t, m.CheckTrustedSigner(SignInfoForTest("any", testTagObject, "secret-service/x").RequestInfo(viaHelper)))
+		assert.False(t, m.CheckTrustedSigner(SignInfoForTest("any", testPushObject, "secret-service/x").RequestInfo(viaHelper)))
 	})
 
 	t.Run("no file prefix matches a tag", func(t *testing.T) {
-		assert.True(t, mgr.CheckTrustedSigner(signRequestOf(viaHelper, "my-repo", testTagObject, nil)))
+		assert.True(t, mgr.CheckTrustedSigner(SignInfoForTest("my-repo", testTagObject).RequestInfo(viaHelper)))
 	})
 }
 
 // A process that sets its comm to a unit name must not match a `unit` rule,
 // which compares the caller's real systemd unit (ADR 0005).
 func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
-	mgr.trustRules = []TrustRule{{
+	mgr := NewManagerForTest(ManagerConfig{TrustRules: []TrustRule{{
 		Name:    "approve-firefox-unit",
-		Action:  "approve",
+		Action:  RuleApprove,
 		Process: &ProcessMatcher{Unit: MustGlob("firefox.service")},
-	}}
+	}}})
 	items := []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}}
 
 	// Genuine caller: comm is "firefox", real systemd unit is "firefox.service".
@@ -1468,9 +787,7 @@ func TestProcessUnitMatchesSystemdUnitNotComm(t *testing.T) {
 // its ancestors, must still get a prompt (ADR 0008).
 func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 	const nvimExe = "/usr/bin/nvim"
-	mgr := NewManager(ManagerConfig{
-		Timeout:        5 * time.Second,
-		HistoryMax:     100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustedSigners: []TrustedSigner{{ExePath: nvimExe}},
 	})
 
@@ -1484,14 +801,14 @@ func TestCheckTrustedSigner_RejectsUntrustedPeer(t *testing.T) {
 			{Name: "nvim", Exe: new(procutil.Path(nvimExe))},
 		},
 	}
-	assert.False(t, mgr.CheckTrustedSigner(signRequest(forged, "any", nil)),
+	assert.False(t, mgr.CheckTrustedSigner(CommitSignRequestForTest(forged, "any")),
 		"a direct protocol speaker must not silently sign even with a trusted ancestor")
 
 	// Setting only PeerTrusted lets the trusted ancestor match again. So the
 	// gate, not the ancestry, blocked the forged request.
 	trusted := forged
 	trusted.PeerTrusted = true
-	assert.True(t, mgr.CheckTrustedSigner(signRequest(trusted, "any", nil)))
+	assert.True(t, mgr.CheckTrustedSigner(CommitSignRequestForTest(trusted, "any")))
 }
 
 func TestCheckTrustRules(t *testing.T) {
@@ -1534,9 +851,7 @@ func TestCheckTrustRules(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustRules: rules,
 	})
 
@@ -1549,9 +864,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeSearch,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 		})
-		if !ok || rule.Name != "approve-gh-search" {
-			t.Errorf("expected approve-gh-search, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-gh-search", rule.Name)
 	})
 
 	t.Run("no match wrong request type", func(t *testing.T) {
@@ -1561,9 +875,7 @@ func TestCheckTrustRules(t *testing.T) {
 		})
 		// No rule matches. Rule 0 covers only search, and with no items neither
 		// the label rule nor the attribute rule can match.
-		if ok {
-			t.Errorf("expected no match, got %v", rule.Name)
-		}
+		assert.False(t, ok, "expected no match, got %v", rule.Name)
 	})
 
 	t.Run("match exe + collection for ignore", func(t *testing.T) {
@@ -1576,9 +888,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeWrite,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: chromeChain},
 		})
-		if !ok || rule.Name != "ignore-chrome-write" {
-			t.Errorf("expected ignore-chrome-write, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "ignore-chrome-write", rule.Name)
 	})
 
 	t.Run("no match wrong collection", func(t *testing.T) {
@@ -1593,9 +904,7 @@ func TestCheckTrustRules(t *testing.T) {
 		})
 		// Rule 1 requires the default collection, so a write to the login
 		// collection matches no rule.
-		if ok {
-			t.Errorf("expected no match, got %v", rule.Name)
-		}
+		assert.False(t, ok, "expected no match, got %v", rule.Name)
 	})
 
 	t.Run("match unit glob", func(t *testing.T) {
@@ -1604,9 +913,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeGetSecret,
 			SenderInfo: gopassSender,
 		})
-		if !ok || rule.Name != "approve-all-from-unit" {
-			t.Errorf("expected approve-all-from-unit, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-all-from-unit", rule.Name)
 	})
 
 	t.Run("match label glob", func(t *testing.T) {
@@ -1619,9 +927,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "random-app", PID: 999}}},
 		})
-		if !ok || rule.Name != "approve-by-label" {
-			t.Errorf("expected approve-by-label, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-by-label", rule.Name)
 	})
 
 	t.Run("match search attributes", func(t *testing.T) {
@@ -1630,9 +937,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Payload:    SearchPayload{Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"}},
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "app", PID: 1}}},
 		})
-		if !ok || rule.Name != "approve-search-attrs" {
-			t.Errorf("expected approve-search-attrs, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-search-attrs", rule.Name)
 	})
 
 	t.Run("match item attributes", func(t *testing.T) {
@@ -1646,15 +952,12 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "nm-applet", PID: 500}}},
 		})
-		if !ok || rule.Name != "approve-by-attributes" {
-			t.Errorf("expected approve-by-attributes, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-by-attributes", rule.Name)
 	})
 
 	t.Run("match item attributes with glob", func(t *testing.T) {
-		m := NewManager(ManagerConfig{
-			Timeout:    time.Second,
-			HistoryMax: 10,
+		m := NewManagerForTest(ManagerConfig{
 			TrustRules: []TrustRule{{
 				Name:   "approve-glob-attrs",
 				Action: "approve",
@@ -1673,9 +976,8 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "kubectl", PID: 1}}},
 		})
-		if !ok || rule.Name != "approve-glob-attrs" {
-			t.Errorf("expected approve-glob-attrs, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-glob-attrs", rule.Name)
 		// Non-matching value
 		items[0].Attributes["username"] = "other/path"
 		rule, ok = m.CheckTrustRules(RequestInfo{
@@ -1683,9 +985,7 @@ func TestCheckTrustRules(t *testing.T) {
 			Type:       RequestTypeGetSecret,
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "kubectl", PID: 1}}},
 		})
-		if ok {
-			t.Errorf("expected no match for non-matching glob, got %v", rule)
-		}
+		assert.False(t, ok, "expected no match for non-matching glob, got %v", rule)
 	})
 
 	t.Run("first match wins", func(t *testing.T) {
@@ -1695,17 +995,14 @@ func TestCheckTrustRules(t *testing.T) {
 			Payload:    SearchPayload{Attributes: map[string]string{"xdg:schema": "org.gnome.keyring.Note"}},
 			SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: ghChain},
 		})
-		if !ok || rule.Name != "approve-gh-search" {
-			t.Errorf("expected first match approve-gh-search, got %v", rule)
-		}
+		require.True(t, ok, "no rule matched")
+		assert.Equal(t, "approve-gh-search", rule.Name)
 	})
 
 	t.Run("empty rules", func(t *testing.T) {
-		m := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 10})
+		m := NewManagerForTest(ManagerConfig{})
 		rule, ok := m.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret})
-		if ok {
-			t.Errorf("expected no match from empty rules, got %v", rule)
-		}
+		assert.False(t, ok, "expected no match from empty rules, got %v", rule)
 	})
 }
 
@@ -1769,9 +1066,7 @@ func TestSecretMatcherMissingAttributeReadsAsEmpty(t *testing.T) {
 }
 
 func TestTrustRules_RequireApproval_Approve(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr, obs := newObservedManager(ManagerConfig{
 		TrustRules: []TrustRule{
 			{
 				Name:         "approve-gh",
@@ -1781,39 +1076,21 @@ func TestTrustRules_RequireApproval_Approve(t *testing.T) {
 			},
 		},
 	})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
 
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Session:    "/s/1",
 		Type:       RequestTypeSearch,
 		SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "gh", PID: 1}}},
 	})
-	if err != nil {
-		t.Fatalf("expected nil (auto-approved), got %v", err)
-	}
-	if mgr.PendingCount() != 0 {
-		t.Error("trust rule approve should not create pending request")
-	}
+	require.NoError(t, err, "expected auto-approved")
+	assert.Zero(t, mgr.PendingCount(), "trust rule approve should not create pending request")
 
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) < 1 || events[0].Type != evAutoApproved {
-		t.Errorf("expected evAutoApproved, got %v", events)
-	}
-
-	// Check history
-	history := mgr.History()
-	if len(history) != 1 || history[0].Resolution != ResolutionAutoApproved {
-		t.Errorf("expected auto_approved in history, got %v", history)
-	}
-
-	mgr.Unsubscribe(obs)
+	assert.Equal(t, []eventKind{evAutoApproved}, obs.Kinds())
+	assert.Equal(t, []Resolution{ResolutionAutoApproved}, historyResolutions(mgr))
 }
 
 func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr, obs := newObservedManager(ManagerConfig{
 		TrustRules: []TrustRule{
 			{
 				Name:         "ignore-chrome",
@@ -1823,8 +1100,6 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 			},
 		},
 	})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
 
 	items := []ItemInfo{{
 		Path:       "/org/freedesktop/secrets/collection/default/1",
@@ -1837,27 +1112,14 @@ func TestTrustRules_RequireApproval_Ignore(t *testing.T) {
 		SenderInfo: SenderInfo{Client: ClientLocal},
 	})
 	require.ErrorIs(t, err, ErrIgnored)
-	if mgr.PendingCount() != 0 {
-		t.Error("trust rule ignore should not create pending request")
-	}
+	assert.Zero(t, mgr.PendingCount(), "trust rule ignore should not create pending request")
 
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) < 1 || events[0].Type != evIgnored {
-		t.Errorf("expected evIgnored, got %v", events)
-	}
-
-	history := mgr.History()
-	if len(history) != 1 || history[0].Resolution != ResolutionIgnored {
-		t.Errorf("expected ignored in history, got %v", history)
-	}
-
-	mgr.Unsubscribe(obs)
+	assert.Equal(t, []eventKind{evIgnored}, obs.Kinds())
+	assert.Equal(t, []Resolution{ResolutionIgnored}, historyResolutions(mgr))
 }
 
 func TestTrustRules_RequireApproval_Deny(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr, obs := newObservedManager(ManagerConfig{
 		TrustRules: []TrustRule{
 			{
 				Name:    "deny-epiphany",
@@ -1866,8 +1128,6 @@ func TestTrustRules_RequireApproval_Deny(t *testing.T) {
 			},
 		},
 	})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
 
 	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/1"}},
@@ -1876,52 +1136,38 @@ func TestTrustRules_RequireApproval_Deny(t *testing.T) {
 		SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "epiphany-search", PID: 1}}},
 	})
 	require.ErrorIs(t, err, ErrDeniedByRule)
-	if mgr.PendingCount() != 0 {
-		t.Error("trust rule deny should not create pending request")
-	}
+	assert.Zero(t, mgr.PendingCount(), "trust rule deny should not create pending request")
 
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) < 1 || events[0].Type != evDenied {
-		t.Errorf("expected evDenied, got %v", events)
-	}
-
-	history := mgr.History()
-	if len(history) != 1 || history[0].Resolution != ResolutionDenied {
-		t.Errorf("expected denied in history, got %v", history)
-	}
-
-	mgr.Unsubscribe(obs)
+	assert.Equal(t, []eventKind{evDenied}, obs.Kinds())
+	assert.Equal(t, []Resolution{ResolutionDenied}, historyResolutions(mgr))
 }
 
 func TestTrustRules_RequireApproval_NoMatch(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    100 * time.Millisecond,
-		HistoryMax: 100,
-		TrustRules: []TrustRule{
-			{
-				Name:         "approve-gh",
-				RequestTypes: []RequestType{"search"},
-				Process:      &ProcessMatcher{Name: MustGlob("gh")},
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{
+			Timeout: 100 * time.Millisecond,
+			TrustRules: []TrustRule{
+				{
+					Name:         "approve-gh",
+					RequestTypes: []RequestType{"search"},
+					Process:      &ProcessMatcher{Name: MustGlob("gh")},
+				},
 			},
-		},
-	})
+		})
 
-	// A request that no rule matches goes pending and times out.
-	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
-		Items:      []ItemInfo{{Path: "/test/item"}},
-		Session:    "/s/1",
-		Type:       RequestTypeGetSecret,
-		SenderInfo: SenderInfo{ProcessChain: []procutil.Process{{Name: "curl", PID: 1}}},
+		// A request that no rule matches goes pending and times out.
+		_, err := mgr.RequireApproval(context.Background(), RequestInfo{
+			Items:      []ItemInfo{{Path: "/test/item"}},
+			Session:    "/s/1",
+			Type:       RequestTypeGetSecret,
+			SenderInfo: SenderInfo{ProcessChain: []procutil.Process{{Name: "curl", PID: 1}}},
+		})
+		assert.Equal(t, ErrTimeout, err, "no trust rule should match")
 	})
-	if err != ErrTimeout {
-		t.Fatalf("expected ErrTimeout (no trust rule match), got %v", err)
-	}
 }
 
 func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustRules: []TrustRule{
 			{
 				Name:    "default-action-rule",
@@ -1936,97 +1182,77 @@ func TestTrustRules_DefaultActionIsApprove(t *testing.T) {
 		Type:       RequestTypeGetSecret,
 		SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "test", PID: 1}}},
 	})
-	if err != nil {
-		t.Fatalf("expected nil (default action approve), got %v", err)
-	}
+	assert.NoError(t, err, "expected default action approve")
 }
 
 func TestTrustRules_CWDMatch(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
-		TrustRules: []TrustRule{
-			{
-				Name:         "vscode-cwd",
-				RequestTypes: []RequestType{"get_secret"},
-				Process: &ProcessMatcher{
-					CWD: MustGlob("/usr/lib/visual-studio-code-electron"),
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{
+			Timeout: 100 * time.Millisecond,
+			TrustRules: []TrustRule{
+				{
+					Name:         "vscode-cwd",
+					RequestTypes: []RequestType{"get_secret"},
+					Process: &ProcessMatcher{
+						CWD: MustGlob("/usr/lib/visual-studio-code-electron"),
+					},
 				},
 			},
-		},
-	})
+		})
 
-	// A matching working directory in the process chain approves the request.
-	_, err := mgr.RequireApproval(context.Background(), RequestInfo{
-		Items:   []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}},
-		Session: "/s/1",
-		Type:    RequestTypeGetSecret,
-		SenderInfo: SenderInfo{
-			Client: ClientLocal,
-			ProcessChain: []procutil.Process{
-				{Name: "electron", PID: 100, Exe: new(procutil.Path("/usr/lib/electron39/electron")), CWD: new(procutil.Path("/usr/lib/visual-studio-code-electron"))},
-				{Name: "systemd", PID: 1},
+		// A matching working directory in the process chain approves the request.
+		_, err := mgr.RequireApproval(context.Background(), RequestInfo{
+			Items:   []ItemInfo{itemInCollection("default", "x")},
+			Session: "/s/1",
+			Type:    RequestTypeGetSecret,
+			SenderInfo: SenderInfo{
+				Client: ClientLocal,
+				ProcessChain: []procutil.Process{
+					{Name: "electron", PID: 100, Exe: new(procutil.Path("/usr/lib/electron39/electron")), CWD: new(procutil.Path("/usr/lib/visual-studio-code-electron"))},
+					{Name: "systemd", PID: 1},
+				},
 			},
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected nil (CWD match), got %v", err)
-	}
+		})
+		require.NoError(t, err, "expected CWD match")
 
-	// A working directory that does not match leaves the request to time out.
-	mgr2 := NewManager(ManagerConfig{
-		Timeout:    100 * time.Millisecond,
-		HistoryMax: 100,
-		TrustRules: mgr.trustRules,
-	})
-	_, err = mgr2.RequireApproval(context.Background(), RequestInfo{
-		Items:   []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/x"}},
-		Session: "/s/1",
-		Type:    RequestTypeGetSecret,
-		SenderInfo: SenderInfo{
-			Client: ClientLocal,
-			ProcessChain: []procutil.Process{
-				{Name: "electron", PID: 100, Exe: new(procutil.Path("/usr/lib/electron39/electron")), CWD: new(procutil.Path("/opt/something-else"))},
+		// A working directory that does not match leaves the request to time out.
+		_, err = mgr.RequireApproval(context.Background(), RequestInfo{
+			Items:   []ItemInfo{itemInCollection("default", "x")},
+			Session: "/s/1",
+			Type:    RequestTypeGetSecret,
+			SenderInfo: SenderInfo{
+				Client: ClientLocal,
+				ProcessChain: []procutil.Process{
+					{Name: "electron", PID: 100, Exe: new(procutil.Path("/usr/lib/electron39/electron")), CWD: new(procutil.Path("/opt/something-else"))},
+				},
 			},
-		},
+		})
+		assert.Equal(t, ErrTimeout, err, "expected CWD mismatch")
 	})
-	if err != ErrTimeout {
-		t.Fatalf("expected ErrTimeout (CWD mismatch), got %v", err)
-	}
 }
 
 func TestRequireApproval_AutoApproved_Disabled(t *testing.T) {
 	mgr := NewDisabledManager()
 	prompted, err := mgr.RequireApproval(context.Background(), RequestInfo{Type: RequestTypeGetSecret})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prompted {
-		t.Error("disabled manager should return prompted=false")
-	}
+	require.NoError(t, err)
+	assert.False(t, prompted, "disabled manager should return prompted=false")
 }
 
 func TestRequireApproval_AutoApproved_Cache(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100, ApprovalWindow: time.Second})
-	sender := SenderInfo{Sender: new(sender.UniqueName(":1.1"))}
+	mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
+	caller := busSender(":1.1")
 	items := []ItemInfo{{Path: "/test/item"}}
 
 	// Manually cache
-	mgr.CacheItemForSender(sender, items[0].Path)
+	mgr.CacheItemForSender(caller, items[0].Path)
 
-	prompted, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Type: RequestTypeGetSecret, SenderInfo: sender})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prompted {
-		t.Error("cache hit should return prompted=false")
-	}
+	prompted, err := mgr.RequireApproval(context.Background(), RequestInfo{Items: items, Type: RequestTypeGetSecret, SenderInfo: caller})
+	require.NoError(t, err)
+	assert.False(t, prompted, "cache hit should return prompted=false")
 }
 
 func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustRules: []TrustRule{{
 			Name:         "test",
 			RequestTypes: []RequestType{"get_secret"},
@@ -2039,139 +1265,82 @@ func TestRequireApproval_AutoApproved_TrustRule(t *testing.T) {
 		Type:       RequestTypeGetSecret,
 		SenderInfo: SenderInfo{Client: ClientLocal, ProcessChain: []procutil.Process{{Name: "gh", PID: 1}}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prompted {
-		t.Error("trust rule match should return prompted=false")
-	}
+	require.NoError(t, err)
+	assert.False(t, prompted, "trust rule match should return prompted=false")
 }
 
 func TestRequireApproval_AutoApproved_AutoApproveRule(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	mgr := NewManagerForTest(ManagerConfig{})
 	mustAddRule(t, mgr, &Request{
 		ID:         "r1",
 		Type:       RequestTypeGetSecret,
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	})
 
 	prompted, err := mgr.RequireApproval(context.Background(), RequestInfo{
 		Items:      []ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i2"}},
 		Type:       RequestTypeGetSecret,
-		SenderInfo: testSender("gh", "/usr/bin/gh"),
+		SenderInfo: ghSender,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prompted {
-		t.Error("auto-approve rule match should return prompted=false")
-	}
+	require.NoError(t, err)
+	assert.False(t, prompted, "auto-approve rule match should return prompted=false")
 }
 
 func TestRequireApproval_NotAutoApproved_ManualApproval(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var prompted bool
-	var approvalErr error
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		prompted, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Approve(waitPendingID(t, mgr)))
+
+		prompted, err := call.wait()
+		require.NoError(t, err)
+		assert.True(t, prompted, "manual approval should return prompted=true")
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-	mgr.Approve(reqID)
-	wg.Wait()
-
-	if approvalErr != nil {
-		t.Fatal(approvalErr)
-	}
-	if !prompted {
-		t.Error("manual approval should return prompted=true")
-	}
 }
 
 func TestPassthrough(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 100})
-	obs := &testObserver{}
-	mgr.Subscribe(obs)
+	mgr, obs := newObservedManager(ManagerConfig{})
 
 	items := []ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}
 	searchAttrs := map[string]string{"xdg:schema": "org.gnome.keyring.Note"}
-	sender := SenderInfo{Client: "test-client", Sender: new(sender.UniqueName(":1.42")), InvokerName: "app.service", PID: 123}
+	caller := busSender(":1.42")
+	caller.Client = "test-client"
+	caller.InvokerName = "app.service"
+	caller.PID = 123
 
-	require.NoError(t, mgr.Passthrough(RequestInfo{Items: items, Type: RequestTypeSearch, Payload: SearchPayload{Attributes: searchAttrs}, SenderInfo: sender}))
+	require.NoError(t, mgr.Passthrough(RequestInfo{Items: items, Type: RequestTypeSearch, Payload: SearchPayload{Attributes: searchAttrs}, SenderInfo: caller}))
 
-	// Check event fired
-	events := obs.WaitForEvents(t.Context(), 1, time.Second)
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Type != evAutoApproved {
-		t.Errorf("expected evAutoApproved, got %v", events[0].Type)
-	}
-	if events[0].Request.Type != RequestTypeSearch {
-		t.Errorf("expected request type search, got %s", events[0].Request.Type)
-	}
+	events := obs.Events()
+	require.Len(t, events, 1)
+	assert.Equal(t, evAutoApproved, events[0].Type)
+	assert.Equal(t, RequestTypeSearch, events[0].Request.Type)
 
-	// Check history entry
 	history := mgr.History()
-	if len(history) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history))
-	}
-	if history[0].Resolution != ResolutionAutoApproved {
-		t.Errorf("expected resolution 'auto_approved', got '%s'", history[0].Resolution)
-	}
-	if history[0].Request.SenderInfo.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", history[0].Request.SenderInfo.Client)
-	}
-	assert.Equal(t, sender.Sender, history[0].Request.SenderInfo.Sender)
-	if search, _ := history[0].Request.Search(); search.Attributes["xdg:schema"] != "org.gnome.keyring.Note" {
-		t.Errorf("expected search attributes preserved, got %v", search.Attributes)
-	}
+	require.Len(t, history, 1)
+	assert.Equal(t, ResolutionAutoApproved, history[0].Resolution)
+	assert.Equal(t, ClientName("test-client"), history[0].Request.SenderInfo.Client)
+	assert.Equal(t, caller.Sender, history[0].Request.SenderInfo.Sender)
+	search, _ := history[0].Request.Search()
+	assert.Equal(t, "org.gnome.keyring.Note", search.Attributes["xdg:schema"], "search attributes preserved")
 
-	// No pending requests
-	if mgr.PendingCount() != 0 {
-		t.Error("passthrough request should not be pending")
-	}
-
-	mgr.Unsubscribe(obs)
+	assert.Zero(t, mgr.PendingCount(), "passthrough request should not be pending")
 
 	// Test with unlock type
-	mgr2 := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 100})
-	obs2 := &testObserver{}
-	mgr2.Subscribe(obs2)
+	mgr2 := NewManagerForTest(ManagerConfig{})
 
 	unlockItems := []ItemInfo{{Path: "/org/freedesktop/secrets/collection/login", Label: "Login"}}
-	require.NoError(t, mgr2.Passthrough(RequestInfo{Items: unlockItems, Type: RequestTypeUnlock, SenderInfo: sender}))
+	require.NoError(t, mgr2.Passthrough(RequestInfo{Items: unlockItems, Type: RequestTypeUnlock, SenderInfo: caller}))
 
 	history2 := mgr2.History()
-	if len(history2) != 1 {
-		t.Fatalf("expected 1 history entry, got %d", len(history2))
-	}
-	if history2[0].Request.Type != RequestTypeUnlock {
-		t.Errorf("expected request type unlock, got %s", history2[0].Request.Type)
-	}
-	if history2[0].Request.Items[0].Path != "/org/freedesktop/secrets/collection/login" {
-		t.Errorf("expected item path preserved, got %s", history2[0].Request.Items[0].Path)
-	}
-
-	mgr2.Unsubscribe(obs2)
+	require.Len(t, history2, 1)
+	assert.Equal(t, RequestTypeUnlock, history2[0].Request.Type)
+	assert.Equal(t, "/org/freedesktop/secrets/collection/login", string(history2[0].Request.Items[0].Path), "item path preserved")
 }
 
 func TestPassthrough_DenyRule(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: time.Second, HistoryMax: 100, TrustRules: []TrustRule{
+	mgr := NewManagerForTest(ManagerConfig{TrustRules: []TrustRule{
 		{Name: "no-unlock", Action: RuleDeny, RequestTypes: []RequestType{RequestTypeUnlock}},
 		{Name: "approve-search", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeSearch}},
 	}})
@@ -2186,36 +1355,16 @@ func TestPassthrough_DenyRule(t *testing.T) {
 }
 
 func TestRequireApproval_NotAutoApproved_Denied(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 5 * time.Second, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{})
 
-	var prompted bool
-	var approvalErr error
-	var wg sync.WaitGroup
-	wg.Go(func() {
-		prompted, approvalErr = mgr.RequireApproval(context.Background(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Type: RequestTypeGetSecret})
+		call := startApproval(context.Background(), mgr, getSecretRequest())
+		require.NoError(t, mgr.Deny(waitPendingID(t, mgr)))
+
+		prompted, err := call.wait()
+		require.Equal(t, ErrDenied, err)
+		assert.False(t, prompted, "denied request should return prompted=false")
 	})
-
-	var reqID RequestID
-	for range 100 {
-		reqs := mgr.Pending()
-		if len(reqs) > 0 {
-			reqID = reqs[0].ID
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if reqID == "" {
-		t.Fatal("request did not appear")
-	}
-	mgr.Deny(reqID)
-	wg.Wait()
-
-	if approvalErr != ErrDenied {
-		t.Fatalf("expected ErrDenied, got %v", approvalErr)
-	}
-	if prompted {
-		t.Error("denied request should return prompted=false")
-	}
 }
 
 func TestResolution_Approves(t *testing.T) {
@@ -2236,9 +1385,7 @@ func TestResolution_Approves(t *testing.T) {
 }
 
 func TestCheckTrustRules_Client(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustRules: []TrustRule{
 			{Name: "symbiosis", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeGetSecret}, Client: MustGlob("symbiosis")},
 			{Name: "dev-search", Action: RuleApprove, RequestTypes: []RequestType{RequestTypeSearch}, Client: MustGlob("dev-*")},
@@ -2278,16 +1425,16 @@ func TestCheckTrustRules_Client(t *testing.T) {
 // A forwarded bus's sender has no local process, so no process block matches
 // it, not even one that would match anything.
 func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
-	mgr := NewManager(ManagerConfig{
-		Timeout:    5 * time.Second,
-		HistoryMax: 100,
+	mgr := NewManagerForTest(ManagerConfig{
 		TrustRules: []TrustRule{
 			{Name: "any-unit", Action: RuleApprove, Client: MustGlob("*"), RequestTypes: []RequestType{RequestTypeGetSecret}, Process: &ProcessMatcher{Unit: MustGlob("*")}},
 			{Name: "empty-process", Action: RuleApprove, Client: MustGlob("*"), RequestTypes: []RequestType{RequestTypeSearch}, Process: &ProcessMatcher{}},
 		},
 	})
 
-	forwarded := SenderInfo{Client: "symbiosis", Sender: new(sender.UniqueName(":1.7")), PID: 42}
+	forwarded := busSender(":1.7")
+	forwarded.Client = "symbiosis"
+	forwarded.PID = 42
 	_, ok := mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: forwarded})
 	assert.False(t, ok, `unit "*"`)
 	_, ok = mgr.CheckTrustRules(RequestInfo{Type: RequestTypeSearch, SenderInfo: forwarded})
@@ -2301,28 +1448,30 @@ func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
 // An expired request ends exactly once. It leaves no pending request and one
 // expired entry in History.
 func TestManager_RequireApproval_ExpiryEndsRequestOnce(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 20 * time.Millisecond, HistoryMax: 100})
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{Timeout: 20 * time.Millisecond})
 
-	_, err := mgr.RequireApproval(t.Context(), RequestInfo{Items: []ItemInfo{{Path: "/test/item"}}, Type: RequestTypeGetSecret})
+		_, err := mgr.RequireApproval(t.Context(), getSecretRequest())
 
-	require.ErrorIs(t, err, ErrTimeout)
-	assert.Zero(t, mgr.PendingCount())
-	history := mgr.History()
-	require.Len(t, history, 1)
-	assert.Equal(t, ResolutionExpired, history[0].Resolution)
+		require.ErrorIs(t, err, ErrTimeout)
+		assert.Zero(t, mgr.PendingCount())
+		// The expiry records the entry after it wakes RequireApproval.
+		synctest.Wait()
+		assert.Equal(t, []Resolution{ResolutionExpired}, historyResolutions(mgr))
+	})
 }
 
 // A request resolved before its timeout is not expired later.
 func TestManager_ResolvedRequestDoesNotExpire(t *testing.T) {
-	mgr := NewManager(ManagerConfig{Timeout: 20 * time.Millisecond, HistoryMax: 100})
-	id := mgr.Create(sampleGPGSignRequest())
+	synctest.Test(t, func(t *testing.T) {
+		mgr := NewManagerForTest(ManagerConfig{Timeout: 20 * time.Millisecond})
+		id := mgr.Create(sampleGPGSignRequest())
 
-	require.NoError(t, mgr.Deny(id))
-	time.Sleep(60 * time.Millisecond)
+		require.NoError(t, mgr.Deny(id))
+		time.Sleep(60 * time.Millisecond)
 
-	history := mgr.History()
-	require.Len(t, history, 1)
-	assert.Equal(t, ResolutionDenied, history[0].Resolution)
+		assert.Equal(t, []Resolution{ResolutionDenied}, historyResolutions(mgr))
+	})
 }
 
 func TestResolution_UnmarshalText(t *testing.T) {

@@ -50,7 +50,7 @@ type wsFixture struct {
 // client, until the test ends.
 func newWSFixture(t *testing.T, mgr *approval.Manager) *wsFixture {
 	t.Helper()
-	return newWSFixtureWith(t, mgr, oneClient("test-client", "/test/socket"))
+	return newWSFixtureWith(t, mgr, oneClient(testClient, "/test/socket"))
 }
 
 // Serves a WSHandler over mgr and provider until the test ends.
@@ -107,7 +107,7 @@ func readMsg[P wsPayload](f *wsFixture, conn *websocket.Conn) P {
 }
 
 func TestWSHandler_Unauthorized(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	_, _, err := websocket.Dial(f.ctx, f.url, nil)
 	assert.Error(t, err, "expected connection to fail without auth")
@@ -126,7 +126,7 @@ func TestWSHandler_Origin(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newWSFixture(t, newTestManager())
+			f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 			origin := tt.origin(strings.TrimPrefix(f.url, "ws://"))
 			conn, resp, err := websocket.Dial(f.ctx, f.url, &websocket.DialOptions{
 				HTTPHeader: http.Header{
@@ -153,24 +153,18 @@ func TestWSHandler_Snapshot(t *testing.T) {
 			{Name: "client2", SocketPath: "/socket2"},
 		},
 	}
-	f := newWSFixtureWith(t, newTestManager(), provider)
+	f := newWSFixtureWith(t, approval.NewManagerForTest(approval.ManagerConfig{}), provider)
 
 	msg := readMsg[snapshotMsg](f, f.dial())
 
-	if len(msg.Clients) != 2 {
-		t.Errorf("expected 2 clients, got %d", len(msg.Clients))
-	}
-	if len(msg.Requests) != 0 {
-		t.Errorf("expected 0 requests, got %d", len(msg.Requests))
-	}
+	assert.Len(t, msg.Clients, 2)
+	assert.Empty(t, msg.Requests)
 	// Version should match BuildVersion (may be empty in dev mode)
-	if msg.Version != BuildVersion {
-		t.Errorf("expected version %q, got %q", BuildVersion, msg.Version)
-	}
+	assert.Equal(t, BuildVersion, msg.Version)
 }
 
 func TestWSHandler_RequestCreated(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -180,15 +174,13 @@ func TestWSHandler_RequestCreated(t *testing.T) {
 
 	msg := readMsg[requestCreatedMsg](f, conn)
 
-	if msg.Request.Client != "test-client" {
-		t.Errorf("expected client 'test-client', got '%s'", msg.Request.Client)
-	}
+	assert.Equal(t, testClient, msg.Request.Client)
 
 	<-done
 }
 
 func TestWSHandler_RequestResolved(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -199,18 +191,14 @@ func TestWSHandler_RequestResolved(t *testing.T) {
 
 	msg := readMsg[requestResolvedMsg](f, conn)
 
-	if msg.ID != created.Request.ID {
-		t.Errorf("expected ID '%s', got '%s'", created.Request.ID, msg.ID)
-	}
-	if msg.Result != approval.ResolutionApproved {
-		t.Errorf("expected result 'approved', got '%s'", msg.Result)
-	}
+	assert.Equal(t, created.Request.ID, msg.ID)
+	assert.Equal(t, approval.ResolutionApproved, msg.Result)
 
 	<-done
 }
 
 func TestWSHandler_HistoryEntryIsTheStoredEntry(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -232,7 +220,7 @@ func TestWSHandler_HistoryEntryIsTheStoredEntry(t *testing.T) {
 }
 
 func TestWSHandler_RequestExpired(t *testing.T) {
-	mgr := newTestManager(func(cfg *approval.ManagerConfig) { cfg.Timeout = 100 * time.Millisecond })
+	mgr := approval.NewManagerForTest(approval.ManagerConfig{Timeout: 100 * time.Millisecond})
 	f := newWSFixture(t, mgr)
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
@@ -246,7 +234,7 @@ func TestWSHandler_RequestExpired(t *testing.T) {
 }
 
 func TestWSHandler_RequestCancelled(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -261,7 +249,7 @@ func TestWSHandler_RequestCancelled(t *testing.T) {
 }
 
 func TestWSHandler_BroadcastClient(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -270,9 +258,7 @@ func TestWSHandler_BroadcastClient(t *testing.T) {
 
 	msg := readMsg[clientConnectedMsg](f, conn)
 
-	if msg.Client.Name != "new-client" {
-		t.Errorf("expected client name 'new-client', got '%s'", msg.Client.Name)
-	}
+	assert.Equal(t, approval.ClientName("new-client"), msg.Client.Name)
 }
 
 // Returns a request from invoker gh to read one secret in the default
@@ -281,7 +267,7 @@ func ghSecretRequest() *approval.Request {
 	return &approval.Request{
 		Type:       approval.RequestTypeGetSecret,
 		Items:      []approval.ItemInfo{{Path: "/org/freedesktop/secrets/collection/default/i1"}},
-		SenderInfo: localSender("gh", "/usr/bin/gh"),
+		SenderInfo: approval.LocalSenderForTest("gh", "/usr/bin/gh"),
 	}
 }
 
@@ -310,26 +296,20 @@ func TestConvertRequest_EncodesAutoApproveScope(t *testing.T) {
 }
 
 func TestWSHandler_SnapshotIncludesAutoApproveRules(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	// Add a rule before connecting
 	mustAddRule(t, f.mgr, ghSecretRequest())
 
 	msg := readMsg[snapshotMsg](f, f.dial())
 
-	if len(msg.AutoApproveRules) != 1 {
-		t.Fatalf("expected 1 auto-approve rule in snapshot, got %d", len(msg.AutoApproveRules))
-	}
-	if msg.AutoApproveRules[0].InvokerName != "gh" {
-		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRules[0].InvokerName)
-	}
-	if msg.AutoApproveRules[0].RequestType != approval.RequestTypeGetSecret {
-		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRules[0].RequestType)
-	}
+	require.Len(t, msg.AutoApproveRules, 1)
+	assert.Equal(t, "gh", msg.AutoApproveRules[0].InvokerName)
+	assert.Equal(t, approval.RequestTypeGetSecret, msg.AutoApproveRules[0].RequestType)
 }
 
 func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
@@ -339,39 +319,29 @@ func TestWSHandler_AutoApproveRuleAdded(t *testing.T) {
 
 	msg := readMsg[autoApproveRuleAddedMsg](f, conn)
 
-	if msg.AutoApproveRule.InvokerName != "gh" {
-		t.Errorf("expected invoker 'gh', got '%s'", msg.AutoApproveRule.InvokerName)
-	}
-	if msg.AutoApproveRule.RequestType != approval.RequestTypeGetSecret {
-		t.Errorf("expected request type 'get_secret', got '%s'", msg.AutoApproveRule.RequestType)
-	}
+	assert.Equal(t, "gh", msg.AutoApproveRule.InvokerName)
+	assert.Equal(t, approval.RequestTypeGetSecret, msg.AutoApproveRule.RequestType)
 	assert.Equal(t, approval.OnlyCollection("default"), msg.AutoApproveRule.Collection)
-	if msg.AutoApproveRule.ID == "" {
-		t.Error("expected non-empty rule ID")
-	}
+	assert.NotEmpty(t, msg.AutoApproveRule.ID, "rule ID")
 }
 
 func TestWSHandler_AutoApproveRuleRemoved(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 	conn := f.dial()
 	f.read(conn, wsmsg.Snapshot)
 
 	ruleID := mustAddRule(t, f.mgr, ghSecretRequest())
 	f.read(conn, wsmsg.AutoApproveRuleAdded)
 
-	if err := f.mgr.RemoveAutoApproveRule(ruleID); err != nil {
-		t.Fatalf("failed to remove rule: %v", err)
-	}
+	require.NoError(t, f.mgr.RemoveAutoApproveRule(ruleID), "remove rule")
 
 	msg := readMsg[autoApproveRuleRemovedMsg](f, conn)
 
-	if msg.ID != ruleID {
-		t.Errorf("expected rule ID '%s', got '%s'", ruleID, msg.ID)
-	}
+	assert.Equal(t, ruleID, msg.ID)
 }
 
 func TestWSHandler_MultipleConnections(t *testing.T) {
-	f := newWSFixture(t, newTestManager())
+	f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 
 	var conns []*websocket.Conn
 	for range 3 {
@@ -391,26 +361,29 @@ func TestWSHandler_MultipleConnections(t *testing.T) {
 // Checks that the gpgsign thin client reads how the server resolved a gpg_sign
 // request: approved, denied or cancelled.
 func TestWSHandler_GPGSignClientReadsResolution(t *testing.T) {
+	signed := &approval.GPGResult{Signature: []byte("SIG")}
 	tests := []struct {
 		resolve func(mgr *approval.Manager, id approval.RequestID) error
 		want    approval.Resolution
+		wantGPG *approval.GPGResult
 	}{
-		{(*approval.Manager).Approve, approval.ResolutionApproved},
-		{(*approval.Manager).Deny, approval.ResolutionDenied},
-		{(*approval.Manager).Cancel, approval.ResolutionCancelled},
+		{func(mgr *approval.Manager, id approval.RequestID) error { return mgr.ApproveGPGSign(id, *signed) }, approval.ResolutionApproved, signed},
+		{(*approval.Manager).Deny, approval.ResolutionDenied, nil},
+		{(*approval.Manager).Cancel, approval.ResolutionCancelled, nil},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.want), func(t *testing.T) {
-			f := newWSFixture(t, newTestManager())
+			f := newWSFixture(t, approval.NewManagerForTest(approval.ManagerConfig{}))
 			conn := f.dial()
 			f.read(conn, wsmsg.Snapshot)
 
-			id := f.mgr.Create(signableGPGSignInfo().RequestInfo(approval.SenderInfo{}))
+			id := f.mgr.Create(approval.CommitSignRequestForTest(approval.RemoteSenderForTest("git"), "repo"))
 			require.NoError(t, tt.resolve(f.mgr, id), "resolve request")
 
 			outcome, err := gpgsign.WaitForResolution(f.ctx, conn, id)
 			require.NoError(t, err, "wait for resolution")
 			assert.Equal(t, tt.want, outcome.Result)
+			assert.Equal(t, tt.wantGPG, outcome.GPGResult)
 		})
 	}
 }

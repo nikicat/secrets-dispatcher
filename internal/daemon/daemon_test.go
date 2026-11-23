@@ -5,17 +5,17 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 	. "github.com/nikicat/secrets-dispatcher/internal/daemon"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
-	"github.com/nikicat/secrets-dispatcher/internal/unixsock"
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // policyConfigTemplate is the dbus-daemon config for integration tests.
@@ -51,70 +51,32 @@ const policyConfigTemplate = `<?xml version="1.0"?>
   </policy>
 </busconfig>`
 
-// startDBusDaemonWithPolicy starts a private dbus-daemon with a policy config
-// that allows the current user to own and call net.mowaka.SecretsDispatcher1.
-// Uses filesystem sockets (NOT abstract) to avoid cross-test collisions.
+// Starts a private bus whose policy lets the current user own and call
+// net.mowaka.SecretsDispatcher1.
 func startDBusDaemonWithPolicy(t *testing.T) string {
 	t.Helper()
-
-	tmpDir := t.TempDir()
-	sock := unixsock.Dir(tmpDir).Socket("test")
-	confPath := filepath.Join(tmpDir, "policy.conf")
-
 	uid := fmt.Sprintf("%d", os.Getuid())
-	conf := fmt.Sprintf(policyConfigTemplate, sock.Address(), uid)
-
-	if err := os.WriteFile(confPath, []byte(conf), 0600); err != nil {
-		t.Fatalf("write policy config: %v", err)
-	}
-
-	cmd := exec.Command("dbus-daemon", "--config-file="+confPath, "--nofork")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start dbus-daemon: %v", err)
-	}
-	t.Cleanup(func() {
-		cmd.Process.Kill() //nolint:errcheck
-		cmd.Wait()         //nolint:errcheck
+	return testutil.StartDBusDaemonWithConfig(t, func(addr string) string {
+		return fmt.Sprintf(policyConfigTemplate, addr, uid)
 	})
-
-	// Wait for socket file to appear (50 * 100ms = 5s max).
-	for range 50 {
-		if sock.Exists() {
-			return sock.Address()
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	t.Fatal("dbus-daemon socket not created in time")
-	return ""
 }
 
-// waitForName polls until the bus name is registered or timeout.
+// Waits until the given name has an owner on the bus at the given address, and
+// fails the test after 5s.
 func waitForName(t *testing.T, addr, name string) {
 	t.Helper()
-	for range 50 {
+	require.Eventually(t, func() bool {
 		conn, err := dbus.Connect(addr)
 		if err != nil {
-			time.Sleep(100 * time.Millisecond)
-			continue
+			return false
 		}
-		obj := conn.BusObject()
+		defer conn.Close()
 		var owners []string
-		if err := obj.Call(dbustypes.BusDaemonInterface.Member("ListNames"), 0).Store(&owners); err != nil {
-			conn.Close()
-			time.Sleep(100 * time.Millisecond)
-			continue
+		if err := conn.BusObject().Call(dbustypes.BusDaemonInterface.Member("ListNames"), 0).Store(&owners); err != nil {
+			return false
 		}
-		conn.Close()
-		if slices.Contains(owners, name) {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("bus name %q not registered in time", name)
+		return slices.Contains(owners, name)
+	}, testutil.BusWait, 100*time.Millisecond, "bus name %q not registered in time", name)
 }
 
 // TestDaemon_RegistersAndServesStubs is the main integration test:
@@ -137,42 +99,25 @@ func TestDaemon_RegistersAndServesStubs(t *testing.T) {
 
 	// Connect a second "client" connection to the same private bus.
 	client, err := dbus.Connect(addr)
-	if err != nil {
-		t.Fatalf("connect client: %v", err)
-	}
+	require.NoError(t, err, "connect client")
 	defer client.Close()
 
 	obj := client.Object(BusName, ObjectPath)
 
 	// Verify Ping.
 	var pong string
-	if err := obj.Call(Interface.Member("Ping"), 0).Store(&pong); err != nil {
-		t.Fatalf("Ping: %v", err)
-	}
-	if pong != "pong" {
-		t.Errorf("Ping returned %q, want %q", pong, "pong")
-	}
+	require.NoError(t, obj.Call(Interface.Member("Ping"), 0).Store(&pong), "Ping")
+	assert.Equal(t, "pong", pong)
 
 	// Verify GetVersion.
 	var version string
-	if err := obj.Call(Interface.Member("GetVersion"), 0).Store(&version); err != nil {
-		t.Fatalf("GetVersion: %v", err)
-	}
-	if version != "1.2.3-test" {
-		t.Errorf("GetVersion returned %q, want %q", version, "1.2.3-test")
-	}
+	require.NoError(t, obj.Call(Interface.Member("GetVersion"), 0).Store(&version), "GetVersion")
+	assert.Equal(t, "1.2.3-test", version)
 
 	// Shut down the daemon cleanly.
 	cancel()
 
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("Run() returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("daemon did not stop within 5s after context cancel")
-	}
+	assert.NoError(t, testutil.Recv(t, errCh, testutil.BusWait, "daemon did not stop after context cancel"), "Run() returned error")
 }
 
 // TestDaemon_NameAlreadyTaken verifies Run() returns an error when the bus
@@ -182,27 +127,19 @@ func TestDaemon_NameAlreadyTaken(t *testing.T) {
 
 	// Claim the bus name first, simulating another instance already running.
 	owner, err := dbus.Connect(addr)
-	if err != nil {
-		t.Fatalf("connect owner: %v", err)
-	}
+	require.NoError(t, err, "connect owner")
 	defer owner.Close()
 
 	reply, err := owner.RequestName(BusName, dbus.NameFlagDoNotQueue)
-	if err != nil {
-		t.Fatalf("pre-claim RequestName: %v", err)
-	}
-	if reply != dbus.RequestNameReplyPrimaryOwner {
-		t.Fatalf("expected to become primary owner, got reply=%d", reply)
-	}
+	require.NoError(t, err, "pre-claim RequestName")
+	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply, "expected to become primary owner")
 
 	// Now try to start a daemon — it should fail because the name is taken.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	err = Run(ctx, Config{Bus: BusAt(addr), Version: "test"})
-	if err == nil {
-		t.Fatal("Run() succeeded but expected an error for name-already-taken")
-	}
+	require.Error(t, err, "Run() succeeded but expected an error for name-already-taken")
 }
 
 // TestDaemon_Introspectable verifies that the introspection XML mentions Ping
@@ -221,24 +158,16 @@ func TestDaemon_Introspectable(t *testing.T) {
 	waitForName(t, addr, BusName)
 
 	client, err := dbus.Connect(addr)
-	if err != nil {
-		t.Fatalf("connect client: %v", err)
-	}
+	require.NoError(t, err, "connect client")
 	defer client.Close()
 
 	obj := client.Object(BusName, ObjectPath)
 
 	var xml string
-	if err := obj.Call(dbustypes.IntrospectableInterface.Member("Introspect"), 0).Store(&xml); err != nil {
-		t.Fatalf("Introspect: %v", err)
-	}
+	require.NoError(t, obj.Call(dbustypes.IntrospectableInterface.Member("Introspect"), 0).Store(&xml), "Introspect")
 
-	if !strings.Contains(xml, "Ping") {
-		t.Errorf("introspection XML does not mention Ping; got:\n%s", xml)
-	}
-	if !strings.Contains(xml, "GetVersion") {
-		t.Errorf("introspection XML does not mention GetVersion; got:\n%s", xml)
-	}
+	assert.Contains(t, xml, "Ping")
+	assert.Contains(t, xml, "GetVersion")
 }
 
 // TestSdNotify_NoSocket verifies SdNotify is a silent no-op when NOTIFY_SOCKET is unset.
@@ -255,9 +184,7 @@ func TestSdNotify_WithSocket(t *testing.T) {
 
 	// Create a Unix datagram listener.
 	ln, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Net: "unixgram", Name: sockPath})
-	if err != nil {
-		t.Fatalf("listen unixgram: %v", err)
-	}
+	require.NoError(t, err, "listen unixgram")
 	t.Cleanup(func() { ln.Close() })
 
 	t.Setenv("NOTIFY_SOCKET", sockPath)
@@ -267,11 +194,6 @@ func TestSdNotify_WithSocket(t *testing.T) {
 	buf := make([]byte, 128)
 	ln.SetReadDeadline(time.Now().Add(2 * time.Second)) //nolint:errcheck
 	n, err := ln.Read(buf)
-	if err != nil {
-		t.Fatalf("read from socket: %v", err)
-	}
-	got := string(buf[:n])
-	if got != "READY=1" {
-		t.Errorf("SdNotify sent %q, want %q", got, "READY=1")
-	}
+	require.NoError(t, err, "read from socket")
+	assert.Equal(t, "READY=1", string(buf[:n]))
 }

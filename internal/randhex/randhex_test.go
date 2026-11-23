@@ -3,24 +3,18 @@ package randhex
 import (
 	"encoding/hex"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestString(t *testing.T) {
 	a, err := String(16)
-	if err != nil {
-		t.Fatalf("String: %v", err)
-	}
-	if len(a) != 32 {
-		t.Errorf("len(String(16)) = %d, want 32", len(a))
-	}
-	if _, err := hex.DecodeString(a); err != nil {
-		t.Errorf("String(16) = %q, not hex: %v", a, err)
-	}
+	require.NoError(t, err)
+	assert.Len(t, a, 32)
+	_, err = hex.DecodeString(a)
+	assert.NoError(t, err, "String(16) = %q, not hex", a)
 	b, err := String(16)
-	if err != nil {
-		t.Fatalf("String: %v", err)
-	}
-	if a == b {
-		t.Errorf("two calls returned the same value %q", a)
-	}
+	require.NoError(t, err)
+	assert.NotEqual(t, a, b, "two calls returned the same value")
 }

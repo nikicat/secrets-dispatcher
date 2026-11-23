@@ -26,7 +26,6 @@ func newStatusFixture(t *testing.T, ownerExe procutil.Path) *statusFixture {
 		layout: tempLayout(t),
 		units:  mockUnits(t),
 	}
-	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
 	mockSession(t, 4242)
 	mockExePath(t, ownerExe)

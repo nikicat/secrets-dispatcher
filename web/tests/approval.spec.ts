@@ -19,12 +19,8 @@ test.afterAll(async () => {
 });
 
 test.describe("Approval Flow", () => {
-  // Authenticate before each test
   test.beforeEach(async ({ page }) => {
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    // Wait for authentication to complete - look for the specific status text
-    await expect(page.getByText("client connected")).toBeVisible();
+    await backend.authenticate(page);
   });
 
   test("shows empty state when no pending requests", async ({ page }) => {

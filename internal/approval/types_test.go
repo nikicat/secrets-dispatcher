@@ -97,8 +97,7 @@ func TestValidateRejectsNullAttributeGlob(t *testing.T) {
 }
 
 func TestRequestInfo_PayloadFollowsType(t *testing.T) {
-	sign, err := NewGPGSignInfo(SignedObject(testCommitObject), "repo", "KEY", ListedFiles(nil))
-	require.NoError(t, err)
+	sign := CommitSignInfoForTest("repo", "fix")
 	attrs := dbustypes.Attributes{"service": "gh"}
 
 	got, ok := RequestInfo{Type: RequestTypeGPGSign, Payload: sign}.GPGSign()

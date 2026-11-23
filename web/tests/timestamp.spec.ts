@@ -40,11 +40,8 @@ test.describe("Timestamp Display Toggle", () => {
     });
 
     // Login and wait for history to appear
-    const loginURL = await backend.generateLoginURL();
-    await page.goto(loginURL);
-    await expect(page.locator(".history-entry").first()).toBeVisible({
-      timeout: 10000,
-    });
+    await backend.authenticate(page);
+    await expect(page.locator(".history-entry").first()).toBeVisible();
   });
 
   test("shows relative time by default", async ({ page }) => {
@@ -86,9 +83,7 @@ test.describe("Timestamp Display Toggle", () => {
 
     // Reload page
     await page.reload();
-    await expect(page.locator(".history-entry").first()).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.locator(".history-entry").first()).toBeVisible();
 
     // Should still show absolute time
     const reloadedTimestamp = page.locator(".history-time").first();

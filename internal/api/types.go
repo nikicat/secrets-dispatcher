@@ -72,9 +72,21 @@ type TrustRule struct {
 	Client approval.Glob `json:"client"`
 }
 
-// ActionResponse is returned by approve/deny endpoints.
+// The outcome that an endpoint acting on the daemon's state reports.
+type ActionStatus string
+
+const (
+	ActionApproved      ActionStatus = "approved"
+	ActionDenied        ActionStatus = "denied"
+	ActionCancelled     ActionStatus = "cancelled"
+	ActionCreated       ActionStatus = "created"
+	ActionDeleted       ActionStatus = "deleted"
+	ActionAuthenticated ActionStatus = "authenticated"
+)
+
+// The body that an endpoint acting on the daemon's state answers with.
 type ActionResponse struct {
-	Status string `json:"status"`
+	Status ActionStatus `json:"status"`
 }
 
 // LogEntry represents an audit log entry (deprecated, use HistoryEntry).

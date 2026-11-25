@@ -21,6 +21,7 @@ make test-go      # Go unit/integration tests
 make test-e2e     # Playwright E2E tests (chromium)
 make test-e2e-all # E2E tests in all browsers
 make pre-commit   # Lint + format + tests (run before submitting)
+prek install      # Once per clone: lint the changed files before each commit
 ```
 
 ## Development Workflow
@@ -50,7 +51,8 @@ come from there).
 - **Frontend:** Prettier (with `prettier-plugin-svelte`) + ESLint (with
   `typescript-eslint` and `eslint-plugin-svelte`), enforced by CI. Run
   `make fmt-frontend`.
-- **Static analysis:** `go vet` and `staticcheck` (enforced by CI).
+- **Static analysis:** `go vet`, `staticcheck` and the analyzers in `gopls`
+  (enforced by CI).
 - **Formatting-only commits** are listed in `.git-blame-ignore-revs`, so that
   `git blame` shows who last changed a line's code, not its layout. GitHub
   reads the file on its own. For local blame, run this once per clone:

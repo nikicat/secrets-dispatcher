@@ -84,7 +84,7 @@ func backendServiceContent(cmd systemd.Command, env []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, backendServiceTemplate, cmd.ExecLine())
 	for _, v := range env {
-		b.WriteString("Environment=" + v + "\n")
+		fmt.Fprintf(&b, "Environment=%s\n", v)
 	}
 	return b.String()
 }

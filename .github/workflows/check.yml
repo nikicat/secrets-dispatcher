@@ -32,15 +32,7 @@ jobs:
 
       - uses: ./.github/actions/setup-frontend
 
-      - run: make embed-frontend
-
-      - name: Committed embed must match a fresh build
-        run: |
-          git add -N internal/api/web/dist
-          git diff --stat --exit-code internal/api/web/dist || {
-            echo "::error::internal/api/web/dist is stale — run 'make embed-frontend' and commit the result"
-            exit 1
-          }
+      - run: make check-embed
 
   test:
     runs-on: ubuntu-latest

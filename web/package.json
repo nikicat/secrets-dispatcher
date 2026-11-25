@@ -12,8 +12,6 @@
     "preview": "vite preview",
     "check": "svelte-check",
     "fmt": "prettier --write .",
-    "fmt:check": "prettier --check .",
-    "lint": "eslint .",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },

@@ -1,14 +1,20 @@
 MAKEFLAGS += -j
 
-.PHONY: all build install deps-frontend frontend backend backend-dev backend-go notifstub notifprobe clean test test-go test-e2e test-e2e-all test-e2e-browser \
-	test-e2e-gnome test-e2e-gnome-container demo playwright-install dev version release pre-commit screenshots \
-	check check-go check-go-fmt check-go-vet check-go-staticcheck check-frontend check-frontend-fmt check-frontend-lint \
+.PHONY: all build install deps-frontend frontend embed-frontend backend backend-dev backend-go notifstub notifprobe clean test test-go test-e2e test-e2e-all test-e2e-browser \
+	test-e2e-gnome test-e2e-gnome-container test-e2e-gnome-vm demo playwright-install dev version release pre-commit screenshots \
+	check check-embed check-go check-go-fmt check-go-vet check-go-staticcheck check-go-gopls check-frontend check-frontend-fmt check-frontend-lint \
 	fmt fmt-go fmt-frontend
 
 all: build
 
 # pnpm in the frontend project; scripts run with cwd web/
 PNPM := pnpm --dir web
+
+# The build tag that skips the embed of the frontend dist
+GO_TAGS := dev
+
+# The copy of web/dist that the Go binary embeds
+EMBED_DIST := internal/api/web/dist
 
 # Install frontend dependencies exactly as locked. pnpm leaves .modules.yaml
 # alone when nothing changed, so touch it to keep the stamp newer than its
@@ -28,9 +34,18 @@ frontend: deps-frontend
 # content-hashed bundles from previous builds accumulate and the freshness
 # check (CI) can never pass.
 embed-frontend: frontend
-	mkdir -p internal/api/web
-	rm -rf internal/api/web/dist
-	cp -r web/dist internal/api/web/
+	mkdir -p $(dir $(EMBED_DIST))
+	rm -rf $(EMBED_DIST)
+	cp -r web/dist $(EMBED_DIST)
+
+# Fails when a fresh build of web/ differs from the index. The rebuilt files
+# stay in place to be committed.
+check-embed: embed-frontend
+	@if ! git diff --quiet -- $(EMBED_DIST) || [ -n "$$(git ls-files --others --exclude-standard -- $(EMBED_DIST))" ]; then \
+		git status --short -- $(EMBED_DIST); \
+		echo "$(EMBED_DIST) is stale. Commit the rebuilt files above."; \
+		exit 1; \
+	fi
 
 # Version from git (fallback for untagged repos)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.0.0-g$$(git rev-parse --short HEAD)")
@@ -46,7 +61,7 @@ backend: embed-frontend
 # Outputs to .build/ to avoid overwriting ./secrets-dispatcher used by local service
 backend-dev: frontend
 	@mkdir -p .build
-	go build -tags dev -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher .
+	go build -tags $(GO_TAGS) -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher .
 
 # Full build
 build: backend
@@ -69,7 +84,7 @@ test: test-go test-e2e
 
 # Go tests only
 test-go:
-	go test -tags dev -race ./...
+	go test -tags $(GO_TAGS) -race ./...
 
 # E2E tests (no embed needed — proxy serves frontend from web/dist)
 test-e2e: backend-dev
@@ -89,7 +104,7 @@ test-e2e-browser: backend-dev
 # a parallel backend-dev build of .build/secrets-dispatcher.
 backend-go:
 	@mkdir -p .build
-	CGO_ENABLED=0 go build -tags dev -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher-go .
+	CGO_ENABLED=0 go build -tags $(GO_TAGS) -ldflags "-X main.version=$(VERSION)" -o .build/secrets-dispatcher-go .
 
 # Notification e2e helpers (ADR 0007): notifstub captures Notify args (Tier-1), notifprobe
 # asserts no expired-close against real gnome-shell (Tier-2, pushed into the VM).
@@ -184,12 +199,18 @@ pre-commit: check test
 # Run all checks
 check: check-go check-frontend
 
+# The files that the checks cover, as paths from the repo root
+GO_FILES ?= $(wildcard $(shell git ls-files -co --exclude-standard '*.go'))
+WEB_FILES ?= web/.
+
+GO_PKGS = $(sort $(patsubst %/,./%,$(dir $(GO_FILES))))
+
 # All Go checks
-check-go: check-go-fmt check-go-vet check-go-staticcheck
+check-go: $(if $(GO_FILES),check-go-fmt check-go-vet check-go-staticcheck check-go-gopls)
 
 # Go formatting check (fails if any files need formatting)
 check-go-fmt:
-	@unformatted=$$(gofmt -l .); \
+	@unformatted=$$(gofmt -l $(GO_FILES)); \
 	if [ -n "$$unformatted" ]; then \
 		echo "Go files need formatting:"; \
 		echo "$$unformatted"; \
@@ -197,13 +218,18 @@ check-go-fmt:
 		exit 1; \
 	fi
 
-# Go vet (dev tag skips embed of frontend dist)
+# Go vet
 check-go-vet:
-	go vet -tags dev ./...
+	go vet -tags $(GO_TAGS) $(GO_PKGS)
 
 # Go staticcheck
 check-go-staticcheck:
-	go tool staticcheck -tags dev ./...
+	go tool staticcheck -tags $(GO_TAGS) $(GO_PKGS)
+
+# gopls's own analyzers (writestring and others), which vet and staticcheck lack.
+# Fails when gopls prints a finding or exits nonzero.
+check-go-gopls:
+	@out=$$(GOFLAGS=-tags=$(GO_TAGS) go tool gopls check $(GO_FILES)) && [ -z "$$out" ] || { echo "$$out"; exit 1; }
 
 # All frontend checks (types + formatting + lint)
 check-frontend: check-frontend-fmt check-frontend-lint deps-frontend
@@ -211,11 +237,11 @@ check-frontend: check-frontend-fmt check-frontend-lint deps-frontend
 
 # Frontend formatting check
 check-frontend-fmt: deps-frontend
-	$(PNPM) fmt:check
+	$(PNPM) exec prettier --check --ignore-unknown $(patsubst web/%,%,$(WEB_FILES))
 
 # Frontend linting
 check-frontend-lint: deps-frontend
-	$(PNPM) lint
+	$(PNPM) exec eslint --no-warn-ignored $(patsubst web/%,%,$(WEB_FILES))
 
 # --- Auto-formatters ---
 

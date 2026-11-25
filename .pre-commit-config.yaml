@@ -1,0 +1,46 @@
+# Runs the checks of `make check` and `make check-embed` before each commit.
+# Sources are checked file by file, vet and staticcheck on the changed packages.
+# A change to a check's own configuration runs that check on every file.
+# svelte-check and check-embed always cover all of web/.
+#
+# The hooks run the host's go and pnpm. go.mod pins staticcheck and gopls, and
+# pnpm-lock.yaml pins the web tools.
+repos:
+  - repo: local
+    hooks:
+      - id: check-go
+        name: make check-go (changed files)
+        entry: sh -c 'make check-go GO_FILES="$*"' --
+        language: system
+        types: [go]
+        require_serial: true
+
+      - id: check-go-all
+        name: make check-go (all files)
+        entry: make check-go
+        language: system
+        pass_filenames: false
+        files: ^(go\.(mod|sum)|Makefile)$
+
+      - id: check-frontend
+        name: make check-frontend (changed files)
+        entry: sh -c 'make check-frontend WEB_FILES="$*"' --
+        language: system
+        files: ^web/(src|tests)/
+        require_serial: true
+
+      - id: check-frontend-all
+        name: make check-frontend (all files)
+        entry: make check-frontend
+        language: system
+        pass_filenames: false
+        files: ^(Makefile$|web/)
+        exclude: ^web/(src|tests)/
+
+      - id: check-embed
+        name: make check-embed
+        entry: make check-embed
+        language: system
+        pass_filenames: false
+        files: ^(Makefile$|web/|internal/api/web/dist/)
+        exclude: ^web/tests/

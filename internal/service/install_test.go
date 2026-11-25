@@ -481,6 +481,21 @@ func TestInstallLocalMaskIdempotent(t *testing.T) {
 	assert.Equal(t, origContent, readFile(t, mask.backup()), "the backup is not overwritten with the mask")
 }
 
+func TestInstallLocalReplacesFormerMask(t *testing.T) {
+	mask := tempTakeoverFiles(t).mask
+
+	mockUnits(t)
+	mockLookPath(t, defaultLookPath)
+	mockSession(t, 0)
+
+	require.NoError(t, mask.file.Write(formerDBusActivationMask))
+
+	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+
+	assert.Equal(t, dbusActivationMask, readFile(t, mask.file), "the mask is the current one")
+	assert.False(t, mask.backup().Exists(), "the former mask is ours, not backed up")
+}
+
 func TestInstallRemoteUnmasks(t *testing.T) {
 	mask := tempTakeoverFiles(t).mask
 
@@ -515,6 +530,37 @@ func TestUninstallUnmasks(t *testing.T) {
 
 	assert.Equal(t, origContent, readFile(t, mask.file), "the original is restored")
 	assert.False(t, mask.backup().Exists(), "the backup is gone after the restore")
+}
+
+func TestUninstallUnmasksBeforeStopping(t *testing.T) {
+	mask := tempTakeoverFiles(t).mask
+
+	units := mockUnits(t)
+	mockSession(t, 0)
+	require.NoError(t, mask.file.Write(dbusActivationMask))
+	var maskedAtStop []bool
+	units.observe = func(c unitCall) {
+		if c.op == opStop {
+			maskedAtStop = append(maskedAtStop, mask.file.Exists())
+		}
+	}
+
+	require.NoError(t, Uninstall(t.Context(), NarrateMilestones))
+
+	require.NotEmpty(t, maskedAtStop)
+	assert.False(t, maskedAtStop[0], "the mask is gone before the first unit stops")
+}
+
+func TestUninstallRemovesFormerMask(t *testing.T) {
+	mask := tempTakeoverFiles(t).mask
+
+	mockUnits(t)
+	mockSession(t, 0)
+	require.NoError(t, mask.file.Write(formerDBusActivationMask))
+
+	require.NoError(t, Uninstall(t.Context(), NarrateMilestones))
+
+	assert.False(t, mask.file.Exists(), "the former mask is ours and goes")
 }
 
 func TestUnmaskNoBackupRemovesMask(t *testing.T) {

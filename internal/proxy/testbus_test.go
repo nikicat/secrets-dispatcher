@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
+	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
 	"github.com/nikicat/secrets-dispatcher/internal/sender"
 	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
@@ -43,12 +44,21 @@ func startTestProxyWith(t *testing.T, frontAddr, backendAddr string, cfg Config)
 // on a private front bus, as in production: client, front bus, proxy, backend
 // bus, real service.
 type mockServiceEnv struct {
-	client *dbus.Conn
-	mock   *testutil.MockSecretService
-	proxy  *Proxy
+	client    *dbus.Conn
+	mock      *testutil.MockSecretService
+	proxy     *Proxy
+	frontAddr string
 }
 
 func newMockServiceEnv(t *testing.T) *mockServiceEnv {
+	t.Helper()
+	return newMockServiceEnvWith(t, func(*dbus.Conn) {})
+}
+
+// Returns a mockServiceEnv as newMockServiceEnv does, with export run on the
+// mock's connection before the proxy starts. godbus races an export against a
+// call that the connection is serving.
+func newMockServiceEnvWith(t *testing.T, export func(mockConn *dbus.Conn)) *mockServiceEnv {
 	t.Helper()
 	frontAddr, backendAddr := testutil.StartDBusDaemon(t), testutil.StartDBusDaemon(t)
 
@@ -58,6 +68,7 @@ func newMockServiceEnv(t *testing.T) *mockServiceEnv {
 
 	mock := testutil.NewMockSecretService()
 	require.NoError(t, mock.Register(mockConn), "register mock service")
+	export(mockConn)
 
 	proxy := startTestProxy(t, frontAddr, backendAddr)
 
@@ -65,7 +76,7 @@ func newMockServiceEnv(t *testing.T) *mockServiceEnv {
 	require.NoError(t, err, "connect client to front bus")
 	t.Cleanup(func() { client.Close() })
 
-	return &mockServiceEnv{client: client, mock: mock, proxy: proxy}
+	return &mockServiceEnv{client: client, mock: mock, proxy: proxy, frontAddr: frontAddr}
 }
 
 func claimTestName(t *testing.T, conn *dbus.Conn, name string) {
@@ -73,4 +84,15 @@ func claimTestName(t *testing.T, conn *dbus.Conn, name string) {
 	reply, err := conn.RequestName(name, dbus.NameFlagDoNotQueue)
 	require.NoError(t, err)
 	require.Equal(t, dbus.RequestNameReplyPrimaryOwner, reply)
+}
+
+// Returns the client's path of a plain session opened through the proxy.
+func openPlainSession(t *testing.T, client *dbus.Conn) dbus.ObjectPath {
+	t.Helper()
+	var output dbus.Variant
+	var path dbus.ObjectPath
+	require.NoError(t, client.Object(dbustypes.BusName, dbustypes.ServicePath).
+		Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, dbustypes.AlgorithmPlain, dbus.MakeVariant("")).
+		Store(&output, &path), "OpenSession via proxy")
+	return path
 }

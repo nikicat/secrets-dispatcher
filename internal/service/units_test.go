@@ -27,9 +27,14 @@ type fakeUnits struct {
 	calls  []unitCall
 	states map[systemd.Unit]unitState
 	closed bool
+	// Runs on each call as it is made, when set.
+	observe func(unitCall)
 }
 
 func (f *fakeUnits) record(ctx context.Context, op unitOp, u systemd.Unit) error {
+	if f.observe != nil {
+		f.observe(unitCall{op, u})
+	}
 	f.calls = append(f.calls, unitCall{op, u})
 	return ctx.Err()
 }

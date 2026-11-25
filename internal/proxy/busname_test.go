@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -50,4 +51,40 @@ func TestProxyFailsWhenSessionBusNameIsHeld(t *testing.T) {
 	require.NoError(t, err)
 	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), Config{Local: &sender.ChainReader{}})
 	require.ErrorIs(t, p.ConnectWith(frontConn, backendConn), errBusNameTaken)
+}
+
+// A backend whose sessions' Close holds shutdown until the test lets it go.
+type stalledSessions struct{ closing, release chan struct{} }
+
+func (s stalledSessions) Close(dbus.Message) *dbus.Error {
+	close(s.closing)
+	<-s.release
+	return nil
+}
+
+func TestProxyReleasesBusNameBeforeClosingBackend(t *testing.T) {
+	stalled := stalledSessions{make(chan struct{}), make(chan struct{})}
+	env := newMockServiceEnvWith(t, func(mockConn *dbus.Conn) {
+		require.NoError(t, mockConn.ExportSubtree(stalled, dbustypes.SessionsPath, string(dbustypes.SessionInterface)))
+	})
+	openPlainSession(t, env.client)
+
+	successor, err := dbus.Connect(env.frontAddr)
+	require.NoError(t, err)
+	t.Cleanup(func() { successor.Close() })
+	reply, err := successor.RequestName(dbustypes.BusName, 0)
+	require.NoError(t, err)
+	require.Equal(t, dbus.RequestNameReplyInQueue, reply)
+
+	// Runs before the proxy's own cleanup, so a failed wait does not leave its Close stuck.
+	release := sync.OnceFunc(func() { close(stalled.release) })
+	t.Cleanup(release)
+	closed := make(chan struct{})
+	go func() { env.proxy.Close(); close(closed) }()
+	testutil.Recv(t, stalled.closing, testutil.BusWait, "backend Session.Close not reached")
+	got, err := busDaemon{successor}.nameOwner(dbustypes.BusName)
+	release()
+	testutil.Recv(t, closed, testutil.BusWait, "proxy Close did not return")
+	require.NoError(t, err)
+	require.Equal(t, uniqueName(successor), got, "the name has moved on while the backend is still closing")
 }

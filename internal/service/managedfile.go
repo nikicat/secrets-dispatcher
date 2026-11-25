@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/nikicat/secrets-dispatcher/internal/systemd"
 	"github.com/nikicat/secrets-dispatcher/internal/textfile"
@@ -64,6 +65,9 @@ func (f narratedFile[F]) removeStep() step {
 type managedFile struct {
 	narratedFile[textfile.File]
 	content string
+	// Content that earlier versions wrote at the path. A file with this content is
+	// ours too (ADR 0009).
+	former []string
 }
 
 func (f managedFile) backup() textfile.File { return f.file.WithSuffix(backupSuffix) }
@@ -83,7 +87,7 @@ func (f managedFile) occupant() occupant {
 	switch {
 	case err != nil:
 		return occupantAbsent
-	case existing == f.content:
+	case existing == f.content || slices.Contains(f.former, existing):
 		return occupantOurs
 	default:
 		return occupantForeign

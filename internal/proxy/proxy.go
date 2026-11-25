@@ -294,10 +294,13 @@ func (p *Proxy) Close() error {
 // upstream cannot hang shutdown.
 const closeTimeout = 5 * time.Second
 
-// Stops what the connection serves and closes both connections.
+// Stops what the connection serves and closes both connections. A call that
+// arrives meanwhile goes to the next owner of org.freedesktop.secrets, not to
+// this connection, and fails when there is no next owner (ADR 0001).
 func (c *connection) close() {
 	ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 	defer cancel()
+	busDaemon{c.frontConn}.releaseName(ctx, dbustypes.BusName)
 	c.prompter.close(ctx)
 	c.signals.close()
 	c.h.close(ctx)

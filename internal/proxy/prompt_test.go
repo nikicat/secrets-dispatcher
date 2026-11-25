@@ -73,12 +73,7 @@ func TestPromptForwardingUnlockFlow(t *testing.T) {
 	assert.False(t, env.mock.Locked(), "collection must be unlocked after the prompt")
 
 	// The point of prompt forwarding: after the prompt flow the secret is actually reachable.
-	var output dbus.Variant
-	var sessionPath dbus.ObjectPath
-	err = env.client.Object(dbustypes.BusName, dbustypes.ServicePath).
-		Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, dbustypes.AlgorithmPlain, dbus.MakeVariant("")).
-		Store(&output, &sessionPath)
-	require.NoError(t, err, "OpenSession via proxy")
+	sessionPath := openPlainSession(t, env.client)
 
 	var secrets map[dbus.ObjectPath]dbustypes.Secret
 	err = env.client.Object(dbustypes.BusName, dbustypes.ServicePath).

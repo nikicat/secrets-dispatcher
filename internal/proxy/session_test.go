@@ -69,11 +69,7 @@ func TestSessionManagerCloseAllGivesUpOnStalledBackend(t *testing.T) {
 func TestSessionCloseClosesUpstream(t *testing.T) {
 	env := newMockServiceEnv(t)
 
-	var output dbus.Variant
-	var clientPath dbus.ObjectPath
-	require.NoError(t, env.client.Object(dbustypes.BusName, dbustypes.ServicePath).
-		Call(dbustypes.ServiceInterface.Member("OpenSession"), 0, dbustypes.AlgorithmPlain, dbus.MakeVariant("")).
-		Store(&output, &clientPath))
+	clientPath := openPlainSession(t, env.client)
 	upstream, ok := env.proxy.conn.h.sessions.UpstreamSession(clientPath)
 	require.True(t, ok)
 	require.True(t, env.mock.HasSession(upstream))

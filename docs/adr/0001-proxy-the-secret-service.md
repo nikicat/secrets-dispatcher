@@ -28,9 +28,22 @@ adds no security.
 - Clients need no changes, and any spec-conforming backend works behind it.
 - The dispatcher must win the bus name and keep it: a provider that re-grabs
   the name bypasses it silently (see [ADR 0009](0009-gnome-keyring-secrets-only-demotion.md)).
+- The dispatcher installs a D-Bus activation mask for the name, so the bus
+  starts no other provider. The mask names the dispatcher's own unit as the
+  provider. The dispatcher is restarted often while it is developed, and a call
+  that arrives during a restart should wait for the new proxy, not fail. While
+  no one owns the name, the bus holds such a call and has systemd start the
+  unit, or join the restart already under way. Stopping the unit does not keep
+  it stopped: the next call starts it again. To keep it down, run
+  `systemctl --user mask secrets-dispatcher.service` or `service uninstall`.
 - On a forwarded bus, an ssh forward that reconnects can find the name still
   held by its dead connection. There the dispatcher waits in the queue, and the
   bus gives it the name when that connection goes. On the session bus it fails
   instead, since a live provider holds the name there.
+- On shutdown the dispatcher gives up the name before it closes anything else,
+  so a client never reaches a proxy that is half closed. A Chromium or Electron
+  os_crypt probe made during a restart once got "use of closed network
+  connection" from the old proxy and kept a plain-text fallback for the rest of
+  the process's life.
 - Secret values travel encrypted between a DH client and the dispatcher; the
   dispatcher decides on metadata (caller, item attributes), not values.

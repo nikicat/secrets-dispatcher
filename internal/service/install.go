@@ -107,7 +107,10 @@ WantedBy=graphical-session.target
 
 const (
 	dbusServiceFile    = dbustypes.BusName + ".service"
-	dbusActivationMask = "[D-BUS Service]\nName=" + dbustypes.BusName + "\nExec=/bin/false\n"
+	dbusActivationMask = "[D-BUS Service]\nName=" + dbustypes.BusName + "\nExec=/bin/false\nSystemdService=" + string(proxyServiceUnit) + "\n"
+	// The mask that earlier versions of the dispatcher installed. It has no
+	// SystemdService line.
+	formerDBusActivationMask = "[D-BUS Service]\nName=" + dbustypes.BusName + "\nExec=/bin/false\n"
 )
 
 type Options struct {
@@ -280,16 +283,18 @@ func (l layout) uninstall(ctx context.Context, n Narration) error {
 	return h.run(ctx, steps)
 }
 
-// Returns the steps of an uninstall from l, in order.
+// Returns the steps of an uninstall from l, in order. The mask is removed before
+// any unit stops, because while it is in place the next call starts the proxy
+// again (ADR 0001).
 func (l layout) uninstallSteps() []step {
-	var steps []step
+	steps := l.files.unmaskSteps()
 	for _, u := range allUnitNames {
 		steps = append(steps, unitStep(opStop, u, ""), unitStep(opDisable, u, ""))
 	}
 	for _, u := range l.installed() {
 		steps = append(steps, l.unitFile(u, "").removeStep())
 	}
-	steps = append(steps, l.files.leaveSteps()...)
+	steps = append(steps, l.files.restoreKeyringSteps()...)
 	return append(steps, reloadStep())
 }
 
@@ -304,13 +309,14 @@ func RestartProxy(ctx context.Context) error {
 }
 
 // Returns the D-Bus activation mask of org.freedesktop.secrets in dir. The mask
-// keeps the bus from starting a provider that takes the name back (ADR 0001).
+// starts the dispatcher's own unit and no other provider (ADR 0001).
 func dbusMask(dir textfile.Dir) managedFile {
 	return managedFile{
 		file:    dir.File(dbusServiceFile),
 		name:    "D-Bus activation mask",
 		purpose: "mask D-Bus activation of org.freedesktop.secrets",
 		content: dbusActivationMask,
+		former:  []string{formerDBusActivationMask},
 	}
 }
 

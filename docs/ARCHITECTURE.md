@@ -114,6 +114,14 @@ run prints it, and the call that makes that change. `service install` runs the
 list that `service install --dry-run` prints, so the two cannot list different
 changes.
 
+The backend unit sets `DBUS_SESSION_BUS_ADDRESS` to the private backend bus only
+for a backend that needs the variable to find that bus. gnome-keyring needs it.
+A backend given as a command line gets it too, because its program is not known
+to take the bus any other way. gopass-secret takes the bus as a flag, so the
+variable keeps pointing at the session bus for its children. That matters
+because gpg-agent starts pinentry with the `DBUS_SESSION_BUS_ADDRESS` that gpg
+passes it, and pinentry must reach the desktop's prompter on the session bus.
+
 ## Scope
 
 secrets-dispatcher runs as your user and adds **visibility and control**, not a

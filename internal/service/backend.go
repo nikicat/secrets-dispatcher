@@ -18,6 +18,9 @@ type backendKind interface {
 	// Returns the command that secrets-dispatcher-backend.service runs.
 	// Errors when a keyword's program is not installed.
 	exec() (systemd.Command, error)
+	// Returns the variables that secrets-dispatcher-backend.service sets, as
+	// NAME=value (docs/ARCHITECTURE.md, Service setup).
+	environment() []string
 	String() string
 }
 
@@ -25,20 +28,32 @@ type backendKind interface {
 type backendKeyword struct {
 	name    string
 	program func() (systemd.Command, error)
+	env     []string
 }
 
 func (k *backendKeyword) exec() (systemd.Command, error) { return k.program() }
+func (k *backendKeyword) environment() []string          { return k.env }
 func (k *backendKeyword) String() string                 { return k.name }
 
 // A backend given as a command line, run verbatim.
 type backendCommand string
 
 func (c backendCommand) exec() (systemd.Command, error) { return systemd.RawCommand(string(c)), nil }
-func (c backendCommand) String() string                 { return string(c) }
+
+// A command line's program is not known to take the private bus as a flag, so
+// it gets the bus in its environment (docs/ARCHITECTURE.md, Service setup).
+func (c backendCommand) environment() []string { return backendBusEnv }
+func (c backendCommand) String() string        { return string(c) }
+
+// The private bus that the backend serves on, with %t for systemd to expand.
+var backendBus = config.SystemdRuntimeDir.BackendBusSocket()
+
+// Hands a backend the private bus through its environment.
+var backendBusEnv = []string{"DBUS_SESSION_BUS_ADDRESS=" + backendBus.Address()}
 
 var (
-	BackendGopass       = Backend{&backendKeyword{"gopass", gopassExec}}
-	BackendGnomeKeyring = Backend{&backendKeyword{"gnome-keyring", gnomeKeyringExec}}
+	BackendGopass       = Backend{&backendKeyword{name: "gopass", program: gopassExec}}
+	BackendGnomeKeyring = Backend{&backendKeyword{name: "gnome-keyring", program: gnomeKeyringExec, env: backendBusEnv}}
 )
 
 var backendKeywords = []Backend{BackendGopass, BackendGnomeKeyring}
@@ -76,7 +91,7 @@ func gopassExec() (systemd.Command, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find gopass-secret: %w", err)
 	}
-	return systemd.NewCommand(path, "service", "--bus-address", config.SystemdRuntimeDir.BackendBusSocket().Address()), nil
+	return systemd.NewCommand(path, "service", "--bus-address", backendBus.Address()), nil
 }
 
 // Returns the path of gnome-keyring-daemon. Errors when it is not installed.

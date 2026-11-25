@@ -88,10 +88,10 @@ func (t takeover) units(execStart systemd.Command) (unitFiles, error) {
 		return nil, err
 	}
 	return unitFiles{
-		busSocketUnit:  {content: fmt.Sprintf(busSocketTemplate, config.SystemdRuntimeDir.BackendBusSocket())},
+		busSocketUnit:  {content: fmt.Sprintf(busSocketTemplate, backendBus)},
 		busServiceUnit: {content: fmt.Sprintf(busServiceTemplate, systemd.NewCommand(dbusDaemon, "--session", "--nofork", "--nopidfile", "--address=systemd:").ExecLine())},
 		backendServiceUnit: {
-			content: fmt.Sprintf(backendServiceTemplate, backendExec.ExecLine(), config.SystemdRuntimeDir.BackendBusSocket().Address()),
+			content: backendServiceContent(backendExec, t.backend.environment()),
 			note:    "private backend: " + backendExec.ExecLine(),
 		},
 		proxyServiceUnit: {content: fmt.Sprintf(localProxyTemplate, execStart.ExecLine())},

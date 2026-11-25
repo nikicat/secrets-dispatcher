@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
@@ -76,8 +77,17 @@ After=` + string(busSocketUnit) + `
 [Service]
 Type=simple
 ExecStart=%s
-Environment=DBUS_SESSION_BUS_ADDRESS=%s
 `
+
+// Returns the backend unit that runs cmd with the assignments in env.
+func backendServiceContent(cmd systemd.Command, env []string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, backendServiceTemplate, cmd.ExecLine())
+	for _, v := range env {
+		b.WriteString("Environment=" + v + "\n")
+	}
+	return b.String()
+}
 
 const localProxyTemplate = `[Unit]
 Description=Secrets Dispatcher - D-Bus Secret Service approval proxy

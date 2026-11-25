@@ -135,7 +135,6 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	// Backend service.
 	content, _ = dir.UnitFile(backendServiceUnit).Read()
 	assert.Contains(t, content, "ExecStart=/usr/bin/gopass-secret service --bus-address", "backend service wrong ExecStart")
-	assert.Contains(t, content, "DBUS_SESSION_BUS_ADDRESS=unix:path=%t/secrets-dispatcher/backend-bus.sock", "backend service missing DBUS_SESSION_BUS_ADDRESS")
 	assert.Contains(t, content, "Requires=secrets-dispatcher-bus.socket", "backend service missing Requires")
 
 	// Proxy service (local variant).

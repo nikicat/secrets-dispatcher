@@ -195,12 +195,12 @@ func TestTakeoverProblems(t *testing.T) {
 		"an unreachable manager is one problem, not one per unit")
 }
 
-// Returns the ExecStart= lines of each unit file, in file order.
-func execStarts(units unitFiles) map[systemd.Unit][]string {
+// Returns the lines of each unit file that start with prefix, in file order.
+func unitLines(units unitFiles, prefix string) map[systemd.Unit][]string {
 	lines := map[systemd.Unit][]string{}
 	for u, file := range units {
 		for line := range strings.Lines(file.content) {
-			if strings.HasPrefix(line, "ExecStart=") {
+			if strings.HasPrefix(line, prefix) {
 				lines[u] = append(lines[u], strings.TrimSuffix(line, "\n"))
 			}
 		}
@@ -215,7 +215,7 @@ func TestTopologyUnitsExecStart(t *testing.T) {
 
 	units, err := remote{}.units(execStart)
 	require.NoError(t, err)
-	assert.Equal(t, map[systemd.Unit][]string{proxyServiceUnit: {want}}, execStarts(units))
+	assert.Equal(t, map[systemd.Unit][]string{proxyServiceUnit: {want}}, unitLines(units, "ExecStart="))
 
 	units, err = newTakeover(new(BackendGnomeKeyring), Provider{}).units(execStart)
 	require.NoError(t, err)
@@ -223,7 +223,27 @@ func TestTopologyUnitsExecStart(t *testing.T) {
 		busServiceUnit:     {"ExecStart=/usr/bin/dbus-daemon --session --nofork --nopidfile --address=systemd:"},
 		backendServiceUnit: {"ExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=secrets --control-directory=%t/secrets-dispatcher/keyring"},
 		proxyServiceUnit:   {want},
-	}, execStarts(units))
+	}, unitLines(units, "ExecStart="))
+}
+
+func TestTopologyUnitsBackendEnvironment(t *testing.T) {
+	mockLookPath(t, defaultLookPath)
+	busEnv := map[systemd.Unit][]string{backendServiceUnit: {"Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/secrets-dispatcher/backend-bus.sock"}}
+
+	for _, tc := range []struct {
+		backend Backend
+		want    map[systemd.Unit][]string
+	}{
+		{BackendGopass, map[systemd.Unit][]string{}},
+		{BackendGnomeKeyring, busEnv},
+		{Backend{backendCommand("/custom/backend")}, busEnv},
+	} {
+		t.Run(tc.backend.String(), func(t *testing.T) {
+			units, err := newTakeover(&tc.backend, Provider{}).units(systemd.NewCommand("/usr/bin/secrets-dispatcher", "serve"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, unitLines(units, "Environment="), "Environment= lines of each unit")
+		})
+	}
 }
 
 func TestTopologyUnitsQuoteSpacedPaths(t *testing.T) {
@@ -236,5 +256,5 @@ func TestTopologyUnitsQuoteSpacedPaths(t *testing.T) {
 		busServiceUnit:     {`ExecStart="/opt/my tools/dbus-daemon" --session --nofork --nopidfile --address=systemd:`},
 		backendServiceUnit: {`ExecStart="/opt/my tools/gopass-secret" service --bus-address unix:path=%t/secrets-dispatcher/backend-bus.sock`},
 		proxyServiceUnit:   {`ExecStart="/opt/my tools/secrets-dispatcher" serve --config "/home/u/my config.yaml"`},
-	}, execStarts(units))
+	}, unitLines(units, "ExecStart="))
 }

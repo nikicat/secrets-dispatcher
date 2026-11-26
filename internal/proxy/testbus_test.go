@@ -34,7 +34,7 @@ func startTestProxyWith(t *testing.T, frontAddr, backendAddr string, cfg Config)
 	require.NoError(t, err, "connect proxy to backend bus")
 	frontConn, err := dbus.Connect(frontAddr)
 	require.NoError(t, err, "connect proxy to front bus")
-	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), cfg)
+	p := New(approval.ClientClaim{Name: approval.ClientName(t.Name())}, approval.NewDisabledManager(), cfg)
 	require.NoError(t, p.ConnectWith(frontConn, backendConn), "connect proxy")
 	t.Cleanup(func() { p.Close() })
 	return p

@@ -18,10 +18,10 @@ import (
 // Serves org.freedesktop.secrets on the front bus, where clients connect, by
 // relaying their requests to the real Secret Service on the backend bus.
 type Proxy struct {
-	clientName approval.ClientName
-	local      *sender.ChainReader
-	base       handlerBase
-	conn       *connection
+	claim approval.ClientClaim
+	local *sender.ChainReader
+	base  handlerBase
+	conn  *connection
 }
 
 // What a connected proxy serves, and the buses it serves it on.
@@ -40,12 +40,12 @@ type Config struct {
 }
 
 // Returns a proxy that serves nothing until Dial or ConnectWith.
-func New(clientName approval.ClientName, approvalMgr *approval.Manager, cfg Config) *Proxy {
+func New(claim approval.ClientClaim, approvalMgr *approval.Manager, cfg Config) *Proxy {
 	return &Proxy{
-		clientName: clientName,
-		local:      cfg.Local,
+		claim: claim,
+		local: cfg.Local,
 		base: handlerBase{
-			logger:       logging.New(clientName),
+			logger:       logging.New(claim.Name),
 			approval:     approvalMgr,
 			slowUpstream: cfg.SlowUpstream,
 		},
@@ -81,16 +81,17 @@ func (f Factory) ClaimSessionBus() (Claim, error) {
 }
 
 func (f Factory) claim(client approval.ClientName, local *sender.ChainReader) (Claim, error) {
-	if !f.approval.ClaimClient(client) {
+	claim, ok := f.approval.ClaimClient(client)
+	if !ok {
 		return Claim{}, fmt.Errorf("another bus has the client name %q", client)
 	}
-	return Claim{client: client, local: local, factory: f}, nil
+	return Claim{claim: claim, local: local, factory: f}, nil
 }
 
 // A client name that a Factory has claimed, which no other bus can take until
 // Release.
 type Claim struct {
-	client  approval.ClientName
+	claim   approval.ClientClaim
 	local   *sender.ChainReader
 	factory Factory
 }
@@ -99,7 +100,7 @@ type Claim struct {
 // bus that front opens. Errors as Proxy.Dial does.
 func (c Claim) Dial(front Connector) (*Proxy, error) {
 	f := c.factory
-	p := New(c.client, f.approval, Config{Local: c.local, SlowUpstream: f.slowUpstream})
+	p := New(c.claim, f.approval, Config{Local: c.local, SlowUpstream: f.slowUpstream})
 	if err := p.Dial(front, f.upstream); err != nil {
 		return nil, err
 	}
@@ -107,7 +108,7 @@ func (c Claim) Dial(front Connector) (*Proxy, error) {
 }
 
 // Gives the client name back once its proxy has stopped.
-func (c Claim) Release() { c.factory.approval.ReleaseClient(c.client) }
+func (c Claim) Release() { c.factory.approval.ReleaseClient(c.claim) }
 
 // Connects to the front and backend buses and serves as ConnectWith does.
 // Errors when either connection fails, closing the one already open.
@@ -175,7 +176,7 @@ func (p *Proxy) connect(frontConn, backendConn *dbus.Conn) (*connection, error) 
 			backendConn: backendConn,
 			sessions:    NewSessionManager(backendConn),
 			tracker:     tracker,
-			resolver:    newSenderInfoResolver(frontConn, p.clientName, p.local),
+			resolver:    newSenderInfoResolver(frontConn, p.claim, p.local),
 		},
 		signals:  signals,
 		prompter: prompter,

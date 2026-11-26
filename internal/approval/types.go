@@ -359,4 +359,6 @@ type SenderInfo struct {
 	Client ClientName
 	// True if the request came through the gpg-sign thin client (ADR 0008).
 	PeerTrusted bool
+	// The claim of the bus the sender is on, which ClientClaim.Sender sets.
+	claim claimGen
 }

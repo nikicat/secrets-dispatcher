@@ -126,7 +126,7 @@ func TestSenderInfoResolver_Resolve_AllFail(t *testing.T) {
 
 func TestNewSenderInfoResolver(t *testing.T) {
 	// Test that newSenderInfoResolver creates a valid resolver
-	resolver := newSenderInfoResolver(nil, approval.ClientLocal, nil)
+	resolver := newSenderInfoResolver(nil, approval.ClientClaim{Name: approval.ClientLocal}, nil)
 	require.NotNil(t, resolver)
 	assert.NotNil(t, resolver.client)
 }
@@ -212,7 +212,7 @@ func TestSenderInfoResolver_Resolve_FallbackToSystemd(t *testing.T) {
 func TestSenderInfoResolver_Resolve_Forwarded(t *testing.T) {
 	client := &mockDBusClient{pid: procutil.PID(os.Getpid()), uid: 1000, unitName: "local.service"}
 	resolver := newSenderInfoResolverWithClient(client)
-	resolver.clientName = "symbiosis"
+	resolver.claim = approval.ClientClaim{Name: "symbiosis"}
 	resolver.local = nil
 
 	info := resolver.Resolve(":1.7")

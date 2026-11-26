@@ -571,11 +571,9 @@ func TestCacheItemForSender_DifferentClientNotCached(t *testing.T) {
 		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Second})
 
 		item := itemInCollection("default", "i123")
-		caller := busSender(":1.200")
-		caller.Client = "a"
-		mgr.CacheItemForSender(caller, item.Path)
+		mgr.CacheItemForSender(ClientClaim{Name: "a"}.Sender(":1.200"), item.Path)
 
-		caller.Client = "b"
+		caller := ClientClaim{Name: "b"}.Sender(":1.200")
 		requirePrompts(t, mgr, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: caller})
 	})
 }
@@ -593,23 +591,69 @@ func TestCacheItemForSender_NoSenderNotCached(t *testing.T) {
 	})
 }
 
-// An approval cached before a client name is released does not cover the same
-// unique name once the name is claimed again.
-func TestReleaseClient_DropsCachedApprovals(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Minute})
+// Returns a claim of the given client name, which no other bus holds.
+func claim(t *testing.T, mgr *Manager, name ClientName) ClientClaim {
+	t.Helper()
+	c, ok := mgr.ClaimClient(name)
+	require.True(t, ok, "%s is held by another bus", name)
+	return c
+}
 
-		item := itemInCollection("default", "i123")
-		caller := busSender(":1.5")
-		caller.Client = "vm"
-		require.True(t, mgr.ClaimClient("vm"), "first claim of vm failed")
-		require.False(t, mgr.ClaimClient("vm"), "vm claimed twice")
-		mgr.CacheItemForSender(caller, item.Path)
-		mgr.ReleaseClient("vm")
-		require.True(t, mgr.ClaimClient("vm"), "released name could not be claimed again")
+func TestClaimClient_RefusesAHeldName(t *testing.T) {
+	mgr := NewManagerForTest(ManagerConfig{})
+	held := claim(t, mgr, "vm")
+	_, ok := mgr.ClaimClient("vm")
+	assert.False(t, ok)
 
-		requirePrompts(t, mgr, RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: caller})
-	})
+	mgr.ReleaseClient(held)
+	claim(t, mgr, "vm")
+}
+
+func TestReleaseClient_ApprovalsStayWithTheirClaim(t *testing.T) {
+	item := itemInCollection("default", "i123")
+	read := func(s SenderInfo) RequestInfo {
+		return RequestInfo{Items: []ItemInfo{item}, Session: "/s/1", Type: RequestTypeGetSecret, SenderInfo: s}
+	}
+	for _, tc := range []struct {
+		name string
+		// Caches an approval for a sender of the first claim, at some point
+		// around its release, and returns the second claim.
+		approve func(t *testing.T, mgr *Manager, first ClientClaim) ClientClaim
+	}{
+		{"cached before the release", func(t *testing.T, mgr *Manager, first ClientClaim) ClientClaim {
+			mgr.CacheItemForSender(first.Sender(":1.5"), item.Path)
+			_, err := mgr.RequireApproval(t.Context(), read(first.Sender(":1.5")))
+			require.NoError(t, err, "the approval does not cover its own bus's sender")
+			mgr.ReleaseClient(first)
+			return claim(t, mgr, "vm")
+		}},
+		{"cached after the release", func(t *testing.T, mgr *Manager, first ClientClaim) ClientClaim {
+			mgr.ReleaseClient(first)
+			mgr.CacheItemForSender(first.Sender(":1.5"), item.Path)
+			return claim(t, mgr, "vm")
+		}},
+		{"cached after the next claim", func(t *testing.T, mgr *Manager, first ClientClaim) ClientClaim {
+			mgr.ReleaseClient(first)
+			next := claim(t, mgr, "vm")
+			mgr.CacheItemForSender(first.Sender(":1.5"), item.Path)
+			return next
+		}},
+		{"pending request approved after the next claim", func(t *testing.T, mgr *Manager, first ClientClaim) ClientClaim {
+			id := mgr.Create(read(first.Sender(":1.5")))
+			mgr.ReleaseClient(first)
+			next := claim(t, mgr, "vm")
+			require.NoError(t, mgr.Approve(id))
+			return next
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Minute})
+				next := tc.approve(t, mgr, claim(t, mgr, "vm"))
+				requirePrompts(t, mgr, read(next.Sender(":1.5")))
+			})
+		})
+	}
 }
 
 func TestApprovalCache_DifferentItem(t *testing.T) {
@@ -1305,8 +1349,7 @@ func TestPassthrough(t *testing.T) {
 
 	items := []ItemInfo{{Label: "xdg:schema=org.gnome.keyring.Note"}}
 	searchAttrs := map[string]string{"xdg:schema": "org.gnome.keyring.Note"}
-	caller := busSender(":1.42")
-	caller.Client = "test-client"
+	caller := ClientClaim{Name: "test-client"}.Sender(":1.42")
 	caller.InvokerName = "app.service"
 	caller.PID = 123
 
@@ -1432,8 +1475,7 @@ func TestCheckTrustRules_ProcessFailsClosedWithoutLocalProcess(t *testing.T) {
 		},
 	})
 
-	forwarded := busSender(":1.7")
-	forwarded.Client = "symbiosis"
+	forwarded := ClientClaim{Name: "symbiosis"}.Sender(":1.7")
 	forwarded.PID = 42
 	_, ok := mgr.CheckTrustRules(RequestInfo{Type: RequestTypeGetSecret, SenderInfo: forwarded})
 	assert.False(t, ok, `unit "*"`)
@@ -1485,4 +1527,44 @@ func TestResolution_UnmarshalText(t *testing.T) {
 	var got Resolution
 	assert.Error(t, json.Unmarshal([]byte(`"bogus"`), &got))
 	assert.Error(t, json.Unmarshal([]byte(`""`), &got))
+}
+
+// Calls the given function on each ended request, as an observer.
+type onEnded struct {
+	IgnoreEvents
+	f func(HistoryEntry)
+}
+
+func (o *onEnded) RequestEnded(e HistoryEntry) { o.f(e) }
+
+// An approval's cache entry and auto-approve rule exist before anyone hears that
+// the request ended, so the client's next request does not prompt again.
+func TestApprove_SettlesBeforeTheEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		approve func(*Manager, RequestID) error
+		settled func(*Manager, RequestInfo) bool
+	}{
+		{"cache entry", (*Manager).Approve, func(m *Manager, info RequestInfo) bool { return m.cache.covers(info) }},
+		{"auto-approve rule", (*Manager).ApproveAndAutoApprove, func(m *Manager, info RequestInfo) bool {
+			_, ok := m.CheckAutoApproveRules(info)
+			return ok
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				mgr := NewManagerForTest(ManagerConfig{ApprovalWindow: time.Minute})
+				info := getSecretRequest()
+				info.SenderInfo = LocalSenderForTest("gh", "/usr/bin/gh")
+				info.SenderInfo.Sender = busSender(":1.5").Sender
+
+				var settled bool
+				mgr.Subscribe(&onEnded{f: func(HistoryEntry) { settled = tc.settled(mgr, info) }})
+				call := startApproval(t.Context(), mgr, info)
+				require.NoError(t, tc.approve(mgr, waitPendingID(t, mgr)))
+				call.wait()
+				assert.True(t, settled, "observers heard of the end before the approval settled")
+			})
+		})
+	}
 }

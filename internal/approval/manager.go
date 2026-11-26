@@ -16,9 +16,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/google/uuid"
 	dbustypes "github.com/nikicat/secrets-dispatcher/internal/dbus"
-	"github.com/nikicat/secrets-dispatcher/internal/expiryset"
 	"github.com/nikicat/secrets-dispatcher/internal/procutil"
-	"github.com/nikicat/secrets-dispatcher/internal/sender"
 )
 
 // Reports a request that the user denied, or that Manager.Cancel ended.
@@ -455,10 +453,7 @@ type Manager struct {
 	history    []HistoryEntry
 	historyMax int
 
-	approvalWindow time.Duration
-	cacheMu        sync.Mutex
-	cache          expiryset.Set[approvalCacheKey]
-	clients        map[ClientName]bool // names held by running buses
+	cache approvalCache
 
 	autoApproveMu       sync.Mutex
 	autoApproveRules    []AutoApproveRule
@@ -493,7 +488,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		timeout:             cfg.Timeout,
 		observers:           make(map[Observer]struct{}),
 		historyMax:          cfg.HistoryMax,
-		approvalWindow:      cfg.ApprovalWindow,
+		cache:               approvalCache{window: cfg.ApprovalWindow},
 		autoApproveDuration: cmp.Or(cfg.AutoApproveDuration, DefaultAutoApproveDuration),
 		trustedSigners:      cfg.TrustedSigners,
 		ignoreChromeDummy:   cfg.IgnoreChromeDummy,
@@ -588,7 +583,7 @@ func (m *Manager) RequireApproval(ctx context.Context, info RequestInfo) (prompt
 		return false, ErrIgnored
 	}
 
-	if m.cachedApproval(info) {
+	if m.cache.covers(info) {
 		return false, nil
 	}
 
@@ -651,27 +646,27 @@ func (m *Manager) addPending(info RequestInfo) *pendingRequest {
 	m.mu.Lock()
 	if _, ok := m.pending[req.ID]; ok {
 		p.expiry = time.AfterFunc(time.Until(p.ExpiresAt), func() {
-			m.resolve(req.ID, ResolutionExpired, nil) //nolint:errcheck // resolved meanwhile is fine
+			m.resolve(req.ID, ResolutionExpired, nil, nil) //nolint:errcheck // resolved meanwhile is fine
 		})
 	}
 	m.mu.Unlock()
 	return p
 }
 
-// Ends the pending request with the given id and resolution, and tells
-// observers. Errors with ErrNotFound when no such request is pending, and with
-// the admit function's error, which leaves the request pending.
-func (m *Manager) resolve(id RequestID, res Resolution, admit func(*Request) error) (*Request, error) {
+// Ends the pending request with the given id and resolution, and runs settle
+// before its waiter and the observers hear of the end. Errors with ErrNotFound
+// when no such request is pending, and with admit's error, which keeps it pending.
+func (m *Manager) resolve(id RequestID, res Resolution, admit func(*Request) error, settle func(*Request)) error {
 	m.mu.Lock()
 	p, ok := m.pending[id]
 	if !ok {
 		m.mu.Unlock()
-		return nil, ErrNotFound
+		return ErrNotFound
 	}
 	if admit != nil {
 		if err := admit(p.Request); err != nil {
 			m.mu.Unlock()
-			return nil, err
+			return err
 		}
 	}
 	delete(m.pending, id)
@@ -679,11 +674,14 @@ func (m *Manager) resolve(id RequestID, res Resolution, admit func(*Request) err
 		p.expiry.Stop()
 	}
 	p.outcome = p.Request.historyEntry(res)
-	close(p.done)
 	m.mu.Unlock()
 
+	if settle != nil {
+		settle(p.Request)
+	}
+	close(p.done)
 	m.publishEnd(p.outcome)
-	return p.Request, nil
+	return nil
 }
 
 // Returns the requests that wait for the user and have not expired.
@@ -704,12 +702,7 @@ func (m *Manager) Pending() []Pending {
 // Approves the pending request with the given id and caches the approval of its
 // items. Errors with ErrNotFound when no such request is pending.
 func (m *Manager) Approve(id RequestID) error {
-	req, err := m.resolve(id, ResolutionApproved, nil)
-	if err != nil {
-		return err
-	}
-	m.cacheApproval(req)
-	return nil
+	return m.resolve(id, ResolutionApproved, nil, m.cache.putRequest)
 }
 
 // Approves the request as Approve does, errors included, and adds an
@@ -717,30 +710,25 @@ func (m *Manager) Approve(id RequestID) error {
 // ErrNotAutoApprovable, approving nothing, unless Request.AutoApprovable holds.
 func (m *Manager) ApproveAndAutoApprove(id RequestID) error {
 	var scope AutoApproveScope
-	req, err := m.resolve(id, ResolutionApproved, func(req *Request) (err error) {
+	return m.resolve(id, ResolutionApproved, func(req *Request) (err error) {
 		scope, err = req.AutoApproveScope()
 		return err
+	}, func(req *Request) {
+		m.cache.putRequest(req)
+		m.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
 	})
-	if err != nil {
-		return err
-	}
-	m.cacheApproval(req)
-	m.AddAutoApproveRule(scope, req.SenderInfo.InvokerName)
-	return nil
 }
 
 // Ends the pending request with the given id as denied by the user. Cancel ends
 // it with no decision. Errors with ErrNotFound when no such request is pending.
 func (m *Manager) Deny(id RequestID) error {
-	_, err := m.resolve(id, ResolutionDenied, nil)
-	return err
+	return m.resolve(id, ResolutionDenied, nil, nil)
 }
 
 // Ends the pending request with the given id as cancelled, recording no decision
 // by the user. Errors with ErrNotFound when no such request is pending.
 func (m *Manager) Cancel(id RequestID) error {
-	_, err := m.resolve(id, ResolutionCancelled, nil)
-	return err
+	return m.resolve(id, ResolutionCancelled, nil, nil)
 }
 
 // Returns the number of pending requests.
@@ -770,92 +758,28 @@ func (m *Manager) GetPending(id RequestID) (Pending, bool) {
 // is approved too, and the thin client then exits with its ExitCode.
 // Errors with ErrNotFound when no request with that id is pending.
 func (m *Manager) ApproveGPGSign(id RequestID, res GPGResult) error {
-	_, err := m.resolve(id, ResolutionApproved, func(req *Request) error {
+	return m.resolve(id, ResolutionApproved, func(req *Request) error {
 		req.GPGResult = res
 		return nil
-	})
-	return err
-}
-
-// Identifies an item approved for a sender. Each bus numbers its own senders,
-// so the client is part of the key.
-type approvalCacheKey struct {
-	client   ClientName
-	sender   sender.UniqueName
-	itemPath string
-}
-
-// Returns the cache key for an approval of the item at the given path for this
-// sender. Reports false when the sender has no unique bus name, since another
-// process could then reuse the approval (ADR 0004).
-func (s SenderInfo) cacheKey(itemPath string) (approvalCacheKey, bool) {
-	if s.Sender == nil {
-		return approvalCacheKey{}, false
-	}
-	return approvalCacheKey{s.Client, *s.Sender, itemPath}, true
-}
-
-func (m *Manager) cachesApprovals() bool {
-	return m.approvalWindow > 0
-}
-
-// Checks whether every item of the given request was recently approved for the
-// same sender (ADR 0004). A request with no items, or of a type that is not
-// cacheable, is never answered from the cache.
-func (m *Manager) cachedApproval(info RequestInfo) bool {
-	if !m.cachesApprovals() || !info.Type.cacheable() || len(info.Items) == 0 {
-		return false
-	}
-	m.cacheMu.Lock()
-	defer m.cacheMu.Unlock()
-
-	for _, item := range info.Items {
-		key, ok := info.SenderInfo.cacheKey(item.Path)
-		if !ok || !m.cache.Has(key) {
-			return false
-		}
-	}
-	return true
+	}, nil)
 }
 
 // Caches an approval of the item at the given path for the given sender, as if
 // the user had approved it.
 func (m *Manager) CacheItemForSender(senderInfo SenderInfo, itemPath string) {
-	if !m.cachesApprovals() {
-		return
-	}
-
-	m.cacheMu.Lock()
-	defer m.cacheMu.Unlock()
-
-	if key, ok := senderInfo.cacheKey(itemPath); ok {
-		m.cache.Put(key, time.Now().Add(m.approvalWindow))
-	}
+	m.cache.put(senderInfo, itemPath)
 }
 
 // Claims the given client name for a bus. Reports false when another bus
-// already holds the name, so that one name never stands for two buses while
-// approvals for it may be cached.
-func (m *Manager) ClaimClient(name ClientName) bool {
-	m.cacheMu.Lock()
-	defer m.cacheMu.Unlock()
-	if m.clients[name] {
-		return false
-	}
-	if m.clients == nil {
-		m.clients = map[ClientName]bool{}
-	}
-	m.clients[name] = true
-	return true
+// already holds the name, so that one name never stands for two buses at once.
+func (m *Manager) ClaimClient(name ClientName) (ClientClaim, bool) {
+	return m.cache.claim(name)
 }
 
-// Releases the given client name after its bus has stopped, and forgets the
-// approvals cached for that name, for the reason approvalCacheKey gives.
-func (m *Manager) ReleaseClient(name ClientName) {
-	m.cacheMu.Lock()
-	defer m.cacheMu.Unlock()
-	delete(m.clients, name)
-	m.cache.DeleteFunc(func(key approvalCacheKey) bool { return key.client == name })
+// Releases the claim after its bus has stopped, and forgets the approvals
+// cached under it.
+func (m *Manager) ReleaseClient(c ClientClaim) {
+	m.cache.release(c)
 }
 
 func (m *Manager) AutoApproveDuration() time.Duration {
@@ -1038,11 +962,4 @@ func (m *Manager) settleByRule(rule TrustRule, info RequestInfo) error {
 // and tells observers that it ended.
 func (m *Manager) record(res Resolution, info RequestInfo) {
 	m.publishEnd(info.newRecord().historyEntry(res))
-}
-
-// Caches the approval of each of the request's items for its sender.
-func (m *Manager) cacheApproval(req *Request) {
-	for _, item := range req.Items {
-		m.CacheItemForSender(req.SenderInfo, item.Path)
-	}
 }

@@ -55,14 +55,16 @@ func TestManager_StartProxy_ClientNameHeld(t *testing.T) {
 	socketPath := tempDir.Socket("vm")
 
 	// Another bus holds "vm", so the socket is skipped and the name stays with its holder.
-	approvalMgr.ClaimClient("vm")
+	held, _ := approvalMgr.ClaimClient("vm")
 	mgr.startProxy(t.Context(), socketPath)
-	require.False(t, approvalMgr.ClaimClient("vm"), "skipped socket released a name another bus holds")
+	_, ok := approvalMgr.ClaimClient("vm")
+	require.False(t, ok, "skipped socket released a name another bus holds")
 
 	// A proxy that fails to start gives its name back.
-	approvalMgr.ReleaseClient("vm")
+	approvalMgr.ReleaseClient(held)
 	mgr.startProxy(t.Context(), socketPath)
-	require.True(t, approvalMgr.ClaimClient("vm"), "failed proxy kept its client name")
+	_, ok = approvalMgr.ClaimClient("vm")
+	require.True(t, ok, "failed proxy kept its client name")
 }
 
 func TestManager_StopProxy_WaitsForName(t *testing.T) {
@@ -80,6 +82,7 @@ func TestManager_StopProxy_WaitsForName(t *testing.T) {
 	go mgr.serve(ctx, socketPath, inst)
 
 	mgr.stopProxy(socketPath)
-	require.True(t, approvalMgr.ClaimClient("vm"), "stopProxy returned before the client name was free")
+	_, ok := approvalMgr.ClaimClient("vm")
+	require.True(t, ok, "stopProxy returned before the client name was free")
 	require.Empty(t, mgr.Clients(), "stopped proxy is still listed")
 }

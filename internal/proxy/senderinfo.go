@@ -20,16 +20,17 @@ type dbusClient interface {
 }
 
 type SenderInfoResolver struct {
-	client     dbusClient
-	clientName approval.ClientName // set as every resolved SenderInfo's Client
+	client dbusClient
+	// The claim of the bus whose senders it resolves.
+	claim approval.ClientClaim
 	// Nil when the bus is forwarded from another machine or container. Its PIDs
 	// belong to another PID namespace, so /proc and systemd here would describe
 	// an unrelated process.
 	local *sender.ChainReader
 }
 
-func newSenderInfoResolver(conn *dbus.Conn, clientName approval.ClientName, local *sender.ChainReader) *SenderInfoResolver {
-	return &SenderInfoResolver{client: realDBusClient{busDaemon{conn}}, clientName: clientName, local: local}
+func newSenderInfoResolver(conn *dbus.Conn, claim approval.ClientClaim, local *sender.ChainReader) *SenderInfoResolver {
+	return &SenderInfoResolver{client: realDBusClient{busDaemon{conn}}, claim: claim, local: local}
 }
 
 // Returns a local resolver that asks the given client about senders.
@@ -41,7 +42,7 @@ func newSenderInfoResolverWithClient(client dbusClient) *SenderInfoResolver {
 // systemd unit and process chain. The bus is asked in a way that works over an
 // SSH tunnel (ADR 0003).
 func (r *SenderInfoResolver) Resolve(name sender.UniqueName) approval.SenderInfo {
-	info := approval.SenderInfo{Client: r.clientName, Sender: &name}
+	info := r.claim.Sender(name)
 
 	// Get PID
 	pid, err := r.client.connectionPID(name)

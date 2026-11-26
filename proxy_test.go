@@ -78,7 +78,7 @@ func (e *testEnv) registerMock() *testutil.MockSecretService {
 func (e *testEnv) newProxy(mgr *approval.Manager) *proxy.Proxy {
 	e.t.Helper()
 
-	p := proxy.New(testClient, mgr, proxy.Config{})
+	p := proxy.New(approval.ClientClaim{Name: testClient}, mgr, proxy.Config{})
 	require.NoError(e.t, e.connectProxy(p), "connect proxy")
 	e.t.Cleanup(func() { p.Close() })
 	return p

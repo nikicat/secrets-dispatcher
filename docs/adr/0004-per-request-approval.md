@@ -20,6 +20,10 @@ hand, trains the user to click approve without reading.
   the cache each read would prompt again. Deletes and writes always prompt. A bulk
   `GetSecrets(items[])` is one request with one prompt, and the cache answers it
   only when every item is cached.
+- **A cached approval stays with the bus it was given on.** Each bus numbers its
+  senders from the start, so the bus that next takes a client name can have a
+  sender with the unique name of an old one. An approval given on one bus never
+  answers a sender of another, however late it arrives.
 - **Unanswered requests expire** after `timeout` (default 5m) and fail.
 - **Auto-approve is opt-in and time-boxed.** "Approve and auto-approve" creates
   a temporary rule for the matching pattern lasting

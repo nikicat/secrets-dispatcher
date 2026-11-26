@@ -49,7 +49,7 @@ func TestProxyFailsWhenSessionBusNameIsHeld(t *testing.T) {
 	require.NoError(t, err)
 	frontConn, err := dbus.Connect(frontAddr)
 	require.NoError(t, err)
-	p := New(approval.ClientName(t.Name()), approval.NewDisabledManager(), Config{Local: &sender.ChainReader{}})
+	p := New(approval.ClientClaim{Name: approval.ClientName(t.Name())}, approval.NewDisabledManager(), Config{Local: &sender.ChainReader{}})
 	require.ErrorIs(t, p.ConnectWith(frontConn, backendConn), errBusNameTaken)
 }
 

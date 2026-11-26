@@ -136,7 +136,7 @@ func (m *Manager) Clients() []ClientInfo {
 	clients := make([]ClientInfo, 0, len(proxies))
 	for path, inst := range proxies {
 		clients = append(clients, ClientInfo{
-			Name:       inst.proxy.clientName,
+			Name:       inst.proxy.claim.Name,
 			SocketPath: path,
 		})
 	}
@@ -262,16 +262,16 @@ func (m *Manager) serve(ctx context.Context, socketPath unixsock.Path, inst *pro
 	if err != nil && !errors.Is(err, context.Canceled) {
 		slog.Error("proxy error",
 			"socket", socketPath,
-			"client", p.clientName,
+			"client", p.claim.Name,
 			"error", err)
 	}
 	p.Close()
 
 	slog.Info("stopped proxy",
 		"socket", socketPath,
-		"client", p.clientName)
+		"client", p.claim.Name)
 
-	m.notifyDisconnected(ClientInfo{Name: p.clientName, SocketPath: socketPath})
+	m.notifyDisconnected(ClientInfo{Name: p.claim.Name, SocketPath: socketPath})
 	inst.claim.Release()
 	// Last, so that stopProxy still finds the entry, and waits on done, until the name is free.
 	m.proxies.remove(socketPath)

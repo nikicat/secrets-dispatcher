@@ -240,15 +240,6 @@ func (h *Handlers) HandleLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
-// convertHistoryEntry converts an approval.HistoryEntry to an API HistoryEntry.
-func convertHistoryEntry(entry approval.HistoryEntry) HistoryEntry {
-	return HistoryEntry{
-		Request:    convertRequest(entry.Request),
-		Resolution: entry.Resolution,
-		ResolvedAt: entry.ResolvedAt,
-	}
-}
-
 // extractRequestID extracts the request ID from a path like /api/v1/pending/{id}/action.
 func extractRequestID(path, prefix, suffix string) approval.RequestID {
 	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
@@ -344,31 +335,7 @@ func (h *Handlers) HandleTestInjectHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Convert API HistoryEntry to approval.HistoryEntry
-	items := make([]approval.ItemInfo, len(entry.Request.Items))
-	for i, item := range entry.Request.Items {
-		items[i] = approval.ItemInfo{
-			Path:       item.Path,
-			Label:      item.Label,
-			Attributes: item.Attributes,
-		}
-	}
-
-	approvalEntry := approval.HistoryEntry{
-		Request: &approval.Request{
-			ID:         entry.Request.ID,
-			Items:      items,
-			Session:    entry.Request.Session,
-			CreatedAt:  entry.Request.CreatedAt,
-			Type:       entry.Request.Type,
-			Payload:    entry.Request.payload(),
-			SenderInfo: approval.SenderInfo{Info: entry.Request.SenderInfo, Client: entry.Request.Client},
-		},
-		Resolution: entry.Resolution,
-		ResolvedAt: entry.ResolvedAt,
-	}
-
-	h.resolver.Manager.AddHistoryEntry(approvalEntry)
+	h.resolver.Manager.AddHistoryEntry(entry.entry())
 
 	writeJSON(w, ActionResponse{Status: ActionCreated})
 }

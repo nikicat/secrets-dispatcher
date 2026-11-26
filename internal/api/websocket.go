@@ -379,42 +379,6 @@ func (wsc *wsConnection) close() {
 	wsc.conn.Close(websocket.StatusNormalClosure, "")
 }
 
-// Returns the request as the API sends it.
-func convertRequest(req *approval.Request) RequestRecord {
-	items := make([]ItemInfo, len(req.Items))
-	for i, item := range req.Items {
-		items[i] = ItemInfo{
-			Path:       item.Path,
-			Label:      item.Label,
-			Attributes: item.Attributes,
-			Collection: item.CollectionName(),
-		}
-	}
-	sign, _ := req.GPGSign()
-	search, _ := req.Search()
-	var scope *approval.AutoApproveScope
-	if s, err := req.AutoApproveScope(); err == nil {
-		scope = &s
-	}
-	return RequestRecord{
-		ID:               req.ID,
-		Client:           req.SenderInfo.Client,
-		Items:            items,
-		Session:          req.Session,
-		CreatedAt:        req.CreatedAt,
-		Type:             req.Type,
-		SearchAttributes: search.Attributes,
-		SenderInfo:       req.SenderInfo.Info,
-		GPGSignInfo:      sign,
-		AutoApproveScope: scope,
-	}
-}
-
-// Returns the pending request as the API sends it.
-func convertPending(p approval.Pending) PendingRequest {
-	return PendingRequest{RequestRecord: convertRequest(p.Request), ExpiresAt: p.ExpiresAt}
-}
-
 func pendingRequests(m *approval.Manager) []PendingRequest {
 	pending := m.Pending()
 	requests := make([]PendingRequest, len(pending))
@@ -431,10 +395,6 @@ func historyEntries(m *approval.Manager) []HistoryEntry {
 		entries[i] = convertHistoryEntry(entry)
 	}
 	return entries
-}
-
-func convertTrustRule(rule approval.TrustRule) TrustRule {
-	return TrustRule{TrustRule: rule, Client: rule.ClientGlob()}
 }
 
 func trustRules(m *approval.Manager) []TrustRule {

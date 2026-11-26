@@ -14,17 +14,30 @@ type installInputs struct {
 	mode       Mode
 	topology   topology
 	runtimeDir config.RuntimeDir
-	configPath config.File
+	draft      config.Draft
 	execStart  systemd.Command // proxy unit ExecStart
+	start      bool
 }
 
+// Returns the inputs of an install with opts. Errors with config.ErrNoRuntimeDir
+// when there is no runtime directory. Errors when the config does not load, and
+// as resolveMode and Mode.topology do.
 func resolveInstallInputs(ctx context.Context, opts Options) (installInputs, error) {
-	topology, err := opts.Mode.topology(ctx, opts.Backend)
+	draft, err := opts.config().Draft()
 	if err != nil {
 		return installInputs{}, err
 	}
 
 	runtimeDir, err := config.LookupRuntimeDir()
+	if err != nil {
+		return installInputs{}, err
+	}
+
+	mode, err := resolveMode(opts.Mode, draft.Serve.TopologyConfig, runtimeDir)
+	if err != nil {
+		return installInputs{}, err
+	}
+	topology, err := mode.topology(ctx, opts.Backend)
 	if err != nil {
 		return installInputs{}, err
 	}
@@ -38,17 +51,13 @@ func resolveInstallInputs(ctx context.Context, opts Options) (installInputs, err
 		return installInputs{}, fmt.Errorf("resolve executable: %w", err)
 	}
 
-	source, err := opts.ConfigPath.OrDefault()
-	if err != nil {
-		return installInputs{}, err
-	}
-
 	return installInputs{
-		mode:       opts.Mode,
+		mode:       mode,
 		topology:   topology,
 		runtimeDir: runtimeDir,
-		configPath: source.File,
-		execStart:  systemd.NewCommand(self, config.ServeArgs(source.File)...),
+		draft:      draft,
+		execStart:  systemd.NewCommand(self, config.ServeArgs(draft.File())...),
+		start:      opts.Start,
 	}, nil
 }
 
@@ -63,7 +72,6 @@ const (
 	// Runs the command that the target spells, or a call that does the same.
 	changeRun    changeOp = "run"
 	changeSignal changeOp = "signal"
-	changeCopy   changeOp = "copy"
 )
 
 // One action of the service setup, as the dry run prints it (ARCHITECTURE.md,
@@ -106,14 +114,19 @@ type installPlan struct {
 	start    bool
 }
 
-// Returns the plan of an install with opts into the layout. It makes no
-// change. Errors as Mode.topology, topology.prepare and topology.units do,
-// and with config.ErrNoRuntimeDir when there is no runtime directory.
+// Returns the installPlan of an install with opts into the layout. Errors as
+// resolveInstallInputs and layout.plan do.
 func (l layout) planInstall(ctx context.Context, opts Options) (installPlan, error) {
 	in, err := resolveInstallInputs(ctx, opts)
 	if err != nil {
 		return installPlan{}, err
 	}
+	return l.plan(in)
+}
+
+// Returns the installPlan of an install of the given inputs into the layout. It
+// makes no change. Errors as topology.prepare and topology.units do.
+func (l layout) plan(in installInputs) (installPlan, error) {
 	steps := []step{in.writeTopologyStep()}
 
 	prepare, err := in.topology.prepare(l.files)
@@ -143,12 +156,12 @@ func (l layout) planInstall(ctx context.Context, opts Options) (installPlan, err
 	for _, u := range in.topology.activated() {
 		steps = append(steps, unitStep(opEnable, u, ""))
 	}
-	if opts.Start {
+	if in.start {
 		for _, u := range in.topology.activated() {
 			steps = append(steps, unitStep(opStart, u, ""))
 		}
 	}
-	return installPlan{steps: steps, topology: in.topology, start: opts.Start}, nil
+	return installPlan{steps: steps, topology: in.topology, start: in.start}, nil
 }
 
 // Returns the changes that Install(opts) makes, in order, without making any.

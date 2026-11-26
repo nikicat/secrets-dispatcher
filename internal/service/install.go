@@ -113,17 +113,33 @@ const (
 	formerDBusActivationMask = "[D-BUS Service]\nName=" + dbustypes.BusName + "\nExec=/bin/false\n"
 )
 
+type ConfigSource interface {
+	// Returns the settings as a draft that saves to the file that the proxy
+	// unit's `serve` command reads.
+	Draft() (config.Draft, error)
+}
+
 type Options struct {
-	// The config file that the proxy unit's `serve` command reads. Install
-	// rewrites its serve topology and keeps every other setting.
-	ConfigPath config.Path
+	// The config that the install reads and writes. The install rewrites its
+	// serve topology and keeps every other setting. Nil reads and writes the
+	// default config file.
+	Config ConfigSource
 	// Start the service immediately after enabling.
 	Start bool
-	Mode  Mode
+	// Nil keeps the mode that the config already serves, or DefaultMode when it
+	// serves nothing (ARCHITECTURE.md, "Service setup").
+	Mode *Mode
 	// A takeover's private backend; nil picks it from the provider.
 	Backend *Backend
 	// How much of its work Install prints. Plan ignores it.
 	Narration Narration
+}
+
+func (o Options) config() ConfigSource {
+	if o.Config == nil {
+		return config.Path("")
+	}
+	return o.Config
 }
 
 // How much of its work the service setup prints. Milestones always print.
@@ -182,8 +198,8 @@ func (h host) narrateFileChanges(changes []unitFileChange) {
 // Replaced in tests.
 var lookPathFunc = exec.LookPath
 
-// Installs and enables the units of opts.Mode, and starts them when opts.Start
-// is set. A local or full install takes org.freedesktop.secrets over (ADR
+// Installs and enables the service units of the install mode, and starts them
+// when opts.Start is set. A local or full install takes org.freedesktop.secrets over (ADR
 // 0001). It makes the changes that Plan lists (ARCHITECTURE.md, "Service setup").
 func Install(ctx context.Context, opts Options) error {
 	l, err := locateLayout()
@@ -245,20 +261,15 @@ func reportOwnership(ctx context.Context) {
 	fmt.Printf("WARNING: org.freedesktop.secrets is owned by %s — secrets-dispatcher is NOT in front\n", p)
 }
 
-// Returns the step that writes the topology's serve upstream and downstream
-// into the config file.
+// Returns the step that writes the serve topology into the config file.
 func (in installInputs) writeTopologyStep() step {
 	note := "set serve topology: " + in.mode.String() + " (other settings preserved)"
-	return step{Change{changeWrite, in.configPath.String(), note}, func(_ context.Context, h host) error {
-		cfg, err := in.configPath.LoadOrEmpty()
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-		cfg.Serve.Upstream, cfg.Serve.Downstream = in.topology.serve(in.runtimeDir)
-		if err := in.configPath.Save(cfg); err != nil {
+	return step{Change{changeWrite, in.draft.File().String(), note}, func(_ context.Context, h host) error {
+		in.draft.Serve.TopologyConfig = in.topology.serve(in.runtimeDir)
+		if err := in.draft.Save(); err != nil {
 			return err
 		}
-		h.narration.printf("Wrote config: %s\n", in.configPath)
+		h.narration.printf("Wrote config: %s\n", in.draft.File())
 		return nil
 	}}
 }

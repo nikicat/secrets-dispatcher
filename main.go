@@ -130,7 +130,7 @@ func helpVars() kong.Vars {
 		"default_history_limit": strconv.Itoa(config.DefaultHistoryLimit),
 		"default_notifications": strconv.FormatBool(config.DefaultNotifications),
 		"modes":                 service.Modes.String(),
-		"default_mode":          service.ModeLocal.String(),
+		"default_mode":          service.DefaultMode.String(),
 		"default_home_base":     companion.DefaultHomeBase,
 		"backends":              service.BackendKeywords(),
 	}
@@ -403,7 +403,7 @@ type serviceCmd struct {
 type serviceInstallCmd struct {
 	Start bool `default:"true" negatable:"" help:"Start the service now. Otherwise it starts at the next login."`
 	configFlag
-	Mode service.Mode `default:"${default_mode}" placeholder:"MODE" help:"Topology mode: ${modes} (default: ${default}). local gates this desktop, remote serves secrets to remote hosts, and full does both."`
+	Mode *service.Mode `placeholder:"MODE" help:"Topology mode: ${modes} (default: the installed mode, or ${default_mode}). local gates this desktop, remote serves secrets to remote hosts, and full does both."`
 	backendFlag
 	DryRun bool `help:"Print what the install would change, then exit without changing anything."`
 	narrationFlag
@@ -411,11 +411,11 @@ type serviceInstallCmd struct {
 
 func (c serviceInstallCmd) Run(ctx context.Context) error {
 	opts := service.Options{
-		ConfigPath: c.Config,
-		Start:      c.Start,
-		Mode:       c.Mode,
-		Backend:    c.Backend,
-		Narration:  c.narration(),
+		Config:    c.Config,
+		Start:     c.Start,
+		Mode:      c.Mode,
+		Backend:   c.Backend,
+		Narration: c.narration(),
 	}
 	if c.DryRun {
 		return service.PrintPlan(ctx, opts)

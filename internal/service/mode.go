@@ -32,10 +32,57 @@ func (m *Mode) UnmarshalText(text []byte) error {
 	return err
 }
 
-// Returns the topology that m sets up, with b as a takeover's private backend.
-// Detects the provider that a takeover displaces. Errors when m names no mode,
-// or when b is set for remote, which has no private backend.
+// The mode of a first install.
+const DefaultMode = ModeLocal
+
+// Returns the mode that m names. A nil m means what a nil Options.Mode means.
+// Errors as installedMode does.
+func resolveMode(m *Mode, t config.TopologyConfig, rd config.RuntimeDir) (Mode, error) {
+	if m != nil {
+		return *m, nil
+	}
+	return installedMode(t, rd)
+}
+
+// Returns the mode whose topology serves what t serves, and DefaultMode when t
+// serves nothing. Errors when no mode's topology serves it.
+func installedMode(t config.TopologyConfig, rd config.RuntimeDir) (Mode, error) {
+	if len(t.Downstream) == 0 {
+		return DefaultMode, nil
+	}
+	for _, m := range Modes.Values() {
+		served, err := m.served(rd)
+		if err != nil {
+			return "", err
+		}
+		if served.Equal(t) {
+			return m, nil
+		}
+	}
+	return "", fmt.Errorf("the config serves none of the install modes %s", Modes)
+}
+
+// Returns the serve topology that m sets up in rd. Errors when m names no mode.
+func (m Mode) served(rd config.RuntimeDir) (config.TopologyConfig, error) {
+	t, err := m.build(nil, func() Provider { return Provider{} })
+	if err != nil {
+		return config.TopologyConfig{}, err
+	}
+	return t.serve(rd), nil
+}
+
+// Returns the topology that Mode.build returns. A takeover displaces the
+// provider that DetectProvider finds on the session bus. Errors as Mode.build
+// does.
 func (m Mode) topology(ctx context.Context, b *Backend) (topology, error) {
+	return m.build(b, func() Provider { return DetectProvider(ctx) })
+}
+
+// Returns the topology that m sets up, with b as a takeover's private backend
+// and detect's result as the provider that a takeover displaces. Calls detect
+// only for a takeover. Errors when m names no mode, or when b is set for
+// remote, which has no private backend.
+func (m Mode) build(b *Backend, detect func() Provider) (topology, error) {
 	switch m {
 	case ModeRemote:
 		if b != nil {
@@ -43,9 +90,9 @@ func (m Mode) topology(ctx context.Context, b *Backend) (topology, error) {
 		}
 		return remote{}, nil
 	case ModeLocal:
-		return newTakeover(b, DetectProvider(ctx)), nil
+		return newTakeover(b, detect()), nil
 	case ModeFull:
-		return full{newTakeover(b, DetectProvider(ctx))}, nil
+		return full{newTakeover(b, detect())}, nil
 	}
 	return nil, Modes.Unknown(m)
 }

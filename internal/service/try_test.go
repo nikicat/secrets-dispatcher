@@ -96,6 +96,7 @@ func TestTryInstallsThenRestoresEverything(t *testing.T) {
 	trialData, err := os.ReadFile(trialConfig)
 	require.NoError(t, err)
 	assert.Contains(t, string(trialData), "127.0.0.1:9999")
+	testutil.AssertPerm(t, trialConfig, 0600)
 
 	// Ctrl-C.
 	cancel()

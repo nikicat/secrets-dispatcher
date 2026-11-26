@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 func TestLookupStateDir(t *testing.T) {
@@ -50,11 +52,8 @@ func TestWriteTokenRoundTrip(t *testing.T) {
 	token, err := dir.ReadToken()
 	require.NoError(t, err)
 	assert.Equal(t, AuthToken("my-secret-token"), token)
-	for path, want := range map[string]os.FileMode{string(dir): 0o700, dir.Cookie(): 0o600} {
-		info, err := os.Stat(path)
-		require.NoError(t, err)
-		assert.Equal(t, want, info.Mode().Perm(), path)
-	}
+	testutil.AssertPerm(t, string(dir), 0o700)
+	testutil.AssertPerm(t, dir.Cookie(), 0o600)
 }
 
 func TestStateDirOrDefault(t *testing.T) {
@@ -80,9 +79,7 @@ func TestLoadStateDir(t *testing.T) {
 		{name: "relative", yaml: "state_dir: state\n", wantErr: `state directory must be an absolute path: "state"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.yaml")
-			os.WriteFile(path, []byte(tc.yaml), 0o644)
-			cfg, err := File{path}.Load()
+			cfg, err := yamlFile(t, tc.yaml).Load()
 			if tc.wantErr != "" {
 				assert.ErrorContains(t, err, tc.wantErr)
 				return

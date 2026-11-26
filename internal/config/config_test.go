@@ -14,10 +14,24 @@ import (
 	"github.com/nikicat/secrets-dispatcher/internal/approval"
 )
 
+// Writes text to config.yaml in a new temporary directory.
+func yamlFile(t *testing.T, text string) File {
+	t.Helper()
+	f := File{path: filepath.Join(t.TempDir(), "config.yaml")}
+	require.NoError(t, os.WriteFile(f.path, []byte(text), 0o644))
+	return f
+}
+
+func topology(up Upstream, down ...Bus) TopologyConfig {
+	topo := TopologyConfig{Upstream: UpstreamConfig{Bus: up}}
+	for _, b := range down {
+		topo.Downstream = append(topo.Downstream, BusConfig{Bus: b})
+	}
+	return topo
+}
+
 func TestLoadFullConfig(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	cfg, err := yamlFile(t, `
 state_dir: /tmp/state
 listen: 0.0.0.0:9090
 serve:
@@ -32,9 +46,7 @@ serve:
   timeout: 10m
   history_limit: 50
   notifications: false
-`), 0o644)
-
-	cfg, err := File{path}.Load()
+`).Load()
 	require.NoError(t, err)
 
 	assert.Equal(t, StateDir("/tmp/state"), cfg.StateDir)
@@ -49,15 +61,11 @@ serve:
 }
 
 func TestLoadPartialConfig(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	cfg, err := yamlFile(t, `
 listen: 127.0.0.1:5555
 serve:
   log_level: warn
-`), 0o644)
-
-	cfg, err := File{path}.Load()
+`).Load()
 	require.NoError(t, err)
 
 	assert.Equal(t, ListenAddr("127.0.0.1:5555"), cfg.Listen)
@@ -71,32 +79,22 @@ serve:
 }
 
 func TestLoadInvalidYAML(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`{{{not yaml`), 0o644)
-
-	_, err := File{path}.Load()
+	_, err := yamlFile(t, `{{{not yaml`).Load()
 	assert.Error(t, err)
 }
 
 func TestLoadInvalidDuration(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	_, err := yamlFile(t, `
 serve:
   timeout: not-a-duration
-`), 0o644)
-
-	_, err := File{path}.Load()
+`).Load()
 	assert.Error(t, err)
 }
 
 // A negative auto_approve_duration would expire every rule as it is added.
 func TestLoadAutoApproveDurationSign(t *testing.T) {
 	load := func(value string) (*Config, error) {
-		path := filepath.Join(t.TempDir(), "config.yaml")
-		require.NoError(t, os.WriteFile(path, []byte("serve:\n  auto_approve_duration: "+value+"\n"), 0o644))
-		return File{path}.Load()
+		return yamlFile(t, "serve:\n  auto_approve_duration: "+value+"\n").Load()
 	}
 
 	_, err := load("-5m")
@@ -119,14 +117,12 @@ func TestDurationYAMLRoundTrip(t *testing.T) {
 }
 
 func TestBusConfigYAMLRoundTrip(t *testing.T) {
-	in := ServeConfig{
-		Upstream: UpstreamConfig{Bus: Socket{Path: "run/up.sock"}},
-		Downstream: []BusConfig{
-			{Bus: Sockets{Dir: "/run/socks"}},
-			{Bus: SessionBus{}},
-			{Bus: Socket{Path: "/run/vm.sock"}},
-		},
-	}
+	in := ServeConfig{TopologyConfig: topology(
+		Socket{Path: "run/up.sock"},
+		Sockets{Dir: "/run/socks"},
+		SessionBus{},
+		Socket{Path: "/run/vm.sock"},
+	)}
 	data, err := yaml.Marshal(in)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `upstream:
@@ -142,46 +138,35 @@ downstream:
 
 	var out ServeConfig
 	require.NoError(t, yaml.Unmarshal(data, &out))
-	assert.Equal(t, in.Upstream, out.Upstream)
-	assert.Equal(t, in.Downstream, out.Downstream)
+	assert.Equal(t, in.TopologyConfig, out.TopologyConfig)
 }
 
 func TestLoadInvalidRemoteName(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	os.WriteFile(path, []byte(`
+	_, err := yamlFile(t, `
 serve:
   remotes:
     - name: ../api
-`), 0o644)
-
-	_, err := File{path}.Load()
+`).Load()
 	assert.ErrorContains(t, err, `invalid remote name "../api"`)
 }
 
 // A relative exe_path could never match, since /proc reports every executable
 // by its absolute path.
 func TestLoadRelativeTrustedSignerExePath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`
+	_, err := yamlFile(t, `
 serve:
   trusted_signers:
     - exe_path: bin/nvim
-`), 0o644))
-
-	_, err := File{path}.Load()
+`).Load()
 	assert.ErrorContains(t, err, `path must be absolute: "bin/nvim"`)
 }
 
 func TestResolveTrustedSignerWithoutExePath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`
+	cfg, err := yamlFile(t, `
 serve:
   trusted_signers:
     - repo_path: dotfiles
-`), 0o644))
-
-	cfg, err := File{path}.Load()
+`).Load()
 	require.NoError(t, err)
 	_, err = cfg.Resolve()
 	assert.ErrorContains(t, err, "trusted_signers[0]: exe_path is required")
@@ -197,10 +182,7 @@ func TestLoadRejectsInvalidGlob(t *testing.T) {
 		"search_attributes: {service: '['}",
 	} {
 		t.Run(field, func(t *testing.T) {
-			file := filepath.Join(t.TempDir(), "config.yaml")
-			require.NoError(t, os.WriteFile(file, []byte("serve:\n  rules:\n    - "+field+"\n"), 0o644))
-
-			_, err := File{file}.Load()
+			_, err := yamlFile(t, "serve:\n  rules:\n    - "+field+"\n").Load()
 			assert.ErrorIs(t, err, path.ErrBadPattern)
 		})
 	}
@@ -215,20 +197,14 @@ func TestLoadRejectsEmptyGlob(t *testing.T) {
 		"search_attributes: {service: ''}",
 	} {
 		t.Run(field, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.yaml")
-			require.NoError(t, os.WriteFile(path, []byte("serve:\n  rules:\n    - "+field+"\n"), 0o644))
-
-			_, err := File{path}.Load()
+			_, err := yamlFile(t, "serve:\n  rules:\n    - "+field+"\n").Load()
 			assert.ErrorContains(t, err, "empty glob; omit the key")
 		})
 	}
 }
 
 func TestLoadReadsNullScalarGlobAsOmitted(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("serve:\n  rules:\n    - process: {unit: , exe: null}\n"), 0o644))
-
-	cfg, err := File{path}.Load()
+	cfg, err := yamlFile(t, "serve:\n  rules:\n    - process: {unit: , exe: null}\n").Load()
 	require.NoError(t, err)
 	assert.Equal(t, approval.ProcessMatcher{}, *cfg.Serve.Rules[0].Process)
 }
@@ -292,17 +268,14 @@ serve:
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.yaml")
-			os.WriteFile(path, []byte(tc.yaml), 0o644)
-			_, err := File{path}.Load()
+			_, err := yamlFile(t, tc.yaml).Load()
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
 
 func TestRuleActionDefaultsToApprove(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	os.WriteFile(path, []byte(`
+	cfg, err := yamlFile(t, `
 serve:
   rules:
     - name: no-action
@@ -310,8 +283,7 @@ serve:
         exe: /usr/bin/git
     - name: empty-action
       action: ""
-`), 0o644)
-	cfg, err := File{path}.Load()
+`).Load()
 	require.NoError(t, err)
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	out, err := cfg.WithDefaults()
@@ -354,7 +326,7 @@ func TestWithDefaultsSSH(t *testing.T) {
 		t.Setenv("SSH_AUTH_SOCK", "/tmp/real-agent.sock")
 		want := SSHConfig{Upstream: "/tmp/up.sock", Listen: "/tmp/agent.sock"}
 		cfg := &Config{
-			Serve: ServeConfig{Downstream: []BusConfig{{Bus: Socket{Path: "/tmp/bus.sock"}}}},
+			Serve: ServeConfig{TopologyConfig: topology(nil, Socket{Path: "/tmp/bus.sock"})},
 			SSH:   &want,
 		}
 		out, err := cfg.WithDefaults()
@@ -370,7 +342,7 @@ func TestWithDefaultsSSH(t *testing.T) {
 	t.Run("listen without runtime dir", func(t *testing.T) {
 		t.Setenv("XDG_RUNTIME_DIR", "")
 		cfg := &Config{
-			Serve: ServeConfig{Downstream: []BusConfig{{Bus: Socket{Path: "/tmp/bus.sock"}}}},
+			Serve: ServeConfig{TopologyConfig: topology(nil, Socket{Path: "/tmp/bus.sock"})},
 			SSH:   &SSHConfig{Upstream: "/tmp/up.sock"},
 		}
 		_, err := cfg.WithDefaults()
@@ -393,95 +365,83 @@ func TestResolveValidates(t *testing.T) {
 		{
 			name: "valid session_bus upstream + sockets downstream",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
+				TopologyConfig: topology(SessionBus{}, Sockets{Dir: "/run/socks"}),
 			}},
 		},
 		{
 			name: "valid socket upstream + session_bus downstream",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: Socket{Path: "/run/up.sock"}},
-				Downstream: []BusConfig{{Bus: SessionBus{}}},
+				TopologyConfig: topology(Socket{Path: "/run/up.sock"}, SessionBus{}),
 			}},
 		},
 		{
 			name: "valid remotes",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Remotes:    []RemoteConfig{{Name: "nb-home"}, {Name: "ci-2"}},
+				TopologyConfig: topology(SessionBus{}, Sockets{Dir: "/run/socks"}),
+				Remotes:        []RemoteConfig{{Name: "nb-home"}, {Name: "ci-2"}},
 			}},
 		},
 		{
 			name: "duplicate remote",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Remotes:    []RemoteConfig{{Name: "nb-home"}, {Name: "nb-home"}},
+				TopologyConfig: topology(SessionBus{}, Sockets{Dir: "/run/socks"}),
+				Remotes:        []RemoteConfig{{Name: "nb-home"}, {Name: "nb-home"}},
 			}},
 			wantErr: `remotes[1]: duplicate name "nb-home"`,
 		},
 		{
 			name: "socket upstream missing path",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: Socket{}},
-				Downstream: []BusConfig{{Bus: SessionBus{}}},
+				TopologyConfig: topology(Socket{}, SessionBus{}),
 			}},
 			wantErr: "requires a non-empty path",
 		},
 		{
 			name: "sockets downstream missing path",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{}}},
+				TopologyConfig: topology(SessionBus{}, Sockets{}),
 			}},
 			wantErr: "requires a non-empty path",
 		},
 		{
 			name: "downstream without a type",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{}},
+				TopologyConfig: topology(SessionBus{}, nil),
 			}},
 			wantErr: `downstream[0]: bus type must be session_bus, socket or sockets, got ""`,
 		},
 		{
 			name: "both upstream and downstream session_bus",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: SessionBus{}}},
+				TopologyConfig: topology(SessionBus{}, SessionBus{}),
 			}},
 			wantErr: "cannot both be session_bus",
 		},
 		{
 			name: "socket downstream named like the session bus",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Socket{Path: "/run/local.sock"}}},
+				TopologyConfig: topology(SessionBus{}, Socket{Path: "/run/local.sock"}),
 			}},
 			wantErr: `reserved client name "local"`,
 		},
 		{
 			name: "two socket downstreams with one client name",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Socket{Path: "/a/vm.sock"}}, {Bus: Socket{Path: "/b/vm.sock"}}},
+				TopologyConfig: topology(SessionBus{}, Socket{Path: "/a/vm.sock"}, Socket{Path: "/b/vm.sock"}),
 			}},
 			wantErr: `already has the client name "vm"`,
 		},
 		{
 			name: "duplicate session_bus downstream",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: Socket{Path: "/up.sock"}},
-				Downstream: []BusConfig{{Bus: SessionBus{}}, {Bus: SessionBus{}}},
+				TopologyConfig: topology(Socket{Path: "/up.sock"}, SessionBus{}, SessionBus{}),
 			}},
 			wantErr: "at most one session_bus downstream",
 		},
 		{
 			name: "valid deny rule",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
+				TopologyConfig: topology(SessionBus{}, Sockets{Dir: "/run/socks"}),
 				Rules: []approval.TrustRule{{
 					Name:    "deny-epiphany",
 					Action:  "deny",
@@ -492,9 +452,8 @@ func TestResolveValidates(t *testing.T) {
 		{
 			name: "ignore rule without request_types",
 			cfg: Config{Serve: ServeConfig{
-				Upstream:   UpstreamConfig{Bus: SessionBus{}},
-				Downstream: []BusConfig{{Bus: Sockets{Dir: "/run/socks"}}},
-				Rules:      []approval.TrustRule{{Name: "drop", Action: approval.RuleIgnore}},
+				TopologyConfig: topology(SessionBus{}, Sockets{Dir: "/run/socks"}),
+				Rules:          []approval.TrustRule{{Name: "drop", Action: approval.RuleIgnore}},
 			}},
 			wantErr: `rules[0]: action "ignore" requires non-empty request_types`,
 		},

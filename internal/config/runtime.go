@@ -69,7 +69,10 @@ func (d RuntimeDir) BackendBusSocket() unixsock.Path { return d.dir().Socket(bac
 // Returns the control directory of the gnome-keyring backend.
 func (d RuntimeDir) KeyringControlDir() unixsock.Dir { return d.dir().Sub(keyringControlDirName) }
 
-// Returns the throwaway config of `secrets-dispatcher try`.
-func (d RuntimeDir) TrialConfig() File { return File{filepath.Join(string(d), trialConfigName)} }
+// Returns the throwaway config of `secrets-dispatcher try`. Only the owner may
+// read it.
+func (d RuntimeDir) TrialConfig() File {
+	return File{path: filepath.Join(string(d), trialConfigName), private: true}
+}
 
 func (d RuntimeDir) dir() unixsock.Dir { return unixsock.Dir(d) }

@@ -144,12 +144,12 @@ func TestServiceInstallFlags(t *testing.T) {
 	} {
 		c, _ := parse(t, append([]string{"service", "install"}, tc.args...)...)
 		assert.Equal(t, tc.wantStart, c.Service.Install.Start, "%v", tc.args)
-		assert.Equal(t, service.ModeLocal, c.Service.Install.Mode, "the default mode")
+		assert.Nil(t, c.Service.Install.Mode, "no --mode leaves it to the install")
 		assert.Nil(t, c.Service.Install.Backend, "no backend leaves it to the provider")
 	}
 
 	c, _ := parse(t, "service", "install", "--mode", "full", "--backend", "/opt/backend --flag", "--verbose")
-	assert.Equal(t, service.ModeFull, c.Service.Install.Mode)
+	assert.Equal(t, new(service.ModeFull), c.Service.Install.Mode)
 	assert.Equal(t, "/opt/backend --flag", c.Service.Install.Backend.String())
 	assert.Equal(t, service.NarrateChanges, c.Service.Install.narration())
 }
@@ -194,13 +194,13 @@ func TestGPGProgramArgs(t *testing.T) {
 }
 
 func TestServeArgsRoundTrip(t *testing.T) {
-	source, err := config.Path(filepath.Join(t.TempDir(), "config.yaml")).OrDefault()
+	path := config.Path(filepath.Join(t.TempDir(), "config.yaml"))
+	source, err := path.OrDefault()
 	require.NoError(t, err)
-	file := source.File
 
-	c, cmd := parse(t, config.ServeArgs(file)...)
+	c, cmd := parse(t, config.ServeArgs(source.File)...)
 	assert.Equal(t, config.ServeCommand, cmd, "the command that the unit's ExecStart runs")
-	assert.Equal(t, file.Path(), c.Serve.Config)
+	assert.Equal(t, path, c.Serve.Config)
 }
 
 func TestServiceCommandNames(t *testing.T) {

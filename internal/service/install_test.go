@@ -32,7 +32,7 @@ func TestInstallRemoteWritesProxyUnit(t *testing.T) {
 
 	mockUnits(t)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 
 	// Proxy unit should exist.
 	content, err := dir.UnitFile(proxyServiceUnit).Read()
@@ -54,7 +54,7 @@ func TestInstallRemoteConfig(t *testing.T) {
 
 	mockUnits(t)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 
 	cfg := installedConfig(t)
 
@@ -67,7 +67,7 @@ func TestInstallRemoteUnitCalls(t *testing.T) {
 
 	units := mockUnits(t)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -81,7 +81,7 @@ func TestInstallRemoteWithStart(t *testing.T) {
 
 	units := mockUnits(t)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote, Start: true}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote), Start: true}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -97,7 +97,7 @@ func TestInstallCustomConfigPath(t *testing.T) {
 	mockUnits(t)
 
 	customConfig := filepath.Join(t.TempDir(), "custom", "config.yaml")
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote, ConfigPath: config.Path(customConfig)}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote), Config: config.Path(customConfig)}))
 
 	// Config should be written to custom path.
 	require.FileExists(t, customConfig, "custom config not written")
@@ -117,7 +117,7 @@ func TestInstallLocalWritesAllUnits(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	for _, name := range allUnitNames {
 		assert.True(t, dir.UnitFile(name).Exists(), "unit file %s not found", name)
@@ -150,7 +150,7 @@ func TestInstallLocalConfig(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	cfg := installedConfig(t)
 
@@ -165,7 +165,7 @@ func TestInstallLocalUnitCalls(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -183,7 +183,7 @@ func TestInstallLocalWithStart(t *testing.T) {
 	mockSession(t, 0)
 	shortOwnerWait(t)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal, Start: true}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal), Start: true}))
 
 	expected := []unitCall{
 		{opReload, ""},
@@ -204,7 +204,7 @@ func TestInstallFullConfig(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeFull}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeFull)}))
 
 	cfg := installedConfig(t)
 
@@ -215,6 +215,21 @@ func TestInstallFullConfig(t *testing.T) {
 	}, cfg.Serve.Downstream)
 }
 
+func TestReinstallKeepsInstalledMode(t *testing.T) {
+	tempXDG(t)
+
+	mockUnits(t)
+	mockLookPath(t, defaultLookPath)
+	mockSession(t, 0)
+
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeFull)}))
+	full := installedConfig(t).Serve.TopologyConfig
+
+	require.NoError(t, Install(t.Context(), Options{}))
+
+	assert.Equal(t, full, installedConfig(t).Serve.TopologyConfig)
+}
+
 func TestInstallFullWritesAllUnits(t *testing.T) {
 	dir := tempLayout(t).unitDir
 
@@ -222,7 +237,7 @@ func TestInstallFullWritesAllUnits(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeFull}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeFull)}))
 
 	for _, name := range allUnitNames {
 		assert.True(t, dir.UnitFile(name).Exists(), "unit file %s not found", name)
@@ -249,7 +264,7 @@ func TestInstallPreservesExistingConfig(t *testing.T) {
 	require.NoError(t, defaultConfigFile(t).Save(&initial))
 
 	// Install in local mode.
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	cfg := installedConfig(t)
 
@@ -275,7 +290,7 @@ func TestInstallSwitchLocalToRemoteRemovesStaleUnits(t *testing.T) {
 	}
 
 	// Switch to remote.
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 
 	// Only proxy unit should remain.
 	assert.True(t, dir.UnitFile(proxyServiceUnit).Exists(), "proxy unit should exist")
@@ -308,7 +323,7 @@ func TestInstallLocalAutoDetectsBackend(t *testing.T) {
 		}
 	})
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	content, _ := dir.UnitFile(backendServiceUnit).Read()
 	assert.Contains(t, content, "ExecStart=/opt/bin/gopass-secret service", "should use auto-detected backend path")
@@ -321,7 +336,7 @@ func TestInstallLocalBackendCommand(t *testing.T) {
 	mockLookPath(t, defaultLookPath)
 	mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal, Backend: &Backend{backendCommand("/custom/backend")}}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal), Backend: &Backend{backendCommand("/custom/backend")}}))
 
 	content, _ := dir.UnitFile(backendServiceUnit).Read()
 	assert.Contains(t, content, "ExecStart=/custom/backend", "should use explicit backend path")
@@ -341,7 +356,7 @@ func TestInstallBackendNotFound(t *testing.T) {
 		return "", fmt.Errorf("not found: %s", name)
 	})
 
-	err := Install(t.Context(), Options{Mode: ModeLocal})
+	err := Install(t.Context(), Options{Mode: new(ModeLocal)})
 	require.ErrorContains(t, err, "gopass-secret")
 }
 
@@ -354,7 +369,7 @@ func TestInstallDbusDaemonNotFound(t *testing.T) {
 		return "", fmt.Errorf("not found: %s", name)
 	})
 
-	err := Install(t.Context(), Options{Mode: ModeLocal})
+	err := Install(t.Context(), Options{Mode: new(ModeLocal)})
 	require.ErrorContains(t, err, "dbus-daemon")
 }
 
@@ -363,38 +378,35 @@ func TestInstallMissingRuntimeDir(t *testing.T) {
 
 	mockUnits(t)
 
-	err := Install(t.Context(), Options{Mode: ModeRemote})
+	err := Install(t.Context(), Options{Mode: new(ModeRemote)})
 	require.ErrorIs(t, err, config.ErrNoRuntimeDir)
 }
 
-func TestInstallRejectsModeNotNamed(t *testing.T) {
-	for _, mode := range []Mode{"", "bogus"} {
-		t.Run(string(mode), func(t *testing.T) {
-			unitDir := tempLayout(t).unitDir
-			units := mockUnits(t)
+func TestInstallRejectsUnknownMode(t *testing.T) {
+	unitDir := tempLayout(t).unitDir
+	units := mockUnits(t)
 
-			installed := unitDir.UnitFile(proxyServiceUnit)
-			require.NoError(t, installed.Write("installed"))
+	installed := unitDir.UnitFile(proxyServiceUnit)
+	require.NoError(t, installed.Write("installed"))
 
-			_, err := Plan(t.Context(), Options{Mode: mode})
-			require.ErrorContains(t, err, "mode must be")
-			require.ErrorContains(t, Install(t.Context(), Options{Mode: mode}), "mode must be")
+	mode := Mode("bogus")
+	_, err := Plan(t.Context(), Options{Mode: &mode})
+	require.ErrorContains(t, err, "mode must be")
+	require.ErrorContains(t, Install(t.Context(), Options{Mode: &mode}), "mode must be")
 
-			for _, u := range allUnitNames {
-				assert.Equal(t, u == proxyServiceUnit, unitDir.UnitFile(u).Exists(), u)
-			}
-			content, err := installed.Read()
-			require.NoError(t, err)
-			assert.Equal(t, "installed", content)
-			assert.Empty(t, units.calls)
-		})
+	for _, u := range allUnitNames {
+		assert.Equal(t, u == proxyServiceUnit, unitDir.UnitFile(u).Exists(), u)
 	}
+	content, err := installed.Read()
+	require.NoError(t, err)
+	assert.Equal(t, "installed", content)
+	assert.Empty(t, units.calls)
 }
 
 func TestInstallRejectsBackendForRemote(t *testing.T) {
 	tmpDir := tempXDG(t)
 	units := mockUnits(t)
-	opts := Options{Mode: ModeRemote, Backend: new(BackendGopass)}
+	opts := Options{Mode: new(ModeRemote), Backend: new(BackendGopass)}
 
 	_, err := Plan(t.Context(), opts)
 	require.ErrorContains(t, err, "only to local and full modes")
@@ -457,7 +469,7 @@ func TestInstallLocalMasksDBusActivation(t *testing.T) {
 	origContent := "[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/usr/bin/gopass-secret-service\n"
 	require.NoError(t, mask.file.Write(origContent))
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	assert.Equal(t, dbusActivationMask, readFile(t, mask.file), "the mask is in place")
 	assert.Equal(t, origContent, readFile(t, mask.backup()), "the backup keeps the original")
@@ -475,7 +487,7 @@ func TestInstallLocalMaskIdempotent(t *testing.T) {
 	origContent := "[D-BUS Service]\nName=org.freedesktop.secrets\nExec=/usr/bin/gopass\n"
 	require.NoError(t, mask.backup().Write(origContent))
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	assert.Equal(t, dbusActivationMask, readFile(t, mask.file), "the mask stays")
 	assert.Equal(t, origContent, readFile(t, mask.backup()), "the backup is not overwritten with the mask")
@@ -490,7 +502,7 @@ func TestInstallLocalReplacesFormerMask(t *testing.T) {
 
 	require.NoError(t, mask.file.Write(formerDBusActivationMask))
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 
 	assert.Equal(t, dbusActivationMask, readFile(t, mask.file), "the mask is the current one")
 	assert.False(t, mask.backup().Exists(), "the former mask is ours, not backed up")
@@ -508,7 +520,7 @@ func TestInstallRemoteUnmasks(t *testing.T) {
 
 	bus := mockSession(t, 0)
 
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 
 	assert.Equal(t, origContent, readFile(t, mask.file), "the original is restored")
 	assert.False(t, mask.backup().Exists(), "the backup is gone after the restore")
@@ -600,7 +612,7 @@ func TestInstallQuietByDefault(t *testing.T) {
 	mockUnits(t)
 
 	out := captureStdout(t, func() {
-		require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+		require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 	})
 
 	assert.NotContains(t, out, "Wrote "+string(proxyServiceUnit)+": ")
@@ -614,7 +626,7 @@ func TestInstallVerboseNarratesChanges(t *testing.T) {
 	units := mockUnits(t)
 
 	out := captureStdout(t, func() {
-		require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote, Narration: NarrateChanges}))
+		require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote), Narration: NarrateChanges}))
 	})
 
 	assert.Contains(t, out, "Wrote "+string(proxyServiceUnit)+": ")
@@ -628,7 +640,7 @@ func TestUninstallQuietByDefault(t *testing.T) {
 	tempXDG(t)
 	mockUnits(t)
 	mockSession(t, 0)
-	require.NoError(t, Install(t.Context(), Options{Mode: ModeRemote}))
+	require.NoError(t, Install(t.Context(), Options{Mode: new(ModeRemote)}))
 
 	out := captureStdout(t, func() {
 		require.NoError(t, Uninstall(t.Context(), NarrateMilestones))

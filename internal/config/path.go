@@ -30,7 +30,7 @@ func DefaultSource() (Source, error) {
 	if err != nil {
 		return Source{}, fmt.Errorf("find the config file: %w", err)
 	}
-	return Source{File: File{defaultConfigFile(base)}, optional: true}, nil
+	return Source{File: File{path: defaultConfigFile(base)}, optional: true}, nil
 }
 
 // Parses a config file location and resolves a relative one against the
@@ -52,9 +52,24 @@ func (p *Path) UnmarshalText(text []byte) error {
 // is empty and there is no default.
 func (p Path) OrDefault() (Source, error) {
 	if p != "" {
-		return Source{File: File{string(p)}}, nil
+		return Source{File: File{path: string(p)}}, nil
 	}
 	return DefaultSource()
+}
+
+// Returns the settings in the file p names, or in the default one, as a draft
+// that saves back to that file. A missing file gives empty settings. Errors as
+// OrDefault does, and when the file fails to load.
+func (p Path) Draft() (Draft, error) {
+	source, err := p.OrDefault()
+	if err != nil {
+		return Draft{}, err
+	}
+	cfg, err := source.File.LoadOrEmpty()
+	if err != nil {
+		return Draft{}, fmt.Errorf("load config: %w", err)
+	}
+	return Draft{cfg, source.File}, nil
 }
 
 // A config file to load. A file the user named must exist; the default one
@@ -74,12 +89,13 @@ func (s Source) Load() (*Config, error) {
 }
 
 // A config file location that is never empty.
-type File struct{ path string }
+type File struct {
+	path string
+	// True if only the owner may read the file and a directory created for it.
+	private bool
+}
 
 func (f File) String() string { return f.path }
-
-// Returns f as a Path, which is never empty.
-func (f File) Path() Path { return Path(f.path) }
 
 // Returns the config in f. Unknown keys are rejected, and each error names the
 // file. Errors with os.ErrNotExist when f does not exist.
@@ -115,7 +131,7 @@ func (f File) Save(cfg *Config) error {
 	if err := f.CreateDir(); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	return os.WriteFile(f.path, data, 0644)
+	return os.WriteFile(f.path, data, f.modes().file)
 }
 
 // Returns the contents of f.
@@ -124,27 +140,31 @@ func (f File) ReadFile() ([]byte, error) {
 }
 
 // Creates the directory that holds f.
-func (f File) CreateDir() error { return f.createDir(0755) }
-
-func (f File) createDir(perm os.FileMode) error {
-	return os.MkdirAll(filepath.Dir(f.path), perm)
+func (f File) CreateDir() error {
+	return os.MkdirAll(filepath.Dir(f.path), f.modes().dir)
 }
 
-// Copies f to dst, creating dst's directory. Only the owner can read the copy.
-// Errors with os.ErrNotExist when f does not exist.
-func (f File) CopyTo(dst File) error {
-	data, err := f.ReadFile()
-	if err != nil {
-		return fmt.Errorf("read config %s: %w", f, err)
+// The modes that a config file and a directory created for it get.
+type fileModes struct{ file, dir os.FileMode }
+
+func (f File) modes() fileModes {
+	if f.private {
+		return fileModes{0600, 0700}
 	}
-	if err := dst.createDir(0700); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
-	}
-	if err := os.WriteFile(dst.path, data, 0600); err != nil {
-		return fmt.Errorf("write config %s: %w", dst, err)
-	}
-	return nil
+	return fileModes{0644, 0755}
 }
+
+type Draft struct {
+	*Config
+	file File
+}
+
+func (d Draft) File() File { return d.file }
+
+// Returns a draft of the same settings that saves to dst.
+func (d Draft) To(dst File) Draft { return Draft{d.Config, dst} }
+
+func (d Draft) Save() error { return d.file.Save(d.Config) }
 
 // Deletes f, if it exists.
 func (f File) Remove() error {

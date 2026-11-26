@@ -62,19 +62,16 @@ func TestTopologyServe(t *testing.T) {
 	tk := newTakeover(nil, Provider{})
 
 	for _, tc := range []struct {
-		name           string
-		topology       topology
-		wantUpstream   config.UpstreamConfig
-		wantDownstream []config.BusConfig
+		name     string
+		topology topology
+		want     config.TopologyConfig
 	}{
-		{"remote", remote{}, sessionUp, []config.BusConfig{clients}},
-		{"local", tk, private, []config.BusConfig{session}},
-		{"full", full{tk}, private, []config.BusConfig{session, clients}},
+		{"remote", remote{}, config.TopologyConfig{Upstream: sessionUp, Downstream: []config.BusConfig{clients}}},
+		{"local", tk, config.TopologyConfig{Upstream: private, Downstream: []config.BusConfig{session}}},
+		{"full", full{tk}, config.TopologyConfig{Upstream: private, Downstream: []config.BusConfig{session, clients}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			upstream, downstream := tc.topology.serve(rd)
-			assert.Equal(t, tc.wantUpstream, upstream)
-			assert.Equal(t, tc.wantDownstream, downstream)
+			assert.Equal(t, tc.want, tc.topology.serve(rd))
 		})
 	}
 }

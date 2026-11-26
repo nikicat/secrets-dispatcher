@@ -114,6 +114,15 @@ run prints it, and the call that makes that change. `service install` runs the
 list that `service install --dry-run` prints, so the two cannot list different
 changes.
 
+`service install` without `--mode` keeps the mode that the config already
+serves. A first install, whose config serves nothing yet, gets local. A
+reinstall without `--mode` used to reset the mode to local. On a full install,
+that dropped the downstream to the dev containers, and every dev container lost
+its Secret Service. `service uninstall` leaves the config's serve settings in
+place, so a later reinstall still keeps that mode. Switching modes always takes
+an explicit `--mode`. On a remote host, for example, `service install --backend`
+without `--mode` fails, because a backend applies only to local and full.
+
 The backend unit sets `DBUS_SESSION_BUS_ADDRESS` to the private backend bus only
 for a backend that needs the variable to find that bus. gnome-keyring needs it.
 A backend given as a command line gets it too, because its program is not known

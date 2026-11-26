@@ -7,13 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nikicat/secrets-dispatcher/internal/testutil"
 )
 
 func TestDefaultSource(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
 	got, err := DefaultSource()
 	require.NoError(t, err)
-	assert.Equal(t, File{"/custom/config/secrets-dispatcher/config.yaml"}, got.File)
+	assert.Equal(t, File{path: "/custom/config/secrets-dispatcher/config.yaml"}, got.File)
 }
 
 func TestPathOrDefault(t *testing.T) {
@@ -24,7 +26,7 @@ func TestPathOrDefault(t *testing.T) {
 		in   Path
 		want Source
 	}{
-		{"/etc/custom.yaml", Source{File: File{"/etc/custom.yaml"}}},
+		{"/etc/custom.yaml", Source{File: File{path: "/etc/custom.yaml"}}},
 		{"", def},
 	} {
 		got, err := tc.in.OrDefault()
@@ -52,44 +54,70 @@ func TestSourceLoadExplicitMissingFile(t *testing.T) {
 }
 
 func TestFileLoadOrEmptyMissingFile(t *testing.T) {
-	cfg, err := File{filepath.Join(t.TempDir(), "missing.yaml")}.LoadOrEmpty()
+	cfg, err := File{path: filepath.Join(t.TempDir(), "missing.yaml")}.LoadOrEmpty()
 	require.NoError(t, err)
 	assert.Equal(t, &Config{}, cfg)
 }
 
 func TestFileSave(t *testing.T) {
-	p := File{filepath.Join(t.TempDir(), "sub", "config.yaml")}
+	p := File{path: filepath.Join(t.TempDir(), "sub", "config.yaml")}
 	require.NoError(t, p.Save(&Config{StateDir: "/srv/state"}))
 
-	info, err := os.Stat(p.String())
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0644), info.Mode().Perm())
+	testutil.AssertPerm(t, p.String(), 0644)
 	cfg, err := p.Load()
 	require.NoError(t, err)
 	assert.Equal(t, StateDir("/srv/state"), cfg.StateDir)
 }
 
-func TestFileCopyTo(t *testing.T) {
-	dir := t.TempDir()
-	src := File{filepath.Join(dir, "config.yaml")}
-	require.NoError(t, os.WriteFile(src.String(), []byte("listen: 127.0.0.1:9999\n"), 0644))
-	dst := File{filepath.Join(dir, "trial", "config.yaml")}
-	require.NoError(t, src.CopyTo(dst))
+func TestFileSavePrivate(t *testing.T) {
+	p := File{path: filepath.Join(t.TempDir(), "sub", "config.yaml"), private: true}
+	require.NoError(t, p.Save(&Config{}))
 
-	data, err := dst.ReadFile()
-	require.NoError(t, err)
-	assert.Equal(t, "listen: 127.0.0.1:9999\n", string(data))
-	info, err := os.Stat(dst.String())
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0600), info.Mode().Perm())
+	testutil.AssertPerm(t, p.String(), 0600)
+	testutil.AssertPerm(t, filepath.Dir(p.String()), 0700)
 }
 
-func TestFileCopyToMissingFile(t *testing.T) {
-	dir := t.TempDir()
-	err := File{filepath.Join(dir, "missing.yaml")}.CopyTo(File{filepath.Join(dir, "copy.yaml")})
-	assert.ErrorIs(t, err, os.ErrNotExist)
+func TestPathDraftMissingFile(t *testing.T) {
+	draft, err := Path(filepath.Join(t.TempDir(), "missing.yaml")).Draft()
+	require.NoError(t, err)
+	assert.Equal(t, &Config{}, draft.Config)
+}
+
+// A draft saves to the file it was loaded from, and a draft moved with To saves
+// to its new file only.
+func TestDraftSave(t *testing.T) {
+	const listen = "listen: 127.0.0.1:9999\n"
+	for _, tc := range []struct {
+		name string
+		move func(Draft) Draft
+	}{
+		{"own file", func(d Draft) Draft { return d }},
+		{"To", func(d Draft) Draft {
+			return d.To(File{path: filepath.Join(filepath.Dir(d.File().String()), "trial.yaml")})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := yamlFile(t, listen)
+			draft, err := Path(src.String()).Draft()
+			require.NoError(t, err)
+			assert.Equal(t, src, draft.File())
+
+			saved := tc.move(draft)
+			saved.StateDir = "/srv/state"
+			require.NoError(t, saved.Save())
+			cfg, err := saved.File().Load()
+			require.NoError(t, err)
+			assert.Equal(t, ListenAddr("127.0.0.1:9999"), cfg.Listen)
+			assert.Equal(t, StateDir("/srv/state"), cfg.StateDir)
+			if saved.File() != src {
+				data, err := src.ReadFile()
+				require.NoError(t, err)
+				assert.Equal(t, listen, string(data))
+			}
+		})
+	}
 }
 
 func TestFileRemoveMissingFile(t *testing.T) {
-	assert.NoError(t, File{filepath.Join(t.TempDir(), "missing.yaml")}.Remove())
+	assert.NoError(t, File{path: filepath.Join(t.TempDir(), "missing.yaml")}.Remove())
 }

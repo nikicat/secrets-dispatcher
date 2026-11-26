@@ -140,6 +140,6 @@ func TestInstallFailsWithoutUserManager(t *testing.T) {
 	tmpDir := tempXDG(t)
 	mockUnitsUnreachable(t)
 
-	require.ErrorContains(t, Install(t.Context(), Options{Mode: ModeRemote}), "user systemd manager")
+	require.ErrorContains(t, Install(t.Context(), Options{Mode: new(ModeRemote)}), "user systemd manager")
 	assert.NoDirExists(t, filepath.Join(tmpDir, "systemd"))
 }

@@ -57,8 +57,7 @@ func (cfg *Config) WithDefaults() (*Settings, error) {
 
 func (s ServeConfig) withDefaults() (ServeSettings, error) {
 	out := ServeSettings{
-		Upstream:                s.Upstream,
-		Downstream:              slices.Clone(s.Downstream),
+		TopologyConfig:          s.TopologyConfig.clone(),
 		LogLevel:                s.LogLevel.OrDefault(),
 		LogFormat:               s.LogFormat.OrDefault(),
 		Timeout:                 cmp.Or(s.Timeout, Duration(DefaultTimeout)),
@@ -195,10 +194,25 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// The bus the daemon forwards requests to, and the buses where it serves
+// clients (ADR 0001).
+type TopologyConfig struct {
+	Upstream   UpstreamConfig `yaml:"upstream"`
+	Downstream []BusConfig    `yaml:"downstream"`
+}
+
+func (t TopologyConfig) Equal(o TopologyConfig) bool {
+	return t.Upstream == o.Upstream && slices.Equal(t.Downstream, o.Downstream)
+}
+
+func (t TopologyConfig) clone() TopologyConfig {
+	t.Downstream = slices.Clone(t.Downstream)
+	return t
+}
+
 // The settings of the serve command.
 type ServeConfig struct {
-	Upstream                UpstreamConfig           `yaml:"upstream"`
-	Downstream              []BusConfig              `yaml:"downstream"`
+	TopologyConfig          `yaml:",inline"`
 	LogLevel                LogLevel                 `yaml:"log_level"`
 	LogFormat               LogFormat                `yaml:"log_format"`
 	Timeout                 Duration                 `yaml:"timeout"`
@@ -278,8 +292,7 @@ type Settings struct {
 
 // A ServeConfig with every default filled in.
 type ServeSettings struct {
-	Upstream                UpstreamConfig           `yaml:"upstream"`
-	Downstream              []BusConfig              `yaml:"downstream"`
+	TopologyConfig          `yaml:",inline"`
 	LogLevel                LogLevel                 `yaml:"log_level"`
 	LogFormat               LogFormat                `yaml:"log_format"`
 	Timeout                 Duration                 `yaml:"timeout"`

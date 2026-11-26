@@ -38,7 +38,7 @@ func TestPlanLocalGnomeKeyringTakeoverOrder(t *testing.T) {
 	mockSession(t, 4242)
 	mockExePath(t, "/usr/bin/gnome-keyring-daemon")
 
-	changes, err := Plan(t.Context(), Options{Mode: ModeLocal, Start: true})
+	changes, err := Plan(t.Context(), Options{Mode: new(ModeLocal), Start: true})
 	require.NoError(t, err)
 
 	config := changeIndex(changes, changeWrite, "config.yaml")
@@ -76,7 +76,7 @@ func TestPlanSurfacesResolvedBackend(t *testing.T) {
 	mockSession(t, 4242)
 	mockExePath(t, "/usr/bin/gnome-keyring-daemon")
 
-	changes, err := Plan(t.Context(), Options{Mode: ModeLocal})
+	changes, err := Plan(t.Context(), Options{Mode: new(ModeLocal)})
 	require.NoError(t, err)
 
 	idx := changeIndex(changes, changeWrite, string(backendServiceUnit))
@@ -89,7 +89,7 @@ func TestPlanRemoteMinimal(t *testing.T) {
 
 	mockSession(t, 0)
 
-	changes, err := Plan(t.Context(), Options{Mode: ModeRemote})
+	changes, err := Plan(t.Context(), Options{Mode: new(ModeRemote)})
 	require.NoError(t, err)
 
 	assert.GreaterOrEqual(t, changeIndex(changes, changeWrite, string(proxyServiceUnit)), 0)
@@ -108,7 +108,7 @@ func TestPlanRemoteReversesTakeoverState(t *testing.T) {
 	// Simulate a previous takeover: our mask, drop-in, and autostart shadow.
 	files.place(t)
 
-	changes, err := Plan(t.Context(), Options{Mode: ModeRemote})
+	changes, err := Plan(t.Context(), Options{Mode: new(ModeRemote)})
 	require.NoError(t, err)
 
 	assert.GreaterOrEqual(t, changeIndex(changes, changeRemove, dbusServiceFile), 0)
@@ -129,7 +129,7 @@ func TestPlannedWritesLandOnDisk(t *testing.T) {
 	mockUnits(t)
 	shortOwnerWait(t)
 
-	opts := Options{Mode: ModeLocal, Start: true}
+	opts := Options{Mode: new(ModeLocal), Start: true}
 	changes, err := Plan(t.Context(), opts)
 	require.NoError(t, err)
 
@@ -153,7 +153,7 @@ func TestPlanTakeoverFileChanges(t *testing.T) {
 	maskBackup, shadowBackup := files.mask.backup().String(), files.shadow.backup().String()
 	require.NoError(t, files.mask.file.Write("foreign"))
 	require.NoError(t, files.shadow.file.Write("foreign"))
-	changes, err := Plan(t.Context(), Options{Mode: ModeLocal})
+	changes, err := Plan(t.Context(), Options{Mode: new(ModeLocal)})
 	require.NoError(t, err)
 	sigterm := changeIndex(changes, changeSignal, "pid 4242")
 	require.Positive(t, sigterm, "missing sigterm in plan: %v", changes)
@@ -173,7 +173,7 @@ func TestPlanTakeoverFileChanges(t *testing.T) {
 	// when place writes ours. The shadow is removed first, so it has no backup.
 	require.NoError(t, files.shadow.file.Remove())
 	files.place(t)
-	changes, err = Plan(t.Context(), Options{Mode: ModeRemote})
+	changes, err = Plan(t.Context(), Options{Mode: new(ModeRemote)})
 	require.NoError(t, err)
 	restart := changeIndex(changes, changeRun, opTryRestart.commandFor(gkServiceUnit))
 	require.Positive(t, restart, "missing restart in plan: %v", changes)
@@ -205,7 +205,7 @@ func TestInstallStopsDisplacedOwner(t *testing.T) {
 			bus := mockSession(t, 4242)
 			mockExePath(t, tc.exe)
 
-			changes, err := Plan(t.Context(), Options{Mode: ModeLocal})
+			changes, err := Plan(t.Context(), Options{Mode: new(ModeLocal)})
 			require.NoError(t, err)
 			if tc.wantSignal {
 				assert.GreaterOrEqual(t, changeIndex(changes, changeSignal, "pid 4242"), 0)
@@ -213,7 +213,7 @@ func TestInstallStopsDisplacedOwner(t *testing.T) {
 				assert.Equal(t, -1, changeIndex(changes, changeSignal, ""))
 			}
 
-			require.NoError(t, Install(t.Context(), Options{Mode: ModeLocal}))
+			require.NoError(t, Install(t.Context(), Options{Mode: new(ModeLocal)}))
 			assert.Equal(t, tc.wantTerminated, bus.terminated)
 		})
 	}

@@ -2,9 +2,7 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/nikicat/secrets-dispatcher/internal/config"
@@ -37,17 +35,15 @@ func Try(ctx context.Context, opts TryOptions) error {
 	if err != nil {
 		return err
 	}
-	trialConfig := runtimeDir.TrialConfig()
-	base, err := opts.ConfigPath.OrDefault()
+	trialFile := runtimeDir.TrialConfig()
+	in, err := resolveInstallInputs(ctx, Options{Config: trialConfig{opts.ConfigPath, trialFile}, Start: true, Mode: new(ModeLocal), Backend: opts.Backend})
 	if err != nil {
 		return err
 	}
-	installOpts := Options{ConfigPath: trialConfig.Path(), Start: true, Mode: ModeLocal, Backend: opts.Backend, Narration: opts.Narration}
-	p, err := l.planInstall(ctx, installOpts)
+	p, err := l.plan(in)
 	if err != nil {
 		return err
 	}
-	p.steps = append([]step{copyTrialConfigStep(base.File, trialConfig)}, p.steps...)
 
 	if opts.DryRun {
 		printTrialPlan(changesOf(p.steps))
@@ -56,7 +52,7 @@ func Try(ctx context.Context, opts TryOptions) error {
 
 	// Remember the provider being displaced so the restore can confirm it is
 	// back. No step has run yet, so this is the pre-takeover state.
-	t := trial{layout: l, config: trialConfig, narration: opts.Narration, orig: DetectProvider(ctx)}
+	t := trial{layout: l, config: trialFile, narration: opts.Narration, orig: DetectProvider(ctx)}
 
 	// Ctrl-C has cancelled ctx by now, and the restore must still run.
 	restoreCtx := context.WithoutCancel(ctx)
@@ -85,13 +81,17 @@ type trial struct {
 	orig      Provider
 }
 
-func copyTrialConfigStep(base, trial config.File) step {
-	return step{Change{changeCopy, fmt.Sprintf("%s -> %s", base, trial), "trial config; your config is never modified"}, func(context.Context, host) error {
-		if err := base.CopyTo(trial); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("copy the base config to the trial: %w", err)
-		}
-		return nil
-	}}
+type trialConfig struct {
+	base  config.Path
+	trial config.File
+}
+
+func (c trialConfig) Draft() (config.Draft, error) {
+	draft, err := c.base.Draft()
+	if err != nil {
+		return config.Draft{}, err
+	}
+	return draft.To(c.trial), nil
 }
 
 func printTrialPlan(changes []Change) {

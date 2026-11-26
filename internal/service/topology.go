@@ -9,8 +9,8 @@ import (
 )
 
 type topology interface {
-	// The upstream and downstream that serve runs with.
-	serve(config.RuntimeDir) (upstream config.UpstreamConfig, downstream []config.BusConfig)
+	// The buses that the serve command runs with.
+	serve(config.RuntimeDir) config.TopologyConfig
 	// Returns the unit files to install. Errors when a program that a unit runs
 	// is not installed.
 	units(execStart systemd.Command) (unitFiles, error)
@@ -29,8 +29,8 @@ type topology interface {
 
 type remote struct{}
 
-func (remote) serve(rd config.RuntimeDir) (config.UpstreamConfig, []config.BusConfig) {
-	return config.SessionUpstream(), []config.BusConfig{rd.ClientsDownstream()}
+func (remote) serve(rd config.RuntimeDir) config.TopologyConfig {
+	return config.TopologyConfig{Upstream: config.SessionUpstream(), Downstream: []config.BusConfig{rd.ClientsDownstream()}}
 }
 
 func (remote) units(execStart systemd.Command) (unitFiles, error) {
@@ -73,9 +73,11 @@ func (t takeover) displacesGnomeKeyring() bool {
 	return t.provider.is(ProviderGnomeKeyring)
 }
 
-func (takeover) serve(rd config.RuntimeDir) (config.UpstreamConfig, []config.BusConfig) {
-	return config.UpstreamConfig{Bus: config.Socket{Path: rd.BackendBusSocket()}},
-		[]config.BusConfig{{Bus: config.SessionBus{}}}
+func (takeover) serve(rd config.RuntimeDir) config.TopologyConfig {
+	return config.TopologyConfig{
+		Upstream:   config.UpstreamConfig{Bus: config.Socket{Path: rd.BackendBusSocket()}},
+		Downstream: []config.BusConfig{{Bus: config.SessionBus{}}},
+	}
 }
 
 func (t takeover) units(execStart systemd.Command) (unitFiles, error) {
@@ -121,7 +123,8 @@ func (takeover) confirm(ctx context.Context) { reportOwnership(ctx) }
 
 type full struct{ takeover }
 
-func (f full) serve(rd config.RuntimeDir) (config.UpstreamConfig, []config.BusConfig) {
-	upstream, downstream := f.takeover.serve(rd)
-	return upstream, append(downstream, rd.ClientsDownstream())
+func (f full) serve(rd config.RuntimeDir) config.TopologyConfig {
+	t := f.takeover.serve(rd)
+	t.Downstream = append(t.Downstream, rd.ClientsDownstream())
+	return t
 }
